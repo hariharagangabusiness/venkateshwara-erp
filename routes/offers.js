@@ -12,8 +12,8 @@ const { createJobCardsForProject } = require('../lib/pipeline');
 const router = express.Router();
 router.use(authRequired);
 
-const uploadDir = path.join(__dirname, '..', 'public', 'uploads', 'offers');
-fs.mkdirSync(uploadDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const uploadDir = getUploadsSubdir('offers');
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),

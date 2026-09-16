@@ -11,8 +11,8 @@ const { sendMail } = require('../lib/mailer');
 const router = express.Router();
 router.use(authRequired);
 
-const expenseUploadDir = path.join(__dirname, '..', 'public', 'uploads', 'expenses');
-fs.mkdirSync(expenseUploadDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const expenseUploadDir = getUploadsSubdir('expenses');
 const uploadExpense = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, expenseUploadDir),

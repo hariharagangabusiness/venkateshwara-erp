@@ -2,7 +2,11 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
 
-const dbPath = path.join(__dirname, 'erp.db');
+const dataDir = process.env.DATA_DIR || __dirname;
+if (process.env.DATA_DIR) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+const dbPath = path.join(dataDir, 'erp.db');
 const isNew = !fs.existsSync(dbPath);
 const raw = new DatabaseSync(dbPath);
 raw.exec('PRAGMA journal_mode = WAL');

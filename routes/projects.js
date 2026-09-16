@@ -8,8 +8,8 @@ const { PIPELINE_STAGES, createJobCardsForProject, combinedStagesForRole } = req
 const router = express.Router();
 router.use(authRequired);
 
-const uploadDir = path.join(__dirname, '..', 'public', 'uploads', 'job-cards');
-fs.mkdirSync(uploadDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const uploadDir = getUploadsSubdir('job-cards');
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),

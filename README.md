@@ -47,6 +47,15 @@ node server.js       # starts on http://localhost:4000
 
 Open `http://localhost:4000` in a browser.
 
+### Deployment (Render or similar)
+
+By default the SQLite DB (`db/erp.db`) and uploaded files (`public/uploads/`) live inside the app directory, which is fine for local use but gets wiped on every redeploy on platforms like Render that use an ephemeral container filesystem. To persist data across redeploys, mount a persistent disk and set:
+
+- `DATA_DIR` — directory for `erp.db` (e.g. `/data`)
+- `UPLOADS_DIR` — directory for uploaded files (e.g. `/data/uploads`)
+
+Both are optional and unset by default, which keeps local dev behavior unchanged.
+
 ### Demo logins
 
 | Username | Password | Role |

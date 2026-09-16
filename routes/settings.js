@@ -7,8 +7,8 @@ const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettin
 const router = express.Router();
 router.use(authRequired);
 
-const logoDir = path.join(__dirname, '..', 'public', 'uploads', 'company');
-fs.mkdirSync(logoDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const logoDir = getUploadsSubdir('company');
 const uploadLogo = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, logoDir),

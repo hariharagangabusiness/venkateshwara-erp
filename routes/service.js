@@ -18,8 +18,8 @@ const JOB_STATUS_TRANSITIONS = {
   restart: { from: ['OnHold'], to: 'InProgress' },
 };
 
-const uploadDir = path.join(__dirname, '..', 'public', 'uploads', 'service-reports');
-fs.mkdirSync(uploadDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const uploadDir = getUploadsSubdir('service-reports');
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),

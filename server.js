@@ -5,11 +5,15 @@ const path = require('path');
 
 // initializes db + runs schema on require
 require('./db');
+const { getUploadsDir } = require('./lib/paths');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+// Explicit mount so uploaded files stay servable at /uploads/... even when
+// UPLOADS_DIR points outside public/ (e.g. a Render persistent disk).
+app.use('/uploads', express.static(getUploadsDir()));
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/masters', require('./routes/masters'));

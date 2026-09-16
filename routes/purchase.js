@@ -17,8 +17,8 @@ const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 
 // Disk storage for quote documents (PDF/image/etc), following the pattern
 // in routes/service.js.
-const quoteUploadDir = path.join(__dirname, '..', 'public', 'uploads', 'purchase-quotes');
-fs.mkdirSync(quoteUploadDir, { recursive: true });
+const { getUploadsSubdir } = require('../lib/paths');
+const quoteUploadDir = getUploadsSubdir('purchase-quotes');
 const uploadQuote = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, quoteUploadDir),
