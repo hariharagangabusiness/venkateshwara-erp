@@ -4,8 +4,19 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-require('./db');
+const { isNew } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
+
+// Seed roles/departments/permissions/demo users/admin login whenever the
+// database file did not already exist before this boot - covers a fresh
+// deploy target (e.g. Railway with no persistent volume yet, or the first
+// boot on a new one) where nobody has a chance to run db/seed.js by hand.
+// seed.js is idempotent (INSERT OR IGNORE / upsert throughout) so this is
+// also safe to leave running against a carried-forward database.
+if (isNew) {
+  console.log('New database detected - running seed...');
+  require('./db/seed');
+}
 
 const app = express();
 app.use(cors());
