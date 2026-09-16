@@ -1,0 +1,7 @@
+node_modules/
+db/erp.db
+db/erp.db-shm
+db/erp.db-wal
+public/uploads/*
+!public/uploads/.gitkeep
+.env
