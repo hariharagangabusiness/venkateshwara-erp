@@ -13,6 +13,28 @@ router.use(requireRole('Admin'));
 
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+// SheetJS's CSV/XLSX reader auto-detects date-looking cells (including a
+// plain YYYY-MM-DD string typed into a CSV) and hands sheet_to_json back
+// either a JS Date object or an Excel serial-date number instead of the
+// original text, depending on the source format. Every importRow() that
+// expects a YYYY-MM-DD date string needs to tolerate all three shapes -
+// this normalizes any of them to 'YYYY-MM-DD', or returns null if the
+// value can't be read as a date at all.
+function normalizeDate(value) {
+  if (value instanceof Date && !isNaN(value)) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (!parsed) return null;
+    const mm = String(parsed.m).padStart(2, '0');
+    const dd = String(parsed.d).padStart(2, '0');
+    return `${parsed.y}-${mm}-${dd}`;
+  }
+  const str = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
+}
+
 // ===================== Entity registry =====================
 // Each entity defines: key, label, table, columns (with an example row for
 // the template), notes (shown on the template's Notes sheet), and an
@@ -110,8 +132,8 @@ const ENTITIES = {
       if (!catName) return { error: 'category_name is required' };
       const cat = db.prepare('SELECT id FROM expense_tracker_categories WHERE name = ?').get(catName);
       if (!cat) return { error: `no expense tracker category named "${catName}"` };
-      const date = String(row.entry_date || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'entry_date must be YYYY-MM-DD' };
+      const date = normalizeDate(row.entry_date);
+      if (!date) return { error: 'entry_date must be YYYY-MM-DD' };
       const amount = Number(row.amount);
       if (!amount) return { error: 'amount must be a non-zero number' };
       return { upsert: { category_id: cat.id, entry_date: date, amount, notes: row.notes || null } };
