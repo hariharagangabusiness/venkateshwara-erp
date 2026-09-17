@@ -269,6 +269,23 @@ window.toggleNavGroup = (label) => {
     if (navEl) navEl.classList.add('active');
   }
 };
+// ===================== Mobile sidebar drawer =====================
+// On screens <=768px the sidebar becomes an off-canvas drawer (see the
+// matching @media block in index.html). These just toggle the 'open'
+// class on the sidebar + a dimming overlay; navigate() below auto-closes
+// it after picking a page so users don't have to close it by hand every
+// time on a phone.
+function toggleSidebarDrawer() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+function closeSidebarDrawer() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+window.toggleSidebarDrawer = toggleSidebarDrawer;
+window.closeSidebarDrawer = closeSidebarDrawer;
+
 function renderSidebar() {
   const el = document.getElementById('sidebar');
   el.innerHTML = `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
@@ -309,6 +326,7 @@ NAV.forEach(g => g.items.forEach(it => PAGE_TITLES[it.id] = it.label));
 let CURRENT_PAGE = null;
 async function navigate(id) {
   CURRENT_PAGE = id;
+  closeSidebarDrawer();
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   let navEl = document.getElementById('nav-' + id);
   // If this page's nav item lives inside a collapsed group (e.g. a deep
