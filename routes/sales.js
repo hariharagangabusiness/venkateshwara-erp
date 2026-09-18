@@ -285,12 +285,29 @@ router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.mana
   res.json({ ok: true });
 });
 
-router.get('/orders/:id/annexure', (req, res) => {
-  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+router.get('/orders/:id/annexure', async (req, res) => {
+  let order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if (!order.annexure_path) return res.status(404).json({ error: 'No annexure has been generated for this order yet.' });
-  const abs = path.join(__dirname, '..', 'public', order.annexure_path);
-  if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Annexure file is missing on disk.' });
+
+  // The annexure is written to disk at generation time, not stored in the
+  // DB itself - on a host without a persistent volume (e.g. Railway without
+  // a mounted disk), that file does not survive a container restart or
+  // redeploy even though sales_orders.annexure_path still points at it.
+  // Rather than surface that as a dead end, regenerate on demand: the same
+  // ensureAnnexureForOrder() used at order-creation time rebuilds it from
+  // the order/offer data (which does live in the DB) and re-serves it.
+  let abs = order.annexure_path ? path.join(__dirname, '..', 'public', order.annexure_path) : null;
+  if (!abs || !fs.existsSync(abs)) {
+    try {
+      const annex = await ensureAnnexureForOrder(order);
+      order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+      abs = path.join(__dirname, '..', 'public', order.annexure_path);
+      if (!fs.existsSync(abs)) throw new Error('Annexure regeneration did not produce a file.');
+    } catch (e) {
+      console.error('Annexure auto-regeneration failed:', e);
+      return res.status(500).json({ error: 'The annexure file was missing and could not be regenerated: ' + e.message });
+    }
+  }
   res.download(abs, path.basename(abs));
 });
 
