@@ -327,6 +327,11 @@ const MIGRATIONS = [
     is_read INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 17: parallel department scheduling on the Targets sheet ----
+  // A stage marked parallel_with_previous starts on the same day as the
+  // stage immediately above it in the plan, instead of waiting for that
+  // stage to finish - see the date-math in PUT /projects/:id/plan.
+  `ALTER TABLE job_cards ADD COLUMN parallel_with_previous INTEGER DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS bg_reminder_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bg_id INTEGER NOT NULL REFERENCES bank_guarantees(id),
