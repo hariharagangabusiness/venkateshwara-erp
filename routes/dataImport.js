@@ -10,9 +10,9 @@ router.use(authRequired);
 // sensitive bulk-write path that can create masters and transactional rows
 // across the whole system.
 router.use(requireRole('Admin'));
-
+ 
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
-
+ 
 // SheetJS's CSV/XLSX reader auto-detects date-looking cells (including a
 // plain YYYY-MM-DD string typed into a CSV) and hands sheet_to_json back
 // either a JS Date object or an Excel serial-date number instead of the
@@ -34,14 +34,14 @@ function normalizeDate(value) {
   const str = String(value || '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
 }
-
+ 
 // ===================== Entity registry =====================
 // Each entity defines: key, label, table, columns (with an example row for
 // the template), notes (shown on the template's Notes sheet), and an
 // importRow(row, ctx) function that validates one sheet_to_json row and
 // either returns { insert: {col: val, ...} } to insert, or { error: 'msg' }
 // to skip it. ctx carries prepared lookup statements + req.user.
-
+ 
 const ENTITIES = {
   clients: {
     label: 'Clients',
@@ -175,6 +175,54 @@ const ENTITIES = {
       };
     },
   },
+  bank_guarantees: {
+    label: 'Bank Guarantees',
+    table: 'bank_guarantees',
+    columns: ['bg_no', 'bg_type', 'order_type', 'order_no', 'issuing_bank', 'value', 'issue_date', 'validity_expiry', 'claim_expiry', 'milestone_link'],
+    example: { bg_no: 'BG/2026/0042', bg_type: 'Performance', order_type: 'SO', order_no: 'SO-1044', issuing_bank: 'HDFC Bank, Faridabad', value: 250000, issue_date: '2026-02-01', validity_expiry: '2027-01-31', claim_expiry: '2027-03-31', milestone_link: 'Release on final acceptance' },
+    notes: [
+      'bg_type must be Advance or Performance. order_type must be SO or PO.',
+      'order_no must match an existing Sales Order order_no (when order_type=SO) or Purchase Order po_no (when order_type=PO) exactly.',
+      'value and validity_expiry are required. Dates are YYYY-MM-DD.',
+      'project_id and beneficiary are auto-derived from the linked order, same as creating a BG from the BG Dashboard.',
+      'bg_no, if given, must be unique - re-running with the same bg_no updates that BG\'s bank/value/dates/milestone_link (safe to re-import). A row with no bg_no is always inserted as a new BG.',
+    ],
+    importRow(row) {
+      const bgType = String(row.bg_type || '').trim();
+      if (!['Advance', 'Performance'].includes(bgType)) return { error: 'bg_type must be Advance or Performance' };
+      const orderType = String(row.order_type || '').trim();
+      if (!['SO', 'PO'].includes(orderType)) return { error: 'order_type must be SO or PO' };
+      const orderNo = String(row.order_no || '').trim();
+      if (!orderNo) return { error: 'order_no is required' };
+      let order, partyName, projectId;
+      if (orderType === 'SO') {
+        order = db.prepare('SELECT so.id, c.name as party_name FROM sales_orders so JOIN clients c ON c.id = so.client_id WHERE so.order_no = ?').get(orderNo);
+        if (!order) return { error: `no Sales Order with order_no "${orderNo}"` };
+        const project = db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(order.id);
+        projectId = project ? project.id : null;
+      } else {
+        order = db.prepare('SELECT po.id, v.name as party_name FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id WHERE po.po_no = ?').get(orderNo);
+        if (!order) return { error: `no Purchase Order with po_no "${orderNo}"` };
+        const pr = db.prepare('SELECT purchase_request_id FROM purchase_orders WHERE id = ?').get(order.id);
+        const prRow = pr && pr.purchase_request_id ? db.prepare('SELECT project_id FROM purchase_requests WHERE id = ?').get(pr.purchase_request_id) : null;
+        projectId = prRow ? prRow.project_id : null;
+      }
+      partyName = order.party_name;
+      const value = Number(row.value);
+      if (!value) return { error: 'value must be a non-zero number' };
+      const validityExpiry = String(row.validity_expiry || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(validityExpiry)) return { error: 'validity_expiry must be YYYY-MM-DD' };
+      const bgNo = row.bg_no ? String(row.bg_no).trim() : null;
+      return {
+        upsert: {
+          bg_no: bgNo, bg_type: bgType, order_type: orderType, order_id: order.id, project_id: projectId,
+          issuing_bank: row.issuing_bank || null, beneficiary: partyName, value,
+          issue_date: row.issue_date || null, validity_expiry: validityExpiry,
+          claim_expiry: row.claim_expiry || null, milestone_link: row.milestone_link || null,
+        },
+      };
+    },
+  },
   daily_work_logs: {
     label: 'Daily Work Log',
     table: 'daily_work_logs',
@@ -197,11 +245,11 @@ const ENTITIES = {
     },
   },
 };
-
+ 
 router.get('/entities', (req, res) => {
   res.json(Object.entries(ENTITIES).map(([id, e]) => ({ id, label: e.label })));
 });
-
+ 
 router.get('/:entity/template', (req, res) => {
   const entity = ENTITIES[req.params.entity];
   if (!entity) return res.status(404).json({ error: 'Unknown entity' });
@@ -215,7 +263,7 @@ router.get('/:entity/template', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.send(buf);
 });
-
+ 
 router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
   const entity = ENTITIES[req.params.entity];
   if (!entity) return res.status(404).json({ error: 'Unknown entity' });
@@ -225,7 +273,7 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
-
+ 
   let inserted = 0; const errors = [];
   const tx = db.transaction(() => {
     rows.forEach((row, i) => {
@@ -264,6 +312,28 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
             ON CONFLICT(employee_id, log_date) DO UPDATE SET note = excluded.note, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
           `).run(result.upsert.employee_id, result.upsert.log_date, result.upsert.note, req.user.id, req.user.id);
           inserted++;
+        } else if (entity.table === 'bank_guarantees') {
+          // bg_no has a UNIQUE index but is nullable - a row with a bg_no
+          // upserts on it (safe re-import); a row with no bg_no has nothing
+          // to match against, so it's always inserted as a new BG.
+          const u = result.upsert;
+          if (u.bg_no) {
+            db.prepare(`
+              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, created_by)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+              ON CONFLICT(bg_no) DO UPDATE SET
+                bg_type = excluded.bg_type, order_type = excluded.order_type, order_id = excluded.order_id,
+                project_id = excluded.project_id, issuing_bank = excluded.issuing_bank, beneficiary = excluded.beneficiary,
+                value = excluded.value, issue_date = excluded.issue_date, validity_expiry = excluded.validity_expiry,
+                claim_expiry = excluded.claim_expiry, milestone_link = excluded.milestone_link
+            `).run(u.bg_no, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, req.user.id);
+          } else {
+            db.prepare(`
+              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, created_by)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            `).run(null, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, req.user.id);
+          }
+          inserted++;
         }
       }
     });
@@ -271,5 +341,6 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
   tx();
   res.json({ inserted, skipped: errors.length, errors });
 });
-
+ 
 module.exports = router;
+ 
