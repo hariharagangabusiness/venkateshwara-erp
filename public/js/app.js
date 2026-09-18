@@ -217,6 +217,7 @@ const NAV = [
     { id: 'expense-tracker', label: 'Monthly Expense Tracker' },
     { id: 'expense-tracker-summary', label: 'Expense Tracker - Year Summary' },
     { id: 'expense-tracker-categories', label: 'Expense Tracker - Categories' },
+    { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
   ]},
   { group: 'Asset Management', items: [
     { id: 'assets', label: 'Asset Register' },
@@ -363,6 +364,19 @@ function esc(s) { return (s === null || s === undefined) ? '' : String(s).replac
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
 function today() { return new Date().toISOString().slice(0, 10); }
+// Round 16: color-coded delivery-date badge for SO/PO lists - green if
+// comfortably ahead, amber inside the 7-day warning window (matches the
+// scan job's WARNING_DAYS), red once past due. No date on file renders
+// nothing rather than a false badge.
+function deliveryBadge(dateStr) {
+  if (!dateStr) return '<span class="muted">-</span>';
+  const days = Math.round((new Date(dateStr) - new Date(today())) / 86400000);
+  let cls = 'active', label = dateStr;
+  if (days < 0) { cls = 'Rejected'; label = `${dateStr} (overdue ${-days}d)`; }
+  else if (days <= 7) { cls = 'Pending'; label = `${dateStr} (due in ${days}d)`; }
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
 function tableHTML(columns, rows, rowRenderer) {
@@ -1312,6 +1326,15 @@ PAGES.orders = async (el) => {
         <div><label>From Lead (optional)</label><select id="so-lead"><option value="">-</option>${wonLeads.map(l => `<option value="${l.id}">#${l.id} ${esc(l.client_name)}</option>`).join('')}</select></div>
         <div><label>Order Value (₹)</label><input id="so-value" type="number"></div>
         <div><label>Description</label><textarea id="so-desc" rows="1"></textarea></div>
+        <div><label>Promised Delivery Date</label><input id="so-delivery" type="date"></div>
+      </div>
+      <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
+        <h4 style="margin-top:0;">LD Clause (optional)</h4>
+        <div class="form-grid">
+          <div><label>LD Rate (%)</label><input id="so-ld-pct" type="number" step="0.01"></div>
+          <div><label>LD Cap (%)</label><input id="so-ld-cap" type="number" step="0.01"></div>
+        </div>
+        <div><label>Trigger Conditions</label><textarea id="so-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       </div>
       <button class="btn" onclick="addOrder()">Create Order</button>
     </div>
@@ -1319,9 +1342,12 @@ PAGES.orders = async (el) => {
       <div class="toolbar"><h3 style="margin:0;">Sales Orders (${orders.length})</h3>
         <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', ''], orders, o => `
+      ${tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Annexure', ''], orders, o => `
         <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
-        <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td></tr>`)}
+        <td>${deliveryBadge(o.promised_delivery_date)}</td>
+        <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
+        <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button></td></tr>
+        <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`)}
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     </div>`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
@@ -1356,8 +1382,41 @@ window.generateAnnexure = async (ev, orderId) => {
 
 window.addOrder = async () => {
   try {
-    await api('/sales/orders', { method: 'POST', body: JSON.stringify({
+    const r = await api('/sales/orders', { method: 'POST', body: JSON.stringify({
       client_id: val('so-client'), lead_id: val('so-lead') || null, order_value: val('so-value'), description: val('so-desc')
+    })});
+    // Commercial terms aren't accepted by the create endpoint (kept
+    // separate/optional, Round 16) - a second call sets them if the user
+    // filled any of those fields in.
+    const delivery = val('so-delivery'), ldPct = val('so-ld-pct'), ldCap = val('so-ld-cap'), ldNotes = val('so-ld-notes');
+    if (delivery || ldPct || ldCap || ldNotes) {
+      await api(`/sales/orders/${r.id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
+        promised_delivery_date: delivery || null, ld_percentage: ldPct || null, ld_cap_percentage: ldCap || null, ld_trigger_notes: ldNotes || null
+      })});
+    }
+    navigate('orders');
+  } catch (e) { alert(e.message); }
+};
+function soTermsForm(o) {
+  return `<div class="form-grid" style="margin-top:8px;">
+    <div><label>Promised Delivery Date</label><input id="so-terms-delivery-${o.id}" type="date" value="${o.promised_delivery_date || ''}"></div>
+    <div><label>LD Rate (%)</label><input id="so-terms-ldpct-${o.id}" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
+    <div><label>LD Cap (%)</label><input id="so-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+  </div>
+  <div><label>Trigger Conditions</label><textarea id="so-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+  <button class="btn small" type="button" onclick="saveSOTerms(${o.id})">Save Terms</button>`;
+}
+window.toggleSOTerms = (id) => {
+  const row = document.getElementById(`so-terms-row-${id}`);
+  row.style.display = row.style.display !== 'none' ? 'none' : '';
+};
+window.saveSOTerms = async (id) => {
+  try {
+    await api(`/sales/orders/${id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
+      promised_delivery_date: val(`so-terms-delivery-${id}`) || null,
+      ld_percentage: val(`so-terms-ldpct-${id}`) || null,
+      ld_cap_percentage: val(`so-terms-ldcap-${id}`) || null,
+      ld_trigger_notes: val(`so-terms-ldnotes-${id}`) || null,
     })});
     navigate('orders');
   } catch (e) { alert(e.message); }
@@ -2417,20 +2476,31 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>Delivery Date</label><input id="po-delivery" type="date"></div>
       </div>
       <div><label>Terms</label><textarea id="po-terms" rows="2" style="width:100%;" placeholder="Standard terms apply..."></textarea></div>
+      <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
+        <h4 style="margin-top:0;">LD Clause (optional)</h4>
+        <div class="form-grid">
+          <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
+          <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
+        </div>
+        <div><label>Trigger Conditions</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
+      </div>
       <div id="po-pr-detail" style="display:none;margin-top:10px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
       <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
       <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Create PO</button>
     </div>
     <div class="panel"><h3>Purchase Orders (${orders.length})</h3>
-      ${tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Documents', ''], orders, o => `
+      ${tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], orders, o => `
         <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td><td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
+        <td>${deliveryBadge(o.delivery_date)}</td>
         <td>
           <button class="btn small outline" type="button" onclick="downloadPoPdf(${o.id}, '${esc(o.po_no)}')">PDF</button>
           <button class="btn small outline" type="button" onclick="downloadPoDocx(${o.id}, '${esc(o.po_no)}')">Word</button>
           <button class="btn small outline" type="button" onclick="emailPo(${o.id})">Email Vendor</button>
         </td>
-        <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button></td></tr>
-        <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="9"><div id="po-attachments-${o.id}"></div></td></tr>`)}
+        <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
+        <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button></td></tr>
+        <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-attachments-${o.id}"></div></td></tr>
+        <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>`)}
     </div>`;
   window.__PO_PRS = prs;
 };
@@ -2475,9 +2545,39 @@ window.fillPOFromPR = () => {
 };
 window.addPO = async () => {
   try {
-    await api('/purchase/orders', { method: 'POST', body: JSON.stringify({
+    const r = await api('/purchase/orders', { method: 'POST', body: JSON.stringify({
       purchase_request_id: val('po-pr') || null, vendor_id: val('po-vendor'), item_id: val('po-item'), quantity: val('po-qty'), rate: val('po-rate'),
       hsn_code: val('po-hsn'), gst_rate: val('po-gst'), delivery_date: val('po-delivery'), terms: val('po-terms'),
+    })});
+    const ldPct = val('po-ld-pct'), ldCap = val('po-ld-cap'), ldNotes = val('po-ld-notes');
+    if (ldPct || ldCap || ldNotes) {
+      await api(`/purchase/orders/${r.id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
+        ld_percentage: ldPct || null, ld_cap_percentage: ldCap || null, ld_trigger_notes: ldNotes || null
+      })});
+    }
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+function poTermsForm(o) {
+  return `<div class="form-grid" style="margin-top:8px;">
+    <div><label>Promised Delivery Date</label><input id="po-terms-delivery-${o.id}" type="date" value="${o.delivery_date || ''}"></div>
+    <div><label>LD Rate (%)</label><input id="po-terms-ldpct-${o.id}" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
+    <div><label>LD Cap (%)</label><input id="po-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+  </div>
+  <div><label>Trigger Conditions</label><textarea id="po-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+  <button class="btn small" type="button" onclick="savePOTerms(${o.id})">Save Terms</button>`;
+}
+window.togglePOTerms = (id) => {
+  const row = document.getElementById(`po-terms-row-${id}`);
+  row.style.display = row.style.display !== 'none' ? 'none' : '';
+};
+window.savePOTerms = async (id) => {
+  try {
+    await api(`/purchase/orders/${id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
+      delivery_date: val(`po-terms-delivery-${id}`) || null,
+      ld_percentage: val(`po-terms-ldpct-${id}`) || null,
+      ld_cap_percentage: val(`po-terms-ldcap-${id}`) || null,
+      ld_trigger_notes: val(`po-terms-ldnotes-${id}`) || null,
     })});
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
@@ -3958,6 +4058,114 @@ window.toggleExpTrackerCategory = async (id, active) => {
   await api('/expense-tracker/categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
   navigate('expense-tracker-categories');
 };
+
+// ---- Bank Guarantee Dashboard (Round 16) ----
+PAGES['bg-dashboard'] = async (el) => {
+  const [summary, bgs, reminders, orders] = await Promise.all([
+    api('/bg/summary'), api('/bg'), api('/bg/reminders?status=PendingReview'), api('/bg/orders'),
+  ]);
+  const verified = await api('/bg/reminders?status=Verified');
+  window.__BG_ORDERS = orders;
+  el.innerHTML = `
+    <div class="cards">
+      <div class="card"><div class="num">${summary.live_count}</div><div class="label">Live Bank Guarantees</div></div>
+      <div class="card"><div class="num">₹${fmt(summary.live_value)}</div><div class="label">Total Live Value</div></div>
+      <div class="card"><div class="num">${summary.expiring_30d}</div><div class="label">Expiring in 30 Days</div></div>
+      <div class="card"><div class="num">${summary.pending_reminders}</div><div class="label">Pending Reminders</div></div>
+    </div>
+
+    ${(reminders.length || verified.length) ? `
+    <div class="panel"><h3>Pending Reminders</h3>
+      ${tableHTML(['BG No', 'Type', 'Value', 'Expiry', 'Reason', 'Step', 'Action'], [...reminders, ...verified], r => `
+        <tr><td>${esc(r.bg_no || '#'+r.bg_id)}</td><td>${esc(r.bg_type)}</td><td>₹${fmt(r.value)}</td><td>${esc(r.validity_expiry)}</td><td>${esc(r.trigger_reason)}</td>
+        <td>${badge(r.status)}</td>
+        <td>
+          ${r.status === 'PendingReview' ? `<button class="btn small" onclick="verifyBGReminder(${r.id})">Verify</button>` : ''}
+          ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
+          <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
+        </td></tr>`)}
+    </div>` : ''}
+
+    <div class="panel"><h3>Add Bank Guarantee</h3>
+      <div class="form-grid">
+        <div><label>BG No</label><input id="bg-no"></div>
+        <div><label>Type</label><select id="bg-type"><option value="Advance">Advance</option><option value="Performance">Performance</option></select></div>
+        <div><label>Order</label><select id="bg-order">${orders.map(o => `<option value="${o.order_type}:${o.order_id}">[${o.order_type}] ${esc(o.label)}</option>`).join('')}</select></div>
+        <div><label>Issuing Bank</label><input id="bg-bank"></div>
+        <div><label>Value (₹)</label><input id="bg-value" type="number"></div>
+        <div><label>Issue Date</label><input id="bg-issue" type="date"></div>
+        <div><label>Validity Expiry</label><input id="bg-expiry" type="date"></div>
+        <div><label>Claim Expiry (optional)</label><input id="bg-claim" type="date"></div>
+      </div>
+      <div><label>Release Condition / Milestone Link</label><textarea id="bg-milestone" rows="2" style="width:100%;" placeholder="e.g. release on final acceptance / installation completion"></textarea></div>
+      <button class="btn" onclick="addBG()">Add Bank Guarantee</button>
+    </div>
+
+    <div class="panel">
+      <div class="tabs" id="bg-tabs">
+        <div class="tab active" onclick="filterBGTab(this,'')">All</div>
+        <div class="tab" onclick="filterBGTab(this,'Advance')">Advance</div>
+        <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
+        <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
+      </div>
+      <div id="bg-table-wrap">${bgTableHTML(bgs)}</div>
+    </div>`;
+  window.__BG_ALL = bgs;
+};
+function bgTableHTML(bgs) {
+  return tableHTML(['BG No', 'Type', 'Order', 'Bank', 'Value', 'Validity Expiry', 'Status', 'Action'], bgs, bg => `
+    <tr><td>${esc(bg.bg_no || '#'+bg.id)}</td><td>${esc(bg.bg_type)}</td><td>[${esc(bg.order_type)}] ${esc(bg.order_label || '')}</td><td>${esc(bg.issuing_bank || '-')}</td>
+    <td>₹${fmt(bg.value)}</td><td>${deliveryBadge(bg.validity_expiry)}</td><td>${badge(bg.status)}</td>
+    <td>${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}</td></tr>`);
+}
+window.filterBGTab = (tabEl, filter) => {
+  document.querySelectorAll('#bg-tabs .tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  const all = window.__BG_ALL || [];
+  const filtered = !filter ? all : (filter === 'PendingRelease' ? all.filter(b => b.status === 'PendingRelease') : all.filter(b => b.bg_type === filter));
+  document.getElementById('bg-table-wrap').innerHTML = bgTableHTML(filtered);
+};
+window.addBG = async () => {
+  const orderSel = val('bg-order');
+  if (!orderSel) { alert('No open SO/PO to attach this BG to.'); return; }
+  const [order_type, order_id] = orderSel.split(':');
+  try {
+    await api('/bg', { method: 'POST', body: JSON.stringify({
+      bg_no: val('bg-no'), bg_type: val('bg-type'), order_type, order_id,
+      issuing_bank: val('bg-bank'), value: val('bg-value'), issue_date: val('bg-issue'),
+      validity_expiry: val('bg-expiry'), claim_expiry: val('bg-claim'), milestone_link: val('bg-milestone'),
+    })});
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+window.releaseBG = async (id) => {
+  if (!confirm('Mark this Bank Guarantee as Released?')) return;
+  try {
+    await api(`/bg/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'Released' }) });
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+window.verifyBGReminder = async (id) => {
+  try {
+    await api(`/bg/reminders/${id}/verify`, { method: 'POST' });
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+window.sendBGReminderEmail = async (id) => {
+  try {
+    const r = await api(`/bg/reminders/${id}/send-email`, { method: 'POST' });
+    if (r.sent) alert(`Reminder emailed to ${r.to}`);
+    else alert(r.message || 'Email not sent.');
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+window.dismissBGReminder = async (id) => {
+  try {
+    await api(`/bg/reminders/${id}/dismiss`, { method: 'POST' });
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+
 
 // ---- Expense Report ----
 PAGES['expense-report'] = async (el) => {

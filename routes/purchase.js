@@ -238,6 +238,19 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   res.json({ id: info.lastInsertRowid, po_no: poNo });
 });
 
+// Commercial terms (Round 16): LD clause (delivery_date already exists on
+// purchase_orders from Round 5 and doubles as the promised delivery date).
+router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT id FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes } = req.body;
+  db.prepare(`
+    UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?
+    WHERE id = ?
+  `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, req.params.id);
+  res.json({ ok: true });
+});
+
 // ---- Store: GRN receive & issue to production ----
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   const { item_id, quantity, po_id, project_id } = req.body;

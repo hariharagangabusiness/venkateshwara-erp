@@ -47,8 +47,28 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/assets', require('./routes/assets'));
 app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/data-import', require('./routes/dataImport'));
+app.use('/api/bg', require('./routes/bankGuarantees'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+// PO/SO delivery-date and Bank Guarantee expiry/reminder scan (Round 16).
+// No background job runner in this app - a plain setInterval is the
+// simplest fit for a single-process app; runs once at boot, then every
+// 6 hours. Never let a scan failure crash the process.
+const { runScan } = require('./lib/bgReminderScan');
+function runReminderScanSafely() {
+  try {
+    const result = runScan();
+    if (result.deliveryAlerts || result.bgReminders) {
+      console.log(`[bg-scan] ${result.deliveryAlerts} delivery alert(s), ${result.bgReminders} BG reminder(s) raised`);
+    }
+  } catch (e) {
+    console.error('[bg-scan] failed:', e.message);
+  }
+}
+setTimeout(runReminderScanSafely, 5000); // let the server finish booting first
+setInterval(runReminderScanSafely, 6 * 60 * 60 * 1000);
+
 
 // Friendly names for UNIQUE-indexed columns, so a raw SQLite constraint
 // error ("UNIQUE constraint failed: clients.gstin") becomes a clean message

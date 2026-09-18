@@ -276,6 +276,68 @@ const MIGRATIONS = [
   `ALTER TABLE service_requests ADD COLUMN end_lat REAL`,
   `ALTER TABLE service_requests ADD COLUMN end_lng REAL`,
   `ALTER TABLE service_requests ADD COLUMN end_captured_at TEXT`,
+  // ---- Round 16: PO/SO commercial terms (LD clause + promised delivery) and Bank Guarantee tracking ----
+  `ALTER TABLE sales_orders ADD COLUMN promised_delivery_date TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN ld_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN ld_cap_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN ld_trigger_notes TEXT`,
+  `ALTER TABLE purchase_orders ADD COLUMN ld_percentage REAL`,
+  `ALTER TABLE purchase_orders ADD COLUMN ld_cap_percentage REAL`,
+  `ALTER TABLE purchase_orders ADD COLUMN ld_trigger_notes TEXT`,
+  `CREATE TABLE IF NOT EXISTS payment_milestones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_type TEXT NOT NULL,              -- 'SO' or 'PO'
+    order_id INTEGER NOT NULL,
+    milestone_name TEXT NOT NULL,
+    due_type TEXT NOT NULL DEFAULT 'Date', -- 'Date' or 'Event'
+    due_date TEXT,
+    linked_event TEXT,
+    percentage REAL,
+    amount REAL,
+    status TEXT DEFAULT 'Pending',         -- Pending, Invoiced, Received, Overdue
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS bank_guarantees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bg_no TEXT UNIQUE,
+    bg_type TEXT NOT NULL,                 -- 'Advance' or 'Performance'
+    order_type TEXT NOT NULL,              -- 'SO' or 'PO'
+    order_id INTEGER NOT NULL,
+    project_id INTEGER REFERENCES projects(id),
+    issuing_bank TEXT,
+    beneficiary TEXT,
+    value REAL NOT NULL DEFAULT 0,
+    issue_date TEXT,
+    validity_expiry TEXT NOT NULL,
+    claim_expiry TEXT,
+    milestone_link TEXT,
+    status TEXT DEFAULT 'Active',          -- Active, PendingRelease, Released, Expired, Extended, Invoked
+    released_at TEXT,
+    released_by INTEGER REFERENCES users(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id),
+    source_type TEXT NOT NULL,             -- BG_EXPIRY, PO_DELIVERY_OVERDUE, SO_DELIVERY_OVERDUE, PAYMENT_MILESTONE_DUE
+    source_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS bg_reminder_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bg_id INTEGER NOT NULL REFERENCES bank_guarantees(id),
+    trigger_reason TEXT NOT NULL,          -- ExpiryApproaching, ProjectCompleted, MilestoneReached
+    triggered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'PendingReview',   -- PendingReview, Verified, EmailSent, Dismissed
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    email_sent_to TEXT,
+    email_sent_at TEXT
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

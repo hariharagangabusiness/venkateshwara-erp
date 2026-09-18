@@ -56,6 +56,7 @@ const permissionCodes = [
   'service_center.manage',
   'expense_tracker.manage',
   'site_visit.manage',
+  'bg.manage',
 ];
 const insertPerm = db.prepare('INSERT OR IGNORE INTO permissions (code) VALUES (?)');
 permissionCodes.forEach(c => insertPerm.run(c));
@@ -88,6 +89,7 @@ grant('Electrical', ['site_visit.manage']);
 grant('HR', ['payroll.manage', 'attendance.manage', 'leave.manage', 'advance.request', 'user.manage']);
 grant('Accounts', ['expense_voucher.create', 'expense_voucher.approve', 'expense_voucher.view_all', 'payroll.approve', 'report.view_all', 'sales_order.manage', 'expense_tracker.manage']);
 grant('HR', ['expense_tracker.manage']);
+grant('Accounts', ['bg.manage']);
 grant('Management', ['foc.approve', 'report.view_all', 'expense_voucher.view_all', 'service_request.manage']);
 
 // Approval chains

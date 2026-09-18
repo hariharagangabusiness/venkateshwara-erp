@@ -271,6 +271,20 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   res.json(result);
 });
 
+// Commercial terms (Round 16): promised delivery date + LD clause. Kept as
+// a lightweight PATCH so it can be filled in any time after order creation,
+// not just at entry.
+router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT id FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const { promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes } = req.body;
+  db.prepare(`
+    UPDATE sales_orders SET promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?
+    WHERE id = ?
+  `).run(promised_delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, req.params.id);
+  res.json({ ok: true });
+});
+
 router.get('/orders/:id/annexure', (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
