@@ -1634,11 +1634,14 @@ function renderScopeTab(el, data) {
         <td style="white-space:pre-wrap;max-width:220px;">${esc(it.description)}</td>
         <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
         <td>${it.qty}</td><td>₹${fmt(it.unit_price)}</td><td>₹${fmt(it.total_price)}</td>
-        <td><button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button></td>
+        <td>
+          <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
+          <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
+        </td>
       </tr>`).join('') || '<tr><td colspan="8" class="empty">No items yet.</td></tr>'}
     <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(items.reduce((a, b) => a + Number(b.total_price || 0), 0))}</b></td></tr>
     </tbody></table>
-    <h4>Add Machinery / Scope Line</h4>
+    <h4 id="it-form-title">Add Machinery / Scope Line</h4>
     <div class="form-grid">
       <div><label>Item Code</label><input id="it-code" placeholder="A / B / C"></div>
       <div><label>Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
@@ -1648,9 +1651,32 @@ function renderScopeTab(el, data) {
     </div>
     <label>Description</label>
     <textarea id="it-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
-    <div style="margin-top:8px;"><button class="btn" onclick="addOfferItem()">Add Line</button></div>
+    <div style="margin-top:8px;">
+      <button class="btn" id="it-submit-btn" onclick="addOfferItem()">Add Line</button>
+      <button class="btn outline" id="it-cancel-btn" onclick="cancelEditOfferItem()" style="display:none;">Cancel</button>
+    </div>
   `;
 }
+let EDITING_OFFER_ITEM_ID = null;
+window.editOfferItem = async (itemId) => {
+  const data = await api('/offers/' + CURRENT_OFFER_ID);
+  const it = data.items.find(x => x.id === itemId);
+  if (!it) return;
+  EDITING_OFFER_ITEM_ID = itemId;
+  document.getElementById('it-code').value = it.item_code || '';
+  document.getElementById('it-section').value = it.section_title || '';
+  document.getElementById('it-desc').value = it.description || '';
+  document.getElementById('it-qty').value = it.qty;
+  document.getElementById('it-price').value = it.unit_price;
+  document.getElementById('it-form-title').textContent = 'Edit Machinery / Scope Line';
+  document.getElementById('it-submit-btn').textContent = 'Update Line';
+  document.getElementById('it-cancel-btn').style.display = '';
+  document.getElementById('it-form-title').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+window.cancelEditOfferItem = () => {
+  EDITING_OFFER_ITEM_ID = null;
+  switchOfferTab('scope');
+};
 window.addOfferItem = async () => {
   try {
     const fd = new FormData();
@@ -1661,7 +1687,12 @@ window.addOfferItem = async () => {
     fd.append('unit_price', val('it-price'));
     const fileInput = document.getElementById('it-image');
     if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
-    await apiUpload(`/offers/${CURRENT_OFFER_ID}/items`, fd, 'POST');
+    if (EDITING_OFFER_ITEM_ID) {
+      await apiUpload(`/offers/${CURRENT_OFFER_ID}/items/${EDITING_OFFER_ITEM_ID}`, fd, 'PUT');
+      EDITING_OFFER_ITEM_ID = null;
+    } else {
+      await apiUpload(`/offers/${CURRENT_OFFER_ID}/items`, fd, 'POST');
+    }
     switchOfferTab('scope');
   } catch (e) { alert(e.message); }
 };
@@ -1887,10 +1918,10 @@ window.loadProjectPlan = async () => {
   if (!cards.length) { body.innerHTML = '<div class="msg err">This project has no job cards.</div>'; return; }
   const targetProject = (await api('/projects')).find(p => String(p.id) === String(projectId));
   body.innerHTML = `
-    <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence; each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench.</p>
-    <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Planned Start</th><th>Planned End</th><th>Status</th></tr></thead>
+    <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence. By default each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. Tick "Run in parallel" on a row to have it start on the same day as the row above it instead — the next non-parallel row waits for whichever of that group finishes last. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench.</p>
+    <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Run in parallel<br>with row above</th><th>Planned Start</th><th>Planned End</th><th>Status</th></tr></thead>
     <tbody id="pl-rows">
-      ${cards.map(c => `
+      ${cards.map((c, i) => `
         <tr data-jc="${c.id}">
           <td class="pl-reorder">
             <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
@@ -1898,6 +1929,7 @@ window.loadProjectPlan = async () => {
           </td>
           <td>${esc(STAGE_LABELS[c.stage] || c.stage)}${c.child_count ? ` <span class="muted">(+${c.child_count} sub-processes, HOD-planned)</span>` : ''}</td>
           <td><input type="number" min="1" class="pl-duration" value="${c.duration_days || 7}" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+          <td style="text-align:center;"><input type="checkbox" class="pl-parallel" ${c.parallel_with_previous ? 'checked' : ''} ${i === 0 ? 'disabled title="The first row has nothing above it to run alongside."' : ''}></td>
           <td class="pl-start">${c.planned_start || '-'}</td>
           <td class="pl-end">${c.planned_end || '-'}</td>
           <td>${badge(c.status)}</td>
@@ -1914,14 +1946,31 @@ window.moveRow = (btn, dir) => {
   if (!sibling) return;
   if (dir < 0) tr.parentNode.insertBefore(tr, sibling);
   else tr.parentNode.insertBefore(sibling, tr);
+  refreshParallelCheckboxRowZero(tr.parentNode);
 };
+// Whichever row ends up first after reordering has nothing above it to run
+// alongside, so its "Run in parallel" checkbox is disabled and cleared;
+// every other row is re-enabled (it may have been the disabled first row
+// a moment ago).
+function refreshParallelCheckboxRowZero(tbody) {
+  Array.from(tbody.children).forEach((tr, i) => {
+    const cb = tr.querySelector('.pl-parallel');
+    if (!cb) return;
+    if (i === 0) { cb.checked = false; cb.disabled = true; cb.title = 'The first row has nothing above it to run alongside.'; }
+    else { cb.disabled = false; cb.title = ''; }
+  });
+}
 window.saveProjectPlan = async (projectId) => {
   const errEl = document.getElementById('pl-err');
   errEl.style.display = 'none';
   const startDate = val('pl-start');
   if (!startDate) { errEl.textContent = 'Pick a plan start date first.'; errEl.style.display = 'block'; return; }
   const rows = Array.from(document.querySelectorAll('#pl-rows tr'));
-  const stages = rows.map(tr => ({ id: Number(tr.dataset.jc), duration_days: Number(tr.querySelector('.pl-duration').value) || 1 }));
+  const stages = rows.map(tr => ({
+    id: Number(tr.dataset.jc),
+    duration_days: Number(tr.querySelector('.pl-duration').value) || 1,
+    parallel_with_previous: tr.querySelector('.pl-parallel').checked,
+  }));
   try {
     const r = await api(`/projects/${projectId}/plan`, { method: 'PUT', body: JSON.stringify({ start_date: startDate, stages }) });
     r.jobCards.forEach(c => {
@@ -2047,7 +2096,20 @@ window.openJobCardDetail = async (id) => {
       <tr><td><a href="#" onclick="openJobCardDetail(${ch.id});return false;">${esc(ch.title || STAGE_LABELS[ch.stage] || ch.stage)}</a></td><td>${badge(ch.status)}</td><td>${esc(ch.assigned_to_name)||'-'}</td><td>${ch.planned_start||'-'}</td><td>${ch.planned_end||'-'}</td></tr>`)}
   ` : '';
 
-  const depsHTML = dependsOn.length ? `<p class="muted">Waiting on hand-off from: ${dependsOn.map(d => `${esc(d.stage)} ${badge(d.status)}`).join(', ')}</p>` : '';
+  // Show each source department's own trail (its notes + comments) right
+  // here, not just that a hand-off happened - so whoever picks this up can
+  // see what was actually noted/actioned upstream without clicking through
+  // to the source card. Also seeded as this card's own first comment (see
+  // POST /job-cards/:id/route-to), but shown here too since it's most
+  // useful right where the hand-off itself is called out.
+  const depsHTML = dependsOn.length ? dependsOn.map(d => `
+    <div class="muted" style="margin-bottom:6px;">
+      Waiting on hand-off from: <b>${esc(STAGE_LABELS[d.stage]||d.stage)}</b> (${esc(d.title)}) ${badge(d.status)}
+      ${d.comments && d.comments.length ? `
+        <div style="margin:4px 0 0 14px;border-left:2px solid var(--border);padding-left:8px;">
+          ${d.comments.map(cm => `<div style="font-size:12px;"><b>${esc(cm.user_name)||'-'}</b> <span class="muted">${new Date(cm.created_at).toLocaleString()}</span>: ${esc(cm.comment)}</div>`).join('')}
+        </div>` : ''}
+    </div>`).join('') : '';
   const routedHTML = routedTo.length ? `<p class="muted">Routed onward to: ${routedTo.map(d => `${esc(STAGE_LABELS[d.stage]||d.stage)} (${esc(d.title)}) ${badge(d.status)}`).join(', ')}</p>` : '';
 
   const annexureHTML = c.so_annexure_path ? `
@@ -2090,10 +2152,10 @@ window.openJobCardDetail = async (id) => {
       </div>
     </div>
     <div class="sub-section">
-      <p class="muted">Hand this off to another department once ready (e.g. BOM to Purchase, cut/bend files to Laser & Bending, drawings to Electrical — can route to several departments independently).</p>
+      <p class="muted">Hand this off to another department once ready (e.g. BOM to Purchase, cut/bend files to Laser & Bending, drawings to Electrical — can route to several departments independently). The sub-assembly/sub-process name below carries forward to the receiving department by default, along with this card's comments so far — edit it only if the handoff is literally a different item.</p>
       <div class="form-grid">
         <div><label>Route to Department</label><select id="jc-route-stage">${Object.keys(STAGE_LABELS).map(s => `<option value="${s}">${esc(STAGE_LABELS[s])}</option>`).join('')}</select></div>
-        <div><label>What's being handed off</label><input id="jc-route-title" placeholder="e.g. BOM for Procurement"></div>
+        <div><label>What's being handed off</label><input id="jc-route-title" value="${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}" placeholder="e.g. BOM for Procurement"></div>
       </div>
       <button class="btn small outline" onclick="routeJobCard(${c.id})">Route to Department</button>
     </div>
@@ -2162,7 +2224,6 @@ window.routeJobCard = async (id) => {
   const errEl = document.getElementById('jc-hod-err');
   const stage = val('jc-route-stage');
   const title = val('jc-route-title');
-  if (!title) { errEl.textContent = 'Describe what\'s being handed off.'; errEl.style.display = 'block'; return; }
   try {
     await api(`/projects/job-cards/${id}/route-to`, { method: 'POST', body: JSON.stringify({ stage, title }) });
     openJobCardDetail(id);
