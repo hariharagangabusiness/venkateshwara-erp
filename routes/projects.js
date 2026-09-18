@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
-const { PIPELINE_STAGES, createJobCardsForProject, combinedStagesForRole } = require('../lib/pipeline');
+const { PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole } = require('../lib/pipeline');
 const router = express.Router();
 router.use(authRequired);
 
@@ -83,7 +83,14 @@ router.get('/by-sales-order/:soId', (req, res) => {
 });
 
 router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
-  const { start_date, stages } = req.body; // stages: [{id, duration_days}], in the order the user wants them to run
+  // stages: [{id, duration_days, parallel_with_previous}], in the order the
+  // user wants them to run. A stage with parallel_with_previous=true starts
+  // on the same day as the stage immediately above it (instead of waiting
+  // for it to finish) - the two run as one "group"; the next stage that is
+  // NOT marked parallel starts the day after the latest of that group's end
+  // dates, whichever ran longest. The first stage can never be parallel
+  // (there's nothing above it to run alongside).
+  const { start_date, stages } = req.body;
   if (!start_date || !Array.isArray(stages) || !stages.length) {
     return res.status(400).json({ error: 'start_date and a non-empty stages array are required' });
   }
@@ -91,21 +98,27 @@ router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
   const tx = db.transaction(() => {
-    let cursor = new Date(start_date + 'T00:00:00');
+    let groupStart = new Date(start_date + 'T00:00:00'); // start date of the current parallel group
+    let groupEnd = null;                                  // latest end date reached within that group
     stages.forEach((s, i) => {
       const days = Math.max(1, Number(s.duration_days) || 1);
-      const plannedStart = cursor.toISOString().slice(0, 10);
-      const end = new Date(cursor);
+      const isParallel = !!s.parallel_with_previous && i > 0;
+      if (!isParallel) {
+        if (groupEnd) {
+          groupStart = new Date(groupEnd);
+          groupStart.setDate(groupStart.getDate() + 1);
+        }
+        groupEnd = null; // starting a fresh group
+      }
+      const plannedStart = groupStart.toISOString().slice(0, 10);
+      const end = new Date(groupStart);
       end.setDate(end.getDate() + days - 1);
       const plannedEnd = end.toISOString().slice(0, 10);
-      db.prepare(`UPDATE job_cards SET duration_days = ?, planned_start = ?, planned_end = ?, sequence = ? WHERE id = ? AND project_id = ? AND parent_job_card_id IS NULL`)
-        .run(days, plannedStart, plannedEnd, i + 1, s.id, project.id);
-      cursor = new Date(end);
-      cursor.setDate(cursor.getDate() + 1);
+      if (!groupEnd || end > groupEnd) groupEnd = end;
+      db.prepare(`UPDATE job_cards SET duration_days = ?, planned_start = ?, planned_end = ?, sequence = ?, parallel_with_previous = ? WHERE id = ? AND project_id = ? AND parent_job_card_id IS NULL`)
+        .run(days, plannedStart, plannedEnd, i + 1, isParallel ? 1 : 0, s.id, project.id);
     });
-    const overallTarget = new Date(cursor);
-    overallTarget.setDate(overallTarget.getDate() - 1);
-    const targetDateStr = overallTarget.toISOString().slice(0, 10);
+    const targetDateStr = groupEnd.toISOString().slice(0, 10);
     db.prepare('UPDATE projects SET target_date = ? WHERE id = ?').run(targetDateStr, project.id);
     return targetDateStr;
   });
@@ -209,6 +222,18 @@ router.get('/job-cards/:id/detail', (req, res) => {
     SELECT jc.id, jc.stage, jc.title, jc.status FROM job_card_dependencies d
     JOIN job_cards jc ON jc.id = d.depends_on_id WHERE d.job_card_id = ?
   `).all(jc.id);
+  // For each department this card was routed from, pull that source card's
+  // own comment trail too - so whoever picks this up downstream can see
+  // what the previous department actually noted/actioned, not just that a
+  // handoff happened. Carries the full trail across a chain of hand-offs
+  // (A routes to B, B routes to C) since each hop's detail call re-derives
+  // it the same way.
+  dependsOn.forEach(d => {
+    d.comments = db.prepare(`
+      SELECT c.*, u.full_name as user_name FROM job_card_comments c LEFT JOIN users u ON u.id = c.user_id
+      WHERE c.job_card_id = ? ORDER BY c.id ASC
+    `).all(d.id);
+  });
   const routedTo = db.prepare(`
     SELECT jc.id, jc.stage, jc.title, jc.status FROM job_card_dependencies d
     JOIN job_cards jc ON jc.id = d.job_card_id WHERE d.depends_on_id = ?
@@ -295,8 +320,13 @@ router.post('/job-cards/:id/route-to', requirePermission('job_card.manage'), (re
   if (!canActOn(req.user, source)) {
     return res.status(403).json({ error: 'Only this card\'s HOD/Supervisor or assignee can route it to another department.' });
   }
-  const { stage, title, duration_days } = req.body;
-  if (!stage || !title) return res.status(400).json({ error: 'stage and title are required' });
+  const { stage, duration_days } = req.body;
+  if (!stage) return res.status(400).json({ error: 'stage is required' });
+  // The sub-assembly/sub-process name carries forward automatically instead
+  // of being retyped at every hop - the destination department sees exactly
+  // what the source called it. An explicit title still overrides this (e.g.
+  // routing "BOM for X" out of a source card literally titled "X").
+  const title = (req.body.title && req.body.title.trim()) || source.title || STAGE_LABELS_SERVER[source.stage] || source.stage;
 
   const tx = db.transaction(() => {
     const info = db.prepare(`
@@ -304,6 +334,20 @@ router.post('/job-cards/:id/route-to', requirePermission('job_card.manage'), (re
       VALUES (?, ?, 'Pending', ?, 1, ?)
     `).run(source.project_id, stage, title, Math.max(1, Number(duration_days) || 7));
     db.prepare(`INSERT OR IGNORE INTO job_card_dependencies (job_card_id, depends_on_id) VALUES (?, ?)`).run(info.lastInsertRowid, source.id);
+    // Seed the new card's own comment trail with whatever the source
+    // department left behind (its notes/comments), so the handover's
+    // context is visible right there in this card's own Comments list -
+    // not only by clicking through to the source card - for trackability.
+    const sourceComments = db.prepare(`
+      SELECT c.*, u.full_name as user_name FROM job_card_comments c LEFT JOIN users u ON u.id = c.user_id
+      WHERE c.job_card_id = ? ORDER BY c.id ASC
+    `).all(source.id);
+    const sourceLabel = STAGE_LABELS_SERVER[source.stage] || source.stage;
+    const handoverLines = [`Routed from ${sourceLabel} (${source.title || sourceLabel}).`];
+    if (source.notes) handoverLines.push(`${sourceLabel} notes: ${source.notes}`);
+    sourceComments.forEach(c => handoverLines.push(`${sourceLabel} — ${c.user_name || 'system'}: ${c.comment}`));
+    db.prepare(`INSERT INTO job_card_comments (job_card_id, user_id, comment) VALUES (?, NULL, ?)`)
+      .run(info.lastInsertRowid, handoverLines.join('\n'));
     // if the source is already Completed, release the new card immediately
     if (source.status === 'Completed') {
       const today = new Date().toISOString().slice(0, 10);
