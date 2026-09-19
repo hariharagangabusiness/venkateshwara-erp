@@ -178,47 +178,66 @@ const ENTITIES = {
   bank_guarantees: {
     label: 'Bank Guarantees',
     table: 'bank_guarantees',
-    columns: ['bg_no', 'bg_type', 'order_type', 'order_no', 'issuing_bank', 'value', 'issue_date', 'validity_expiry', 'claim_expiry', 'milestone_link'],
-    example: { bg_no: 'BG/2026/0042', bg_type: 'Performance', order_type: 'SO', order_no: 'SO-1044', issuing_bank: 'HDFC Bank, Faridabad', value: 250000, issue_date: '2026-02-01', validity_expiry: '2027-01-31', claim_expiry: '2027-03-31', milestone_link: 'Release on final acceptance' },
+    columns: ['bg_no', 'bg_type', 'order_type', 'order_no', 'beneficiary', 'project_code', 'issuing_bank', 'value', 'issue_date', 'validity_expiry', 'claim_expiry', 'milestone_link'],
+    examples: [
+      { bg_no: 'BG/2026/0042', bg_type: 'Performance', order_type: 'SO', order_no: 'SO-1044', beneficiary: '', project_code: '', issuing_bank: 'HDFC Bank, Faridabad', value: 250000, issue_date: '2026-02-01', validity_expiry: '2027-01-31', claim_expiry: '2027-03-31', milestone_link: 'Release on final acceptance' },
+      { bg_no: 'MIG-BG-0001', bg_type: 'Performance', order_type: 'LEGACY', order_no: 'Old ERP ref BG-114 / paper file 2019', beneficiary: 'ABC Industries', project_code: 'PRJ-2019-014', issuing_bank: 'SBI, Faridabad', value: 180000, issue_date: '2019-06-10', validity_expiry: '2026-12-31', claim_expiry: '', milestone_link: '' },
+    ],
     notes: [
-      'bg_type must be Advance or Performance. order_type must be SO or PO.',
-      'order_no must match an existing Sales Order order_no (when order_type=SO) or Purchase Order po_no (when order_type=PO) exactly.',
+      'bg_type must be Advance or Performance. order_type must be SO, PO, or LEGACY.',
+      'SO/PO: order_no must match an existing Sales Order order_no (order_type=SO) or Purchase Order po_no (order_type=PO) exactly. project_id and beneficiary are auto-derived from the linked order, same as creating a BG from the BG Dashboard - leave beneficiary/project_code blank.',
+      'LEGACY: for historical/manual BGs that have no matching Sales/Purchase Order in this system (data migration from an old system or paper records). order_no is stored as a free-text reference only (e.g. the old system\'s own BG/order number) and is not validated. beneficiary is required (it cannot be auto-derived without a linked order). project_code is optional - if given, it must match an existing Project Code exactly.',
       'value and validity_expiry are required. Dates are YYYY-MM-DD.',
-      'project_id and beneficiary are auto-derived from the linked order, same as creating a BG from the BG Dashboard.',
-      'bg_no, if given, must be unique - re-running with the same bg_no updates that BG\'s bank/value/dates/milestone_link (safe to re-import). A row with no bg_no is always inserted as a new BG.',
+      'bg_no, if given, must be unique - re-running with the same bg_no updates that BG\'s bank/value/dates/milestone_link (safe to re-import). A row with no bg_no is always inserted as a new BG. For LEGACY rows, giving each one a stable bg_no (e.g. a sequential migration number like MIG-BG-0001, or the old system\'s own BG number) is strongly recommended so re-imports stay idempotent and the record is traceable back to its source.',
     ],
     importRow(row) {
       const bgType = String(row.bg_type || '').trim();
       if (!['Advance', 'Performance'].includes(bgType)) return { error: 'bg_type must be Advance or Performance' };
       const orderType = String(row.order_type || '').trim();
-      if (!['SO', 'PO'].includes(orderType)) return { error: 'order_type must be SO or PO' };
-      const orderNo = String(row.order_no || '').trim();
-      if (!orderNo) return { error: 'order_no is required' };
-      let order, partyName, projectId;
-      if (orderType === 'SO') {
-        order = db.prepare('SELECT so.id, c.name as party_name FROM sales_orders so JOIN clients c ON c.id = so.client_id WHERE so.order_no = ?').get(orderNo);
-        if (!order) return { error: `no Sales Order with order_no "${orderNo}"` };
-        const project = db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(order.id);
-        projectId = project ? project.id : null;
-      } else {
-        order = db.prepare('SELECT po.id, v.name as party_name FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id WHERE po.po_no = ?').get(orderNo);
-        if (!order) return { error: `no Purchase Order with po_no "${orderNo}"` };
-        const pr = db.prepare('SELECT purchase_request_id FROM purchase_orders WHERE id = ?').get(order.id);
-        const prRow = pr && pr.purchase_request_id ? db.prepare('SELECT project_id FROM purchase_requests WHERE id = ?').get(pr.purchase_request_id) : null;
-        projectId = prRow ? prRow.project_id : null;
-      }
-      partyName = order.party_name;
+      if (!['SO', 'PO', 'LEGACY'].includes(orderType)) return { error: 'order_type must be SO, PO or LEGACY' };
       const value = Number(row.value);
       if (!value) return { error: 'value must be a non-zero number' };
       const validityExpiry = String(row.validity_expiry || '').trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(validityExpiry)) return { error: 'validity_expiry must be YYYY-MM-DD' };
       const bgNo = row.bg_no ? String(row.bg_no).trim() : null;
+
+      let orderId = 0, projectId = null, beneficiary, legacyRef = null;
+      if (orderType === 'LEGACY') {
+        beneficiary = String(row.beneficiary || '').trim();
+        if (!beneficiary) return { error: 'beneficiary is required when order_type is LEGACY' };
+        if (row.project_code) {
+          const project = db.prepare('SELECT id FROM projects WHERE project_code = ?').get(String(row.project_code).trim());
+          if (!project) return { error: `no project with project_code "${row.project_code}"` };
+          projectId = project.id;
+        }
+        legacyRef = row.order_no ? String(row.order_no).trim() : null;
+      } else {
+        const orderNo = String(row.order_no || '').trim();
+        if (!orderNo) return { error: 'order_no is required' };
+        let order;
+        if (orderType === 'SO') {
+          order = db.prepare('SELECT so.id, c.name as party_name FROM sales_orders so JOIN clients c ON c.id = so.client_id WHERE so.order_no = ?').get(orderNo);
+          if (!order) return { error: `no Sales Order with order_no "${orderNo}"` };
+          const project = db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(order.id);
+          projectId = project ? project.id : null;
+        } else {
+          order = db.prepare('SELECT po.id, v.name as party_name FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id WHERE po.po_no = ?').get(orderNo);
+          if (!order) return { error: `no Purchase Order with po_no "${orderNo}"` };
+          const pr = db.prepare('SELECT purchase_request_id FROM purchase_orders WHERE id = ?').get(order.id);
+          const prRow = pr && pr.purchase_request_id ? db.prepare('SELECT project_id FROM purchase_requests WHERE id = ?').get(pr.purchase_request_id) : null;
+          projectId = prRow ? prRow.project_id : null;
+        }
+        orderId = order.id;
+        beneficiary = order.party_name;
+      }
+
       return {
         upsert: {
-          bg_no: bgNo, bg_type: bgType, order_type: orderType, order_id: order.id, project_id: projectId,
-          issuing_bank: row.issuing_bank || null, beneficiary: partyName, value,
+          bg_no: bgNo, bg_type: bgType, order_type: orderType, order_id: orderId, project_id: projectId,
+          issuing_bank: row.issuing_bank || null, beneficiary, value,
           issue_date: row.issue_date || null, validity_expiry: validityExpiry,
           claim_expiry: row.claim_expiry || null, milestone_link: row.milestone_link || null,
+          legacy_ref: legacyRef,
         },
       };
     },
@@ -254,7 +273,7 @@ router.get('/:entity/template', (req, res) => {
   const entity = ENTITIES[req.params.entity];
   if (!entity) return res.status(404).json({ error: 'Unknown entity' });
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet([entity.example], { header: entity.columns });
+  const ws = XLSX.utils.json_to_sheet(entity.examples || [entity.example], { header: entity.columns });
   XLSX.utils.book_append_sheet(wb, ws, entity.label.slice(0, 31));
   const note = XLSX.utils.aoa_to_sheet([['Notes'], ...entity.notes.map(n => [n])]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
@@ -319,19 +338,19 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
           const u = result.upsert;
           if (u.bg_no) {
             db.prepare(`
-              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, created_by)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, legacy_ref, created_by)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
               ON CONFLICT(bg_no) DO UPDATE SET
                 bg_type = excluded.bg_type, order_type = excluded.order_type, order_id = excluded.order_id,
                 project_id = excluded.project_id, issuing_bank = excluded.issuing_bank, beneficiary = excluded.beneficiary,
                 value = excluded.value, issue_date = excluded.issue_date, validity_expiry = excluded.validity_expiry,
-                claim_expiry = excluded.claim_expiry, milestone_link = excluded.milestone_link
-            `).run(u.bg_no, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, req.user.id);
+                claim_expiry = excluded.claim_expiry, milestone_link = excluded.milestone_link, legacy_ref = excluded.legacy_ref
+            `).run(u.bg_no, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, u.legacy_ref, req.user.id);
           } else {
             db.prepare(`
-              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, created_by)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            `).run(null, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, req.user.id);
+              INSERT INTO bank_guarantees (bg_no, bg_type, order_type, order_id, project_id, issuing_bank, beneficiary, value, issue_date, validity_expiry, claim_expiry, milestone_link, legacy_ref, created_by)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            `).run(null, u.bg_type, u.order_type, u.order_id, u.project_id, u.issuing_bank, u.beneficiary, u.value, u.issue_date, u.validity_expiry, u.claim_expiry, u.milestone_link, u.legacy_ref, req.user.id);
           }
           inserted++;
         }

@@ -343,6 +343,12 @@ const MIGRATIONS = [
     email_sent_to TEXT,
     email_sent_at TEXT
   )`,
+  // ---- Round 18: historical/manual Bank Guarantees with no matching SO/PO
+  // in this system (data migration). order_type gains a third value, 'LEGACY'
+  // - order_id is stored as 0 (there's no real FK on this polymorphic column
+  // to violate) and legacy_ref carries the old system's/paper record's own
+  // reference number as plain audit text. See routes/dataImport.js.
+  `ALTER TABLE bank_guarantees ADD COLUMN legacy_ref TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
