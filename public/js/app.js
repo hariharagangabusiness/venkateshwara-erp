@@ -155,6 +155,7 @@ const NAV = [
   { group: 'Overview', items: [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'approvals', label: 'My Approvals' },
+    { id: 'todos', label: 'To-Do List' },
     { id: 'dept-report', label: 'Department Report' },
   ]},
   { group: 'Sales & Marketing', items: [
@@ -5391,6 +5392,73 @@ window.saveDailyWorkLog = async () => {
     await api('/site-visits/daily-log/bulk', { method: 'POST', body: JSON.stringify({ entries }) });
     navigate('daily-work-log');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+
+// ===================== To-Do List =====================
+// Logging a To-Do (handing an action item to someone, against a department
+// HOD) is restricted to HODs/Admin - see routes/todos.js `canLog()`. A
+// regular employee only gets the "My To-Do List" panel below, where they can
+// move their own items through Pending/InProgress/Completed/OnHold.
+const TODO_STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
+PAGES['todos'] = async (el) => {
+  const people = await api('/todos/people');
+  const canLog = people.can_log;
+  const [mine, all] = await Promise.all([api('/todos/mine'), canLog ? api('/todos') : Promise.resolve([])]);
+  const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
+  const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
+  const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
+  const detailsRow = t => `${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
+  el.innerHTML = `
+    ${canLog ? `
+    <div class="panel"><h3>Log a New To-Do</h3>
+      <div class="form-grid">
+        <div><label>HOD</label><select id="td-hod"><option value="">— none —</option>${hodOptions}</select></div>
+        <div><label>Assigned To (who has the action)</label><select id="td-assignee"><option value="">Select...</option>${assigneeOptions}</select></div>
+        <div><label>Start Date</label><input id="td-start" type="date" value="${today()}"></div>
+        <div><label>Target Date</label><input id="td-target" type="date"></div>
+        <div style="grid-column:1/-1;"><label>Brief Description</label><input id="td-brief" placeholder="e.g. Submit revised layout drawing"></div>
+        <div style="grid-column:1/-1;"><label>Details</label><textarea id="td-details" rows="3"></textarea></div>
+      </div>
+      <button class="btn" onclick="saveTodo()">Log To-Do</button>
+      <div id="td-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
+
+    <div class="panel"><h3>My To-Do List</h3>
+      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status'], mine, t => `
+        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${t.start_date || '-'}</td>
+        <td>${deliveryBadge(t.target_date)}</td>
+        <td><select onchange="updateTodoStatus(${t.id}, this.value)">
+          ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select></td></tr>`)}
+    </div>
+
+    ${canLog ? `
+    <div class="panel"><h3>All To-Dos Logged</h3>
+      ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], all, t => `
+        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
+        <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td>
+        <td><button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button></td></tr>`)}
+    </div>` : ''}`;
+};
+window.saveTodo = async () => {
+  const errEl = document.getElementById('td-err');
+  try {
+    await api('/todos', { method: 'POST', body: JSON.stringify({
+      hod_id: val('td-hod') || null, assigned_to: val('td-assignee'),
+      start_date: val('td-start') || null, target_date: val('td-target') || null,
+      brief_description: val('td-brief'), details: val('td-details'),
+    })});
+    navigate('todos');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.updateTodoStatus = async (id, status) => {
+  try { await api('/todos/' + id, { method: 'PATCH', body: JSON.stringify({ status }) }); navigate('todos'); }
+  catch (e) { alert(e.message); }
+};
+window.deleteTodo = async (id) => {
+  if (!confirm('Delete this To-Do?')) return;
+  try { await api('/todos/' + id, { method: 'DELETE' }); navigate('todos'); }
+  catch (e) { alert(e.message); }
 };
 
 // ===================== Data Import (generic migration tool, Admin only) =====================

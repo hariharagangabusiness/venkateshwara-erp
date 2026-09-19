@@ -343,6 +343,27 @@ const MIGRATIONS = [
     email_sent_to TEXT,
     email_sent_at TEXT
   )`,
+  // ---- Round 18: historical/manual Bank Guarantees with no matching SO/PO
+  // in this system (data migration). order_type gains a third value, 'LEGACY'
+  // - order_id is stored as 0 (there's no real FK on this polymorphic column
+  // to violate) and legacy_ref carries the old system's/paper record's own
+  // reference number as plain audit text. See routes/dataImport.js.
+  `ALTER TABLE bank_guarantees ADD COLUMN legacy_ref TEXT`,
+  // ---- Round 19: To-Do List (action items logged against a department HOD
+  // and handed to whoever actually has the action) - see routes/todos.js.
+  `CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hod_id INTEGER REFERENCES users(id),
+    assigned_to INTEGER NOT NULL REFERENCES users(id),
+    start_date TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    brief_description TEXT NOT NULL,
+    details TEXT,
+    status TEXT DEFAULT 'Pending',         -- Pending, InProgress, Completed, OnHold
+    created_by INTEGER REFERENCES users(id),
+    completed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

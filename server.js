@@ -48,6 +48,7 @@ app.use('/api/assets', require('./routes/assets'));
 app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/data-import', require('./routes/dataImport'));
 app.use('/api/bg', require('./routes/bankGuarantees'));
+app.use('/api/todos', require('./routes/todos'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 

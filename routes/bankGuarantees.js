@@ -32,6 +32,10 @@ router.get('/orders', canView, (req, res) => {
 // contact email, so BG creation can auto-fill beneficiary/contact instead of
 // asking for them twice.
 function resolveOrderContext(orderType, orderId) {
+  // LEGACY BGs (migrated historical/manual records - see routes/dataImport.js)
+  // have no real Sales/Purchase Order to resolve; their beneficiary/project_id
+  // were captured directly on the row at import time instead.
+  if (orderType === 'LEGACY') return null;
   if (orderType === 'SO') {
     const so = db.prepare(`
       SELECT so.*, c.name as party_name, c.email as party_email
@@ -73,7 +77,7 @@ router.get('/', canView, (req, res) => {
   // a per-row lookup against the small orders list.
   rows.forEach(r => {
     const ctx = resolveOrderContext(r.order_type, r.order_id);
-    r.order_label = ctx ? ctx.partyName : null;
+    r.order_label = ctx ? ctx.partyName : (r.order_type === 'LEGACY' ? (r.legacy_ref || r.beneficiary || 'Legacy / manual record') : null);
   });
   res.json(rows);
 });
