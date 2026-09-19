@@ -67,7 +67,7 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   if (!canLog(req.user)) return res.status(403).json({ error: 'Only a department HOD or Admin can log a To-Do.' });
-  const { hod_id, assigned_to, start_date, target_date, brief_description, details } = req.body;
+  const { hod_id, assigned_to, start_date, target_date, brief_description, details, priority } = req.body;
   if (!assigned_to) return res.status(400).json({ error: 'assigned_to is required' });
   const assignee = db.prepare('SELECT id FROM users WHERE id = ? AND is_active = 1').get(assigned_to);
   if (!assignee) return res.status(400).json({ error: 'That person no longer has an active login.' });
@@ -78,10 +78,11 @@ router.post('/', (req, res) => {
   if (!start_date || !target_date) return res.status(400).json({ error: 'start_date and target_date are required' });
   const brief = String(brief_description || '').trim();
   if (!brief) return res.status(400).json({ error: 'brief_description is required' });
+  if (priority !== undefined && !['Normal', 'High'].includes(priority)) return res.status(400).json({ error: 'priority must be Normal or High' });
   const info = db.prepare(`
-    INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, created_by)
-    VALUES (?,?,?,?,?,?,?)
-  `).run(hod_id || null, assigned_to, start_date, target_date, brief, details || null, req.user.id);
+    INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, created_by)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).run(hod_id || null, assigned_to, start_date, target_date, brief, details || null, priority || 'Normal', req.user.id);
   db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
     .run(assigned_to, 'TODO_ASSIGNED', info.lastInsertRowid, `New To-Do assigned to you: ${brief}`);
   res.json({ id: info.lastInsertRowid });
@@ -93,7 +94,7 @@ router.patch('/:id', (req, res) => {
   const isOwner = t.assigned_to === req.user.id;
   const isManager = canLog(req.user);
   if (!isOwner && !isManager) return res.status(403).json({ error: 'Access denied' });
-  const { status, start_date, target_date, brief_description, details, hod_id, assigned_to } = req.body;
+  const { status, start_date, target_date, brief_description, details, hod_id, assigned_to, priority } = req.body;
   const updates = []; const params = [];
   // Anyone with the action can move its status; only the logging HOD/Admin
   // can redefine the task itself or hand it to someone else.
@@ -109,6 +110,10 @@ router.patch('/:id', (req, res) => {
     if (details !== undefined) { updates.push('details = ?'); params.push(details || null); }
     if (hod_id !== undefined) { updates.push('hod_id = ?'); params.push(hod_id || null); }
     if (assigned_to !== undefined) { updates.push('assigned_to = ?'); params.push(assigned_to); }
+    if (priority !== undefined) {
+      if (!['Normal', 'High'].includes(priority)) return res.status(400).json({ error: 'priority must be Normal or High' });
+      updates.push('priority = ?'); params.push(priority);
+    }
   }
   if (!updates.length) return res.json({ ok: true });
   params.push(req.params.id);

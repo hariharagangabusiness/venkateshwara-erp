@@ -49,6 +49,7 @@ app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/data-import', require('./routes/dataImport'));
 app.use('/api/bg', require('./routes/bankGuarantees'));
 app.use('/api/todos', require('./routes/todos'));
+app.use('/api/org-hierarchy', require('./routes/orgHierarchy'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 

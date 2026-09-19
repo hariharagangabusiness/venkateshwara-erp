@@ -1,9 +1,22 @@
 const express = require('express');
 const { db } = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRole } = require('../middleware/auth');
 const { combinedStagesForRole } = require('../lib/pipeline');
+const { listExportableTables, exportTableXlsx } = require('../lib/tableExport');
 const router = express.Router();
 router.use(authRequired);
+
+// ===================== Full-field table export (Admin only) =====================
+// Every raw column of any whitelisted table, straight to xlsx, for external
+// deep-dive analysis (Power BI, Python/pandas) - see lib/tableExport.js for
+// what's excluded and why. Admin-only: a raw dump includes internal FKs and
+// audit columns not normally shown on any screen.
+router.get('/export/tables', requireRole('Admin'), (req, res) => {
+  res.json(listExportableTables());
+});
+router.get('/export/:table', requireRole('Admin'), (req, res) => {
+  exportTableXlsx(res, req.params.table);
+});
 
 function isDeptSupervisor(user, stage) {
   if (user.role_name === 'Admin') return true;

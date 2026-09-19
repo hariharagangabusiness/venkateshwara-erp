@@ -88,7 +88,23 @@ router.get('/summary', canView, (req, res) => {
   const totals = db.prepare(`SELECT COUNT(*) as live_count, COALESCE(SUM(value),0) as live_value FROM bank_guarantees WHERE status IN ('Active','PendingRelease')`).get();
   const expiring = db.prepare(`SELECT COUNT(*) as c FROM bank_guarantees WHERE status IN ('Active','PendingRelease') AND validity_expiry <= ? AND validity_expiry >= ?`).get(in30, today);
   const pendingReminders = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log WHERE status = 'PendingReview'`).get();
-  res.json({ live_count: totals.live_count, live_value: totals.live_value, expiring_30d: expiring.c, pending_reminders: pendingReminders.c });
+  // MGMT dashboard additions - claim-expiry compliance (see lib/bgReminderScan.js).
+  const claimAlerts = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log WHERE trigger_reason = 'ClaimExpiryApproaching' AND status IN ('PendingReview','Verified')`).get();
+  const financeTodos = db.prepare(`
+    SELECT t.id, t.brief_description, t.target_date, t.status, u.full_name as assigned_to_name
+    FROM todos t LEFT JOIN users u ON u.id = t.assigned_to
+    WHERE t.source_type = 'BG_CLAIM_EXPIRY' AND t.status != 'Completed'
+    ORDER BY t.target_date ASC
+  `).all();
+  const compliance = db.prepare(`
+    SELECT COUNT(*) as total, SUM(CASE WHEN status = 'Completed' AND completed_at IS NOT NULL AND date(completed_at) <= target_date THEN 1 ELSE 0 END) as on_time
+    FROM todos WHERE source_type = 'BG_CLAIM_EXPIRY'
+  `).get();
+  const complianceRate = compliance.total ? Math.round((compliance.on_time / compliance.total) * 100) : null;
+  res.json({
+    live_count: totals.live_count, live_value: totals.live_value, expiring_30d: expiring.c, pending_reminders: pendingReminders.c,
+    claim_expiry_alerts: claimAlerts.c, finance_todos: financeTodos, claim_compliance_rate: complianceRate,
+  });
 });
 
 router.post('/', canManage, (req, res) => {

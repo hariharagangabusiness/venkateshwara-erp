@@ -38,6 +38,23 @@ function doLogout() {
 document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
 let ALLOWED_PAGES = null; // null = unrestricted; Set of page ids once an Admin has configured this role
+// Faint company branding watermark across the app shell - best-effort and
+// non-blocking, same idea as the one baked into every generated PDF
+// (lib/pdfBranding.js), just so the two never contradict what boot() does.
+let APP_WATERMARK_RENDERED = false;
+async function renderAppWatermark() {
+  if (APP_WATERMARK_RENDERED) return;
+  try {
+    const company = await api('/settings/company');
+    const el = document.getElementById('app-watermark');
+    const name = company.legal_name || company.trade_name || '';
+    el.innerHTML = company.logo_path
+      ? `<img src="${esc(company.logo_path)}">`
+      : `<span>${esc(name)}</span>`;
+    APP_WATERMARK_RENDERED = true;
+  } catch (e) { /* purely decorative - never block the app over this */ }
+}
+
 async function boot() {
   try {
     ME = await api('/auth/me');
@@ -52,6 +69,7 @@ async function boot() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('user-name').textContent = ME.full_name;
   document.getElementById('user-role').textContent = ME.role;
+  renderAppWatermark();
   // Department-scoped roles (everyone except Admin/ProjectManager, who can
   // touch any department) get their own dedicated sidebar group named after
   // their department - e.g. "Design", "Electrical", "Manufacturing" - the
@@ -236,6 +254,8 @@ const NAV = [
     { id: 'approval-matrix', label: 'Approval Matrix' },
     { id: 'company-settings', label: 'Company Settings' },
     { id: 'data-import', label: 'Data Import' },
+    { id: 'full-data-export', label: 'Full Data Export' },
+    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
   ]},
 ];
 // Per-department Job Cards groups are injected dynamically in boot() for
@@ -4230,7 +4250,16 @@ PAGES['bg-dashboard'] = async (el) => {
       <div class="card"><div class="num">₹${fmt(summary.live_value)}</div><div class="label">Total Live Value</div></div>
       <div class="card"><div class="num">${summary.expiring_30d}</div><div class="label">Expiring in 30 Days</div></div>
       <div class="card"><div class="num">${summary.pending_reminders}</div><div class="label">Pending Reminders</div></div>
+      <div class="card"><div class="num">${summary.claim_expiry_alerts}</div><div class="label">Claim Expiry Alerts (7-day)</div></div>
+      <div class="card"><div class="num">${summary.claim_compliance_rate === null ? '-' : summary.claim_compliance_rate + '%'}</div><div class="label">Claim Task On-Time Rate</div></div>
     </div>
+
+    ${summary.finance_todos && summary.finance_todos.length ? `
+    <div class="panel"><h3>Finance Team - Claim Filing Tasks</h3>
+      <p class="muted">High-priority To-Dos auto-raised for the Finance HOD when a BG's claim-filing deadline is 7 days out - full detail and status updates on the To-Do List page.</p>
+      ${tableHTML(['Task', 'Assigned To', 'Target Date', 'Status'], summary.finance_todos, t => `
+        <tr><td>${esc(t.brief_description)}</td><td>${esc(t.assigned_to_name)}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td></tr>`)}
+    </div>` : ''}
 
     ${(reminders.length || verified.length) ? `
     <div class="panel"><h3>Pending Reminders</h3>
@@ -5580,7 +5609,7 @@ PAGES['todos'] = async (el) => {
   const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
   const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
   const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
-  const detailsRow = t => `${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
+  const detailsRow = t => `${t.priority === 'High' ? '<span class="badge Rejected" style="margin-right:6px;">HIGH</span>' : ''}${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
   const updatesToggle = t => `<button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>`;
   el.innerHTML = `
     ${canLog ? `
@@ -5590,6 +5619,7 @@ PAGES['todos'] = async (el) => {
         <div><label>Assigned To (who has the action)</label><select id="td-assignee"><option value="">Select...</option>${assigneeOptions}</select></div>
         <div><label>Start Date</label><input id="td-start" type="date" value="${today()}"></div>
         <div><label>Target Date</label><input id="td-target" type="date"></div>
+        <div><label>Priority</label><select id="td-priority"><option value="Normal">Normal</option><option value="High">High</option></select></div>
         <div style="grid-column:1/-1;"><label>Brief Description</label><input id="td-brief" placeholder="e.g. Submit revised layout drawing"></div>
         <div style="grid-column:1/-1;"><label>Details</label><textarea id="td-details" rows="3"></textarea></div>
       </div>
@@ -5658,7 +5688,7 @@ window.saveTodo = async () => {
     await api('/todos', { method: 'POST', body: JSON.stringify({
       hod_id: val('td-hod') || null, assigned_to: val('td-assignee'),
       start_date: val('td-start') || null, target_date: val('td-target') || null,
-      brief_description: val('td-brief'), details: val('td-details'),
+      brief_description: val('td-brief'), details: val('td-details'), priority: val('td-priority'),
     })});
     navigate('todos');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
@@ -5671,6 +5701,105 @@ window.deleteTodo = async (id) => {
   if (!confirm('Delete this To-Do?')) return;
   try { await api('/todos/' + id, { method: 'DELETE' }); navigate('todos'); }
   catch (e) { alert(e.message); }
+};
+
+// ===================== Full Data Export (Admin only) =====================
+// Every raw column of any table in the system, straight to xlsx, for
+// external deep-dive analysis in Power BI/Python - see lib/tableExport.js
+// for exactly what's excluded (credentials, internal ACL plumbing) and why.
+PAGES['full-data-export'] = async (el) => {
+  const tables = await api('/reports/export/tables');
+  el.innerHTML = `
+    <div class="panel"><h3>Full Data Export</h3>
+      <p class="muted">Every raw field of a table - including internal IDs, foreign keys, and timestamps not shown on any screen - as a single Excel file. For loading into Power BI, Python/pandas, or similar external analysis, not for everyday reporting (see the built-in report pages for that).</p>
+      <div class="form-grid">
+        <div><label>Table</label><select id="fde-table">${tables.map(t => `<option value="${t}">${t}</option>`).join('')}</select></div>
+      </div>
+      <button class="btn" onclick="downloadFullTableExport()">Download Export</button>
+    </div>`;
+};
+window.downloadFullTableExport = () => {
+  const table = val('fde-table');
+  downloadTemplateFile(`/reports/export/${table}`, `${table}_full_export.xlsx`);
+};
+
+// ===================== Organizational Hierarchy =====================
+// A reporting rollup tree (Region -> Unit -> Department -> Team) that sits
+// ABOVE the app's real department/role/HOD model, purely for grouping KPIs -
+// it never changes who can see or do what elsewhere in the app. Managing the
+// tree (add/edit/delete nodes) is Admin-only; viewing the rollup matches
+// whoever can already see cross-department reports (report.view_all).
+let ORG_HIERARCHY_SELECTED = null;
+PAGES['org-hierarchy'] = async (el) => {
+  const [nodes, departments] = await Promise.all([api('/org-hierarchy/tree'), api('/masters/departments')]);
+  const isAdmin = ME.role === 'Admin';
+  const byParent = {};
+  nodes.forEach(n => { const key = n.parent_id || 'root'; (byParent[key] = byParent[key] || []).push(n); });
+  const renderNode = (n, depth) => {
+    const children = byParent[n.id] || [];
+    return `<div style="padding:6px 0 6px ${depth * 22}px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span class="badge active">${esc(n.node_type)}</span>
+      <b>${esc(n.name)}</b>
+      ${n.department_name ? `<span class="muted">&rarr; ${esc(n.department_name)}</span>` : ''}
+      <button class="btn small outline" onclick="viewOrgRollup(${n.id})">View Rollup</button>
+      ${isAdmin ? `<button class="btn small outline" onclick="deleteOrgNode(${n.id})">Delete</button>` : ''}
+    </div>${children.map(c => renderNode(c, depth + 1)).join('')}`;
+  };
+  const roots = byParent.root || [];
+  el.innerHTML = `
+    ${isAdmin ? `
+    <div class="panel"><h3>Add Node</h3>
+      <div class="form-grid">
+        <div><label>Name</label><input id="on-name" placeholder="e.g. North Region"></div>
+        <div><label>Type</label><select id="on-type"><option value="Region">Region</option><option value="Unit">Unit</option><option value="Department">Department</option><option value="Team">Team</option></select></div>
+        <div><label>Parent Node (optional)</label><select id="on-parent"><option value="">— top level —</option>${nodes.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select></div>
+        <div><label>Maps to Department (optional)</label><select id="on-dept"><option value="">— none —</option>${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+        <div><label>Sort Order</label><input id="on-sort" type="number" value="0"></div>
+      </div>
+      <button class="btn" onclick="addOrgNode()">Add Node</button>
+      <div id="on-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
+    <div class="panel"><h3>Hierarchy</h3>
+      ${roots.length ? roots.map(n => renderNode(n, 0)).join('') : '<div class="empty">No nodes yet.</div>'}
+    </div>
+    <div class="panel" id="org-rollup-panel" style="display:none;"></div>`;
+};
+window.addOrgNode = async () => {
+  const errEl = document.getElementById('on-err');
+  try {
+    await api('/org-hierarchy/nodes', { method: 'POST', body: JSON.stringify({
+      name: val('on-name'), node_type: val('on-type'), parent_id: val('on-parent') || null, department_id: val('on-dept') || null, sort_order: val('on-sort'),
+    })});
+    navigate('org-hierarchy');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteOrgNode = async (id) => {
+  if (!confirm('Delete this node?')) return;
+  try { await api('/org-hierarchy/nodes/' + id, { method: 'DELETE' }); navigate('org-hierarchy'); }
+  catch (e) { alert(e.message); }
+};
+window.viewOrgRollup = async (id) => {
+  ORG_HIERARCHY_SELECTED = id;
+  const panel = document.getElementById('org-rollup-panel');
+  panel.style.display = 'block';
+  const data = await api(`/org-hierarchy/nodes/${id}/rollup`);
+  panel.innerHTML = `
+    <h3>Rollup - ${esc(data.node.name)}</h3>
+    <div class="cards">
+      <div class="card"><div class="num">${data.totals.headcount}</div><div class="label">Active Headcount</div></div>
+      <div class="card"><div class="num">₹${fmt(data.totals.monthly_salary_cost)}</div><div class="label">Monthly Salary Cost</div></div>
+    </div>
+    ${tableHTML(['Department', 'Headcount', 'Monthly Salary Cost', ''], data.by_department, d => `
+      <tr><td>${esc(d.department_name)}</td><td>${d.headcount}</td><td>₹${fmt(d.monthly_salary_cost)}</td>
+      <td><button class="btn small outline" onclick="drillOrgDepartment(${d.department_id})">Drill Down</button></td></tr>`)}
+    <div id="org-drill-wrap"></div>`;
+  panel.scrollIntoView({ behavior: 'smooth' });
+};
+window.drillOrgDepartment = async (deptId) => {
+  const wrap = document.getElementById('org-drill-wrap');
+  const employees = await api(`/org-hierarchy/departments/${deptId}/employees`);
+  wrap.innerHTML = `<h4 style="margin-top:14px;">Employees</h4>${tableHTML(['Code', 'Name', 'Designation', 'Monthly Salary'], employees, e => `
+    <tr><td>${esc(e.employee_code)||'-'}</td><td>${esc(e.full_name)}</td><td>${esc(e.designation)||'-'}</td><td>₹${fmt(e.monthly_salary)}</td></tr>`)}`;
 };
 
 // ===================== Data Import (generic migration tool, Admin only) =====================

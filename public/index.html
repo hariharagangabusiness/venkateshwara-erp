@@ -167,6 +167,18 @@
     .toolbar{flex-wrap:wrap;gap:8px;}
     .toolbar .btn{flex:0 0 auto;}
   }
+  /* Company branding watermark - faint, behind all real content (pointer-
+     events disabled so it never blocks a click), same idea as the one baked
+     into every generated PDF (see lib/pdfBranding.js). */
+  #app-watermark{
+    position:fixed; inset:0; z-index:1; pointer-events:none;
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+  #app-watermark img{max-width:32vw;max-height:32vw;opacity:0.035;}
+  #app-watermark span{
+    opacity:0.03; font-size:min(8vw,95px); font-weight:800; color:#1a3a6b;
+    transform:rotate(-30deg); white-space:nowrap;
+  }
 </style>
 </head>
 <body>
@@ -186,6 +198,7 @@
 </div>
 
 <div id="app">
+  <div id="app-watermark"></div>
   <div class="shell">
     <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebarDrawer()"></div>
     <div class="sidebar" id="sidebar"></div>
