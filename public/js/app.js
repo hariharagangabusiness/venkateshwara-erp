@@ -4230,7 +4230,16 @@ PAGES['bg-dashboard'] = async (el) => {
       <div class="card"><div class="num">₹${fmt(summary.live_value)}</div><div class="label">Total Live Value</div></div>
       <div class="card"><div class="num">${summary.expiring_30d}</div><div class="label">Expiring in 30 Days</div></div>
       <div class="card"><div class="num">${summary.pending_reminders}</div><div class="label">Pending Reminders</div></div>
+      <div class="card"><div class="num">${summary.claim_expiry_alerts}</div><div class="label">Claim Expiry Alerts (7-day)</div></div>
+      <div class="card"><div class="num">${summary.claim_compliance_rate === null ? '-' : summary.claim_compliance_rate + '%'}</div><div class="label">Claim Task On-Time Rate</div></div>
     </div>
+
+    ${summary.finance_todos && summary.finance_todos.length ? `
+    <div class="panel"><h3>Finance Team - Claim Filing Tasks</h3>
+      <p class="muted">High-priority To-Dos auto-raised for the Finance HOD when a BG's claim-filing deadline is 7 days out - full detail and status updates on the To-Do List page.</p>
+      ${tableHTML(['Task', 'Assigned To', 'Target Date', 'Status'], summary.finance_todos, t => `
+        <tr><td>${esc(t.brief_description)}</td><td>${esc(t.assigned_to_name)}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td></tr>`)}
+    </div>` : ''}
 
     ${(reminders.length || verified.length) ? `
     <div class="panel"><h3>Pending Reminders</h3>
@@ -5580,7 +5589,7 @@ PAGES['todos'] = async (el) => {
   const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
   const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
   const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
-  const detailsRow = t => `${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
+  const detailsRow = t => `${t.priority === 'High' ? '<span class="badge Rejected" style="margin-right:6px;">HIGH</span>' : ''}${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
   const updatesToggle = t => `<button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>`;
   el.innerHTML = `
     ${canLog ? `
@@ -5590,6 +5599,7 @@ PAGES['todos'] = async (el) => {
         <div><label>Assigned To (who has the action)</label><select id="td-assignee"><option value="">Select...</option>${assigneeOptions}</select></div>
         <div><label>Start Date</label><input id="td-start" type="date" value="${today()}"></div>
         <div><label>Target Date</label><input id="td-target" type="date"></div>
+        <div><label>Priority</label><select id="td-priority"><option value="Normal">Normal</option><option value="High">High</option></select></div>
         <div style="grid-column:1/-1;"><label>Brief Description</label><input id="td-brief" placeholder="e.g. Submit revised layout drawing"></div>
         <div style="grid-column:1/-1;"><label>Details</label><textarea id="td-details" rows="3"></textarea></div>
       </div>
@@ -5658,7 +5668,7 @@ window.saveTodo = async () => {
     await api('/todos', { method: 'POST', body: JSON.stringify({
       hod_id: val('td-hod') || null, assigned_to: val('td-assignee'),
       start_date: val('td-start') || null, target_date: val('td-target') || null,
-      brief_description: val('td-brief'), details: val('td-details'),
+      brief_description: val('td-brief'), details: val('td-details'), priority: val('td-priority'),
     })});
     navigate('todos');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }

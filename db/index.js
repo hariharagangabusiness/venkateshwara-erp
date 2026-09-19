@@ -335,7 +335,7 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS bg_reminder_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bg_id INTEGER NOT NULL REFERENCES bank_guarantees(id),
-    trigger_reason TEXT NOT NULL,          -- ExpiryApproaching, ProjectCompleted, MilestoneReached
+    trigger_reason TEXT NOT NULL,          -- ExpiryApproaching, ProjectCompleted, MilestoneReached, ClaimExpiryApproaching
     triggered_at TEXT DEFAULT CURRENT_TIMESTAMP,
     status TEXT DEFAULT 'PendingReview',   -- PendingReview, Verified, EmailSent, Dismissed
     reviewed_by INTEGER REFERENCES users(id),
@@ -441,6 +441,14 @@ const MIGRATIONS = [
     status_at_update TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 24: BG claim-expiry compliance workflow - a system-generated
+  // To-Do needs a priority to flag urgency, and a source_type/source_id
+  // pointer (same polymorphic pattern as `notifications`) so the scan job
+  // can tell "is there already an open To-Do for this BG's claim deadline"
+  // without fragile text matching. See lib/bgReminderScan.js.
+  `ALTER TABLE todos ADD COLUMN priority TEXT DEFAULT 'Normal'`,
+  `ALTER TABLE todos ADD COLUMN source_type TEXT`,
+  `ALTER TABLE todos ADD COLUMN source_id INTEGER`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
