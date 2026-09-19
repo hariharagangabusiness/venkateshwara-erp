@@ -38,6 +38,23 @@ function doLogout() {
 document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
 let ALLOWED_PAGES = null; // null = unrestricted; Set of page ids once an Admin has configured this role
+// Faint company branding watermark across the app shell - best-effort and
+// non-blocking, same idea as the one baked into every generated PDF
+// (lib/pdfBranding.js), just so the two never contradict what boot() does.
+let APP_WATERMARK_RENDERED = false;
+async function renderAppWatermark() {
+  if (APP_WATERMARK_RENDERED) return;
+  try {
+    const company = await api('/settings/company');
+    const el = document.getElementById('app-watermark');
+    const name = company.legal_name || company.trade_name || '';
+    el.innerHTML = company.logo_path
+      ? `<img src="${esc(company.logo_path)}">`
+      : `<span>${esc(name)}</span>`;
+    APP_WATERMARK_RENDERED = true;
+  } catch (e) { /* purely decorative - never block the app over this */ }
+}
+
 async function boot() {
   try {
     ME = await api('/auth/me');
@@ -52,6 +69,7 @@ async function boot() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('user-name').textContent = ME.full_name;
   document.getElementById('user-role').textContent = ME.role;
+  renderAppWatermark();
   // Department-scoped roles (everyone except Admin/ProjectManager, who can
   // touch any department) get their own dedicated sidebar group named after
   // their department - e.g. "Design", "Electrical", "Manufacturing" - the
