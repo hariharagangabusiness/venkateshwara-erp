@@ -88,13 +88,15 @@ router.get('/expense-summary', requirePermission('report.view_all', 'expense_vou
 router.get('/foc', (req, res) => {
   res.json(db.prepare(`
     SELECT f.*, so.order_no, p.project_code, d.name as department_name,
-      u.full_name as requested_by_name, a.full_name as approved_by_name
+      u.full_name as requested_by_name, a.full_name as approved_by_name,
+      c.name as client_master_name
     FROM foc_requests f
     LEFT JOIN sales_orders so ON so.id = f.sales_order_id
     LEFT JOIN projects p ON p.id = f.project_id
     LEFT JOIN departments d ON d.id = f.department_id
     LEFT JOIN users u ON u.id = f.requested_by
     LEFT JOIN users a ON a.id = f.approved_by
+    LEFT JOIN clients c ON c.id = f.client_id
     ORDER BY f.id DESC
   `).all());
 });
@@ -103,20 +105,27 @@ router.post('/foc', requirePermission('foc.request'), (req, res) => {
   if (req.user.role_name !== 'Admin' && !req.user.is_supervisor) {
     return res.status(403).json({ error: 'Only a department HOD/Supervisor (or Admin) can raise an FOC request.' });
   }
-  const { sales_order_id, item_description, quantity, unit, estimated_value, reason } = req.body;
+  const { sales_order_id, client_id, customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason } = req.body;
   if (!item_description) return res.status(400).json({ error: 'Describe the material being requested.' });
   let projectId = null;
+  let clientId = client_id || null;
   if (sales_order_id) {
     const project = db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(sales_order_id);
     if (project) projectId = project.id;
+    // Customer is implied by the SO - same auto-derivation as project_id.
+    const so = db.prepare('SELECT client_id FROM sales_orders WHERE id = ?').get(sales_order_id);
+    if (so) clientId = so.client_id;
+  } else if (!clientId && !String(customer_name || '').trim()) {
+    return res.status(400).json({ error: 'Not linked to an order - pick a customer from Clients or type a customer name.' });
   }
   const focNo = 'FOC-' + Date.now();
   const info = db.prepare(`
-    INSERT INTO foc_requests (foc_no, sales_order_id, project_id, department_id, requested_by, item_description,
-      quantity, unit, estimated_value, reason)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-  `).run(focNo, sales_order_id || null, projectId, req.user.department_id, req.user.id, item_description,
-    quantity || 1, unit || 'Nos', estimated_value || 0, reason || null);
+    INSERT INTO foc_requests (foc_no, sales_order_id, project_id, department_id, requested_by, client_id,
+      customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(focNo, sales_order_id || null, projectId, req.user.department_id, req.user.id, clientId,
+    sales_order_id ? null : (customer_name || null), contact_person || null, contact_phone || null,
+    item_description, quantity || 1, unit || 'Nos', estimated_value || 0, reason || null);
   res.json({ id: info.lastInsertRowid, foc_no: focNo });
 });
 
@@ -131,17 +140,25 @@ router.put('/foc/:id', requirePermission('foc.request', 'foc.approve'), (req, re
   if (existing.status !== 'Pending' && !isPrivileged) {
     return res.status(400).json({ error: 'This request has already been actioned - only Management/Admin can still edit it.' });
   }
-  const { sales_order_id, item_description, quantity, unit, estimated_value, reason } = req.body;
+  const { sales_order_id, client_id, customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason } = req.body;
   let projectId = existing.project_id;
+  let clientId = client_id !== undefined ? (client_id || null) : existing.client_id;
   if (sales_order_id !== undefined) {
     const project = sales_order_id ? db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(sales_order_id) : null;
     projectId = project ? project.id : null;
+    if (sales_order_id) {
+      const so = db.prepare('SELECT client_id FROM sales_orders WHERE id = ?').get(sales_order_id);
+      clientId = so ? so.client_id : null;
+    }
   }
   db.prepare(`
-    UPDATE foc_requests SET sales_order_id=?, project_id=?, item_description=?, quantity=?, unit=?, estimated_value=?,
-      reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
+    UPDATE foc_requests SET sales_order_id=?, project_id=?, client_id=?, customer_name=?, contact_person=?, contact_phone=?,
+      item_description=?, quantity=?, unit=?, estimated_value=?, reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
   `).run(
-    sales_order_id !== undefined ? (sales_order_id || null) : existing.sales_order_id, projectId,
+    sales_order_id !== undefined ? (sales_order_id || null) : existing.sales_order_id, projectId, clientId,
+    sales_order_id !== undefined && sales_order_id ? null : (customer_name !== undefined ? customer_name : existing.customer_name),
+    contact_person !== undefined ? contact_person : existing.contact_person,
+    contact_phone !== undefined ? contact_phone : existing.contact_phone,
     item_description !== undefined ? item_description : existing.item_description,
     quantity !== undefined ? quantity : existing.quantity,
     unit !== undefined ? unit : existing.unit,

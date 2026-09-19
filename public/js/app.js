@@ -956,19 +956,20 @@ PAGES.clients = async (el) => {
         <button class="btn outline" id="cl-cancel-btn" onclick="cancelClientEdit()" style="display:none;">Cancel</button>
       </div>
     </div>
+    <div id="cl-addresses-panel"></div>
     <div class="panel">
       <div class="toolbar"><h3 style="margin:0;">All Clients (${clients.length})</h3>
         <button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], clients, c => `
-        <tr><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
+      ${tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], clients, c => `
+        <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
         <td><button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
         <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button></td></tr>`)}
     </div>`;
 };
 window.editClient = (c) => {
   EDITING_CLIENT_ID = c.id;
-  document.getElementById('cl-form-title').textContent = 'Edit Client — ' + c.name;
+  document.getElementById('cl-form-title').textContent = `Edit Client — ${c.name} (${c.client_code || '#' + c.id})`;
   document.getElementById('cl-name').value = c.name || '';
   document.getElementById('cl-contact').value = c.contact_person || '';
   document.getElementById('cl-phone').value = c.phone || '';
@@ -979,6 +980,7 @@ window.editClient = (c) => {
   document.getElementById('cl-save-btn').textContent = 'Save Changes';
   document.getElementById('cl-cancel-btn').style.display = 'inline-block';
   document.getElementById('cl-form-title').scrollIntoView({ behavior: 'smooth' });
+  renderClientAddressesPanel(c.id);
 };
 window.cancelClientEdit = () => navigate('clients');
 window.saveClient = async () => {
@@ -998,7 +1000,54 @@ window.saveClient = async () => {
 };
 window.reportClients = async () => {
   const clients = await api('/masters/clients');
-  downloadCSV('clients_report.csv', clients, ['id', 'name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
+  downloadCSV('clients_report.csv', clients, ['id', 'client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
+};
+
+// ---- Bill-to / Ship-to addresses (shown once a client exists to edit) ----
+async function renderClientAddressesPanel(clientId) {
+  const panel = document.getElementById('cl-addresses-panel');
+  const addresses = await api(`/masters/clients/${clientId}/addresses`);
+  const addrRow = (a) => `<tr>
+      <td>${esc(a.address_type)}${a.is_default ? ' <span class="badge active">Default</span>' : ''}</td>
+      <td>${esc(a.label)||'-'}</td>
+      <td>${[a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).map(esc).join(', ')}</td>
+      <td>${esc(a.gstin)||'-'}</td>
+      <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id})">Delete</button></td>
+    </tr>`;
+  panel.innerHTML = `
+    <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
+      ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
+      <div class="form-grid" style="margin-top:10px;">
+        <div><label>Type</label><select id="ca-type"><option value="Billing">Billing</option><option value="Shipping">Shipping</option></select></div>
+        <div><label>Label</label><input id="ca-label" placeholder="e.g. Head Office, Plant 2"></div>
+        <div><label>GSTIN</label><input id="ca-gstin"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 1</label><input id="ca-line1"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 2</label><input id="ca-line2"></div>
+        <div><label>City</label><input id="ca-city"></div>
+        <div><label>State</label><input id="ca-state"></div>
+        <div><label>State Code</label><input id="ca-state-code" placeholder="e.g. 06"></div>
+        <div><label>Pincode</label><input id="ca-pincode"></div>
+        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
+      </div>
+      <button class="btn" onclick="addClientAddress(${clientId})">Add Address</button>
+      <div id="ca-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>`;
+}
+window.addClientAddress = async (clientId) => {
+  const errEl = document.getElementById('ca-err');
+  try {
+    await api(`/masters/clients/${clientId}/addresses`, { method: 'POST', body: JSON.stringify({
+      address_type: val('ca-type'), label: val('ca-label'), line1: val('ca-line1'), line2: val('ca-line2'),
+      city: val('ca-city'), state: val('ca-state'), state_code: val('ca-state-code'), pincode: val('ca-pincode'),
+      gstin: val('ca-gstin'), is_default: document.getElementById('ca-default').checked,
+    })});
+    renderClientAddressesPanel(clientId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteClientAddress = async (clientId, id) => {
+  if (!confirm('Delete this address?')) return;
+  await api(`/masters/client-addresses/${id}`, { method: 'DELETE' });
+  renderClientAddressesPanel(clientId);
 };
 function val(id) { return document.getElementById(id).value; }
 
@@ -4619,14 +4668,28 @@ window.saveMatrixChain = async (chainId) => {
 // wherever possible); Management/Admin approve or reject them. All fields
 // stay editable while a request is Pending.
 PAGES.foc = async (el) => {
-  const [reqs, orders] = await Promise.all([api('/finance/foc'), api('/sales/orders')]);
+  const [reqs, orders, clients] = await Promise.all([api('/finance/foc'), api('/sales/orders'), api('/masters/clients')]);
   const canRequest = has('foc.request') && (ME.is_supervisor || ME.role === 'Admin');
   const canApprove = has('foc.approve');
   el.innerHTML = `
     ${canRequest ? `
     <div class="panel"><h3>New FOC Material Request</h3>
       <div class="form-grid">
-        <div><label>Linked Sales Order (optional)</label><select id="foc-so"><option value="">-- Not linked to an order --</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+        <div><label>Linked Sales Order (optional)</label><select id="foc-so" onchange="document.getElementById('foc-customer-wrap').style.display = this.value ? 'none' : 'grid'">
+          <option value="">-- Not linked to an order --</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-grid" id="foc-customer-wrap">
+        <div><label>Customer (from Clients)</label><select id="foc-client" onchange="document.getElementById('foc-manual-wrap').style.display = this.value ? 'none' : 'grid'">
+          <option value="">-- Enter customer manually instead --</option>
+          ${clients.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.client_code)})</option>`).join('')}
+        </select></div>
+        <div><label>Contact Person</label><input id="foc-contact-person"></div>
+        <div><label>Contact Number</label><input id="foc-contact-phone"></div>
+      </div>
+      <div class="form-grid" id="foc-manual-wrap">
+        <div><label>Customer Name (manual)</label><input id="foc-cust-name"></div>
+      </div>
+      <div class="form-grid">
         <div><label>Material / Item Description</label><input id="foc-desc" placeholder="e.g. M8 hex bolts, 2 boxes"></div>
         <div><label>Quantity</label><input id="foc-qty" type="number" value="1"></div>
         <div><label>Unit</label><input id="foc-unit" value="Nos"></div>
@@ -4638,13 +4701,13 @@ PAGES.foc = async (el) => {
       <div class="muted" style="margin-top:8px;">Approval: Management/Admin.</div>
     </div>` : ''}
     <div class="panel"><h3>FOC Requests (${reqs.length})</h3>
-      ${tableHTML(['FOC No', 'Order', 'Department', 'Item', 'Qty', 'Value', 'Requested By', 'Status', 'Action', ''], reqs, r => `
-        <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
+      ${tableHTML(['FOC No', 'Order', 'Customer', 'Department', 'Item', 'Qty', 'Value', 'Requested By', 'Status', 'Action', ''], reqs, r => `
+        <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
         <td>${focEditableCell(r, 'item_description')}</td><td>${focEditableCell(r, 'quantity')} ${esc(r.unit)}</td><td>₹${fmt(r.estimated_value)}</td>
         <td>${esc(r.requested_by_name)}</td><td>${badge(r.status)}</td>
         <td>${focActions(r, canApprove)}</td>
         <td><button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button></td></tr>
-        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
+        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="11"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
     </div>`;
 };
 window.toggleFOCAttachments = (id) => {
@@ -4668,7 +4731,10 @@ function focActions(r, canApprove) {
 window.addFOC = async () => {
   try {
     const { id } = await api('/finance/foc', { method: 'POST', body: JSON.stringify({
-      sales_order_id: val('foc-so') || null, item_description: val('foc-desc'), quantity: val('foc-qty'),
+      sales_order_id: val('foc-so') || null,
+      client_id: val('foc-client') || null, customer_name: val('foc-cust-name'),
+      contact_person: val('foc-contact-person'), contact_phone: val('foc-contact-phone'),
+      item_description: val('foc-desc'), quantity: val('foc-qty'),
       unit: val('foc-unit'), estimated_value: val('foc-value'), reason: val('foc-reason'),
     })});
     const fileInput = document.getElementById('foc-file');

@@ -364,6 +364,28 @@ const MIGRATIONS = [
     completed_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 20: FOC customer capture independent of an SO, auto-generated
+  // Client ID, and structured Bill-to/Ship-to addresses per client.
+  `ALTER TABLE foc_requests ADD COLUMN client_id INTEGER REFERENCES clients(id)`,
+  `ALTER TABLE foc_requests ADD COLUMN customer_name TEXT`,
+  `ALTER TABLE foc_requests ADD COLUMN contact_person TEXT`,
+  `ALTER TABLE foc_requests ADD COLUMN contact_phone TEXT`,
+  `ALTER TABLE clients ADD COLUMN client_code TEXT`,
+  `CREATE TABLE IF NOT EXISTS client_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    address_type TEXT NOT NULL,        -- 'Billing' or 'Shipping'
+    label TEXT,                        -- e.g. "Head Office", "Plant 2 - Manesar"
+    line1 TEXT NOT NULL,
+    line2 TEXT,
+    city TEXT,
+    state TEXT,
+    state_code TEXT,                   -- drives CGST/SGST vs IGST on invoices/proforma
+    pincode TEXT,
+    gstin TEXT,
+    is_default INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -396,6 +418,10 @@ const UNIQUE_INDEXES = [
   // serial. Partial (excludes NULL/'') because Draft rows created before
   // Round 9 introduced sl_no may still have none.
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_service_reports_sl_no ON service_reports(sl_no) WHERE sl_no IS NOT NULL AND sl_no <> ''`,
+  // Client ID is a customer-facing reference number - genuinely unique once
+  // assigned. Partial (excludes NULL) so clients created before Round 20 are
+  // backfilled below without a transient collision window.
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_client_code ON clients(client_code) WHERE client_code IS NOT NULL`,
 ];
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }
@@ -419,6 +445,10 @@ try { raw.exec(`UPDATE purchase_orders SET gst_rate = 18 WHERE gst_rate IS NULL`
 // created_at so "days in stage" degrades to "days since created" for them
 // instead of showing garbage.
 try { raw.exec(`UPDATE leads SET stage_changed_at = created_at WHERE stage_changed_at IS NULL`); } catch (e) {}
+// Round 20: clients created before client_code existed - assign each one a
+// stable code derived from its own id, so every client ends up with one
+// without a separate running counter to maintain.
+try { raw.exec(`UPDATE clients SET client_code = 'CLI-' || printf('%06d', id) WHERE client_code IS NULL`); } catch (e) {}
 
 // Backfill `sequence` for any job cards created before that column existed,
 // using their insertion order (id) within each project as the sequence -
