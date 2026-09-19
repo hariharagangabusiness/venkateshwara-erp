@@ -163,6 +163,7 @@ const NAV = [
     { id: 'pipeline', label: 'Pipeline (Kanban)' },
     { id: 'followups', label: "Today's Follow-ups" },
     { id: 'offers', label: 'Offers / Quotations' },
+    { id: 'offer-options', label: 'Offer Field Options' },
     { id: 'orders', label: 'Sales Orders' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
@@ -1569,10 +1570,20 @@ window.openOfferBuilder = async (id) => {
   panel.scrollIntoView({ behavior: 'smooth' });
 };
 
+function offerFieldSelect(id, options, current) {
+  const opts = options.map(o => o.value);
+  if (current && !opts.includes(current)) opts.unshift(current); // keep a retired/pre-migration value selectable
+  return `<select id="${id}"><option value="">-- Select --</option>${opts.map(v => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
+}
 async function renderOfferBuilder(panel) {
-  const data = await api('/offers/' + CURRENT_OFFER_ID);
+  const [data, versions, applicationOpts, typeOpts, materialOpts] = await Promise.all([
+    api('/offers/' + CURRENT_OFFER_ID),
+    api('/offers/' + CURRENT_OFFER_ID + '/versions'),
+    api('/offers/field-options/application'),
+    api('/offers/field-options/type_of_system'),
+    api('/offers/field-options/material_of_construction'),
+  ]);
   const o = data.offer;
-  const versions = await api('/offers/' + CURRENT_OFFER_ID + '/versions');
   const tabs = [['scope', 'Scope of Supply & Pictures'], ['tech', 'Technical Specification'], ['boughtout', 'Make of Bought Out Items'], ['terms', 'Terms & Conditions'], ['text', 'Inclusions / Exclusions / Utilities']];
   panel.innerHTML = `
     <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span></h3>
@@ -1589,9 +1600,9 @@ async function renderOfferBuilder(panel) {
       <div><label>Contact Phone</label><input id="ob-phone" value="${esc(o.contact_phone)}"></div>
       <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>
       <div><label>Drawing No</label><input id="ob-drawing" value="${esc(o.drawing_no)}"></div>
-      <div><label>Application</label><input id="ob-application" value="${esc(o.application)}"></div>
-      <div><label>Type Of System</label><input id="ob-type" value="${esc(o.type_of_system)}"></div>
-      <div><label>Material Of Construction</label><input id="ob-material" value="${esc(o.material_of_construction)}"></div>
+      <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
+      <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
+      <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
     </div>
     <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
@@ -4168,6 +4179,42 @@ window.addExpTrackerCategory = async () => {
 window.toggleExpTrackerCategory = async (id, active) => {
   await api('/expense-tracker/categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
   navigate('expense-tracker-categories');
+};
+
+// ---- Offer Field Options (Application / Type of System / Material of Construction) ----
+const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
+let OFFER_OPTIONS_TAB = 'application';
+PAGES['offer-options'] = async (el) => {
+  const all = await api('/offers/field-options');
+  const rows = all.filter(o => o.field_name === OFFER_OPTIONS_TAB);
+  el.innerHTML = `
+    <div class="panel">
+      <div class="tabs">${OFFER_OPTION_FIELDS.map(([id, label]) => `<div class="tab ${OFFER_OPTIONS_TAB === id ? 'active' : ''}" onclick="switchOfferOptionsTab('${id}')">${label}</div>`).join('')}</div>
+      <div style="margin-top:14px;" class="form-grid">
+        <div><label>New Value</label><input id="oo-value"></div>
+        <div><label>Sort Order</label><input id="oo-sort" type="number" value="0"></div>
+      </div>
+      <button class="btn" onclick="addOfferOption()">Add Option</button>
+      <table style="margin-top:14px;"><thead><tr><th>Value</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
+        ${rows.map(o => `<tr>
+          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'value', this.textContent)">${esc(o.value)}</span></td>
+          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'sort_order', this.textContent)">${o.sort_order}</span></td>
+          <td>${o.active ? 'Yes' : 'No'}</td>
+          <td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>
+        </tr>`).join('') || '<tr><td colspan="4" class="empty">No options yet.</td></tr>'}
+      </tbody></table>
+    </div>`;
+};
+window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
+window.addOfferOption = async () => {
+  try {
+    await api('/offers/field-options', { method: 'POST', body: JSON.stringify({ field_name: OFFER_OPTIONS_TAB, value: val('oo-value'), sort_order: val('oo-sort') }) });
+    navigate('offer-options');
+  } catch (e) { alert(e.message); }
+};
+window.editOfferOption = async (id, field, value) => {
+  try { await api('/offers/field-options/' + id, { method: 'PUT', body: JSON.stringify({ [field]: value }) }); navigate('offer-options'); }
+  catch (e) { alert(e.message); navigate('offer-options'); }
 };
 
 // ---- Bank Guarantee Dashboard (Round 16) ----

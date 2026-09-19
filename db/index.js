@@ -386,6 +386,17 @@ const MIGRATIONS = [
     is_default INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 21: admin-editable dropdown options for the Offers/Quotations
+  // form's Application / Type of System / Material of Construction fields -
+  // one generic table for all three (same shape), see routes/offers.js.
+  `CREATE TABLE IF NOT EXISTS offer_field_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    field_name TEXT NOT NULL,     -- 'application' | 'type_of_system' | 'material_of_construction'
+    value TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    active INTEGER DEFAULT 1,
+    UNIQUE(field_name, value)
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -449,6 +460,17 @@ try { raw.exec(`UPDATE leads SET stage_changed_at = created_at WHERE stage_chang
 // stable code derived from its own id, so every client ends up with one
 // without a separate running counter to maintain.
 try { raw.exec(`UPDATE clients SET client_code = 'CLI-' || printf('%06d', id) WHERE client_code IS NULL`); } catch (e) {}
+// Round 21: every value already typed into an offer's Application/Type of
+// System/Material of Construction becomes a valid dropdown option from day
+// one - no existing offer's value becomes "invalid" once these go live.
+for (const col of ['application', 'type_of_system', 'material_of_construction']) {
+  try {
+    raw.exec(`
+      INSERT OR IGNORE INTO offer_field_options (field_name, value)
+      SELECT DISTINCT '${col}', ${col} FROM offers WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''
+    `);
+  } catch (e) {}
+}
 
 // Backfill `sequence` for any job cards created before that column existed,
 // using their insertion order (id) within each project as the sequence -

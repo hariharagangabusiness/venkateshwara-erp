@@ -24,6 +24,48 @@ const upload = multer({
 
 function offerPerm() { return requirePermission('sales_order.manage', 'lead.manage'); }
 
+// ===================== Admin-editable dropdown options =====================
+// Application / Type of System / Material of Construction - one generic
+// table for all three fields (see db/index.js Round 21). Values are never
+// hard-deleted (only deactivated) so an offer written before a value was
+// retired still displays it correctly.
+const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction'];
+
+router.get('/field-options/:field', offerPerm(), (req, res) => {
+  if (!OFFER_OPTION_FIELDS.includes(req.params.field)) return res.status(404).json({ error: 'Unknown field' });
+  res.json(db.prepare(`
+    SELECT * FROM offer_field_options WHERE field_name = ? AND active = 1 ORDER BY sort_order, value
+  `).all(req.params.field));
+});
+// Admin view lists every option (including inactive) so they can be reactivated.
+router.get('/field-options', requirePermission('offer_options.manage'), (req, res) => {
+  res.json(db.prepare(`SELECT * FROM offer_field_options ORDER BY field_name, sort_order, value`).all());
+});
+router.post('/field-options', requirePermission('offer_options.manage'), (req, res) => {
+  const { field_name, value, sort_order } = req.body;
+  if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, or material_of_construction' });
+  if (!String(value || '').trim()) return res.status(400).json({ error: 'Enter a value.' });
+  try {
+    const info = db.prepare(`INSERT INTO offer_field_options (field_name, value, sort_order) VALUES (?,?,?)`)
+      .run(field_name, value.trim(), Number(sort_order) || 0);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: 'That value already exists for this field.' });
+  }
+});
+router.put('/field-options/:id', requirePermission('offer_options.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_field_options WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { value, sort_order, active } = req.body;
+  db.prepare(`UPDATE offer_field_options SET value=?, sort_order=?, active=? WHERE id=?`).run(
+    value !== undefined ? value : existing.value,
+    sort_order !== undefined ? Number(sort_order) : existing.sort_order,
+    active !== undefined ? (active ? 1 : 0) : existing.active,
+    existing.id
+  );
+  res.json({ ok: true });
+});
+
 // ===================== List / Detail =====================
 
 router.get('/', (req, res) => {
