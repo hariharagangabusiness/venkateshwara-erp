@@ -236,6 +236,7 @@ const NAV = [
     { id: 'approval-matrix', label: 'Approval Matrix' },
     { id: 'company-settings', label: 'Company Settings' },
     { id: 'data-import', label: 'Data Import' },
+    { id: 'full-data-export', label: 'Full Data Export' },
     { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
   ]},
 ];
@@ -5682,6 +5683,26 @@ window.deleteTodo = async (id) => {
   if (!confirm('Delete this To-Do?')) return;
   try { await api('/todos/' + id, { method: 'DELETE' }); navigate('todos'); }
   catch (e) { alert(e.message); }
+};
+
+// ===================== Full Data Export (Admin only) =====================
+// Every raw column of any table in the system, straight to xlsx, for
+// external deep-dive analysis in Power BI/Python - see lib/tableExport.js
+// for exactly what's excluded (credentials, internal ACL plumbing) and why.
+PAGES['full-data-export'] = async (el) => {
+  const tables = await api('/reports/export/tables');
+  el.innerHTML = `
+    <div class="panel"><h3>Full Data Export</h3>
+      <p class="muted">Every raw field of a table - including internal IDs, foreign keys, and timestamps not shown on any screen - as a single Excel file. For loading into Power BI, Python/pandas, or similar external analysis, not for everyday reporting (see the built-in report pages for that).</p>
+      <div class="form-grid">
+        <div><label>Table</label><select id="fde-table">${tables.map(t => `<option value="${t}">${t}</option>`).join('')}</select></div>
+      </div>
+      <button class="btn" onclick="downloadFullTableExport()">Download Export</button>
+    </div>`;
+};
+window.downloadFullTableExport = () => {
+  const table = val('fde-table');
+  downloadTemplateFile(`/reports/export/${table}`, `${table}_full_export.xlsx`);
 };
 
 // ===================== Organizational Hierarchy =====================
