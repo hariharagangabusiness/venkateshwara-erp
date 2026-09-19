@@ -364,6 +364,83 @@ const MIGRATIONS = [
     completed_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 20: FOC customer capture independent of an SO, auto-generated
+  // Client ID, and structured Bill-to/Ship-to addresses per client.
+  `ALTER TABLE foc_requests ADD COLUMN client_id INTEGER REFERENCES clients(id)`,
+  `ALTER TABLE foc_requests ADD COLUMN customer_name TEXT`,
+  `ALTER TABLE foc_requests ADD COLUMN contact_person TEXT`,
+  `ALTER TABLE foc_requests ADD COLUMN contact_phone TEXT`,
+  `ALTER TABLE clients ADD COLUMN client_code TEXT`,
+  `CREATE TABLE IF NOT EXISTS client_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    address_type TEXT NOT NULL,        -- 'Billing' or 'Shipping'
+    label TEXT,                        -- e.g. "Head Office", "Plant 2 - Manesar"
+    line1 TEXT NOT NULL,
+    line2 TEXT,
+    city TEXT,
+    state TEXT,
+    state_code TEXT,                   -- drives CGST/SGST vs IGST on invoices/proforma
+    pincode TEXT,
+    gstin TEXT,
+    is_default INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // ---- Round 21: admin-editable dropdown options for the Offers/Quotations
+  // form's Application / Type of System / Material of Construction fields -
+  // one generic table for all three (same shape), see routes/offers.js.
+  `CREATE TABLE IF NOT EXISTS offer_field_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    field_name TEXT NOT NULL,     -- 'application' | 'type_of_system' | 'material_of_construction'
+    value TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    active INTEGER DEFAULT 1,
+    UNIQUE(field_name, value)
+  )`,
+  // ---- Round 22: Proforma Invoices (Advance / Pre-Dispatch) - separate from
+  // sales_invoices since a proforma is not a fiscal tax document, doesn't
+  // consume the tax-invoice-number sequence, and doesn't push the SO to
+  // Invoiced. One SO can have several (one Advance, one PreDispatch) plus
+  // exactly one eventual tax invoice - see routes/finance.js.
+  `CREATE TABLE IF NOT EXISTS proforma_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proforma_no TEXT UNIQUE,
+    sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
+    client_id INTEGER REFERENCES clients(id),
+    milestone_id INTEGER REFERENCES payment_milestones(id),
+    invoice_type TEXT NOT NULL,        -- 'Advance' or 'PreDispatch'
+    proforma_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    place_of_supply TEXT,
+    buyer_gstin TEXT,
+    buyer_state TEXT,
+    taxable_value REAL DEFAULT 0,
+    cgst REAL DEFAULT 0,
+    sgst REAL DEFAULT 0,
+    igst REAL DEFAULT 0,
+    total_value REAL DEFAULT 0,
+    status TEXT DEFAULT 'Draft',       -- Draft, Sent, Received, Cancelled
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS proforma_invoice_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proforma_id INTEGER NOT NULL REFERENCES proforma_invoices(id),
+    description TEXT NOT NULL,
+    taxable_value REAL DEFAULT 0,
+    gst_rate REAL DEFAULT 18,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // ---- Round 23: To-Do activity log - notes the assignee (or the logging
+  // HOD/Admin) attaches to a To-Do over its life, plus an auto-logged entry
+  // per status change, so the two merge into one timeline. See routes/todos.js.
+  `CREATE TABLE IF NOT EXISTS todo_updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    todo_id INTEGER NOT NULL REFERENCES todos(id),
+    user_id INTEGER REFERENCES users(id),
+    note TEXT NOT NULL,
+    status_at_update TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -396,6 +473,10 @@ const UNIQUE_INDEXES = [
   // serial. Partial (excludes NULL/'') because Draft rows created before
   // Round 9 introduced sl_no may still have none.
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_service_reports_sl_no ON service_reports(sl_no) WHERE sl_no IS NOT NULL AND sl_no <> ''`,
+  // Client ID is a customer-facing reference number - genuinely unique once
+  // assigned. Partial (excludes NULL) so clients created before Round 20 are
+  // backfilled below without a transient collision window.
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_client_code ON clients(client_code) WHERE client_code IS NOT NULL`,
 ];
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }
@@ -419,6 +500,21 @@ try { raw.exec(`UPDATE purchase_orders SET gst_rate = 18 WHERE gst_rate IS NULL`
 // created_at so "days in stage" degrades to "days since created" for them
 // instead of showing garbage.
 try { raw.exec(`UPDATE leads SET stage_changed_at = created_at WHERE stage_changed_at IS NULL`); } catch (e) {}
+// Round 20: clients created before client_code existed - assign each one a
+// stable code derived from its own id, so every client ends up with one
+// without a separate running counter to maintain.
+try { raw.exec(`UPDATE clients SET client_code = 'CLI-' || printf('%06d', id) WHERE client_code IS NULL`); } catch (e) {}
+// Round 21: every value already typed into an offer's Application/Type of
+// System/Material of Construction becomes a valid dropdown option from day
+// one - no existing offer's value becomes "invalid" once these go live.
+for (const col of ['application', 'type_of_system', 'material_of_construction']) {
+  try {
+    raw.exec(`
+      INSERT OR IGNORE INTO offer_field_options (field_name, value)
+      SELECT DISTINCT '${col}', ${col} FROM offers WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''
+    `);
+  } catch (e) {}
+}
 
 // Backfill `sequence` for any job cards created before that column existed,
 // using their insertion order (id) within each project as the sequence -

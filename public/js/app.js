@@ -163,6 +163,7 @@ const NAV = [
     { id: 'pipeline', label: 'Pipeline (Kanban)' },
     { id: 'followups', label: "Today's Follow-ups" },
     { id: 'offers', label: 'Offers / Quotations' },
+    { id: 'offer-options', label: 'Offer Field Options' },
     { id: 'orders', label: 'Sales Orders' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
@@ -956,19 +957,20 @@ PAGES.clients = async (el) => {
         <button class="btn outline" id="cl-cancel-btn" onclick="cancelClientEdit()" style="display:none;">Cancel</button>
       </div>
     </div>
+    <div id="cl-addresses-panel"></div>
     <div class="panel">
       <div class="toolbar"><h3 style="margin:0;">All Clients (${clients.length})</h3>
         <button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], clients, c => `
-        <tr><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
+      ${tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], clients, c => `
+        <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
         <td><button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
         <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button></td></tr>`)}
     </div>`;
 };
 window.editClient = (c) => {
   EDITING_CLIENT_ID = c.id;
-  document.getElementById('cl-form-title').textContent = 'Edit Client — ' + c.name;
+  document.getElementById('cl-form-title').textContent = `Edit Client — ${c.name} (${c.client_code || '#' + c.id})`;
   document.getElementById('cl-name').value = c.name || '';
   document.getElementById('cl-contact').value = c.contact_person || '';
   document.getElementById('cl-phone').value = c.phone || '';
@@ -979,6 +981,7 @@ window.editClient = (c) => {
   document.getElementById('cl-save-btn').textContent = 'Save Changes';
   document.getElementById('cl-cancel-btn').style.display = 'inline-block';
   document.getElementById('cl-form-title').scrollIntoView({ behavior: 'smooth' });
+  renderClientAddressesPanel(c.id);
 };
 window.cancelClientEdit = () => navigate('clients');
 window.saveClient = async () => {
@@ -998,7 +1001,54 @@ window.saveClient = async () => {
 };
 window.reportClients = async () => {
   const clients = await api('/masters/clients');
-  downloadCSV('clients_report.csv', clients, ['id', 'name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
+  downloadCSV('clients_report.csv', clients, ['id', 'client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
+};
+
+// ---- Bill-to / Ship-to addresses (shown once a client exists to edit) ----
+async function renderClientAddressesPanel(clientId) {
+  const panel = document.getElementById('cl-addresses-panel');
+  const addresses = await api(`/masters/clients/${clientId}/addresses`);
+  const addrRow = (a) => `<tr>
+      <td>${esc(a.address_type)}${a.is_default ? ' <span class="badge active">Default</span>' : ''}</td>
+      <td>${esc(a.label)||'-'}</td>
+      <td>${[a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).map(esc).join(', ')}</td>
+      <td>${esc(a.gstin)||'-'}</td>
+      <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id})">Delete</button></td>
+    </tr>`;
+  panel.innerHTML = `
+    <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
+      ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
+      <div class="form-grid" style="margin-top:10px;">
+        <div><label>Type</label><select id="ca-type"><option value="Billing">Billing</option><option value="Shipping">Shipping</option></select></div>
+        <div><label>Label</label><input id="ca-label" placeholder="e.g. Head Office, Plant 2"></div>
+        <div><label>GSTIN</label><input id="ca-gstin"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 1</label><input id="ca-line1"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 2</label><input id="ca-line2"></div>
+        <div><label>City</label><input id="ca-city"></div>
+        <div><label>State</label><input id="ca-state"></div>
+        <div><label>State Code</label><input id="ca-state-code" placeholder="e.g. 06"></div>
+        <div><label>Pincode</label><input id="ca-pincode"></div>
+        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
+      </div>
+      <button class="btn" onclick="addClientAddress(${clientId})">Add Address</button>
+      <div id="ca-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>`;
+}
+window.addClientAddress = async (clientId) => {
+  const errEl = document.getElementById('ca-err');
+  try {
+    await api(`/masters/clients/${clientId}/addresses`, { method: 'POST', body: JSON.stringify({
+      address_type: val('ca-type'), label: val('ca-label'), line1: val('ca-line1'), line2: val('ca-line2'),
+      city: val('ca-city'), state: val('ca-state'), state_code: val('ca-state-code'), pincode: val('ca-pincode'),
+      gstin: val('ca-gstin'), is_default: document.getElementById('ca-default').checked,
+    })});
+    renderClientAddressesPanel(clientId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteClientAddress = async (clientId, id) => {
+  if (!confirm('Delete this address?')) return;
+  await api(`/masters/client-addresses/${id}`, { method: 'DELETE' });
+  renderClientAddressesPanel(clientId);
 };
 function val(id) { return document.getElementById(id).value; }
 
@@ -1520,10 +1570,20 @@ window.openOfferBuilder = async (id) => {
   panel.scrollIntoView({ behavior: 'smooth' });
 };
 
+function offerFieldSelect(id, options, current) {
+  const opts = options.map(o => o.value);
+  if (current && !opts.includes(current)) opts.unshift(current); // keep a retired/pre-migration value selectable
+  return `<select id="${id}"><option value="">-- Select --</option>${opts.map(v => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
+}
 async function renderOfferBuilder(panel) {
-  const data = await api('/offers/' + CURRENT_OFFER_ID);
+  const [data, versions, applicationOpts, typeOpts, materialOpts] = await Promise.all([
+    api('/offers/' + CURRENT_OFFER_ID),
+    api('/offers/' + CURRENT_OFFER_ID + '/versions'),
+    api('/offers/field-options/application'),
+    api('/offers/field-options/type_of_system'),
+    api('/offers/field-options/material_of_construction'),
+  ]);
   const o = data.offer;
-  const versions = await api('/offers/' + CURRENT_OFFER_ID + '/versions');
   const tabs = [['scope', 'Scope of Supply & Pictures'], ['tech', 'Technical Specification'], ['boughtout', 'Make of Bought Out Items'], ['terms', 'Terms & Conditions'], ['text', 'Inclusions / Exclusions / Utilities']];
   panel.innerHTML = `
     <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span></h3>
@@ -1540,9 +1600,9 @@ async function renderOfferBuilder(panel) {
       <div><label>Contact Phone</label><input id="ob-phone" value="${esc(o.contact_phone)}"></div>
       <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>
       <div><label>Drawing No</label><input id="ob-drawing" value="${esc(o.drawing_no)}"></div>
-      <div><label>Application</label><input id="ob-application" value="${esc(o.application)}"></div>
-      <div><label>Type Of System</label><input id="ob-type" value="${esc(o.type_of_system)}"></div>
-      <div><label>Material Of Construction</label><input id="ob-material" value="${esc(o.material_of_construction)}"></div>
+      <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
+      <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
+      <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
     </div>
     <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
@@ -4121,6 +4181,42 @@ window.toggleExpTrackerCategory = async (id, active) => {
   navigate('expense-tracker-categories');
 };
 
+// ---- Offer Field Options (Application / Type of System / Material of Construction) ----
+const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
+let OFFER_OPTIONS_TAB = 'application';
+PAGES['offer-options'] = async (el) => {
+  const all = await api('/offers/field-options');
+  const rows = all.filter(o => o.field_name === OFFER_OPTIONS_TAB);
+  el.innerHTML = `
+    <div class="panel">
+      <div class="tabs">${OFFER_OPTION_FIELDS.map(([id, label]) => `<div class="tab ${OFFER_OPTIONS_TAB === id ? 'active' : ''}" onclick="switchOfferOptionsTab('${id}')">${label}</div>`).join('')}</div>
+      <div style="margin-top:14px;" class="form-grid">
+        <div><label>New Value</label><input id="oo-value"></div>
+        <div><label>Sort Order</label><input id="oo-sort" type="number" value="0"></div>
+      </div>
+      <button class="btn" onclick="addOfferOption()">Add Option</button>
+      <table style="margin-top:14px;"><thead><tr><th>Value</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
+        ${rows.map(o => `<tr>
+          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'value', this.textContent)">${esc(o.value)}</span></td>
+          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'sort_order', this.textContent)">${o.sort_order}</span></td>
+          <td>${o.active ? 'Yes' : 'No'}</td>
+          <td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>
+        </tr>`).join('') || '<tr><td colspan="4" class="empty">No options yet.</td></tr>'}
+      </tbody></table>
+    </div>`;
+};
+window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
+window.addOfferOption = async () => {
+  try {
+    await api('/offers/field-options', { method: 'POST', body: JSON.stringify({ field_name: OFFER_OPTIONS_TAB, value: val('oo-value'), sort_order: val('oo-sort') }) });
+    navigate('offer-options');
+  } catch (e) { alert(e.message); }
+};
+window.editOfferOption = async (id, field, value) => {
+  try { await api('/offers/field-options/' + id, { method: 'PUT', body: JSON.stringify({ [field]: value }) }); navigate('offer-options'); }
+  catch (e) { alert(e.message); navigate('offer-options'); }
+};
+
 // ---- Bank Guarantee Dashboard (Round 16) ----
 PAGES['bg-dashboard'] = async (el) => {
   const [summary, bgs, reminders, orders] = await Promise.all([
@@ -4619,14 +4715,28 @@ window.saveMatrixChain = async (chainId) => {
 // wherever possible); Management/Admin approve or reject them. All fields
 // stay editable while a request is Pending.
 PAGES.foc = async (el) => {
-  const [reqs, orders] = await Promise.all([api('/finance/foc'), api('/sales/orders')]);
+  const [reqs, orders, clients] = await Promise.all([api('/finance/foc'), api('/sales/orders'), api('/masters/clients')]);
   const canRequest = has('foc.request') && (ME.is_supervisor || ME.role === 'Admin');
   const canApprove = has('foc.approve');
   el.innerHTML = `
     ${canRequest ? `
     <div class="panel"><h3>New FOC Material Request</h3>
       <div class="form-grid">
-        <div><label>Linked Sales Order (optional)</label><select id="foc-so"><option value="">-- Not linked to an order --</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+        <div><label>Linked Sales Order (optional)</label><select id="foc-so" onchange="document.getElementById('foc-customer-wrap').style.display = this.value ? 'none' : 'grid'">
+          <option value="">-- Not linked to an order --</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-grid" id="foc-customer-wrap">
+        <div><label>Customer (from Clients)</label><select id="foc-client" onchange="document.getElementById('foc-manual-wrap').style.display = this.value ? 'none' : 'grid'">
+          <option value="">-- Enter customer manually instead --</option>
+          ${clients.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.client_code)})</option>`).join('')}
+        </select></div>
+        <div><label>Contact Person</label><input id="foc-contact-person"></div>
+        <div><label>Contact Number</label><input id="foc-contact-phone"></div>
+      </div>
+      <div class="form-grid" id="foc-manual-wrap">
+        <div><label>Customer Name (manual)</label><input id="foc-cust-name"></div>
+      </div>
+      <div class="form-grid">
         <div><label>Material / Item Description</label><input id="foc-desc" placeholder="e.g. M8 hex bolts, 2 boxes"></div>
         <div><label>Quantity</label><input id="foc-qty" type="number" value="1"></div>
         <div><label>Unit</label><input id="foc-unit" value="Nos"></div>
@@ -4638,13 +4748,13 @@ PAGES.foc = async (el) => {
       <div class="muted" style="margin-top:8px;">Approval: Management/Admin.</div>
     </div>` : ''}
     <div class="panel"><h3>FOC Requests (${reqs.length})</h3>
-      ${tableHTML(['FOC No', 'Order', 'Department', 'Item', 'Qty', 'Value', 'Requested By', 'Status', 'Action', ''], reqs, r => `
-        <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
+      ${tableHTML(['FOC No', 'Order', 'Customer', 'Department', 'Item', 'Qty', 'Value', 'Requested By', 'Status', 'Action', ''], reqs, r => `
+        <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
         <td>${focEditableCell(r, 'item_description')}</td><td>${focEditableCell(r, 'quantity')} ${esc(r.unit)}</td><td>₹${fmt(r.estimated_value)}</td>
         <td>${esc(r.requested_by_name)}</td><td>${badge(r.status)}</td>
         <td>${focActions(r, canApprove)}</td>
         <td><button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button></td></tr>
-        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
+        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="11"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
     </div>`;
 };
 window.toggleFOCAttachments = (id) => {
@@ -4668,7 +4778,10 @@ function focActions(r, canApprove) {
 window.addFOC = async () => {
   try {
     const { id } = await api('/finance/foc', { method: 'POST', body: JSON.stringify({
-      sales_order_id: val('foc-so') || null, item_description: val('foc-desc'), quantity: val('foc-qty'),
+      sales_order_id: val('foc-so') || null,
+      client_id: val('foc-client') || null, customer_name: val('foc-cust-name'),
+      contact_person: val('foc-contact-person'), contact_phone: val('foc-contact-phone'),
+      item_description: val('foc-desc'), quantity: val('foc-qty'),
       unit: val('foc-unit'), estimated_value: val('foc-value'), reason: val('foc-reason'),
     })});
     const fileInput = document.getElementById('foc-file');
@@ -4777,7 +4890,7 @@ window.saveEmailSettings = async () => {
 
 // ===================== Round 5: Sales Invoices =====================
 PAGES['sales-invoices'] = async (el) => {
-  const [invoices, orders] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales'))]);
+  const [invoices, orders, proformas] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales')), api('/finance/proforma-invoices')]);
   el.innerHTML = `
     <div class="panel"><h3>Generate Invoice from Sales Order</h3>
       <div class="form-grid">
@@ -4803,7 +4916,66 @@ PAGES['sales-invoices'] = async (el) => {
           ${i.status !== 'Paid' ? `<button class="btn small" type="button" onclick="markInvoicePaid(${i.id})">Mark Paid</button>` : ''}
           ${i.status === 'Draft' ? `<button class="btn small outline" type="button" onclick="cancelInvoice(${i.id})">Cancel</button>` : ''}
         </td></tr>`)}
+    </div>
+    <div class="panel"><h3>Generate Proforma Invoice (Advance / Pre-Dispatch)</h3>
+      <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
+      <div class="form-grid">
+        <div><label>Sales Order</label><select id="pf-so" onchange="loadPFMilestones()">${(orders||[]).map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.description||'')}</option>`).join('')}</select></div>
+        <div><label>Type</label><select id="pf-type"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
+        <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
+        <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
+        <div><label>Buyer State</label><input id="pf-buyer-state" placeholder="e.g. Haryana"></div>
+        <div><label>Buyer GSTIN</label><input id="pf-buyer-gstin"></div>
+      </div>
+      <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
+      <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    </div>
+    <div class="panel"><h3>Proforma Invoices (${proformas.length})</h3>
+      ${tableHTML(['Proforma No', 'Client', 'Order', 'Type', 'Milestone', 'Total', 'Status', ''], proformas, p => `
+        <tr><td>${esc(p.proforma_no)}</td><td>${esc(p.client_name)}</td><td>${esc(p.order_no)}</td><td>${p.invoice_type === 'Advance' ? 'Advance' : 'Pre-Dispatch'}</td>
+        <td>${esc(p.milestone_name)||'-'}</td><td>₹${fmt(p.total_value)}</td><td>${badge(p.status)}</td>
+        <td>
+          <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/proforma-invoices/${p.id}/pdf', '${esc(p.proforma_no).replace(/\//g,'-')}.pdf')">PDF</button>
+          <button class="btn small outline" type="button" onclick="emailProforma(${p.id})">Email to Client</button>
+          ${p.status === 'Draft' ? `<button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
+          <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
+        </td></tr>`)}
     </div>`;
+};
+window.loadPFMilestones = async () => {
+  const sel = document.getElementById('pf-milestone');
+  sel.innerHTML = '<option value="">-- None / manual amount --</option>';
+  const soId = val('pf-so');
+  if (!soId) return;
+  try {
+    const ms = await api(`/bg/milestones?order_type=SO&order_id=${soId}`);
+    sel.innerHTML += ms.map(m => `<option value="${m.id}">${esc(m.milestone_name)} (${m.percentage ? m.percentage + '%' : '₹' + fmt(m.amount)})</option>`).join('');
+  } catch (e) { /* no milestone read access - manual amount still works */ }
+};
+window.generateProforma = async () => {
+  const errEl = document.getElementById('pf-err'); errEl.style.display = 'none';
+  const soId = val('pf-so');
+  if (!soId) { errEl.textContent = 'Pick a sales order.'; errEl.style.display = 'block'; return; }
+  try {
+    await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
+      invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null, amount: val('pf-amount') || undefined,
+      buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
+    })});
+    navigate('sales-invoices');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.markProformaReceived = async (id) => {
+  try { await api(`/finance/proforma-invoices/${id}/mark-received`, { method: 'POST' }); navigate('sales-invoices'); } catch (e) { alert(e.message); }
+};
+window.cancelProforma = async (id) => {
+  if (!confirm('Cancel this proforma invoice?')) return;
+  try { await api(`/finance/proforma-invoices/${id}/cancel`, { method: 'POST' }); navigate('sales-invoices'); } catch (e) { alert(e.message); }
+};
+window.emailProforma = async (id) => {
+  try {
+    const r = await api(`/finance/proforma-invoices/${id}/email`, { method: 'POST' });
+    alert(r.sent ? `Emailed to ${r.to}` : `Not sent: ${r.message}`);
+  } catch (e) { alert(e.message); }
 };
 window.generateInvoice = async () => {
   const errEl = document.getElementById('inv-err'); errEl.style.display = 'none';
@@ -5403,11 +5575,13 @@ const TODO_STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 PAGES['todos'] = async (el) => {
   const people = await api('/todos/people');
   const canLog = people.can_log;
-  const [mine, all] = await Promise.all([api('/todos/mine'), canLog ? api('/todos') : Promise.resolve([])]);
+  const canView = people.can_view;
+  const [mine, all] = await Promise.all([api('/todos/mine'), canView ? api('/todos') : Promise.resolve([])]);
   const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
   const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
   const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
   const detailsRow = t => `${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
+  const updatesToggle = t => `<button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>`;
   el.innerHTML = `
     ${canLog ? `
     <div class="panel"><h3>Log a New To-Do</h3>
@@ -5424,21 +5598,56 @@ PAGES['todos'] = async (el) => {
     </div>` : ''}
 
     <div class="panel"><h3>My To-Do List</h3>
-      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status'], mine, t => `
+      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status', ''], mine, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${t.start_date || '-'}</td>
         <td>${deliveryBadge(t.target_date)}</td>
         <td><select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select></td></tr>`)}
+        </select></td><td>${updatesToggle(t)}</td></tr>
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="6"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>
 
-    ${canLog ? `
+    ${canView ? `
     <div class="panel"><h3>All To-Dos Logged</h3>
       ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], all, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
         <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td>
-        <td><button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button></td></tr>`)}
+        <td>${updatesToggle(t)} ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}</td></tr>
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>` : ''}`;
+};
+window.toggleTodoUpdates = (id) => {
+  const row = document.getElementById(`todo-updates-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) renderTodoUpdates(id);
+};
+async function renderTodoUpdates(id) {
+  const wrap = document.getElementById(`todo-updates-${id}`);
+  const updates = await api(`/todos/${id}/updates`);
+  wrap.innerHTML = `
+    <div style="padding:10px;background:#f6f7f9;border-radius:6px;">
+      ${updates.length ? updates.map(u => `
+        <div style="padding:6px 0;border-bottom:1px solid var(--border);">
+          <b>${esc(u.user_name) || 'System'}</b> <span class="muted">${new Date(u.created_at).toLocaleString()}</span>
+          ${u.status_at_update ? badge(u.status_at_update) : ''}
+          <div>${esc(u.note)}</div>
+        </div>`).join('') : '<div class="muted">No updates logged yet.</div>'}
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <input id="todo-update-note-${id}" placeholder="Add an update..." style="flex:1;">
+        <button class="btn small" onclick="addTodoUpdate(${id})">Add</button>
+      </div>
+    </div>`;
+}
+window.addTodoUpdate = async (id) => {
+  const input = document.getElementById(`todo-update-note-${id}`);
+  const note = input.value.trim();
+  if (!note) return;
+  try {
+    await api(`/todos/${id}/updates`, { method: 'POST', body: JSON.stringify({ note }) });
+    input.value = '';
+    renderTodoUpdates(id);
+  } catch (e) { alert(e.message); }
 };
 window.saveTodo = async () => {
   const errEl = document.getElementById('td-err');

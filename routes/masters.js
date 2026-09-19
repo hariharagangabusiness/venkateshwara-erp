@@ -38,7 +38,11 @@ router.post('/clients', requirePermission('lead.manage', 'sales_order.manage'), 
   const { name, contact_person, phone, email, address, gstin, source } = req.body;
   const info = db.prepare(`INSERT INTO clients (name, contact_person, phone, email, address, gstin, source) VALUES (?,?,?,?,?,?,?)`)
     .run(name, contact_person, phone, email, address, gstin, source);
-  res.json({ id: info.lastInsertRowid });
+  // Client ID is customer-facing and derived from the row's own id, so it
+  // needs the id to exist first - same two-step pattern as items.barcode.
+  const clientCode = 'CLI-' + String(info.lastInsertRowid).padStart(6, '0');
+  db.prepare('UPDATE clients SET client_code = ? WHERE id = ?').run(clientCode, info.lastInsertRowid);
+  res.json({ id: info.lastInsertRowid, client_code: clientCode });
 });
 router.put('/clients/:id', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
   const { name, contact_person, phone, email, address, gstin, source } = req.body;
@@ -46,6 +50,51 @@ router.put('/clients/:id', requirePermission('lead.manage', 'sales_order.manage'
   if (!existing) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE clients SET name=?, contact_person=?, phone=?, email=?, address=?, gstin=?, source=? WHERE id=?`)
     .run(name, contact_person, phone, email, address, gstin, source, req.params.id);
+  res.json({ ok: true });
+});
+
+// ---- Bill-to / Ship-to addresses (a client can have more than one of each -
+// e.g. a head office that's billed, but material ships to different plants) ----
+router.get('/clients/:id/addresses', (req, res) => {
+  res.json(db.prepare('SELECT * FROM client_addresses WHERE client_id = ? ORDER BY address_type, is_default DESC, id').all(req.params.id));
+});
+router.post('/clients/:id/addresses', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
+  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id);
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+  const { address_type, label, line1, line2, city, state, state_code, pincode, gstin, is_default } = req.body;
+  if (!['Billing', 'Shipping'].includes(address_type)) return res.status(400).json({ error: 'address_type must be Billing or Shipping' });
+  if (!String(line1 || '').trim()) return res.status(400).json({ error: 'Address line 1 is required' });
+  const tx = db.transaction(() => {
+    if (is_default) db.prepare('UPDATE client_addresses SET is_default = 0 WHERE client_id = ? AND address_type = ?').run(req.params.id, address_type);
+    return db.prepare(`
+      INSERT INTO client_addresses (client_id, address_type, label, line1, line2, city, state, state_code, pincode, gstin, is_default)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `).run(req.params.id, address_type, label || null, line1.trim(), line2 || null, city || null, state || null, state_code || null, pincode || null, gstin || null, is_default ? 1 : 0);
+  });
+  const info = tx();
+  res.json({ id: info.lastInsertRowid });
+});
+router.put('/client-addresses/:id', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM client_addresses WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { label, line1, line2, city, state, state_code, pincode, gstin, is_default } = req.body;
+  const tx = db.transaction(() => {
+    if (is_default) db.prepare('UPDATE client_addresses SET is_default = 0 WHERE client_id = ? AND address_type = ? AND id != ?').run(existing.client_id, existing.address_type, existing.id);
+    db.prepare(`
+      UPDATE client_addresses SET label=?, line1=?, line2=?, city=?, state=?, state_code=?, pincode=?, gstin=?, is_default=? WHERE id=?
+    `).run(
+      label !== undefined ? label : existing.label, line1 !== undefined ? line1 : existing.line1,
+      line2 !== undefined ? line2 : existing.line2, city !== undefined ? city : existing.city,
+      state !== undefined ? state : existing.state, state_code !== undefined ? state_code : existing.state_code,
+      pincode !== undefined ? pincode : existing.pincode, gstin !== undefined ? gstin : existing.gstin,
+      is_default !== undefined ? (is_default ? 1 : 0) : existing.is_default, existing.id
+    );
+  });
+  tx();
+  res.json({ ok: true });
+});
+router.delete('/client-addresses/:id', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
+  db.prepare('DELETE FROM client_addresses WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
