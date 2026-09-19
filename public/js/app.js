@@ -4890,7 +4890,7 @@ window.saveEmailSettings = async () => {
 
 // ===================== Round 5: Sales Invoices =====================
 PAGES['sales-invoices'] = async (el) => {
-  const [invoices, orders] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales'))]);
+  const [invoices, orders, proformas] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales')), api('/finance/proforma-invoices')]);
   el.innerHTML = `
     <div class="panel"><h3>Generate Invoice from Sales Order</h3>
       <div class="form-grid">
@@ -4916,7 +4916,66 @@ PAGES['sales-invoices'] = async (el) => {
           ${i.status !== 'Paid' ? `<button class="btn small" type="button" onclick="markInvoicePaid(${i.id})">Mark Paid</button>` : ''}
           ${i.status === 'Draft' ? `<button class="btn small outline" type="button" onclick="cancelInvoice(${i.id})">Cancel</button>` : ''}
         </td></tr>`)}
+    </div>
+    <div class="panel"><h3>Generate Proforma Invoice (Advance / Pre-Dispatch)</h3>
+      <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
+      <div class="form-grid">
+        <div><label>Sales Order</label><select id="pf-so" onchange="loadPFMilestones()">${(orders||[]).map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.description||'')}</option>`).join('')}</select></div>
+        <div><label>Type</label><select id="pf-type"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
+        <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
+        <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
+        <div><label>Buyer State</label><input id="pf-buyer-state" placeholder="e.g. Haryana"></div>
+        <div><label>Buyer GSTIN</label><input id="pf-buyer-gstin"></div>
+      </div>
+      <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
+      <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    </div>
+    <div class="panel"><h3>Proforma Invoices (${proformas.length})</h3>
+      ${tableHTML(['Proforma No', 'Client', 'Order', 'Type', 'Milestone', 'Total', 'Status', ''], proformas, p => `
+        <tr><td>${esc(p.proforma_no)}</td><td>${esc(p.client_name)}</td><td>${esc(p.order_no)}</td><td>${p.invoice_type === 'Advance' ? 'Advance' : 'Pre-Dispatch'}</td>
+        <td>${esc(p.milestone_name)||'-'}</td><td>₹${fmt(p.total_value)}</td><td>${badge(p.status)}</td>
+        <td>
+          <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/proforma-invoices/${p.id}/pdf', '${esc(p.proforma_no).replace(/\//g,'-')}.pdf')">PDF</button>
+          <button class="btn small outline" type="button" onclick="emailProforma(${p.id})">Email to Client</button>
+          ${p.status === 'Draft' ? `<button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
+          <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
+        </td></tr>`)}
     </div>`;
+};
+window.loadPFMilestones = async () => {
+  const sel = document.getElementById('pf-milestone');
+  sel.innerHTML = '<option value="">-- None / manual amount --</option>';
+  const soId = val('pf-so');
+  if (!soId) return;
+  try {
+    const ms = await api(`/bg/milestones?order_type=SO&order_id=${soId}`);
+    sel.innerHTML += ms.map(m => `<option value="${m.id}">${esc(m.milestone_name)} (${m.percentage ? m.percentage + '%' : '₹' + fmt(m.amount)})</option>`).join('');
+  } catch (e) { /* no milestone read access - manual amount still works */ }
+};
+window.generateProforma = async () => {
+  const errEl = document.getElementById('pf-err'); errEl.style.display = 'none';
+  const soId = val('pf-so');
+  if (!soId) { errEl.textContent = 'Pick a sales order.'; errEl.style.display = 'block'; return; }
+  try {
+    await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
+      invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null, amount: val('pf-amount') || undefined,
+      buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
+    })});
+    navigate('sales-invoices');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.markProformaReceived = async (id) => {
+  try { await api(`/finance/proforma-invoices/${id}/mark-received`, { method: 'POST' }); navigate('sales-invoices'); } catch (e) { alert(e.message); }
+};
+window.cancelProforma = async (id) => {
+  if (!confirm('Cancel this proforma invoice?')) return;
+  try { await api(`/finance/proforma-invoices/${id}/cancel`, { method: 'POST' }); navigate('sales-invoices'); } catch (e) { alert(e.message); }
+};
+window.emailProforma = async (id) => {
+  try {
+    const r = await api(`/finance/proforma-invoices/${id}/email`, { method: 'POST' });
+    alert(r.sent ? `Emailed to ${r.to}` : `Not sent: ${r.message}`);
+  } catch (e) { alert(e.message); }
 };
 window.generateInvoice = async () => {
   const errEl = document.getElementById('inv-err'); errEl.style.display = 'none';

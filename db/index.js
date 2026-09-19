@@ -397,6 +397,39 @@ const MIGRATIONS = [
     active INTEGER DEFAULT 1,
     UNIQUE(field_name, value)
   )`,
+  // ---- Round 22: Proforma Invoices (Advance / Pre-Dispatch) - separate from
+  // sales_invoices since a proforma is not a fiscal tax document, doesn't
+  // consume the tax-invoice-number sequence, and doesn't push the SO to
+  // Invoiced. One SO can have several (one Advance, one PreDispatch) plus
+  // exactly one eventual tax invoice - see routes/finance.js.
+  `CREATE TABLE IF NOT EXISTS proforma_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proforma_no TEXT UNIQUE,
+    sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
+    client_id INTEGER REFERENCES clients(id),
+    milestone_id INTEGER REFERENCES payment_milestones(id),
+    invoice_type TEXT NOT NULL,        -- 'Advance' or 'PreDispatch'
+    proforma_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    place_of_supply TEXT,
+    buyer_gstin TEXT,
+    buyer_state TEXT,
+    taxable_value REAL DEFAULT 0,
+    cgst REAL DEFAULT 0,
+    sgst REAL DEFAULT 0,
+    igst REAL DEFAULT 0,
+    total_value REAL DEFAULT 0,
+    status TEXT DEFAULT 'Draft',       -- Draft, Sent, Received, Cancelled
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS proforma_invoice_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proforma_id INTEGER NOT NULL REFERENCES proforma_invoices(id),
+    description TEXT NOT NULL,
+    taxable_value REAL DEFAULT 0,
+    gst_rate REAL DEFAULT 18,
+    sort_order INTEGER DEFAULT 0
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

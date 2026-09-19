@@ -6,6 +6,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateInvoicePdf } = require('../lib/invoicePdf');
+const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const router = express.Router();
@@ -370,6 +371,164 @@ router.get('/invoices/:id/pdf', async (req, res) => {
   try {
     const gen = await generateInvoicePdf(inv, items, client || {}, getCompanySettings());
     res.download(gen.outPath, `${inv.invoice_no.replace(/\//g, '-')}.pdf`, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===================== Proforma Invoices (Round 22) =====================
+// Advance / pre-dispatch payment requests against a sales order - not a tax
+// document (see db/index.js Round 22 comment). Reuses the same GST-split
+// logic as tax invoices for the printed estimate, but never touches the
+// invoice-number sequence and never pushes the SO to 'Invoiced'.
+function nextProformaNo() {
+  const now = new Date();
+  const fyStart = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+  const key = 'proforma_seq_' + fy;
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const next = row ? Number(row.value) + 1 : 1;
+  db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(next));
+  return `PF/${fy}/${String(next).padStart(4, '0')}`;
+}
+
+router.get('/proforma-invoices', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT pf.*, c.name as client_name, so.order_no, m.milestone_name
+    FROM proforma_invoices pf
+    LEFT JOIN clients c ON c.id = pf.client_id
+    LEFT JOIN sales_orders so ON so.id = pf.sales_order_id
+    LEFT JOIN payment_milestones m ON m.id = pf.milestone_id
+    ORDER BY pf.id DESC
+  `).all());
+});
+router.get('/proforma-invoices/:id', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  const pf = db.prepare(`
+    SELECT pf.*, c.name as client_name, m.milestone_name FROM proforma_invoices pf
+    LEFT JOIN clients c ON c.id = pf.client_id LEFT JOIN payment_milestones m ON m.id = pf.milestone_id
+    WHERE pf.id = ?
+  `).get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
+  res.json({ proforma: pf, items });
+});
+
+router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sales_order.manage'), (req, res) => {
+  const so = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.soId);
+  if (!so) return res.status(404).json({ error: 'Sales order not found' });
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(so.client_id);
+  if (!client) return res.status(400).json({ error: 'This sales order has no linked client.' });
+  const { invoice_type, milestone_id, buyer_state, buyer_gstin } = req.body;
+  if (!['Advance', 'PreDispatch'].includes(invoice_type)) return res.status(400).json({ error: 'invoice_type must be Advance or PreDispatch' });
+
+  let milestone = null;
+  if (milestone_id) {
+    milestone = db.prepare(`SELECT * FROM payment_milestones WHERE id = ? AND order_type = 'SO' AND order_id = ?`).get(milestone_id, so.id);
+    if (!milestone) return res.status(400).json({ error: 'That payment milestone does not belong to this sales order.' });
+  }
+
+  const company = getCompanySettings();
+  let items = Array.isArray(req.body.items) && req.body.items.length ? req.body.items : null;
+  if (!items) {
+    // Default to the milestone's own amount/percentage, or the request body's
+    // flat amount, so a milestone-linked proforma needs no manual line items.
+    const amount = milestone
+      ? (milestone.amount || (Number(milestone.percentage) || 0) / 100 * (Number(so.order_value) || 0))
+      : Number(req.body.amount) || 0;
+    if (!amount) return res.status(400).json({ error: 'Give an amount, or pick a milestone that has one.' });
+    items = [{ description: milestone ? milestone.milestone_name : `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.order_no}`, taxable_value: amount, gst_rate: company.default_gst_rate || 18 }];
+  }
+  const buyerState = buyer_state || '';
+  const buyerGstin = buyer_gstin || client.gstin || '';
+  const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
+
+  let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
+  const lineRows = items.map((it, i) => {
+    const taxable = Number(it.taxable_value) || 0;
+    const gstRate = Number(it.gst_rate) || company.default_gst_rate || 18;
+    taxableTotal += taxable;
+    const taxAmt = taxable * gstRate / 100;
+    if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
+    return { description: it.description, taxable_value: taxable, gst_rate: gstRate, sort_order: i };
+  });
+  const total = taxableTotal + cgst + sgst + igst;
+  const proformaNo = nextProformaNo();
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO proforma_invoices (proforma_no, sales_order_id, client_id, milestone_id, invoice_type,
+        place_of_supply, buyer_gstin, buyer_state, taxable_value, cgst, sgst, igst, total_value, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(proformaNo, so.id, client.id, milestone_id || null, invoice_type,
+      buyerState || company.default_place_of_supply, buyerGstin, buyerState, taxableTotal, cgst, sgst, igst, total, 'Draft', req.user.id);
+    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, taxable_value, gst_rate, sort_order) VALUES (?,?,?,?,?)`);
+    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.taxable_value, r.gst_rate, r.sort_order));
+    // The tax-invoice pipeline uses 'Invoiced' for this same transition -
+    // one consistent status regardless of which document triggered it.
+    if (milestone) db.prepare(`UPDATE payment_milestones SET status = 'Invoiced' WHERE id = ?`).run(milestone.id);
+    return info.lastInsertRowid;
+  });
+  const id = tx();
+  res.json({ id, proforma_no: proformaNo });
+});
+
+router.post('/proforma-invoices/:id/mark-received', requirePermission('sales_order.manage', 'report.view_all'), (req, res) => {
+  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE proforma_invoices SET status = 'Received' WHERE id = ?`).run(pf.id);
+  if (pf.milestone_id) db.prepare(`UPDATE payment_milestones SET status = 'Received' WHERE id = ?`).run(pf.milestone_id);
+  try {
+    db.prepare(`
+      INSERT INTO finance_ledger (type, reference_table, reference_id, amount, direction, description, created_by)
+      VALUES ('ProformaInvoice', 'proforma_invoices', ?, ?, 'Inflow', ?, ?)
+    `).run(pf.id, pf.total_value, 'Proforma ' + pf.proforma_no, req.user.id);
+  } catch (e) { /* best-effort ledger hook */ }
+  res.json({ ok: true });
+});
+router.post('/proforma-invoices/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
+  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  if (pf.status === 'Received') return res.status(400).json({ error: 'This proforma has already been marked Received and cannot be cancelled.' });
+  db.prepare(`UPDATE proforma_invoices SET status = 'Cancelled' WHERE id = ?`).run(pf.id);
+  if (pf.milestone_id) db.prepare(`UPDATE payment_milestones SET status = 'Pending' WHERE id = ? AND status = 'Invoiced'`).run(pf.milestone_id);
+  res.json({ ok: true });
+});
+router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manage'), async (req, res) => {
+  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  const toAddress = client && client.email;
+  if (!toAddress) return res.status(400).json({ error: 'This client has no email on file - add one under Clients.' });
+  let gen;
+  try {
+    gen = await generateProformaInvoicePdf(pf, items, client || {}, getCompanySettings());
+    const pdfBuffer = fs.readFileSync(gen.outPath);
+    const result = await sendMail({
+      to: toAddress,
+      subject: `Proforma Invoice ${pf.proforma_no} - Venkateshwara Engineers`,
+      text: `Dear ${client.contact_person || client.name},\n\nPlease find attached Proforma Invoice ${pf.proforma_no} for ₹${Number(pf.total_value).toLocaleString('en-IN')}.\n\nRegards,\nVenkateshwara Engineers`,
+      attachments: [{ filename: `${pf.proforma_no.replace(/\//g, '-')}.pdf`, content: pdfBuffer }],
+    });
+    if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
+    return res.json({ ok: false, sent: false, message: result.reason });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (gen) fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+  }
+});
+router.get('/proforma-invoices/:id/pdf', async (req, res) => {
+  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  try {
+    const gen = await generateProformaInvoicePdf(pf, items, client || {}, getCompanySettings());
+    res.download(gen.outPath, `${pf.proforma_no.replace(/\//g, '-')}.pdf`, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
