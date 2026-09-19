@@ -6,16 +6,20 @@ router.use(authRequired);
 
 const STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 
-// Only a department HOD (is_supervisor) or Admin can log a To-Do and hand it
-// to someone - same access-control convention already used for
-// supervisor-only actions elsewhere (routes/finance.js, routes/tickets.js).
+// A department HOD (is_supervisor), Admin, or Management can log a To-Do,
+// hand it to someone, and act on ANY To-Do (change its status, redefine it,
+// reassign it) - same access-control convention already used for
+// supervisor-only actions elsewhere (routes/finance.js, routes/tickets.js),
+// extended to Management by role rather than the per-user is_supervisor flag.
 // A regular employee can see and update the status of To-Dos assigned to
-// them, but can't create new ones or hand work to other people.
+// them, but can't create new ones or act on someone else's.
 function canLog(user) {
-  return user.role_name === 'Admin' || !!user.is_supervisor;
+  return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
 }
-// Who may see every To-Do and its full update log without owning it -
-// broader than canLog: Management sees everything by role, not by flag.
+// Who may see every To-Do and its full update log without owning it. Kept as
+// a separate function from canLog even though the two sets currently match -
+// they answer different questions (view vs. act), and future roles may need
+// one without the other.
 function canView(user) {
   return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
 }
