@@ -430,6 +430,17 @@ const MIGRATIONS = [
     gst_rate REAL DEFAULT 18,
     sort_order INTEGER DEFAULT 0
   )`,
+  // ---- Round 23: To-Do activity log - notes the assignee (or the logging
+  // HOD/Admin) attaches to a To-Do over its life, plus an auto-logged entry
+  // per status change, so the two merge into one timeline. See routes/todos.js.
+  `CREATE TABLE IF NOT EXISTS todo_updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    todo_id INTEGER NOT NULL REFERENCES todos(id),
+    user_id INTEGER REFERENCES users(id),
+    note TEXT NOT NULL,
+    status_at_update TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

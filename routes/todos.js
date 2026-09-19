@@ -14,6 +14,11 @@ const STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 function canLog(user) {
   return user.role_name === 'Admin' || !!user.is_supervisor;
 }
+// Who may see every To-Do and its full update log without owning it -
+// broader than canLog: Management sees everything by role, not by flag.
+function canView(user) {
+  return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
+}
 
 // People pickers for the "Log a New To-Do" form.
 router.get('/people', (req, res) => {
@@ -29,7 +34,7 @@ router.get('/people', (req, res) => {
     WHERE u.is_active = 1
     ORDER BY d.name, u.full_name
   `).all();
-  res.json({ hods, assignees, can_log: canLog(req.user) });
+  res.json({ hods, assignees, can_log: canLog(req.user), can_view: canView(req.user) });
 });
 
 // To-Dos where I'm the one who has the action.
@@ -42,10 +47,10 @@ router.get('/mine', (req, res) => {
   `).all(req.user.id));
 });
 
-// Every To-Do logged, across everyone - HOD/Admin oversight view. A regular
-// employee only ever sees their own via /mine.
+// Every To-Do logged, across everyone - Management/HOD/Admin oversight view.
+// A regular employee only ever sees their own via /mine.
 router.get('/', (req, res) => {
-  if (!canLog(req.user)) return res.status(403).json({ error: 'Access denied' });
+  if (!canView(req.user)) return res.status(403).json({ error: 'Access denied' });
   res.json(db.prepare(`
     SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name, c.full_name as created_by_name
     FROM todos t
@@ -104,7 +109,36 @@ router.patch('/:id', (req, res) => {
   if (!updates.length) return res.json({ ok: true });
   params.push(req.params.id);
   db.prepare(`UPDATE todos SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  // A status move is logged into the same timeline as manual notes, so the
+  // two read as one thread instead of two disconnected logs.
+  if (status !== undefined) {
+    db.prepare(`INSERT INTO todo_updates (todo_id, user_id, note, status_at_update) VALUES (?,?,?,?)`)
+      .run(t.id, req.user.id, `Status changed to ${status}`, status);
+  }
   res.json({ ok: true });
+});
+
+// Activity log: notes the assignee (or the logging HOD/Admin) attaches over
+// the To-Do's life, plus the auto-logged status-change entries above.
+router.get('/:id/updates', (req, res) => {
+  const t = db.prepare('SELECT * FROM todos WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  if (t.assigned_to !== req.user.id && !canView(req.user)) return res.status(403).json({ error: 'Access denied' });
+  res.json(db.prepare(`
+    SELECT tu.*, u.full_name as user_name FROM todo_updates tu LEFT JOIN users u ON u.id = tu.user_id
+    WHERE tu.todo_id = ? ORDER BY tu.id DESC
+  `).all(t.id));
+});
+router.post('/:id/updates', (req, res) => {
+  const t = db.prepare('SELECT * FROM todos WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  const isOwner = t.assigned_to === req.user.id;
+  if (!isOwner && !canLog(req.user)) return res.status(403).json({ error: 'Only the assignee or the logging HOD/Admin can add an update.' });
+  const note = String(req.body.note || '').trim();
+  if (!note) return res.status(400).json({ error: 'note is required' });
+  const info = db.prepare(`INSERT INTO todo_updates (todo_id, user_id, note, status_at_update) VALUES (?,?,?,?)`)
+    .run(t.id, req.user.id, note, t.status);
+  res.json({ id: info.lastInsertRowid });
 });
 
 router.delete('/:id', (req, res) => {

@@ -5575,11 +5575,13 @@ const TODO_STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 PAGES['todos'] = async (el) => {
   const people = await api('/todos/people');
   const canLog = people.can_log;
-  const [mine, all] = await Promise.all([api('/todos/mine'), canLog ? api('/todos') : Promise.resolve([])]);
+  const canView = people.can_view;
+  const [mine, all] = await Promise.all([api('/todos/mine'), canView ? api('/todos') : Promise.resolve([])]);
   const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
   const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
   const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
   const detailsRow = t => `${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
+  const updatesToggle = t => `<button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>`;
   el.innerHTML = `
     ${canLog ? `
     <div class="panel"><h3>Log a New To-Do</h3>
@@ -5596,21 +5598,56 @@ PAGES['todos'] = async (el) => {
     </div>` : ''}
 
     <div class="panel"><h3>My To-Do List</h3>
-      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status'], mine, t => `
+      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status', ''], mine, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${t.start_date || '-'}</td>
         <td>${deliveryBadge(t.target_date)}</td>
         <td><select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select></td></tr>`)}
+        </select></td><td>${updatesToggle(t)}</td></tr>
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="6"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>
 
-    ${canLog ? `
+    ${canView ? `
     <div class="panel"><h3>All To-Dos Logged</h3>
       ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], all, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
         <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td>
-        <td><button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button></td></tr>`)}
+        <td>${updatesToggle(t)} ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}</td></tr>
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>` : ''}`;
+};
+window.toggleTodoUpdates = (id) => {
+  const row = document.getElementById(`todo-updates-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) renderTodoUpdates(id);
+};
+async function renderTodoUpdates(id) {
+  const wrap = document.getElementById(`todo-updates-${id}`);
+  const updates = await api(`/todos/${id}/updates`);
+  wrap.innerHTML = `
+    <div style="padding:10px;background:#f6f7f9;border-radius:6px;">
+      ${updates.length ? updates.map(u => `
+        <div style="padding:6px 0;border-bottom:1px solid var(--border);">
+          <b>${esc(u.user_name) || 'System'}</b> <span class="muted">${new Date(u.created_at).toLocaleString()}</span>
+          ${u.status_at_update ? badge(u.status_at_update) : ''}
+          <div>${esc(u.note)}</div>
+        </div>`).join('') : '<div class="muted">No updates logged yet.</div>'}
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <input id="todo-update-note-${id}" placeholder="Add an update..." style="flex:1;">
+        <button class="btn small" onclick="addTodoUpdate(${id})">Add</button>
+      </div>
+    </div>`;
+}
+window.addTodoUpdate = async (id) => {
+  const input = document.getElementById(`todo-update-note-${id}`);
+  const note = input.value.trim();
+  if (!note) return;
+  try {
+    await api(`/todos/${id}/updates`, { method: 'POST', body: JSON.stringify({ note }) });
+    input.value = '';
+    renderTodoUpdates(id);
+  } catch (e) { alert(e.message); }
 };
 window.saveTodo = async () => {
   const errEl = document.getElementById('td-err');
