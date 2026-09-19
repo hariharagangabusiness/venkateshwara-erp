@@ -236,6 +236,7 @@ const NAV = [
     { id: 'approval-matrix', label: 'Approval Matrix' },
     { id: 'company-settings', label: 'Company Settings' },
     { id: 'data-import', label: 'Data Import' },
+    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
   ]},
 ];
 // Per-department Job Cards groups are injected dynamically in boot() for
@@ -5681,6 +5682,85 @@ window.deleteTodo = async (id) => {
   if (!confirm('Delete this To-Do?')) return;
   try { await api('/todos/' + id, { method: 'DELETE' }); navigate('todos'); }
   catch (e) { alert(e.message); }
+};
+
+// ===================== Organizational Hierarchy =====================
+// A reporting rollup tree (Region -> Unit -> Department -> Team) that sits
+// ABOVE the app's real department/role/HOD model, purely for grouping KPIs -
+// it never changes who can see or do what elsewhere in the app. Managing the
+// tree (add/edit/delete nodes) is Admin-only; viewing the rollup matches
+// whoever can already see cross-department reports (report.view_all).
+let ORG_HIERARCHY_SELECTED = null;
+PAGES['org-hierarchy'] = async (el) => {
+  const [nodes, departments] = await Promise.all([api('/org-hierarchy/tree'), api('/masters/departments')]);
+  const isAdmin = ME.role === 'Admin';
+  const byParent = {};
+  nodes.forEach(n => { const key = n.parent_id || 'root'; (byParent[key] = byParent[key] || []).push(n); });
+  const renderNode = (n, depth) => {
+    const children = byParent[n.id] || [];
+    return `<div style="padding:6px 0 6px ${depth * 22}px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span class="badge active">${esc(n.node_type)}</span>
+      <b>${esc(n.name)}</b>
+      ${n.department_name ? `<span class="muted">&rarr; ${esc(n.department_name)}</span>` : ''}
+      <button class="btn small outline" onclick="viewOrgRollup(${n.id})">View Rollup</button>
+      ${isAdmin ? `<button class="btn small outline" onclick="deleteOrgNode(${n.id})">Delete</button>` : ''}
+    </div>${children.map(c => renderNode(c, depth + 1)).join('')}`;
+  };
+  const roots = byParent.root || [];
+  el.innerHTML = `
+    ${isAdmin ? `
+    <div class="panel"><h3>Add Node</h3>
+      <div class="form-grid">
+        <div><label>Name</label><input id="on-name" placeholder="e.g. North Region"></div>
+        <div><label>Type</label><select id="on-type"><option value="Region">Region</option><option value="Unit">Unit</option><option value="Department">Department</option><option value="Team">Team</option></select></div>
+        <div><label>Parent Node (optional)</label><select id="on-parent"><option value="">— top level —</option>${nodes.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select></div>
+        <div><label>Maps to Department (optional)</label><select id="on-dept"><option value="">— none —</option>${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+        <div><label>Sort Order</label><input id="on-sort" type="number" value="0"></div>
+      </div>
+      <button class="btn" onclick="addOrgNode()">Add Node</button>
+      <div id="on-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
+    <div class="panel"><h3>Hierarchy</h3>
+      ${roots.length ? roots.map(n => renderNode(n, 0)).join('') : '<div class="empty">No nodes yet.</div>'}
+    </div>
+    <div class="panel" id="org-rollup-panel" style="display:none;"></div>`;
+};
+window.addOrgNode = async () => {
+  const errEl = document.getElementById('on-err');
+  try {
+    await api('/org-hierarchy/nodes', { method: 'POST', body: JSON.stringify({
+      name: val('on-name'), node_type: val('on-type'), parent_id: val('on-parent') || null, department_id: val('on-dept') || null, sort_order: val('on-sort'),
+    })});
+    navigate('org-hierarchy');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteOrgNode = async (id) => {
+  if (!confirm('Delete this node?')) return;
+  try { await api('/org-hierarchy/nodes/' + id, { method: 'DELETE' }); navigate('org-hierarchy'); }
+  catch (e) { alert(e.message); }
+};
+window.viewOrgRollup = async (id) => {
+  ORG_HIERARCHY_SELECTED = id;
+  const panel = document.getElementById('org-rollup-panel');
+  panel.style.display = 'block';
+  const data = await api(`/org-hierarchy/nodes/${id}/rollup`);
+  panel.innerHTML = `
+    <h3>Rollup - ${esc(data.node.name)}</h3>
+    <div class="cards">
+      <div class="card"><div class="num">${data.totals.headcount}</div><div class="label">Active Headcount</div></div>
+      <div class="card"><div class="num">₹${fmt(data.totals.monthly_salary_cost)}</div><div class="label">Monthly Salary Cost</div></div>
+    </div>
+    ${tableHTML(['Department', 'Headcount', 'Monthly Salary Cost', ''], data.by_department, d => `
+      <tr><td>${esc(d.department_name)}</td><td>${d.headcount}</td><td>₹${fmt(d.monthly_salary_cost)}</td>
+      <td><button class="btn small outline" onclick="drillOrgDepartment(${d.department_id})">Drill Down</button></td></tr>`)}
+    <div id="org-drill-wrap"></div>`;
+  panel.scrollIntoView({ behavior: 'smooth' });
+};
+window.drillOrgDepartment = async (deptId) => {
+  const wrap = document.getElementById('org-drill-wrap');
+  const employees = await api(`/org-hierarchy/departments/${deptId}/employees`);
+  wrap.innerHTML = `<h4 style="margin-top:14px;">Employees</h4>${tableHTML(['Code', 'Name', 'Designation', 'Monthly Salary'], employees, e => `
+    <tr><td>${esc(e.employee_code)||'-'}</td><td>${esc(e.full_name)}</td><td>${esc(e.designation)||'-'}</td><td>₹${fmt(e.monthly_salary)}</td></tr>`)}`;
 };
 
 // ===================== Data Import (generic migration tool, Admin only) =====================
