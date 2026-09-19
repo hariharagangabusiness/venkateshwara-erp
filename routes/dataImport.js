@@ -34,6 +34,15 @@ function normalizeDate(value) {
   const str = String(value || '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
 }
+// For an optional date field: a blank cell is legitimately "not given" (null,
+// no error); anything else must parse via normalizeDate() or the row is
+// rejected - a value Excel couldn't read as a date is almost always a
+// formatting mistake, not something to silently store as garbage or drop.
+function optionalDate(value) {
+  if (value === '' || value === null || value === undefined) return { ok: true, value: null };
+  const normalized = normalizeDate(value);
+  return normalized ? { ok: true, value: normalized } : { ok: false, value: null };
+}
  
 // ===================== Entity registry =====================
 // Each entity defines: key, label, table, columns (with an example row for
@@ -114,7 +123,9 @@ const ENTITIES = {
         if (!dept) return { error: `no department named "${row.department}"` };
         deptId = dept.id;
       }
-      return { insert: { employee_code: code, full_name: fullName, department_id: deptId, designation: row.designation || null, date_of_joining: row.date_of_joining || null, phone: row.phone ? String(row.phone) : null, email: row.email || null, monthly_salary: Number(row.monthly_salary) || 0 } };
+      const doj = optionalDate(row.date_of_joining);
+      if (!doj.ok) return { error: 'date_of_joining is not a valid date (YYYY-MM-DD)' };
+      return { insert: { employee_code: code, full_name: fullName, department_id: deptId, designation: row.designation || null, date_of_joining: doj.value, phone: row.phone ? String(row.phone) : null, email: row.email || null, monthly_salary: Number(row.monthly_salary) || 0 } };
     },
   },
   expense_tracker_entries: {
@@ -169,8 +180,12 @@ const ENTITIES = {
           engineerIds.push(e.id);
         }
       }
+      const arrival = optionalDate(row.arrival_date);
+      if (!arrival.ok) return { error: 'arrival_date is not a valid date (YYYY-MM-DD)' };
+      const close = optionalDate(row.close_date);
+      if (!close.ok) return { error: 'close_date is not a valid date (YYYY-MM-DD)' };
       return {
-        insert: { site_name: siteName, client_id: clientId, purpose: row.purpose || null, status, arrival_date: row.arrival_date || null, close_date: row.close_date || null, expenses_note: row.expenses_note || null },
+        insert: { site_name: siteName, client_id: clientId, purpose: row.purpose || null, status, arrival_date: arrival.value, close_date: close.value, expenses_note: row.expenses_note || null },
         engineerIds,
       };
     },
@@ -197,8 +212,12 @@ const ENTITIES = {
       if (!['SO', 'PO', 'LEGACY'].includes(orderType)) return { error: 'order_type must be SO, PO or LEGACY' };
       const value = Number(row.value);
       if (!value) return { error: 'value must be a non-zero number' };
-      const validityExpiry = String(row.validity_expiry || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(validityExpiry)) return { error: 'validity_expiry must be YYYY-MM-DD' };
+      const validityExpiry = normalizeDate(row.validity_expiry);
+      if (!validityExpiry) return { error: 'validity_expiry must be a valid date (YYYY-MM-DD)' };
+      const issueDate = optionalDate(row.issue_date);
+      if (!issueDate.ok) return { error: 'issue_date is not a valid date (YYYY-MM-DD)' };
+      const claimExpiry = optionalDate(row.claim_expiry);
+      if (!claimExpiry.ok) return { error: 'claim_expiry is not a valid date (YYYY-MM-DD)' };
       const bgNo = row.bg_no ? String(row.bg_no).trim() : null;
 
       let orderId = 0, projectId = null, beneficiary, legacyRef = null;
@@ -235,8 +254,8 @@ const ENTITIES = {
         upsert: {
           bg_no: bgNo, bg_type: bgType, order_type: orderType, order_id: orderId, project_id: projectId,
           issuing_bank: row.issuing_bank || null, beneficiary, value,
-          issue_date: row.issue_date || null, validity_expiry: validityExpiry,
-          claim_expiry: row.claim_expiry || null, milestone_link: row.milestone_link || null,
+          issue_date: issueDate.value, validity_expiry: validityExpiry,
+          claim_expiry: claimExpiry.value, milestone_link: row.milestone_link || null,
           legacy_ref: legacyRef,
         },
       };
@@ -256,8 +275,8 @@ const ENTITIES = {
       if (!empName) return { error: 'employee_name is required' };
       const emp = db.prepare('SELECT id FROM employees WHERE full_name = ?').get(empName);
       if (!emp) return { error: `no employee named "${empName}"` };
-      const date = String(row.log_date || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'log_date must be YYYY-MM-DD' };
+      const date = normalizeDate(row.log_date);
+      if (!date) return { error: 'log_date must be a valid date (YYYY-MM-DD)' };
       const note = String(row.note || '').trim();
       if (!note) return { error: 'note is required' };
       return { upsert: { employee_id: emp.id, log_date: date, note } };
