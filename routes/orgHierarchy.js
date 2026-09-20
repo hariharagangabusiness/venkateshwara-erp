@@ -1,6 +1,7 @@
 const express = require('express');
 const { db } = require('../db');
 const { authRequired, requireRole, requirePermission } = require('../middleware/auth');
+const { descendantNodeIds } = require('../lib/orgHierarchy');
 const router = express.Router();
 router.use(authRequired);
 
@@ -53,20 +54,6 @@ router.delete('/nodes/:id', requireRole('Admin'), (req, res) => {
   db.prepare('DELETE FROM org_nodes WHERE id = ?').run(existing.id);
   res.json({ ok: true });
 });
-
-// All descendant node ids of a node, INCLUDING itself - a plain recursive
-// CTE, the standard SQLite way to walk a self-referential tree without
-// pulling the whole table and walking it in JS.
-function descendantNodeIds(nodeId) {
-  return db.prepare(`
-    WITH RECURSIVE sub(id) AS (
-      SELECT id FROM org_nodes WHERE id = ?
-      UNION ALL
-      SELECT o.id FROM org_nodes o JOIN sub ON o.parent_id = sub.id
-    )
-    SELECT id FROM sub
-  `).all(nodeId).map(r => r.id);
-}
 
 // Rollup report: headcount + monthly salary cost, aggregated per department
 // under this node (drill-down rows) and summed for the node itself (the
