@@ -1,0 +1,17 @@
+# Railway builds this app with Nixpacks by default, which produces a bare
+# Node.js container with none of the shared libraries a real Chromium binary
+# needs at runtime (libnss3.so, libatk, libcups, etc). Without this file,
+# every PDF export (offers, invoices, POs, challans, service reports) fails
+# in production with "error while loading shared libraries: libnss3.so:
+# cannot open shared object file" - @sparticuz/chromium's bundled binary
+# still depends on those system libraries being present on the host; it
+# isn't a fully static build.
+#
+# Installing the `chromium` Nix package pulls in a complete, correctly
+# linked Chromium build (Nix wraps its binaries with the right library paths
+# automatically, unlike a bare apt install) and puts it on PATH at runtime -
+# lib/browserPath.js's findBrowser() picks it up automatically via `which`,
+# so this real system browser is used instead of the semi-portable
+# Lambda-oriented @sparticuz/chromium fallback.
+[phases.setup]
+nixPkgs = ["chromium"]
