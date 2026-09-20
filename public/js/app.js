@@ -920,6 +920,27 @@ PAGES['time-motion-report'] = async (el) => {
 // within that, by the requester's department, so a role that approves
 // several kinds of request (Admin, Management) can scan the queue by
 // what it is and where it came from rather than a flat list of ids.
+// The queue itself is a merge of four unrelated gates in the backend
+// (formal approval chains, FOC material requests, BG reminders awaiting
+// internal verification, and BG claim-expiry To-Dos assigned to this
+// person) normalized into one shape by GET /approvals/pending - grouping
+// and department drill-down here work the same regardless of which one a
+// row came from; only the action column and its handler differ by source.
+function approvalActionCell(r) {
+  if (r.source === 'FOC') {
+    return `<button class="btn small green" onclick="actOnFoc(${r.id}, 'approve')">Approve</button>
+      <button class="btn small red" onclick="actOnFoc(${r.id}, 'reject')">Reject</button>`;
+  }
+  if (r.source === 'BGReminder') {
+    return `<button class="btn small green" onclick="actOnBgReminder(${r.id})">Verify</button>`;
+  }
+  if (r.source === 'BGClaimTask') {
+    return `<button class="btn small green" onclick="actOnApprovalTodo(${r.id}, 'InProgress')">In Progress</button>
+      <button class="btn small blue" onclick="actOnApprovalTodo(${r.id}, 'Completed')">Complete</button>`;
+  }
+  return `<button class="btn small green" onclick="actOnApproval(${r.id}, 'Approved')">Approve</button>
+    <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>`;
+}
 PAGES.approvals = async (el) => {
   const pending = await api('/approvals/pending');
   const byChain = {};
@@ -936,12 +957,9 @@ PAGES.approvals = async (el) => {
         <div style="margin-bottom:10px;">
           <div style="font-weight:600;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">${esc(dept)}</div>
           ${tableHTML(['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'], byDept[dept], r => `
-            <tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step}</td>
+            <tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
             <td>${new Date(r.created_at).toLocaleString()}</td>
-            <td>
-              <button class="btn small green" onclick="actOnApproval(${r.id}, 'Approved')">Approve</button>
-              <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>
-            </td></tr>
+            <td>${approvalActionCell(r)}</td></tr>
           `)}
         </div>`).join('')}
     </div>`;
@@ -951,6 +969,24 @@ window.actOnApproval = async (id, action) => {
   const comment = action === 'Rejected' ? prompt('Reason for rejection (optional):') : null;
   try {
     await api(`/approvals/${id}/act`, { method: 'POST', body: JSON.stringify({ action, comment }) });
+    navigate('approvals');
+  } catch (e) { alert(e.message); }
+};
+window.actOnFoc = async (id, verb) => {
+  try {
+    await api(`/finance/foc/${id}/${verb}`, { method: 'POST' });
+    navigate('approvals');
+  } catch (e) { alert(e.message); }
+};
+window.actOnBgReminder = async (id) => {
+  try {
+    await api(`/bg/reminders/${id}/verify`, { method: 'POST' });
+    navigate('approvals');
+  } catch (e) { alert(e.message); }
+};
+window.actOnApprovalTodo = async (id, status) => {
+  try {
+    await api(`/todos/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
     navigate('approvals');
   } catch (e) { alert(e.message); }
 };
