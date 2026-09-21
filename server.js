@@ -50,6 +50,7 @@ app.use('/api/data-import', require('./routes/dataImport'));
 app.use('/api/bg', require('./routes/bankGuarantees'));
 app.use('/api/todos', require('./routes/todos'));
 app.use('/api/org-hierarchy', require('./routes/orgHierarchy'));
+app.use('/api/soa', require('./routes/soa'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -58,6 +59,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // simplest fit for a single-process app; runs once at boot, then every
 // 6 hours. Never let a scan failure crash the process.
 const { runScan } = require('./lib/bgReminderScan');
+const { runSoaScan } = require('./lib/soaScan');
 function runReminderScanSafely() {
   try {
     const result = runScan();
@@ -66,6 +68,15 @@ function runReminderScanSafely() {
     }
   } catch (e) {
     console.error('[bg-scan] failed:', e.message);
+  }
+  // Piggybacks on the same timer - a Monthly/Quarterly cadence has no need
+  // for its own more frequent interval, and the scan is idempotent per
+  // (client, period_end) so running it every 6h is harmless.
+  try {
+    const soaResult = runSoaScan();
+    if (soaResult.created) console.log(`[soa-scan] ${soaResult.created} statement(s) queued for review`);
+  } catch (e) {
+    console.error('[soa-scan] failed:', e.message);
   }
 }
 setTimeout(runReminderScanSafely, 5000); // let the server finish booting first

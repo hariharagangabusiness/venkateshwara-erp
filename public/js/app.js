@@ -232,6 +232,7 @@ const NAV = [
     { id: 'finance-ledger', label: 'Finance Ledger' },
     { id: 'monthly-reconciliation', label: 'Monthly Reconciliation' },
     { id: 'sales-invoices', label: 'Sales Invoices' },
+    { id: 'soa', label: 'Statement of Accounts' },
     { id: 'operating-expenses', label: 'Operating Expenses' },
     { id: 'gst-summary', label: 'GST Summary' },
     { id: 'expense-tracker', label: 'Monthly Expense Tracker' },
@@ -1142,8 +1143,32 @@ window.deleteClientAddress = async (clientId, id) => {
 function val(id) { return document.getElementById(id).value; }
 
 // ---- Customer 360 ----
+const SOA_MODES = ['Cash', 'Cheque', 'NEFT', 'RTGS', 'UPI', 'Other'];
+function soaSectionHTML(clientId, ledger) {
+  if (!ledger) return '';
+  const recent = ledger.rows.slice(-5).reverse();
+  return `
+    <h4>Statement of Account <span class="muted" style="font-weight:normal;">(closing balance: ₹${fmt(Math.abs(ledger.closingBalance))} ${ledger.closingBalance > 0 ? 'receivable' : ledger.closingBalance < 0 ? 'in credit' : ''})</span></h4>
+    ${tableHTML(['Date', 'Type', 'Ref', 'Debit', 'Credit', 'Balance'], recent, r => `
+      <tr><td>${new Date(r.date).toLocaleDateString()}</td><td>${esc(r.type)}</td><td>${esc(r.ref)}</td>
+      <td>${r.debit ? '₹' + fmt(r.debit) : '-'}</td><td>${r.credit ? '₹' + fmt(r.credit) : '-'}</td><td>₹${fmt(r.balance)}</td></tr>`)}
+    <div style="margin:8px 0;"><a href="#" onclick="downloadSoaPdf(${clientId});return false;">Download Full Statement (PDF)</a></div>
+    <div class="form-grid" style="margin-top:6px;">
+      <div><label>Record Payment - Amount (₹)</label><input id="soa-rcpt-amount" type="number"></div>
+      <div><label>Date</label><input id="soa-rcpt-date" type="date" value="${today()}"></div>
+      <div><label>Mode</label><select id="soa-rcpt-mode">${SOA_MODES.map(m => `<option>${m}</option>`).join('')}</select></div>
+      <div><label>Reference No (optional)</label><input id="soa-rcpt-ref"></div>
+    </div>
+    <button class="btn small" onclick="recordPaymentReceipt(${clientId})">Record Payment</button>
+    <div id="soa-rcpt-err" class="msg err" style="display:none;margin-top:6px;"></div>
+  `;
+}
 window.openClient360 = async (clientId) => {
-  const d = await api('/masters/clients/' + clientId + '/360');
+  const canSeeSoa = has('payment_receipt.manage', 'soa.manage', 'report.view_all');
+  const [d, ledger] = await Promise.all([
+    api('/masters/clients/' + clientId + '/360'),
+    canSeeSoa ? api('/soa/ledger/' + clientId).catch(() => null) : Promise.resolve(null),
+  ]);
   const c = d.client;
   const body = `
     <div class="form-grid">
@@ -1163,8 +1188,21 @@ window.openClient360 = async (clientId) => {
     <h4>Sales Orders (${d.orders.length})</h4>
     ${tableHTML(['Order No', 'Value', 'Status', 'Date'], d.orders, o => `
       <tr><td>${esc(o.order_no)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td></tr>`)}
+    ${soaSectionHTML(clientId, ledger)}
   `;
   openMiniModal('Customer 360 — ' + c.name, body, true);
+};
+window.downloadSoaPdf = (clientId) => downloadTemplateFile(`/soa/ledger/${clientId}/pdf`, `SOA-${clientId}.pdf`);
+window.recordPaymentReceipt = async (clientId) => {
+  const errEl = document.getElementById('soa-rcpt-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/soa/receipts', { method: 'POST', body: JSON.stringify({
+      client_id: clientId, amount: val('soa-rcpt-amount'), receipt_date: val('soa-rcpt-date'),
+      mode: val('soa-rcpt-mode'), reference_no: val('soa-rcpt-ref'),
+    })});
+    await openClient360(clientId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ---- CSV report helper (used by Leads / Offers / Orders / Clients "Generate Report") ----
@@ -5171,6 +5209,94 @@ window.emailInvoice = async (id) => {
   try {
     const result = await api(`/finance/invoices/${id}/email`, { method: 'POST' });
     alert(result.sent ? `Invoice emailed to ${result.to}.` : (result.message || 'Email was not sent.'));
+  } catch (e) { alert(e.message); }
+};
+
+// ===================== Statement of Accounts =====================
+// Automated per-client statements: a Monthly/Quarterly org-wide default,
+// overridable per client, feeds a background scan (lib/soaScan.js) that
+// queues a statement for internal review - never emails a customer directly.
+// This page is where Accounts sets the cadence and works the review queue;
+// day-to-day payment recording and one-off statement downloads live on each
+// client's own Customer 360 modal (see soaSectionHTML above).
+PAGES.soa = async (el) => {
+  const [settings, pending, clients] = await Promise.all([
+    api('/soa/settings'), api('/soa/pending'), api('/masters/clients'),
+  ]);
+  el.innerHTML = `
+    <div class="panel">
+      <h3>Org-Wide Default</h3>
+      <div class="form-grid">
+        <div><label>Frequency</label><select id="soa-org-freq">
+          ${['Off', 'Monthly', 'Quarterly'].map(f => `<option value="${f}" ${settings.org.frequency === f ? 'selected' : ''}>${f}</option>`).join('')}
+        </select></div>
+        <div><label><input type="checkbox" id="soa-org-enabled" ${settings.org.enabled ? 'checked' : ''}> Enabled</label></div>
+      </div>
+      <button class="btn small" onclick="saveSoaOrgSettings()">Save Default</button>
+      <button class="btn small outline" onclick="runSoaScanNow()" style="margin-left:6px;">Run Scan Now</button>
+      <p class="muted" style="margin-top:8px;">Every client follows this default unless given their own override below. A statement is only ever queued here for internal review - nothing is emailed to a customer without Verify + Send.</p>
+    </div>
+    <div class="panel">
+      <h3>Per-Client Overrides (${settings.overrides.length})</h3>
+      <div class="form-grid">
+        <div><label>Client</label><select id="soa-ov-client">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div><label>Frequency</label><select id="soa-ov-freq"><option>Off</option><option>Monthly</option><option>Quarterly</option></select></div>
+        <div><label><input type="checkbox" id="soa-ov-enabled"> Enabled</label></div>
+      </div>
+      <button class="btn small" onclick="saveSoaClientOverride()">Set Override</button>
+      ${tableHTML(['Client', 'Frequency', 'Enabled', ''], settings.overrides, o => `
+        <tr><td>${esc(o.client_name)}</td><td>${esc(o.frequency)}</td><td>${o.enabled ? 'Yes' : 'No'}</td>
+        <td><button class="btn small outline" type="button" onclick="clearSoaClientOverride(${o.client_id})">Clear (use default)</button></td></tr>`)}
+    </div>
+    <div class="panel">
+      <h3>Pending Review (${pending.length})</h3>
+      <p class="muted">Internal check before anything reaches a customer - review the figures, Verify, then Send.</p>
+      ${tableHTML(['Client', 'Period', 'Closing Balance', 'Generated', 'Status', 'Action'], pending, p => `
+        <tr><td>${esc(p.client_name)}</td><td>${p.period_start} to ${p.period_end}</td><td>₹${fmt(p.closing_balance)}</td>
+        <td>${new Date(p.generated_at).toLocaleDateString()}</td><td>${badge(p.status)}</td>
+        <td>
+          <a href="#" onclick="downloadSoaPeriodPdf(${p.client_id}, '${p.period_start}', '${p.period_end}');return false;">PDF</a>
+          ${p.status === 'PendingReview' ? `<button class="btn small" type="button" onclick="verifySoa(${p.id})">Verify</button>` : ''}
+          ${p.status === 'Verified' ? `<button class="btn small green" type="button" onclick="sendSoaEmail(${p.id})" ${p.client_email ? '' : 'disabled title="No email on file"'}>Send Email</button>` : ''}
+          <button class="btn small outline" type="button" onclick="dismissSoa(${p.id})">Dismiss</button>
+        </td></tr>`)}
+    </div>`;
+};
+window.saveSoaOrgSettings = async () => {
+  try {
+    await api('/soa/settings/org', { method: 'PUT', body: JSON.stringify({ frequency: val('soa-org-freq'), enabled: document.getElementById('soa-org-enabled').checked }) });
+    navigate('soa');
+  } catch (e) { alert(e.message); }
+};
+window.saveSoaClientOverride = async () => {
+  try {
+    await api('/soa/settings/client/' + val('soa-ov-client'), { method: 'PUT', body: JSON.stringify({ frequency: val('soa-ov-freq'), enabled: document.getElementById('soa-ov-enabled').checked }) });
+    navigate('soa');
+  } catch (e) { alert(e.message); }
+};
+window.clearSoaClientOverride = async (clientId) => {
+  try { await api('/soa/settings/client/' + clientId, { method: 'DELETE' }); navigate('soa'); } catch (e) { alert(e.message); }
+};
+window.runSoaScanNow = async () => {
+  try {
+    const r = await api('/soa/scan', { method: 'POST' });
+    alert(`${r.created} statement(s) queued for review.`);
+    navigate('soa');
+  } catch (e) { alert(e.message); }
+};
+window.downloadSoaPeriodPdf = (clientId, from, to) => downloadTemplateFile(`/soa/ledger/${clientId}/pdf?from=${from}&to=${to}`, `SOA-${clientId}-${from}-to-${to}.pdf`);
+window.verifySoa = async (id) => {
+  try { await api(`/soa/${id}/verify`, { method: 'POST' }); navigate('soa'); } catch (e) { alert(e.message); }
+};
+window.dismissSoa = async (id) => {
+  if (!confirm('Dismiss this statement without sending it?')) return;
+  try { await api(`/soa/${id}/dismiss`, { method: 'POST' }); navigate('soa'); } catch (e) { alert(e.message); }
+};
+window.sendSoaEmail = async (id) => {
+  try {
+    const r = await api(`/soa/${id}/send-email`, { method: 'POST' });
+    alert(r.sent ? `Emailed to ${r.to}` : `Not sent: ${r.message}`);
+    navigate('soa');
   } catch (e) { alert(e.message); }
 };
 
