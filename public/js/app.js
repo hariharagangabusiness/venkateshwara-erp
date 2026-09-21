@@ -6179,13 +6179,14 @@ PAGES['todos'] = async (el) => {
     </div>` : ''}
 
     <div class="panel"><h3>My To-Do List</h3>
-      ${tableHTML(['Action / Details', 'HOD', 'Start Date', 'Target Date', 'Status', ''], mine, t => `
-        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${t.start_date || '-'}</td>
+      <p class="muted">Items handed to you directly, plus other action items logged against your own department's HOD so your whole team can track them.</p>
+      ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], mine, t => `
+        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}${t.is_mine ? '' : ' <span class="muted">(dept)</span>'}</td><td>${t.start_date || '-'}</td>
         <td>${deliveryBadge(t.target_date)}</td>
-        <td><select onchange="updateTodoStatus(${t.id}, this.value)">
+        <td>${(t.is_mine || canLog) ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select></td><td>${updatesToggle(t)}</td></tr>
-        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="6"><div id="todo-updates-${t.id}"></div></td></tr>`)}
+        </select>` : badge(t.status)}</td><td>${updatesToggle(t)}</td></tr>
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>
 
     ${canView ? `
