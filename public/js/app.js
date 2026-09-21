@@ -408,6 +408,32 @@ function tableHTML(columns, rows, rowRenderer) {
   </tbody></table>`;
 }
 
+// ---- Generic multi-field list search ----
+// Every "All X" list page (Clients, Sales Orders, Offers, ...) already hands
+// its full row set straight to the browser (these lists are small enough
+// that there's never been a need for server-side paging), so a live,
+// client-side, multi-field filter is all "search this list" needs - no new
+// backend search index to build or keep in sync. Typing filters by
+// substring match against every field named in `fields`, re-rendering just
+// the table (and its count) rather than the whole page, so the box never
+// loses focus while typing.
+const LIST_SEARCH_STATE = {};
+function renderListSearch(key, allRows, fields, onFilter, placeholder) {
+  LIST_SEARCH_STATE[key] = { allRows, fields, onFilter };
+  return `<input type="text" class="list-search" placeholder="${esc(placeholder || 'Search...')}"
+    oninput="filterList('${key}', this.value)"
+    style="margin:8px 0;width:100%;max-width:360px;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:13px;">`;
+}
+window.filterList = (key, query) => {
+  const st = LIST_SEARCH_STATE[key];
+  if (!st) return;
+  const q = query.trim().toLowerCase();
+  const filtered = !q ? st.allRows : st.allRows.filter(row =>
+    st.fields.some(f => String(row[f] ?? '').toLowerCase().includes(q))
+  );
+  st.onFilter(filtered);
+};
+
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
   const items = await api(apiPath);
   selectEl.innerHTML = `<option value="">${placeholder || 'Select...'}</option>` +
@@ -993,6 +1019,12 @@ window.actOnApprovalTodo = async (id, status) => {
 
 // ---- Clients ----
 let EDITING_CLIENT_ID = null;
+function renderClientRows(rows) {
+  return tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
+    <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
+    <td><button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
+    <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button></td></tr>`);
+}
 PAGES.clients = async (el) => {
   const clients = await api('/masters/clients');
   el.innerHTML = `
@@ -1015,13 +1047,14 @@ PAGES.clients = async (el) => {
     </div>
     <div id="cl-addresses-panel"></div>
     <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">All Clients (${clients.length})</h3>
+      <div class="toolbar"><h3 id="cl-count" style="margin:0;">All Clients (${clients.length})</h3>
         <button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], clients, c => `
-        <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
-        <td><button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
-        <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button></td></tr>`)}
+      ${renderListSearch('clients', clients, ['client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'source', 'gstin'], (rows) => {
+        document.getElementById('cl-table-wrap').innerHTML = renderClientRows(rows);
+        document.getElementById('cl-count').textContent = 'All Clients (' + rows.length + ')';
+      }, 'Search by name, contact, phone, email, GSTIN, address...')}
+      <div id="cl-table-wrap">${renderClientRows(clients)}</div>
     </div>`;
 };
 window.editClient = (c) => {
@@ -1422,6 +1455,14 @@ const SHORT_STAGE_LABELS = {
   Assembling: 'Assembling', Packing: 'Packing', Shipping: 'Shipping', Installation: 'Installation',
 };
 
+function renderOrderRows(rows) {
+  return tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Annexure', ''], rows, o => `
+    <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
+    <td>${deliveryBadge(o.promised_delivery_date)}</td>
+    <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
+    <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button></td></tr>
+    <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`);
+}
 PAGES.orders = async (el) => {
   const orders = await api('/sales/orders');
   const wonLeads = (await api('/sales/leads')).filter(l => l.stage === 'Won');
@@ -1446,15 +1487,14 @@ PAGES.orders = async (el) => {
       <button class="btn" onclick="addOrder()">Create Order</button>
     </div>
     <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">Sales Orders (${orders.length})</h3>
+      <div class="toolbar"><h3 id="so-count" style="margin:0;">Sales Orders (${orders.length})</h3>
         <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Annexure', ''], orders, o => `
-        <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
-        <td>${deliveryBadge(o.promised_delivery_date)}</td>
-        <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
-        <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button></td></tr>
-        <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`)}
+      ${renderListSearch('orders', orders, ['order_no', 'client_name', 'status', 'description'], (rows) => {
+        document.getElementById('so-table-wrap').innerHTML = renderOrderRows(rows);
+        document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
+      }, 'Search by order no, client, status...')}
+      <div id="so-table-wrap">${renderOrderRows(orders)}</div>
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     </div>`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
@@ -1624,16 +1664,23 @@ PAGES.offers = async (el) => {
       <button class="btn" onclick="createOffer()">Create Offer (opens builder with prefilled sheets)</button>
     </div>
     <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">All Offers (${offers.length})</h3>
+      <div class="toolbar"><h3 id="of-count" style="margin:0;">All Offers (${offers.length})</h3>
         <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], offers, o => `
-        <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
-        <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button></td></tr>`)}
+      ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
+        document.getElementById('of-table-wrap').innerHTML = renderOfferRows(rows);
+        document.getElementById('of-count').textContent = 'All Offers (' + rows.length + ')';
+      }, 'Search by offer no, client, subject, status...')}
+      <div id="of-table-wrap">${renderOfferRows(offers)}</div>
     </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
   `;
 };
+function renderOfferRows(rows) {
+  return tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], rows, o => `
+    <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
+    <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button></td></tr>`);
+}
 window.reportOffers = async () => {
   const offers = await api('/offers');
   downloadCSV('offers_report.csv', offers, ['id', 'offer_no', 'client_name', 'subject', 'offer_date', 'status', 'sales_order_id']);
@@ -2495,13 +2542,20 @@ PAGES.vendors = async (el) => {
       <button class="btn" onclick="uploadVendorTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="ve-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>Vendors (${vendors.length})</h3>
-      ${tableHTML(['Name', 'GSTIN', 'State', 'Category', 'Contact', 'Phone', 'PO Email', 'Terms', 'Status'], vendors, v => `<tr>
-        <td>${esc(v.legal_name || v.name)}</td><td>${esc(v.gstin)||'-'}</td><td>${esc(v.state)||'-'}</td><td>${esc(v.category)||'-'}</td>
-        <td>${esc(v.contact_person)||'-'}</td><td>${esc(v.phone)||'-'}</td><td>${esc(v.po_email||v.email)||'-'}</td>
-        <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td></tr>`)}
+    <div class="panel"><h3 id="ve-count">Vendors (${vendors.length})</h3>
+      ${renderListSearch('vendors', vendors, ['legal_name', 'name', 'gstin', 'state', 'category', 'contact_person', 'phone', 'po_email', 'email'], (rows) => {
+        document.getElementById('ve-table-wrap').innerHTML = renderVendorRows(rows);
+        document.getElementById('ve-count').textContent = 'Vendors (' + rows.length + ')';
+      }, 'Search by name, GSTIN, state, category, contact...')}
+      <div id="ve-table-wrap">${renderVendorRows(vendors)}</div>
     </div>`;
 };
+function renderVendorRows(rows) {
+  return tableHTML(['Name', 'GSTIN', 'State', 'Category', 'Contact', 'Phone', 'PO Email', 'Terms', 'Status'], rows, v => `<tr>
+    <td>${esc(v.legal_name || v.name)}</td><td>${esc(v.gstin)||'-'}</td><td>${esc(v.state)||'-'}</td><td>${esc(v.category)||'-'}</td>
+    <td>${esc(v.contact_person)||'-'}</td><td>${esc(v.phone)||'-'}</td><td>${esc(v.po_email||v.email)||'-'}</td>
+    <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td></tr>`);
+}
 window.addVendor = async () => {
   const errEl = document.getElementById('v-err');
   errEl.style.display = 'none';
@@ -2543,25 +2597,32 @@ PAGES['purchase-requests'] = async (el) => {
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests estimated at ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
     </div>
-    <div class="panel"><h3>Purchase Requests (${reqs.length})</h3>
+    <div class="panel"><h3 id="pr-count">Purchase Requests (${reqs.length})</h3>
       <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the item, project, quantity or value.</p>
-      ${tableHTML(['PR No', 'Item', 'Project', 'Qty', 'Est. Value', 'Status', 'Action'], reqs, r => `
-        <tr id="pr-row-${r.id}">
-          <td>${esc(r.pr_no)}</td>
-          <td>${esc(r.item_name)}${r.item_master_status === 'Pending' ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
-          <td>${esc(r.project_code)||'-'}</td><td>${r.quantity}</td><td>₹${fmt(r.estimated_value)}</td><td>${badge(r.status)}</td>
-          <td>
-            ${r.status === 'Pending' ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
-            ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
-            ${!r.status || (r.status !== 'Pending' && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
-          </td>
-        </tr>
-        ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`)}
+      ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_name', 'project_code', 'status'], (rows) => {
+        document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
+        document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
+      }, 'Search by PR no, item, project, status...')}
+      <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
     </div>
     <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   window.__PR_CACHE = reqs; window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
 };
+function renderPRRows(rows) {
+  return tableHTML(['PR No', 'Item', 'Project', 'Qty', 'Est. Value', 'Status', 'Action'], rows, r => `
+    <tr id="pr-row-${r.id}">
+      <td>${esc(r.pr_no)}</td>
+      <td>${esc(r.item_name)}${r.item_master_status === 'Pending' ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
+      <td>${esc(r.project_code)||'-'}</td><td>${r.quantity}</td><td>₹${fmt(r.estimated_value)}</td><td>${badge(r.status)}</td>
+      <td>
+        ${r.status === 'Pending' ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
+        ${!r.status || (r.status !== 'Pending' && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
+      </td>
+    </tr>
+    ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`);
+}
 window.showVendorsForPRItem = async () => {
   const itemId = val('pr-item');
   const box = document.getElementById('pr-vendor-suggestions');
@@ -2704,22 +2765,29 @@ PAGES['purchase-orders'] = async (el) => {
       <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
       <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Create PO</button>
     </div>
-    <div class="panel"><h3>Purchase Orders (${orders.length})</h3>
-      ${tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], orders, o => `
-        <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td><td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
-        <td>${deliveryBadge(o.delivery_date)}</td>
-        <td>
-          <button class="btn small outline" type="button" onclick="downloadPoPdf(${o.id}, '${esc(o.po_no)}')">PDF</button>
-          <button class="btn small outline" type="button" onclick="downloadPoDocx(${o.id}, '${esc(o.po_no)}')">Word</button>
-          <button class="btn small outline" type="button" onclick="emailPo(${o.id})">Email Vendor</button>
-        </td>
-        <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
-        <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button></td></tr>
-        <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-attachments-${o.id}"></div></td></tr>
-        <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>`)}
+    <div class="panel"><h3 id="po-count">Purchase Orders (${orders.length})</h3>
+      ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
+        document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
+        document.getElementById('po-count').textContent = 'Purchase Orders (' + rows.length + ')';
+      }, 'Search by PO no, vendor, item, status...')}
+      <div id="po-table-wrap">${renderPORows(orders)}</div>
     </div>`;
   window.__PO_PRS = prs;
 };
+function renderPORows(rows) {
+  return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
+    <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td><td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
+    <td>${deliveryBadge(o.delivery_date)}</td>
+    <td>
+      <button class="btn small outline" type="button" onclick="downloadPoPdf(${o.id}, '${esc(o.po_no)}')">PDF</button>
+      <button class="btn small outline" type="button" onclick="downloadPoDocx(${o.id}, '${esc(o.po_no)}')">Word</button>
+      <button class="btn small outline" type="button" onclick="emailPo(${o.id})">Email Vendor</button>
+    </td>
+    <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
+    <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button></td></tr>
+    <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-attachments-${o.id}"></div></td></tr>
+    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>`);
+}
 window.downloadPoPdf = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/pdf`, `${poNo}.pdf`);
 window.downloadPoDocx = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/docx`, `${poNo}.docx`);
 window.emailPo = async (id) => {
