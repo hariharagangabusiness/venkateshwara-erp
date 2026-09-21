@@ -651,6 +651,18 @@ const UNIQUE_INDEXES = [
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }
 }
+// Plain (non-unique) lookup indexes for hot filter columns - the To-Do List's
+// role-based scoping (routes/todos.js `/mine`) now filters every request by
+// assigned_to and, via a join, by the hod's department, so both need to stay
+// fast as the table grows rather than falling back to a full scan.
+const PERFORMANCE_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_todos_assigned_to ON todos(assigned_to)`,
+  `CREATE INDEX IF NOT EXISTS idx_todos_hod_id ON todos(hod_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_users_department_id ON users(department_id)`,
+];
+for (const stmt of PERFORMANCE_INDEXES) {
+  try { raw.exec(stmt); } catch (e) { throw e; }
+}
 // Existing rows on a carried-forward DB predate the `status` column and got
 // NULL from the ALTER TABLE above (not the 'Approved' default, which only
 // applies to rows inserted after the column exists) - backfill them so old

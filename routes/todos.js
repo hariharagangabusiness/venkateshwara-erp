@@ -23,6 +23,14 @@ function canLog(user) {
 function canView(user) {
   return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
 }
+// Anyone who'd see this To-Do in their own list (the assignee, a department-
+// mate of the HOD it's logged against, or anyone with the oversight view)
+// can read its activity log - matches the visibility rule GET /mine applies.
+// `t` must carry a `hod_department_id` column (the joined HOD's department).
+function canSeeTodo(user, t) {
+  return t.assigned_to === user.id || canView(user) ||
+    (t.hod_department_id != null && t.hod_department_id === user.department_id);
+}
 
 // People pickers for the "Log a New To-Do" form.
 router.get('/people', (req, res) => {
@@ -41,14 +49,34 @@ router.get('/people', (req, res) => {
   res.json({ hods, assignees, can_log: canLog(req.user), can_view: canView(req.user) });
 });
 
-// To-Dos where I'm the one who has the action.
+// "My To-Do List": items I personally have the action on, plus - so a whole
+// team can track work logged against their own HOD, not just whoever it was
+// literally handed to - items logged against a HOD in my own department.
+// Admin/Management are never scoped down: they get every To-Do in the system
+// here too, same as the oversight view below, so this panel alone is a
+// complete picture for them without needing the separate "All To-Dos" panel.
+// All of this is decided from req.user (set by authRequired from the session,
+// not from anything the client sends), so it can't be widened by request
+// params.
 router.get('/mine', (req, res) => {
-  res.json(db.prepare(`
-    SELECT t.*, h.full_name as hod_name
-    FROM todos t LEFT JOIN users h ON h.id = t.hod_id
-    WHERE t.assigned_to = ?
-    ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-  `).all(req.user.id));
+  const isGlobal = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
+  const rows = isGlobal
+    ? db.prepare(`
+        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
+        FROM todos t
+        LEFT JOIN users h ON h.id = t.hod_id
+        JOIN users a ON a.id = t.assigned_to
+        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
+      `).all()
+    : db.prepare(`
+        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
+        FROM todos t
+        LEFT JOIN users h ON h.id = t.hod_id
+        JOIN users a ON a.id = t.assigned_to
+        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id = ?)
+        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
+      `).all(req.user.id, req.user.department_id);
+  res.json(rows.map(t => ({ ...t, is_mine: t.assigned_to === req.user.id })));
 });
 
 // Every To-Do logged, across everyone - Management/HOD/Admin oversight view.
@@ -130,9 +158,13 @@ router.patch('/:id', (req, res) => {
 // Activity log: notes the assignee (or the logging HOD/Admin) attaches over
 // the To-Do's life, plus the auto-logged status-change entries above.
 router.get('/:id/updates', (req, res) => {
-  const t = db.prepare('SELECT * FROM todos WHERE id = ?').get(req.params.id);
+  const t = db.prepare(`
+    SELECT t.*, h.department_id as hod_department_id
+    FROM todos t LEFT JOIN users h ON h.id = t.hod_id
+    WHERE t.id = ?
+  `).get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Not found' });
-  if (t.assigned_to !== req.user.id && !canView(req.user)) return res.status(403).json({ error: 'Access denied' });
+  if (!canSeeTodo(req.user, t)) return res.status(403).json({ error: 'Access denied' });
   res.json(db.prepare(`
     SELECT tu.*, u.full_name as user_name FROM todo_updates tu LEFT JOIN users u ON u.id = tu.user_id
     WHERE tu.todo_id = ? ORDER BY tu.id DESC
