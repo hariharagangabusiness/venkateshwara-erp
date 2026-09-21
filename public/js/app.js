@@ -1576,14 +1576,46 @@ async function renderAttachmentsWidget(entityType, entityId, container) {
 
 let CURRENT_OFFER_ID = null;
 let CURRENT_OFFER_TAB = 'scope';
+let CURRENT_OFFER = null; // the offer header last fetched for the open builder - used to decide whether an edit will fork a new version
+
+// Any offer edit past Draft forks a new version server-side rather than
+// overwriting a version that may already be with the customer (see
+// lib/offerVersioning.js) - this asks up front so it isn't a silent
+// surprise, and optionally captures why, which shows up in Version History.
+// Returns null if the user cancels, else a (possibly empty) reason string.
+function confirmOfferRevision(offer) {
+  if (!offer || offer.status === 'Draft') return '';
+  return prompt(
+    `This offer has already been ${offer.status}. Saving this change will create a new version (v${offer.version + 1}) rather than overwrite the version already sent.\n\nOptionally, describe why you're revising it (shown in Version History):`,
+    ''
+  );
+}
+// After any content mutation that might have forked a new version, land the
+// builder on whichever offer id is now current and refresh what's on screen.
+async function afterOfferMutation(result, msg) {
+  const panel = document.getElementById('offer-builder-panel');
+  if (result && result.newVersion) {
+    await openOfferBuilder(result.offerId);
+    showMsg(panel, (msg || 'Saved') + ' as a new version.', true);
+  } else {
+    if (result && result.offerId) CURRENT_OFFER_ID = result.offerId;
+    const data = await api('/offers/' + CURRENT_OFFER_ID);
+    CURRENT_OFFER = data.offer;
+    renderOfferTab(data);
+    if (msg) showMsg(panel, msg, true);
+  }
+}
 
 PAGES.offers = async (el) => {
-  const offers = await api('/offers');
-  const clients = await api('/masters/clients');
+  const [offers, clients, leads] = await Promise.all([api('/offers'), api('/masters/clients'), api('/sales/leads')]);
   el.innerHTML = `
     <div class="panel"><h3>New Offer</h3>
       <div class="form-grid">
         <div><label>Client</label><select id="nf-client">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div><label>Linked Enquiry / RFQ (optional)</label><select id="nf-lead">
+          <option value="">-- None --</option>
+          ${leads.map(l => `<option value="${l.id}">${esc(l.client_name)} - ${esc(l.product_interest || l.enquiry_details || ('Lead #' + l.id))}</option>`).join('')}
+        </select></div>
         <div><label>Contact Person</label><input id="nf-contact"></div>
         <div><label>Contact Phone</label><input id="nf-phone"></div>
         <div><label>Subject / Machine</label><input id="nf-subject" placeholder="e.g. Electronic Weighing and Bagging System"></div>
@@ -1595,8 +1627,8 @@ PAGES.offers = async (el) => {
       <div class="toolbar"><h3 style="margin:0;">All Offers (${offers.length})</h3>
         <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
       </div>
-      ${tableHTML(['Offer No', 'Client', 'Subject', 'Date', 'Status', ''], offers, o => `
-        <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
+      ${tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], offers, o => `
+        <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
         <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button></td></tr>`)}
     </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
@@ -1609,7 +1641,7 @@ window.reportOffers = async () => {
 window.createOffer = async () => {
   try {
     const r = await api('/offers', { method: 'POST', body: JSON.stringify({
-      client_id: val('nf-client'), contact_person: val('nf-contact'), contact_phone: val('nf-phone'), subject: val('nf-subject')
+      client_id: val('nf-client'), lead_id: val('nf-lead') || null, contact_person: val('nf-contact'), contact_phone: val('nf-phone'), subject: val('nf-subject')
     })});
     await openOfferBuilder(r.id);
   } catch (e) { alert(e.message); }
@@ -1640,13 +1672,15 @@ async function renderOfferBuilder(panel) {
     api('/offers/field-options/material_of_construction'),
   ]);
   const o = data.offer;
+  CURRENT_OFFER = o;
   const tabs = [['scope', 'Scope of Supply & Pictures'], ['tech', 'Technical Specification'], ['boughtout', 'Make of Bought Out Items'], ['terms', 'Terms & Conditions'], ['text', 'Inclusions / Exclusions / Utilities']];
   panel.innerHTML = `
     <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span></h3>
     ${versions.length > 1 ? `<div class="panel" style="background:#f6f7f9;">
       <b>Version History</b>
-      ${tableHTML(['Version', 'Status', 'Date', ''], versions, v => `
+      ${tableHTML(['Version', 'Status', 'Date', 'Revision Reason', ''], versions, v => `
         <tr${v.id === o.id ? ' style="font-weight:600;"' : ''}><td>v${v.version}</td><td>${badge(v.status)}</td><td>${new Date(v.offer_date).toLocaleDateString()}</td>
+        <td class="muted">${esc(v.revision_reason) || '-'}</td>
         <td>${v.id !== o.id ? `<button class="btn small outline" onclick="openOfferBuilder(${v.id})">View</button>` : '<span class="muted">Current</span>'}
         <a href="#" onclick="downloadOfferVersionPdf(${v.id});return false;">PDF</a></td></tr>`)}
     </div>` : ''}
@@ -1673,24 +1707,15 @@ async function renderOfferBuilder(panel) {
 window.saveOfferHeader = async () => {
   try {
     const data = await api('/offers/' + CURRENT_OFFER_ID);
-    if (data.offer.status !== 'Draft' &&
-        !confirm('This offer has already been sent. Saving changes will create a new version (v' + (data.offer.version + 1) + ') rather than overwrite the sent version. Continue?')) {
-      return;
-    }
+    const reason = confirmOfferRevision(data.offer);
+    if (reason === null) return;
     const r = await api('/offers/' + CURRENT_OFFER_ID, { method: 'PUT', body: JSON.stringify({
       subject: val('ob-subject'), contact_person: val('ob-contact'), contact_phone: val('ob-phone'), contact_email: val('ob-email'),
       drawing_no: val('ob-drawing'), application: val('ob-application'), type_of_system: val('ob-type'), material_of_construction: val('ob-material'),
       inclusions: data.offer.inclusions, exclusions: data.offer.exclusions, utilities_requirement: data.offer.utilities_requirement,
-      instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status
+      instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status, revision_reason: reason || null
     })});
-    if (r.newVersion) {
-      await openOfferBuilder(r.id);
-      const panel = document.getElementById('offer-builder-panel');
-      showMsg(panel, 'Saved as a new version.', true);
-      return;
-    }
-    const panel = document.getElementById('offer-builder-panel');
-    showMsg(panel, 'Header saved.', true);
+    await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Header saved');
   } catch (e) { alert(e.message); }
 };
 window.downloadOfferVersionPdf = async (offerId) => {
@@ -1725,6 +1750,7 @@ window.confirmOffer = async () => {
 window.switchOfferTab = async (tab) => {
   CURRENT_OFFER_TAB = tab;
   const data = await api('/offers/' + CURRENT_OFFER_ID);
+  CURRENT_OFFER = data.offer;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   const idx = ['scope', 'tech', 'boughtout', 'terms', 'text'].indexOf(tab);
   document.querySelectorAll('.tab')[idx].classList.add('active');
@@ -1796,26 +1822,34 @@ window.cancelEditOfferItem = () => {
 };
 window.addOfferItem = async () => {
   try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
     const fd = new FormData();
     fd.append('item_code', val('it-code'));
     fd.append('section_title', val('it-section'));
     fd.append('description', val('it-desc'));
     fd.append('qty', val('it-qty'));
     fd.append('unit_price', val('it-price'));
+    fd.append('revision_reason', reason || '');
     const fileInput = document.getElementById('it-image');
     if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
+    let r;
     if (EDITING_OFFER_ITEM_ID) {
-      await apiUpload(`/offers/${CURRENT_OFFER_ID}/items/${EDITING_OFFER_ITEM_ID}`, fd, 'PUT');
+      r = await apiUpload(`/offers/${CURRENT_OFFER_ID}/items/${EDITING_OFFER_ITEM_ID}`, fd, 'PUT');
       EDITING_OFFER_ITEM_ID = null;
     } else {
-      await apiUpload(`/offers/${CURRENT_OFFER_ID}/items`, fd, 'POST');
+      r = await apiUpload(`/offers/${CURRENT_OFFER_ID}/items`, fd, 'POST');
     }
-    switchOfferTab('scope');
+    await afterOfferMutation(r);
   } catch (e) { alert(e.message); }
 };
 window.deleteOfferItem = async (itemId) => {
-  await api(`/offers/${CURRENT_OFFER_ID}/items/${itemId}`, { method: 'DELETE' });
-  switchOfferTab('scope');
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/items/${itemId}`, { method: 'DELETE', body: JSON.stringify({ revision_reason: reason || null }) });
+    await afterOfferMutation(r);
+  } catch (e) { alert(e.message); }
 };
 
 function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel) {
@@ -1845,8 +1879,10 @@ window.saveKvTab = async (endpoint, keyField, valField) => {
     [valField]: tr.querySelector('.kv-val').value
   })).filter(r => r[keyField]);
   try {
-    await api(`/offers/${CURRENT_OFFER_ID}/${endpoint}`, { method: 'PUT', body: JSON.stringify({ rows }) });
-    showMsg(document.getElementById('offer-builder-panel'), 'Saved.', true);
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/${endpoint}`, { method: 'PUT', body: JSON.stringify({ rows, revision_reason: reason || null }) });
+    await afterOfferMutation(r, 'Saved');
   } catch (e) { alert(e.message); }
 };
 
@@ -1866,13 +1902,15 @@ function renderTextTab(el, offer) {
 window.saveTextTab = async () => {
   try {
     const data = await api('/offers/' + CURRENT_OFFER_ID);
-    await api('/offers/' + CURRENT_OFFER_ID, { method: 'PUT', body: JSON.stringify({
+    const reason = confirmOfferRevision(data.offer);
+    if (reason === null) return;
+    const r = await api('/offers/' + CURRENT_OFFER_ID, { method: 'PUT', body: JSON.stringify({
       subject: data.offer.subject, contact_person: data.offer.contact_person, contact_phone: data.offer.contact_phone, contact_email: data.offer.contact_email,
       drawing_no: data.offer.drawing_no, application: data.offer.application, type_of_system: data.offer.type_of_system, material_of_construction: data.offer.material_of_construction,
       inclusions: val('txt-inclusions'), exclusions: val('txt-exclusions'), utilities_requirement: val('txt-utilities'), instrument_air_supply: val('txt-air'),
-      status: data.offer.status
+      status: data.offer.status, revision_reason: reason || null
     })});
-    showMsg(document.getElementById('offer-builder-panel'), 'Saved.', true);
+    await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Saved');
   } catch (e) { alert(e.message); }
 };
 
