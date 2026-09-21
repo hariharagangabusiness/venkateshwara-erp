@@ -316,6 +316,13 @@ router.get('/orders/:id/annexure', async (req, res) => {
 router.post('/orders/:id/regenerate-annexure', requirePermission('sales_order.manage'), async (req, res) => {
   const salesOrder = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!salesOrder) return res.status(404).json({ error: 'Not found' });
+  const review = db.prepare('SELECT locked, status FROM annexure_reviews WHERE sales_order_id = ?').get(salesOrder.id);
+  if (review && review.locked) {
+    return res.status(400).json({ error: 'This annexure has already been approved and is locked. Reject it under Order Confirmation & Annexure review first if a genuine revision is needed.' });
+  }
+  if (review && review.status === 'PendingApproval') {
+    return res.status(400).json({ error: 'This annexure is awaiting approval and cannot be regenerated - it must be approved or rejected first.' });
+  }
   try {
     ensureProjectForOrder(salesOrder, req.user.id);
     const annex = await ensureAnnexureForOrder(salesOrder);

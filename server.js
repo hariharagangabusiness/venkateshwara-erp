@@ -51,6 +51,7 @@ app.use('/api/bg', require('./routes/bankGuarantees'));
 app.use('/api/todos', require('./routes/todos'));
 app.use('/api/org-hierarchy', require('./routes/orgHierarchy'));
 app.use('/api/soa', require('./routes/soa'));
+app.use('/api/order-confirmation', require('./routes/orderConfirmation'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 

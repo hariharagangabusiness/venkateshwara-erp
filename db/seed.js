@@ -59,6 +59,7 @@ const permissionCodes = [
   'bg.manage',
   'offer_options.manage',
   'payment_receipt.manage', 'soa.manage',
+  'order_confirmation.approve', 'annexure.approve',
 ];
 const insertPerm = db.prepare('INSERT OR IGNORE INTO permissions (code) VALUES (?)');
 permissionCodes.forEach(c => insertPerm.run(c));
@@ -94,6 +95,7 @@ grant('HR', ['expense_tracker.manage']);
 grant('Accounts', ['bg.manage']);
 grant('Accounts', ['payment_receipt.manage', 'soa.manage']);
 grant('Management', ['foc.approve', 'report.view_all', 'expense_voucher.view_all', 'service_request.manage']);
+grant('Management', ['order_confirmation.approve', 'annexure.approve']);
 
 // Approval chains
 const chains = [
