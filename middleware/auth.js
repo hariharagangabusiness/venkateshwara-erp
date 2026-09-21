@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { db } = require('../db');
+const { oversightRoleIds } = require('../lib/roleOversight');
 const SECRET = process.env.JWT_SECRET || 'venkateshwara-erp-dev-secret';
 
 function authRequired(req, res, next) {
@@ -22,15 +23,21 @@ function authRequired(req, res, next) {
 }
 
 // Checks that the user's role has ANY of the given permission codes,
-// OR that the user's role is 'Admin' (Admin bypasses all checks).
+// OR that the user's role is 'Admin' (Admin bypasses all checks), OR that
+// the user has been granted cross-department oversight (role_oversight) of
+// another role that itself holds one of the codes - e.g. a unified
+// Electrical & Service HOD picks up Service's permissions on top of their
+// own without their account's actual role/department changing.
 function requirePermission(...codes) {
   return (req, res, next) => {
     if (req.user.role_name === 'Admin') return next();
+    const roleIds = [req.user.role_id, ...oversightRoleIds(db, req.user.id)];
+    const placeholders = roleIds.map(() => '?').join(',');
     const rows = db.prepare(`
       SELECT p.code FROM role_permissions rp
       JOIN permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id = ?
-    `).all(req.user.role_id);
+      WHERE rp.role_id IN (${placeholders})
+    `).all(...roleIds);
     const granted = new Set(rows.map(r => r.code));
     if (codes.some(c => granted.has(c))) return next();
     return res.status(403).json({ error: 'Access denied: missing permission ' + codes.join(',') });

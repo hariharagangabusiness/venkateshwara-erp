@@ -164,6 +164,39 @@ router.delete('/extra-access/:id', requireRole('Admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Cross-Department Oversight (Round 22): grant a specific user
+// supervisor-level reach into another role's domain (Job Cards, To-Dos, and
+// any permission-gated route via requirePermission), without merging the
+// two departments/roles - e.g. a real-world HOD who covers both Electrical
+// and Service. Purely additive; see lib/roleOversight.js for how it's
+// applied. Doesn't touch page-level nav visibility - pair it with Extra
+// Page Access above if the granted user's own role can't already see the
+// other department's pages.
+router.get('/role-oversight', requireRole('Admin'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT ro.*, u.full_name as user_name, r.name as oversees_role_name
+    FROM role_oversight ro
+    JOIN users u ON u.id = ro.user_id
+    JOIN roles r ON r.id = ro.oversees_role_id
+    ORDER BY ro.id DESC
+  `).all();
+  res.json(rows);
+});
+router.post('/role-oversight', requireRole('Admin'), (req, res) => {
+  const { user_id, oversees_role_id } = req.body;
+  if (!user_id || !oversees_role_id) return res.status(400).json({ error: 'user_id and oversees_role_id are required' });
+  const user = db.prepare('SELECT id, role_id FROM users WHERE id = ?').get(user_id);
+  if (!user) return res.status(400).json({ error: 'User not found' });
+  if (user.role_id === Number(oversees_role_id)) return res.status(400).json({ error: 'A user already has full reach over their own role - pick a different one to grant.' });
+  db.prepare(`INSERT OR IGNORE INTO role_oversight (user_id, oversees_role_id, granted_by) VALUES (?,?,?)`)
+    .run(user_id, oversees_role_id, req.user.id);
+  res.json({ ok: true });
+});
+router.delete('/role-oversight/:id', requireRole('Admin'), (req, res) => {
+  db.prepare('DELETE FROM role_oversight WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---- Approval Matrix (Admin only) ----
 // Lets an Admin edit which role approves each step of each approval chain
 // (Expense Voucher, Leave, Purchase Request, Salary Advance, Payroll),

@@ -5,6 +5,7 @@ const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole } = require('../lib/pipeline');
+const { oversightRoleNames } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
 
@@ -20,7 +21,10 @@ const upload = multer({
 
 // A department's HOD/Supervisor (or Admin) can start/complete any card in
 // their own department and allocate work within it; a regular team member
-// can only act on a card specifically assigned to them.
+// can only act on a card specifically assigned to them. A user granted
+// cross-department oversight (role_oversight - see lib/roleOversight.js,
+// e.g. a unified Electrical & Service HOD) gets the same supervisor
+// authority over that other stage too, without their own role changing.
 function isSupervisorOf(user, stage) {
   if (user.role_name === 'Admin') return true;
   if (user.role_name === stage) return !!user.is_supervisor;
@@ -28,6 +32,7 @@ function isSupervisorOf(user, stage) {
   // Tacking, Welding, BuffingSandblast, Painting) - the combined queue is
   // meant to put them in charge of the whole chain, not just the parent card.
   if (user.role_name === 'Manufacturing' && user.is_supervisor && combinedStagesForRole('Manufacturing').includes(stage)) return true;
+  if (oversightRoleNames(db, user.id).includes(stage)) return true;
   return false;
 }
 function canActOn(user, jc) {
@@ -160,9 +165,13 @@ router.get('/job-cards/mine', (req, res) => {
   // for Manufacturing, that means the parent stage AND every sub-process
   // (Fitting/Tacking/Welding/BuffingSandblast/Painting) combined into one
   // queue, so a sub-process login isn't limited to a narrow sliver - plus
+  // any stage(s) belonging to a role this user has been granted
+  // cross-department oversight of (role_oversight - e.g. a unified
+  // Electrical & Service HOD also sees Electrical's queue here), plus
   // HOD-created sub-assemblies within it, and hand-off cards routed in from
   // another department. Only surfaced once released (planned_start set).
-  const stages = combinedStagesForRole(req.user.role_name);
+  const stages = combinedStagesForRole(req.user.role_name)
+    .concat(oversightRoleNames(db, req.user.id).flatMap(combinedStagesForRole));
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
     SELECT jc.*, p.project_code, p.title as project_title,
