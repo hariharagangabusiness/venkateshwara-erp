@@ -8,6 +8,7 @@ const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
+const { ensureEditableVersion } = require('../lib/offerVersioning');
 
 const router = express.Router();
 router.use(authRequired);
@@ -69,10 +70,14 @@ router.put('/field-options/:id', requirePermission('offer_options.manage'), (req
 // ===================== List / Detail =====================
 
 router.get('/', (req, res) => {
-  const { client_id } = req.query;
-  let q = `SELECT o.*, c.name as client_name FROM offers o JOIN clients c ON c.id = o.client_id WHERE 1=1`;
+  const { client_id, lead_id } = req.query;
+  let q = `
+    SELECT o.*, c.name as client_name, l.enquiry_details as lead_enquiry_details
+    FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id WHERE 1=1
+  `;
   const params = [];
   if (client_id) { q += ' AND o.client_id = ?'; params.push(client_id); }
+  if (lead_id) { q += ' AND o.lead_id = ?'; params.push(lead_id); }
   q += ' ORDER BY o.id DESC';
   res.json(db.prepare(q).all(...params));
 });
@@ -104,7 +109,7 @@ router.get('/:id/versions', (req, res) => {
   if (!offer) return res.status(404).json({ error: 'Not found' });
   const rootId = familyRootId(offer);
   const versions = db.prepare(`
-    SELECT id, offer_no, version, status, offer_date, updated_at FROM offers
+    SELECT id, offer_no, version, status, offer_date, updated_at, revision_reason FROM offers
     WHERE id = ? OR parent_offer_id = ? ORDER BY version
   `).all(rootId, rootId);
   res.json(versions);
@@ -113,17 +118,17 @@ router.get('/:id/versions', (req, res) => {
 // ===================== Create =====================
 
 router.post('/', offerPerm(), (req, res) => {
-  const { client_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no } = req.body;
+  const { client_id, lead_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no } = req.body;
   if (!client_id) return res.status(400).json({ error: 'client_id is required' });
   const offerNo = 'OFR-' + Date.now();
 
   const tx = db.transaction(() => {
     const info = db.prepare(`
-      INSERT INTO offers (offer_no, client_id, contact_person, contact_phone, contact_email, subject,
+      INSERT INTO offers (offer_no, client_id, lead_id, contact_person, contact_phone, contact_email, subject,
         application, type_of_system, material_of_construction, drawing_no,
         inclusions, exclusions, utilities_requirement, instrument_air_supply, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(offerNo, client_id, contact_person, contact_phone, contact_email, subject,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(offerNo, client_id, lead_id || null, contact_person, contact_phone, contact_email, subject,
       application, type_of_system, material_of_construction, drawing_no,
       defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, req.user.id);
     const offerId = info.lastInsertRowid;
@@ -160,37 +165,12 @@ router.put('/:id', offerPerm(), (req, res) => {
   const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
 
+  let targetId = existing.id;
+  let forked = false;
   if (existing.status !== 'Draft' && !f.statusOnly) {
-    const rootId = existing.parent_offer_id || existing.id;
-    const maxVersion = db.prepare(`
-      SELECT MAX(version) as v FROM offers WHERE id = ? OR parent_offer_id = ?
-    `).get(rootId, rootId).v || existing.version || 1;
-
-    const full = getFullOffer(existing.id);
-    const tx = db.transaction(() => {
-      const info = db.prepare(`
-        INSERT INTO offers (offer_no, client_id, contact_person, contact_phone, contact_email, subject,
-          drawing_no, application, type_of_system, material_of_construction,
-          inclusions, exclusions, utilities_requirement, instrument_air_supply,
-          status, version, created_by, parent_offer_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).run(existing.offer_no, existing.client_id, f.contact_person, f.contact_phone, f.contact_email, f.subject,
-        f.drawing_no, f.application, f.type_of_system, f.material_of_construction,
-        f.inclusions, f.exclusions, f.utilities_requirement, f.instrument_air_supply,
-        'Draft', maxVersion + 1, req.user.id, rootId);
-      const newId = info.lastInsertRowid;
-      const itemStmt = db.prepare(`INSERT INTO offer_items (offer_id, item_code, section_title, description, image_path, qty, unit_price, total_price, sort_order) VALUES (?,?,?,?,?,?,?,?,?)`);
-      full.items.forEach(it => itemStmt.run(newId, it.item_code, it.section_title, it.description, it.image_path, it.qty, it.unit_price, it.total_price, it.sort_order));
-      const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
-      full.techSpecs.forEach(s => specStmt.run(newId, s.spec_key, s.spec_value, s.sort_order));
-      const boStmt = db.prepare(`INSERT INTO offer_bought_out_items (offer_id, component, make, sort_order) VALUES (?,?,?,?)`);
-      full.boughtOut.forEach(b => boStmt.run(newId, b.component, b.make, b.sort_order));
-      const termStmt = db.prepare(`INSERT INTO offer_terms (offer_id, term_key, term_value, sort_order) VALUES (?,?,?,?)`);
-      full.terms.forEach(t => termStmt.run(newId, t.term_key, t.term_value, t.sort_order));
-      return newId;
-    });
-    const newId = tx();
-    return res.json({ ok: true, newVersion: true, id: newId });
+    const version = ensureEditableVersion(existing.id, req.user.id, f.revision_reason);
+    targetId = version.id;
+    forked = true;
   }
 
   db.prepare(`
@@ -202,50 +182,60 @@ router.put('/:id', offerPerm(), (req, res) => {
   `).run(f.subject, f.contact_person, f.contact_phone, f.contact_email,
     f.application, f.type_of_system, f.material_of_construction, f.drawing_no,
     f.inclusions, f.exclusions, f.utilities_requirement, f.instrument_air_supply,
-    f.status || existing.status || 'Draft', req.params.id);
-  res.json({ ok: true });
+    forked ? 'Draft' : (f.status || existing.status || 'Draft'), targetId);
+  res.json({ ok: true, newVersion: forked, id: targetId });
 });
 
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order } = req.body;
+  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason } = req.body;
+  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
   const info = db.prepare(`
     INSERT INTO offer_items (offer_id, item_code, section_title, description, image_path, qty, unit_price, total_price, sort_order)
     VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(req.params.id, item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || 0);
-  res.json({ id: info.lastInsertRowid, image_path: imagePath });
+  `).run(version.id, item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || 0);
+  res.json({ id: info.lastInsertRowid, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order } = req.body;
+  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, revision_reason);
+  const targetItemId = version.itemIdMap.get(existing.id);
   let imagePath = existing.image_path;
   if (req.file) {
     imagePath = '/uploads/offers/' + req.file.filename;
-    if (existing.image_path) {
-      const oldPath = path.join(__dirname, '..', 'public', existing.image_path);
-      fs.unlink(oldPath, () => {});
+    // Only delete the old file in place (Draft edit, one row references it) -
+    // a forked copy's row still points at the same file, so the frozen
+    // earlier version needs it to keep existing.
+    if (existing.image_path && !version.forked) {
+      fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
     }
   }
   db.prepare(`
     UPDATE offer_items SET item_code=?, section_title=?, description=?, image_path=?, qty=?, unit_price=?, total_price=?, sort_order=?
     WHERE id=?
-  `).run(item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || existing.sort_order, req.params.itemId);
-  res.json({ ok: true, image_path: imagePath });
+  `).run(item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || existing.sort_order, targetItemId);
+  res.json({ ok: true, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
 router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
-  if (existing && existing.image_path) {
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason);
+  const targetItemId = version.itemIdMap.get(existing.id);
+  // Same reasoning as the image replacement above - a forked copy's row
+  // shares the physical file with the frozen earlier version's row.
+  if (existing.image_path && !version.forked) {
     fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
   }
-  db.prepare('DELETE FROM offer_items WHERE id = ?').run(req.params.itemId);
-  res.json({ ok: true });
+  db.prepare('DELETE FROM offer_items WHERE id = ?').run(targetItemId);
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
 // ===================== Bulk-replace helpers for the editable sheets =====================
@@ -263,16 +253,19 @@ function bulkReplace(table, offerId, rows, colA, colB) {
 }
 
 router.put('/:id/tech-specs', offerPerm(), (req, res) => {
-  bulkReplace('offer_tech_specs', req.params.id, req.body.rows || [], 'spec_key', 'spec_value');
-  res.json({ ok: true });
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  bulkReplace('offer_tech_specs', version.id, req.body.rows || [], 'spec_key', 'spec_value');
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/bought-out', offerPerm(), (req, res) => {
-  bulkReplace('offer_bought_out_items', req.params.id, req.body.rows || [], 'component', 'make');
-  res.json({ ok: true });
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  bulkReplace('offer_bought_out_items', version.id, req.body.rows || [], 'component', 'make');
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/terms', offerPerm(), (req, res) => {
-  bulkReplace('offer_terms', req.params.id, req.body.rows || [], 'term_key', 'term_value');
-  res.json({ ok: true });
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  bulkReplace('offer_terms', version.id, req.body.rows || [], 'term_key', 'term_value');
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
 // ===================== PDF generation =====================

@@ -466,6 +466,11 @@ const MIGRATIONS = [
     sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 26: Offer version-control gaps closed - an offer's iteration
+  // history had no link back to the enquiry/RFQ that started it (only to the
+  // client), and no note of *why* a version was revised. See lib/offerVersioning.js.
+  `ALTER TABLE offers ADD COLUMN lead_id INTEGER REFERENCES leads(id)`,
+  `ALTER TABLE offers ADD COLUMN revision_reason TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
