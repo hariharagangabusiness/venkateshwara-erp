@@ -174,9 +174,50 @@ router.post('/:id/reopen', requirePermission('service_request.manage'), (req, re
       VALUES (?,?,?,?,?)
     `).run(sr.id, sr.closed_at, req.user.id, sr.employee_id || null, reason || null);
     db.prepare(`UPDATE service_requests SET status = 'Open', job_status = 'Assigned', closed_at = NULL WHERE id = ?`).run(sr.id);
+    // Folds into the same activity timeline as ordinary notes (below) so
+    // "why was this reopened" shows up right alongside everything else
+    // support/ops logs against the SR, not only in the separate reopenings report.
+    db.prepare(`
+      INSERT INTO sr_updates (sr_id, user_id, note, status_change, action_taken) VALUES (?,?,?,?,?)
+    `).run(sr.id, req.user.id, reason || null, 'Closed -> Open (reopened)', 'Reopened under the 15-day free-of-charge policy');
   });
   tx();
   res.json({ ok: true });
+});
+
+// ===================== Activity log (free-form updates, part E) =====================
+// Independent of the formal status/job-status machines above - lets
+// support/ops record "called customer, waiting on part" or similar without
+// that being a status transition, and gives every real transition
+// (including a reopen, logged above) one shared timeline to read back.
+function canLogSrUpdate(req, sr) {
+  if (req.user.role_name === 'Admin') return true;
+  if (canFillReport(req, sr)) return true; // the technician this SR is scheduled to
+  const rows = db.prepare(`
+    SELECT p.code FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = ?
+  `).all(req.user.role_id);
+  return rows.some(r => r.code === 'service_request.manage');
+}
+router.get('/:id/updates', (req, res) => {
+  const sr = db.prepare('SELECT id FROM service_requests WHERE id = ?').get(req.params.id);
+  if (!sr) return res.status(404).json({ error: 'Not found' });
+  res.json(db.prepare(`
+    SELECT u.*, usr.full_name as user_name FROM sr_updates u LEFT JOIN users usr ON usr.id = u.user_id
+    WHERE u.sr_id = ? ORDER BY u.created_at DESC, u.id DESC
+  `).all(req.params.id));
+});
+router.post('/:id/updates', (req, res) => {
+  const sr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(req.params.id);
+  if (!sr) return res.status(404).json({ error: 'Not found' });
+  if (!canLogSrUpdate(req, sr)) return res.status(403).json({ error: 'Only the Service team or the assigned technician can log an update on this SR.' });
+  const { note, status_change, action_taken } = req.body;
+  if (!String(note || '').trim() && !String(action_taken || '').trim()) {
+    return res.status(400).json({ error: 'Enter a note or an action taken.' });
+  }
+  const info = db.prepare(`
+    INSERT INTO sr_updates (sr_id, user_id, note, status_change, action_taken) VALUES (?,?,?,?,?)
+  `).run(sr.id, req.user.id, note || null, status_change || null, action_taken || null);
+  res.json({ id: info.lastInsertRowid });
 });
 
 // Simple reporting view: reopen counts grouped by technician, for spotting

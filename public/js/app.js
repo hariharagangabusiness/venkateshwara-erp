@@ -25,6 +25,10 @@ async function doLogin() {
     const data = await api('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
     TOKEN = data.token;
     localStorage.setItem('erp_token', TOKEN);
+    if (data.must_change_password) {
+      promptForcedPasswordChange(password);
+      return;
+    }
     await boot();
   } catch (e) {
     errEl.textContent = e.message;
@@ -34,8 +38,124 @@ function doLogout() {
   TOKEN = null; localStorage.removeItem('erp_token');
   document.getElementById('app').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
+  showLoginBox();
 }
 document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+// ---- Forgot / reset password (unauthenticated) ----
+function hideAllLoginBoxes() {
+  ['login-box-main', 'forgot-password-box', 'reset-password-box'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+}
+window.showLoginBox = () => { hideAllLoginBoxes(); document.getElementById('login-box-main').style.display = 'block'; };
+window.showForgotPassword = () => {
+  hideAllLoginBoxes();
+  document.getElementById('forgot-password-box').style.display = 'block';
+  document.getElementById('forgot-err').textContent = '';
+  document.getElementById('forgot-msg').style.display = 'none';
+};
+window.submitForgotPassword = async () => {
+  const email = document.getElementById('forgot-email').value.trim();
+  const errEl = document.getElementById('forgot-err');
+  const msgEl = document.getElementById('forgot-msg');
+  errEl.textContent = ''; msgEl.style.display = 'none';
+  if (!email) { errEl.textContent = 'Enter your email address.'; return; }
+  try {
+    const r = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+    msgEl.textContent = r.message;
+    msgEl.style.display = 'block';
+  } catch (e) { errEl.textContent = e.message; }
+};
+
+// A reset link (?reset_token=...) lands here before anything else - even
+// over an existing logged-in session, since clicking one is an explicit
+// intent to change a password, not to resume whatever was open before.
+let RESET_TOKEN = null;
+async function checkForResetToken() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('reset_token');
+  if (!token) return false;
+  RESET_TOKEN = token;
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  hideAllLoginBoxes();
+  document.getElementById('reset-password-box').style.display = 'block';
+  const introEl = document.getElementById('reset-intro');
+  try {
+    const r = await api('/auth/reset-password/validate?token=' + encodeURIComponent(token));
+    introEl.textContent = `Hi ${r.full_name}, set a new password for your account (${r.username}).`;
+    document.getElementById('reset-form').style.display = 'block';
+  } catch (e) {
+    introEl.textContent = e.message;
+  }
+  return true;
+}
+window.submitResetPassword = async () => {
+  const newPassword = document.getElementById('reset-new-password').value;
+  const errEl = document.getElementById('reset-err');
+  errEl.textContent = '';
+  try {
+    await api('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token: RESET_TOKEN, new_password: newPassword }) });
+    // Clear the token from the URL so a page refresh doesn't try to reuse
+    // an already-consumed link, then drop back to a normal login prompt.
+    window.history.replaceState({}, '', window.location.pathname);
+    hideAllLoginBoxes();
+    document.getElementById('login-box-main').style.display = 'block';
+    document.getElementById('login-err').textContent = '';
+    showMsg(document.getElementById('login-box-main'), 'Password set - please sign in.', true);
+  } catch (e) { errEl.textContent = e.message; }
+};
+
+// ---- Forced password change (welcome email / admin reset) ----
+// A dedicated overlay, not openMiniModal - this runs before boot() and
+// before #app exists, and deliberately has no close button, since the app
+// must not be usable with a password that passed through an email inbox
+// or an Admin's hands until the account owner has replaced it themselves.
+function promptForcedPasswordChange(currentPassword) {
+  const overlay = document.createElement('div');
+  overlay.id = 'forced-pw-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `<div class="login-box" style="width:min(360px,92vw);">
+    <h1>Set a New Password</h1>
+    <p>For your security, please set your own password before continuing.</p>
+    <input id="forced-new-password" type="password" placeholder="New password (min 6 characters)" autocomplete="new-password">
+    <button onclick="submitForcedPasswordChange()">Set Password &amp; Continue</button>
+    <div class="login-err" id="forced-pw-err"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  window.__FORCED_PW_CURRENT = currentPassword;
+}
+window.submitForcedPasswordChange = async () => {
+  const newPassword = document.getElementById('forced-new-password').value;
+  const errEl = document.getElementById('forced-pw-err');
+  errEl.textContent = '';
+  try {
+    await api('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: window.__FORCED_PW_CURRENT, new_password: newPassword }) });
+    document.getElementById('forced-pw-overlay').remove();
+    window.__FORCED_PW_CURRENT = null;
+    await boot();
+  } catch (e) { errEl.textContent = e.message; }
+};
+
+// ---- Self-service change password (from within the app) ----
+window.openChangePasswordModal = () => {
+  const body = `
+    <div><label>Current Password</label><input id="cp-current" type="password"></div>
+    <div style="margin-top:8px;"><label>New Password (min 6 characters)</label><input id="cp-new" type="password"></div>
+    <div style="margin-top:12px;"><button class="btn" onclick="submitChangePassword()">Change Password</button></div>
+    <div class="msg err" id="cp-err" style="display:none;margin-top:8px;"></div>`;
+  openMiniModal('Change Password', body);
+};
+window.submitChangePassword = async () => {
+  const errEl = document.getElementById('cp-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/auth/change-password', { method: 'POST', body: JSON.stringify({
+      current_password: val('cp-current'), new_password: val('cp-new'),
+    })});
+    closeMiniModal();
+    alert('Password changed.');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
 
 let ALLOWED_PAGES = null; // null = unrestricted; Set of page ids once an Admin has configured this role
 // Faint company branding watermark across the app shell - best-effort and
@@ -3361,10 +3481,11 @@ PAGES.service = async (el) => {
         <td>${r.scheduled_date||'-'}</td><td>${esc(r.employee_name)||'-'}</td>
         <td>${esc(r.issue_description)}</td><td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
         <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
-        <td>${srActions(r)}</td></tr>`)}
+        <td>${srActions(r)} <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`)}
     </div>
     <div class="panel" id="sr-schedule-panel" style="display:none;"><h3>Schedule Service Request</h3><div id="sr-schedule-body"></div></div>
-    <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>`;
+    <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
+    <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>`;
 };
 function srActions(r) {
   const parts = [];
@@ -3404,6 +3525,44 @@ window.reopenSR = async (id) => {
     await api(`/service/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) });
     navigate('service');
   } catch (e) { alert(e.message); }
+};
+window.viewSrUpdates = async (srId, srNo) => {
+  window.__SR_UPDATES_ID = srId;
+  const panel = document.getElementById('sr-updates-panel');
+  document.getElementById('sr-updates-title').textContent = `Activity Log - ${srNo}`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth' });
+  await renderSrUpdates(srId);
+};
+async function renderSrUpdates(srId) {
+  const body = document.getElementById('sr-updates-body');
+  const updates = await api(`/service/${srId}/updates`);
+  body.innerHTML = `
+    ${updates.length ? updates.map(u => `
+      <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:8px;">
+        <p style="margin:0 0 4px;"><b>${esc(u.user_name)||'-'}</b> &middot; <span class="muted">${new Date(u.created_at).toLocaleString()}</span></p>
+        ${u.status_change ? `<p style="margin:0 0 4px;"><b>Status:</b> ${esc(u.status_change)}</p>` : ''}
+        ${u.action_taken ? `<p style="margin:0 0 4px;"><b>Action Taken:</b> ${esc(u.action_taken)}</p>` : ''}
+        ${u.note ? `<p style="margin:0;">${esc(u.note)}</p>` : ''}
+      </div>`).join('') : '<div class="empty">No updates logged yet.</div>'}
+    <div class="form-grid" style="margin-top:10px;">
+      <div><label>Action Taken (optional)</label><input id="sr-upd-action"></div>
+      <div><label>Status Change (optional)</label><input id="sr-upd-status" placeholder="e.g. Waiting on part"></div>
+    </div>
+    <label>Note</label>
+    <textarea id="sr-upd-note" rows="2" style="width:100%;"></textarea>
+    <button class="btn small" style="margin-top:8px;" onclick="addSrUpdate(${srId})">Log Update</button>
+    <div id="sr-upd-err" class="msg err" style="display:none;margin-top:6px;"></div>`;
+}
+window.addSrUpdate = async (srId) => {
+  const errEl = document.getElementById('sr-upd-err');
+  errEl.style.display = 'none';
+  try {
+    await api(`/service/${srId}/updates`, { method: 'POST', body: JSON.stringify({
+      note: val('sr-upd-note'), status_change: val('sr-upd-status'), action_taken: val('sr-upd-action'),
+    })});
+    await renderSrUpdates(srId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.addSR = async () => {
   try {
@@ -4761,7 +4920,8 @@ PAGES.users = async (el) => {
       <div class="form-grid">
         <div><label>Username</label><input id="us-username"></div>
         <div><label>Full Name</label><input id="us-name"></div>
-        <div><label>Password</label><input id="us-pass" type="text" placeholder="Default: Demo@123"></div>
+        <div><label>Email (for welcome email &amp; password reset)</label><input id="us-email" type="email"></div>
+        <div><label>Password</label><input id="us-pass" type="text" placeholder="Leave blank to auto-generate + email"></div>
         <div><label>Role</label><select id="us-role" onchange="checkUserDeptWarning()">${roles.map(r => `<option value="${r.id}" data-name="${esc(r.name)}">${esc(r.name)}</option>`).join('')}</select></div>
         <div><label>Department</label><select id="us-dept" onchange="checkUserDeptWarning()"><option value="">-</option>${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
         <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="us-supervisor" type="checkbox"> Supervisor / HOD (can act on every card in this role's queue, allocate work, and see the full department report)</label></div>
@@ -4776,11 +4936,11 @@ PAGES.users = async (el) => {
       <button class="btn" onclick="addUser()">Create User</button>
     </div>
     <div class="panel"><h3>Users (${users.length})</h3>
-      ${tableHTML(['Username', 'Name', 'Role', 'Department', 'Supervisor', 'Linked Employee', 'Status', 'Action'], users, u => `
-        <tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.role)}</td><td>${esc(u.department)||'<span class="muted">Not set</span>'}</td>
+      ${tableHTML(['Username', 'Name', 'Email', 'Role', 'Department', 'Supervisor', 'Linked Employee', 'Status', 'Action'], users, u => `
+        <tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)||'<span class="muted">Not set</span>'}</td><td>${esc(u.role)}</td><td>${esc(u.department)||'<span class="muted">Not set</span>'}</td>
         <td>${u.is_supervisor ? badge('active') : '-'}</td>
         <td>${u.employee_id ? esc(u.employee_code || '') + ' - ' + esc(u.employee_name) : '<span class="muted">Not linked</span>'}</td>
-        <td>${badge(u.is_active ? 'active' : 'Rejected')}</td>
+        <td>${badge(u.is_active ? 'active' : 'Rejected')}${u.must_change_password ? ' <span class="badge Pending" title="Must set their own password at next login">Pending activation</span>' : ''}</td>
         <td>
           <button class="btn small outline" onclick="openEditUser(${u.id})">Edit</button>
           <button class="btn small outline" onclick="toggleUser(${u.id})">${u.is_active ? 'Deactivate' : 'Activate'}</button>
@@ -4811,11 +4971,18 @@ window.checkUserDeptWarning = (prefix) => {
 };
 window.addUser = async () => {
   try {
-    await api('/masters/users', { method: 'POST', body: JSON.stringify({
-      username: val('us-username'), password: val('us-pass'), full_name: val('us-name'), role_id: val('us-role'),
+    const r = await api('/masters/users', { method: 'POST', body: JSON.stringify({
+      username: val('us-username'), password: val('us-pass'), full_name: val('us-name'), email: val('us-email'), role_id: val('us-role'),
       department_id: val('us-dept') || null, employee_id: val('us-employee') || null,
       is_supervisor: document.getElementById('us-supervisor').checked,
     })});
+    if (r.welcome_email && r.welcome_email.attempted) {
+      alert(r.welcome_email.sent
+        ? 'User created. A welcome email with login details was sent.'
+        : `User created, but the welcome email was not sent: ${r.welcome_email.reason || 'unknown reason'}.${r.password_used ? ' Temporary password: ' + r.password_used : ''}`);
+    } else if (r.password_used) {
+      alert(`User created. No email on file, so nothing was sent - temporary password: ${r.password_used}`);
+    }
     navigate('users');
   } catch (e) { alert(e.message); }
 };
@@ -4828,6 +4995,7 @@ window.openEditUser = (id) => {
   document.getElementById('user-edit-body').innerHTML = `
     <div class="form-grid">
       <div><label>Full Name</label><input id="ue-name" value="${esc(u.full_name)}"></div>
+      <div><label>Email</label><input id="ue-email" type="email" value="${esc(u.email)}"></div>
       <div><label>Role</label><select id="ue-role" onchange="checkUserDeptWarning('ue')">${roles.map(r => `<option value="${r.id}" data-name="${esc(r.name)}" ${r.id===u.role_id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></div>
       <div><label>Department</label><select id="ue-dept" onchange="checkUserDeptWarning('ue')"><option value="">-</option>${depts.map(d => `<option value="${d.id}" ${d.id===u.department_id?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
       <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ue-supervisor" type="checkbox" ${u.is_supervisor?'checked':''}> Supervisor / HOD</label></div>
@@ -4843,7 +5011,7 @@ window.openEditUser = (id) => {
 window.saveEditUser = async (id) => {
   try {
     const body = {
-      full_name: val('ue-name'), role_id: val('ue-role'), department_id: val('ue-dept') || null,
+      full_name: val('ue-name'), email: val('ue-email'), role_id: val('ue-role'), department_id: val('ue-dept') || null,
       is_supervisor: document.getElementById('ue-supervisor').checked,
     };
     if (val('ue-pass').trim()) body.password = val('ue-pass').trim();
@@ -6217,4 +6385,6 @@ window.uploadDataImportFile = async () => {
 };
 
 // ===================== Boot on load if token exists =====================
-if (TOKEN) boot();
+checkForResetToken().then(hadResetToken => {
+  if (!hadResetToken && TOKEN) boot();
+});
