@@ -5060,8 +5060,11 @@ PAGES.access = async (el) => {
   // configured pages, so it's meaningless to offer as a checkbox here.
   const catalogForRoles = data.pageCatalog.map(g => ({ group: g.group, items: g.items.filter(it => it.id !== 'access') })).filter(g => g.items.length);
   body.innerHTML = data.roles.filter(r => r.name !== 'Admin').map(r => `
-    <div class="panel" style="margin-bottom:12px;">
-      <h4 style="margin:0 0 8px;">${esc(r.name)} ${r.configured ? badge('Pending') : '<span class="muted">(Unrestricted - sees everything)</span>'}</h4>
+    <div class="panel access-role-panel collapsed" style="margin-bottom:12px;" id="access-panel-${r.id}">
+      <h4 class="access-role-head" onclick="toggleAccessRolePanel(${r.id})">
+        <span>${esc(r.name)} ${r.configured ? badge('Pending') : '<span class="muted">(Unrestricted - sees everything)</span>'}</span>
+        <span class="chev">&#9660;</span>
+      </h4>
       <div class="access-grid" id="access-role-${r.id}">
         ${catalogForRoles.map(g => `
           <div class="access-group">
@@ -5071,11 +5074,15 @@ PAGES.access = async (el) => {
             `).join('')}
           </div>`).join('')}
       </div>
-      <div style="margin-top:10px;">
+      <div class="access-role-actions" style="margin-top:10px;">
         <button class="btn small" onclick="saveAccess(${r.id})">Save Access for ${esc(r.name)}</button>
         ${r.configured ? `<button class="btn small outline" onclick="resetAccess(${r.id})">Reset to Unrestricted</button>` : ''}
       </div>
     </div>`).join('');
+};
+window.toggleAccessRolePanel = (roleId) => {
+  const panel = document.getElementById(`access-panel-${roleId}`);
+  if (panel) panel.classList.toggle('collapsed');
 };
 async function renderExtraAccessPanel(pageCatalog) {
   const [depts, users, extras] = await Promise.all([api('/masters/departments'), api('/masters/users'), api('/admin/extra-access')]);
