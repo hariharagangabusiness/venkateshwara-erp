@@ -6191,6 +6191,7 @@ PAGES['todos'] = async (el) => {
 
     ${canView ? `
     <div class="panel"><h3>All To-Dos Logged</h3>
+      <p class="muted">${['Admin', 'Management'].includes(ME.role) ? 'Every To-Do across the whole company.' : "Every To-Do logged against your own department's HOD, plus anything assigned directly to you."}</p>
       ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], all, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
         <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td>
