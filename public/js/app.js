@@ -205,12 +205,22 @@ async function boot() {
   // previous login, then decide fresh where it belongs for this one.
   const prodGroup = NAV.find(g => g.group === 'Projects Management');
   if (prodGroup) prodGroup.items = prodGroup.items.filter(it => it.id !== 'jobcards');
+  const elecServiceGroup = NAV.find(g => g.group === 'Electrical & Service');
+  if (elecServiceGroup) elecServiceGroup.items = elecServiceGroup.items.filter(it => it.id !== 'jobcards');
   DEPT_OWN_GROUP.items = [];
   if (ME.department_name && !['Admin', 'ProjectManager'].includes(ME.role)) {
     const label = `${ME.department_name} Job Cards`;
     PAGE_TITLES['jobcards'] = label;
-    DEPT_OWN_GROUP.group = ME.department_name;
-    DEPT_OWN_GROUP.items = [{ id: 'jobcards', label }];
+    // Electrical and Service are one merged department/HOD in this org (see
+    // Round 22) - their Job Cards entry lives inside the shared "Electrical &
+    // Service" tab instead of getting its own separate top-level group. Every
+    // other department still gets its own department-named group as before.
+    if (['Electrical', 'Service'].includes(ME.role) && elecServiceGroup) {
+      elecServiceGroup.items.unshift({ id: 'jobcards', label });
+    } else {
+      DEPT_OWN_GROUP.group = ME.department_name;
+      DEPT_OWN_GROUP.items = [{ id: 'jobcards', label }];
+    }
   } else if (prodGroup) {
     // Admin/ProjectManager keep a generic "My Job Cards" entry under
     // Projects Management (they also get the full per-department set
@@ -228,8 +238,9 @@ async function boot() {
   // Buffing-Sandblast/Painting) into their own sections rather than one
   // flat list, since combinedStagesForRole() already pulls all of them in.
   // NAV persists across logins, so start idempotent: strip any jc_* items a
-  // previous login may have merged into Purchase / Store & Inventory.
-  NAV.forEach(g => { if (g.group === 'Purchase' || g.group === 'Store & Inventory') g.items = g.items.filter(it => !it.id.startsWith('jc_')); });
+  // previous login may have merged into Purchase / Store & Inventory /
+  // Electrical & Service.
+  NAV.forEach(g => { if (['Purchase', 'Store & Inventory', 'Electrical & Service'].includes(g.group)) g.items = g.items.filter(it => !it.id.startsWith('jc_')); });
   DEPT_JOBCARDS_GROUPS.length = 0;
   if (['Admin', 'ProjectManager'].includes(ME.role)) {
     try {
@@ -237,9 +248,11 @@ async function boot() {
       // Purchase and Store already have their own dedicated functional nav
       // groups (Purchase Requests/POs/Vendors, Item Master/Stock In-Out/
       // Challans) - their job cards belong INSIDE those, not in a second
-      // separate group of the same name. Every other stage gets its own
+      // separate group of the same name. Electrical is merged into the same
+      // "Electrical & Service" tab Service's own functional pages live in
+      // (Round 22 - one HOD covers both). Every other stage gets its own
       // group, since nothing else already claims that department's name.
-      const MERGE_INTO = { Purchase: 'Purchase', Store: 'Store & Inventory' };
+      const MERGE_INTO = { Purchase: 'Purchase', Store: 'Store & Inventory', Electrical: 'Electrical & Service' };
       // These downstream stages don't have their own dedicated functional
       // nav group the way Purchase/Store do, and by request they're grouped
       // together under "Manufacturing" alongside its sub-processes, rather
@@ -326,7 +339,7 @@ const NAV = [
     { id: 'sc-transfers', label: 'Store → Service Center Transfers' },
     { id: 'sc-stock', label: 'Service Center Stock Levels' },
   ]},
-  { group: 'Service', items: [
+  { group: 'Electrical & Service', items: [
     { id: 'service', label: 'Service & Spares' },
     { id: 'service-mine', label: 'My Service Requests' },
     { id: 'service-recon', label: 'Reconciliation' },
@@ -5050,11 +5063,18 @@ PAGES.access = async (el) => {
       <div id="extra-access-list"></div>
     </div>
     <div class="panel">
+      <h3>Cross-Department Oversight (Round 22)</h3>
+      <p class="muted">Grant a specific user full supervisor-level reach into another role's domain - Job Cards allocation, To-Do oversight, and any permission-gated page that role has - without changing that user's own role or department. For a real-world HOD who covers two departments (e.g. Electrical & Service) rather than actually merging those departments/roles. This grants back-end authority only; pair it with Extra Page Access above if their own role's page list doesn't already show the other department's pages.</p>
+      <div id="role-oversight-form"></div>
+      <div id="role-oversight-list"></div>
+    </div>
+    <div class="panel">
       <h3>User Access by Role</h3>
       <p class="muted">Tick the pages a role is allowed to see in the sidebar. A role with nothing configured (marked "Unrestricted") sees every page, same as today - saving any selection for a role switches it to that fixed list. Admin can always see everything and can't be restricted.</p>
       <div id="access-body"></div>
     </div>`;
   await renderExtraAccessPanel(data.pageCatalog);
+  await renderRoleOversightPanel();
   const body = document.getElementById('access-body');
   // "User Access" itself is always Admin-only regardless of any role's
   // configured pages, so it's meaningless to offer as a checkbox here.
@@ -5126,6 +5146,33 @@ window.saveExtraAccess = async () => {
 };
 window.removeExtraAccess = async (id) => {
   await api('/admin/extra-access/' + id, { method: 'DELETE' });
+  navigate('access');
+};
+async function renderRoleOversightPanel() {
+  const [users, roles, grants] = await Promise.all([api('/masters/users'), api('/masters/roles'), api('/admin/role-oversight')]);
+  const nonAdminRoles = roles.filter(r => r.name !== 'Admin');
+  const formEl = document.getElementById('role-oversight-form');
+  formEl.innerHTML = `
+    <div class="form-grid">
+      <div><label>User (the HOD/supervisor being granted oversight)</label>
+        <select id="ro-user">${users.map(u => `<option value="${u.id}">${esc(u.full_name)} (${esc(u.department)||'-'})</option>`).join('')}</select></div>
+      <div><label>Grant Oversight Of Role</label>
+        <select id="ro-role">${nonAdminRoles.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('')}</select></div>
+    </div>
+    <button class="btn small" onclick="saveRoleOversight()">Grant Oversight</button>`;
+  const listEl = document.getElementById('role-oversight-list');
+  listEl.innerHTML = grants.length ? tableHTML(['User', 'Oversees Role', ''], grants, g => `
+    <tr><td>${esc(g.user_name)}</td><td>${esc(g.oversees_role_name)}</td>
+    <td><button class="btn small outline" onclick="removeRoleOversight(${g.id})">Revoke</button></td></tr>`) : '<div class="empty">No cross-department oversight grants yet.</div>';
+}
+window.saveRoleOversight = async () => {
+  try {
+    await api('/admin/role-oversight', { method: 'POST', body: JSON.stringify({ user_id: val('ro-user'), oversees_role_id: val('ro-role') }) });
+    navigate('access');
+  } catch (e) { alert(e.message); }
+};
+window.removeRoleOversight = async (id) => {
+  await api('/admin/role-oversight/' + id, { method: 'DELETE' });
   navigate('access');
 };
 window.saveAccess = async (roleId) => {
@@ -6105,6 +6152,7 @@ window.saveSiteVisit = async (id) => {
 
 // ===================== Engineer Daily Work Log (replaces "DAILY WORK" Excel) =====================
 let DWL_MONTH = null;
+const DWL_STATUSES = ['', 'Pending', 'InProgress', 'Completed', 'OnHold'];
 PAGES['daily-work-log'] = async (el) => {
   const month = DWL_MONTH || thisMonth();
   DWL_MONTH = month;
@@ -6112,13 +6160,13 @@ PAGES['daily-work-log'] = async (el) => {
   const [y, m] = month.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
   const byKey = {};
-  logs.forEach(l => { byKey[l.employee_id + '|' + l.log_date] = l.note; });
+  logs.forEach(l => { byKey[l.employee_id + '|' + l.log_date] = l; });
   const dayCols = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const dateFor = (d) => `${month}-${String(d).padStart(2, '0')}`;
   el.innerHTML = `
     <div class="panel"><div class="form-grid"><div><label>Month</label>
       <input type="month" value="${month}" onchange="DWL_MONTH=this.value;navigate('daily-work-log')"></div></div>
-      <p class="muted">One cell per engineer per day - type the job/site they worked on, or a shorthand like "OD" (outdoor duty), "A" (absent), "1/2" (half day), same as the old sheet.</p>
+      <p class="muted">One cell per engineer per day - type the job/site they worked on, or a shorthand like "OD" (outdoor duty), "A" (absent), "1/2" (half day), same as the old sheet. Optionally set a Status when you're actively assigning that day's task rather than just recording what happened - leave it blank for a plain note, same as before.</p>
     </div>
     <div class="panel">
       <div style="overflow-x:auto;">
@@ -6126,7 +6174,12 @@ PAGES['daily-work-log'] = async (el) => {
           ${dayCols.map(d => `<th style="min-width:120px;">${d}</th>`).join('')}</tr></thead>
         <tbody>
           ${engineers.map(e => `<tr><td>${esc(e.full_name)}</td>
-            ${dayCols.map(d => `<td><input class="dwl-cell" data-emp="${e.id}" data-date="${dateFor(d)}" value="${esc(byKey[e.id+'|'+dateFor(d)]||'')}" style="width:110px;"></td>`).join('')}
+            ${dayCols.map(d => { const cell = byKey[e.id + '|' + dateFor(d)] || {}; return `<td>
+              <input class="dwl-cell" data-emp="${e.id}" data-date="${dateFor(d)}" value="${esc(cell.note || '')}" style="width:110px;">
+              <select class="dwl-status" data-emp="${e.id}" data-date="${dateFor(d)}" style="width:110px;margin-top:3px;" title="${cell.assigned_by_name ? 'Assigned by ' + esc(cell.assigned_by_name) : ''}">
+                ${DWL_STATUSES.map(s => `<option value="${s}" ${cell.status === s ? 'selected' : ''}>${s || '(no status)'}</option>`).join('')}
+              </select>
+            </td>`; }).join('')}
           </tr>`).join('')}
         </tbody></table>
       </div>
@@ -6137,10 +6190,15 @@ PAGES['daily-work-log'] = async (el) => {
 window.saveDailyWorkLog = async () => {
   const errEl = document.getElementById('dwl-err');
   try {
-    const entries = [];
+    const byKey = {};
     document.querySelectorAll('.dwl-cell').forEach(c => {
-      entries.push({ employee_id: Number(c.dataset.emp), log_date: c.dataset.date, note: c.value });
+      byKey[c.dataset.emp + '|' + c.dataset.date] = { employee_id: Number(c.dataset.emp), log_date: c.dataset.date, note: c.value, status: '' };
     });
+    document.querySelectorAll('.dwl-status').forEach(s => {
+      const key = s.dataset.emp + '|' + s.dataset.date;
+      if (byKey[key]) byKey[key].status = s.value;
+    });
+    const entries = Object.values(byKey);
     await api('/site-visits/daily-log/bulk', { method: 'POST', body: JSON.stringify({ entries }) });
     navigate('daily-work-log');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }

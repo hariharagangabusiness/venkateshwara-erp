@@ -88,12 +88,22 @@ router.put('/visits/:id', requirePermission('site_visit.manage'), (req, res) => 
 });
 
 // ===================== Daily Work Log =====================
-// One free-text cell per engineer per day - a daily roll-call, independent
-// of structured job-card timestamps elsewhere in the ERP.
+// One cell per engineer per day - a daily roll-call, independent of
+// structured job-card timestamps elsewhere in the ERP. A supervisor can
+// still just type a free-text note (the original shorthand-driven flow,
+// unchanged), or additionally set a status when they're actively assigning
+// that day's task rather than just recording what happened after the fact -
+// status stays null/untouched for a plain logged note, same as before this
+// was added.
+const DWL_STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 router.get('/daily-log', requirePermission('site_visit.manage', 'report.view_all'), (req, res) => {
   const month = req.query.month; // 'YYYY-MM'
   if (!month || !/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: 'Pass ?month=YYYY-MM' });
-  const rows = db.prepare(`SELECT * FROM daily_work_logs WHERE log_date LIKE ?`).all(month + '%');
+  const rows = db.prepare(`
+    SELECT dwl.*, u.full_name as assigned_by_name
+    FROM daily_work_logs dwl LEFT JOIN users u ON u.id = dwl.assigned_by
+    WHERE dwl.log_date LIKE ?
+  `).all(month + '%');
   res.json(rows);
 });
 
@@ -101,18 +111,23 @@ router.post('/daily-log/bulk', requirePermission('site_visit.manage'), (req, res
   const { entries } = req.body;
   if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ error: 'No entries to save.' });
   const upsert = db.prepare(`
-    INSERT INTO daily_work_logs (employee_id, log_date, note, created_by, updated_by)
-    VALUES (?,?,?,?,?)
+    INSERT INTO daily_work_logs (employee_id, log_date, note, status, assigned_by, created_by, updated_by)
+    VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(employee_id, log_date) DO UPDATE SET
-      note = excluded.note, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+      note = excluded.note, status = excluded.status, assigned_by = excluded.assigned_by,
+      updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
   `);
   const del = db.prepare(`DELETE FROM daily_work_logs WHERE employee_id = ? AND log_date = ?`);
   const tx = db.transaction(() => {
     entries.forEach(e => {
       if (!e.employee_id || !e.log_date) return;
       const note = (e.note || '').trim();
-      if (!note) { del.run(e.employee_id, e.log_date); return; }
-      upsert.run(e.employee_id, e.log_date, note, req.user.id, req.user.id);
+      const status = e.status && DWL_STATUSES.includes(e.status) ? e.status : null;
+      if (!note && !status) { del.run(e.employee_id, e.log_date); return; }
+      // assigned_by only gets set/refreshed when a status is actually present -
+      // a plain shorthand note with no status is just a log entry, not a task
+      // assignment, so it shouldn't imply anyone "assigned" it.
+      upsert.run(e.employee_id, e.log_date, note, status, status ? req.user.id : null, req.user.id, req.user.id);
     });
   });
   tx();

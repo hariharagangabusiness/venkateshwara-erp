@@ -1,8 +1,19 @@
 const express = require('express');
 const { db } = require('../db');
 const { authRequired } = require('../middleware/auth');
+const { inOversightDept, oversightDepartmentIds } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
+
+// The user's own department plus any department they've been granted
+// cross-department oversight of (role_oversight - e.g. a unified Electrical
+// & Service HOD) - the full set of departments whose To-Dos they can see/
+// manage as if it were their own.
+function scopedDepartmentIds(user) {
+  const ids = oversightDepartmentIds(db, user.id);
+  if (user.department_id != null) ids.push(user.department_id);
+  return ids;
+}
 
 const STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 
@@ -38,14 +49,14 @@ function canView(user) {
 function canManageTodo(user, t) {
   if (isGlobal(user)) return true;
   if (!canLog(user)) return false;
-  return t.hod_department_id != null ? t.hod_department_id === user.department_id : t.created_by === user.id;
+  return t.hod_department_id != null ? inOversightDept(db, user, t.hod_department_id) : t.created_by === user.id;
 }
 // Anyone who'd see this To-Do in their own list (the assignee, a department-
 // mate of the HOD it's logged against, or Admin/Management) can read its
 // activity log - matches the visibility rule GET /mine applies.
 function canSeeTodo(user, t) {
   return t.assigned_to === user.id || isGlobal(user) ||
-    (t.hod_department_id != null && t.hod_department_id === user.department_id);
+    (t.hod_department_id != null && inOversightDept(db, user, t.hod_department_id));
 }
 
 // People pickers for the "Log a New To-Do" form. A department-scoped
@@ -55,12 +66,13 @@ function canSeeTodo(user, t) {
 // company-wide: handing the action itself to someone in another department
 // is a normal coordination pattern and isn't restricted.
 router.get('/people', (req, res) => {
+  const deptIds = scopedDepartmentIds(req.user);
   const hods = db.prepare(`
     SELECT u.id, u.full_name, d.name as department
     FROM users u LEFT JOIN departments d ON d.id = u.department_id
-    WHERE u.is_active = 1 AND u.is_supervisor = 1 ${isGlobal(req.user) ? '' : 'AND u.department_id = ?'}
+    WHERE u.is_active = 1 AND u.is_supervisor = 1 ${isGlobal(req.user) ? '' : `AND u.department_id IN (${deptIds.map(() => '?').join(',') || 'NULL'})`}
     ORDER BY d.name, u.full_name
-  `).all(...(isGlobal(req.user) ? [] : [req.user.department_id]));
+  `).all(...(isGlobal(req.user) ? [] : deptIds));
   const assignees = db.prepare(`
     SELECT u.id, u.full_name, d.name as department
     FROM users u LEFT JOIN departments d ON d.id = u.department_id
@@ -80,6 +92,7 @@ router.get('/people', (req, res) => {
 // not from anything the client sends), so it can't be widened by request
 // params.
 router.get('/mine', (req, res) => {
+  const deptIds = scopedDepartmentIds(req.user);
   const rows = isGlobal(req.user)
     ? db.prepare(`
         SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
@@ -93,9 +106,9 @@ router.get('/mine', (req, res) => {
         FROM todos t
         LEFT JOIN users h ON h.id = t.hod_id
         JOIN users a ON a.id = t.assigned_to
-        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id = ?)
+        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id IN (${deptIds.map(() => '?').join(',') || 'NULL'}))
         ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-      `).all(req.user.id, req.user.department_id);
+      `).all(req.user.id, ...deptIds);
   res.json(rows.map(t => ({ ...t, is_mine: t.assigned_to === req.user.id })));
 });
 
@@ -106,6 +119,7 @@ router.get('/mine', (req, res) => {
 // capability at all only ever sees their own via /mine.
 router.get('/', (req, res) => {
   if (!canView(req.user)) return res.status(403).json({ error: 'Access denied' });
+  const deptIds = scopedDepartmentIds(req.user);
   const rows = isGlobal(req.user)
     ? db.prepare(`
         SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name, c.full_name as created_by_name
@@ -121,9 +135,9 @@ router.get('/', (req, res) => {
         LEFT JOIN users h ON h.id = t.hod_id
         JOIN users a ON a.id = t.assigned_to
         LEFT JOIN users c ON c.id = t.created_by
-        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id = ?)
+        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id IN (${deptIds.map(() => '?').join(',') || 'NULL'}))
         ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-      `).all(req.user.id, req.user.department_id);
+      `).all(req.user.id, ...deptIds);
   res.json(rows);
 });
 
@@ -136,7 +150,7 @@ router.post('/', (req, res) => {
   if (hod_id) {
     const hod = db.prepare('SELECT id, department_id FROM users WHERE id = ? AND is_supervisor = 1').get(hod_id);
     if (!hod) return res.status(400).json({ error: 'That user is not marked as a department HOD.' });
-    if (!isGlobal(req.user) && hod.department_id !== req.user.department_id) {
+    if (!isGlobal(req.user) && !inOversightDept(db, req.user, hod.department_id)) {
       return res.status(400).json({ error: "You can only log a To-Do against your own department's HOD." });
     }
   }
@@ -175,7 +189,7 @@ router.patch('/:id', (req, res) => {
   if (isManager) {
     if (hod_id !== undefined && hod_id && !isGlobal(req.user)) {
       const hod = db.prepare('SELECT department_id FROM users WHERE id = ? AND is_supervisor = 1').get(hod_id);
-      if (!hod || hod.department_id !== req.user.department_id) {
+      if (!hod || !inOversightDept(db, req.user, hod.department_id)) {
         return res.status(400).json({ error: "You can only reassign a To-Do to your own department's HOD." });
       }
     }

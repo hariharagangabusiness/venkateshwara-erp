@@ -603,6 +603,19 @@ const MIGRATIONS = [
     action_taken TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 22: Cross-department oversight (e.g. one HOD covering both
+  // Electrical and Service without merging the two departments/roles - see
+  // lib/roleOversight.js) and Daily Work Log entries becoming assignable
+  // (status + who assigned it) instead of pure free-text.
+  `CREATE TABLE IF NOT EXISTS role_oversight (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    oversees_role_id INTEGER NOT NULL REFERENCES roles(id),
+    granted_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `ALTER TABLE daily_work_logs ADD COLUMN status TEXT`,
+  `ALTER TABLE daily_work_logs ADD COLUMN assigned_by INTEGER REFERENCES users(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -647,6 +660,9 @@ const UNIQUE_INDEXES = [
   // lookup to be unambiguous. Partial (excludes NULL/'') since most existing
   // accounts predate this column and many will never have one set.
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email ON users(email) WHERE email IS NOT NULL AND email <> ''`,
+  // A user is granted oversight of a given other role at most once - granting
+  // it again is a no-op, not a second row.
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_role_oversight ON role_oversight(user_id, oversees_role_id)`,
 ];
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }
