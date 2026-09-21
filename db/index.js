@@ -560,6 +560,49 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 29: Password reset + welcome email + SR activity log.
+  // users had no email at all - it's needed both to look someone up for a
+  // password reset and to send the welcome email on account creation.
+  // Nullable/unenforced-unique on purpose: many existing accounts (and
+  // Admin/demo logins) will never have one set, and that's fine - reset-by-
+  // email and the welcome email simply don't apply to them.
+  `ALTER TABLE users ADD COLUMN email TEXT`,
+  // Set on any account whose current password was auto-generated (welcome
+  // email) or reset via a token, rather than chosen by the person - checked
+  // at login to force a change before they can use the app with a password
+  // that passed through an email inbox.
+  `ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0`,
+  // One reset/activation flow, not two - setting a first password on a new
+  // account and resetting a forgotten one are the same operation
+  // (token proves "this really is that email's owner", then set a password),
+  // so `purpose` is a label for the email copy, not a fork in the logic.
+  // Only the token's hash is ever stored, never the raw token itself (same
+  // reasoning as a password hash) - see lib/passwordReset.js.
+  `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'PasswordReset',   -- PasswordReset, AccountActivation
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // Free-form activity log for a Service Request, independent of the
+  // formal status/job-status state machines already in service_requests -
+  // support/ops can log "called customer, waiting on part" without that
+  // being a status transition. Same shape as todo_updates (the same need,
+  // solved once before for To-Dos): a note plus an optional status_change/
+  // action_taken pair, so a real transition (including a reopen) can be
+  // annotated in the same timeline as pure commentary. See routes/service.js.
+  `CREATE TABLE IF NOT EXISTS sr_updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sr_id INTEGER NOT NULL REFERENCES service_requests(id),
+    user_id INTEGER REFERENCES users(id),
+    note TEXT,
+    status_change TEXT,
+    action_taken TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -600,6 +643,10 @@ const UNIQUE_INDEXES = [
   // default row is deliberately excluded (and kept singular by application
   // logic in routes/soa.js) since a partial index can't cover it the same way.
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_soa_settings_client ON soa_settings(client_id) WHERE client_id IS NOT NULL`,
+  // A login's email must resolve to exactly one account for password-reset
+  // lookup to be unambiguous. Partial (excludes NULL/'') since most existing
+  // accounts predate this column and many will never have one set.
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email ON users(email) WHERE email IS NOT NULL AND email <> ''`,
 ];
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }

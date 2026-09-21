@@ -206,16 +206,35 @@
 <body>
 
 <div id="login-screen">
-  <div class="login-box">
+  <div class="login-box" id="login-box-main">
     <h1>Venkateshwara Engineers</h1>
     <p>ERP System &mdash; Sign in to continue</p>
     <input id="login-username" placeholder="Username" autocomplete="username">
     <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
     <button onclick="doLogin()">Sign In</button>
     <div class="login-err" id="login-err"></div>
+    <p style="text-align:right;margin:0 0 10px;"><a href="#" onclick="showForgotPassword();return false;" style="font-size:var(--fs-sm);color:var(--muted);">Forgot password?</a></p>
     <div class="hint">Demo logins (password shown after username):<br>
       admin / Admin@123 (full access)<br>
       hr1, accounts1, sales1, purchase1, pm1 / Demo@123</div>
+  </div>
+  <div class="login-box" id="forgot-password-box" style="display:none;">
+    <h1>Reset Password</h1>
+    <p>Enter your account's email - we'll send a reset link if it's on file.</p>
+    <input id="forgot-email" type="email" placeholder="Email address" autocomplete="email">
+    <button onclick="submitForgotPassword()">Send Reset Link</button>
+    <div class="login-err" id="forgot-err"></div>
+    <div class="hint" id="forgot-msg" style="display:none;"></div>
+    <p style="text-align:center;margin:10px 0 0;"><a href="#" onclick="showLoginBox();return false;" style="font-size:var(--fs-sm);color:var(--muted);">Back to Sign In</a></p>
+  </div>
+  <div class="login-box" id="reset-password-box" style="display:none;">
+    <h1>Set New Password</h1>
+    <p id="reset-intro">Checking your link&hellip;</p>
+    <div id="reset-form" style="display:none;">
+      <input id="reset-new-password" type="password" placeholder="New password (min 6 characters)" autocomplete="new-password">
+      <button onclick="submitResetPassword()">Set Password &amp; Sign In</button>
+    </div>
+    <div class="login-err" id="reset-err"></div>
   </div>
 </div>
 
@@ -230,6 +249,7 @@
         <h2 id="page-title" style="flex:1">Dashboard</h2>
         <div class="userinfo">
           <span><b id="user-name"></b> &middot; <span id="user-role"></span></span>
+          <button class="logout-btn" onclick="openChangePasswordModal()">Change Password</button>
           <button class="logout-btn" onclick="doLogout()">Log out</button>
         </div>
       </div>
