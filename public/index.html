@@ -119,6 +119,12 @@
   .access-group-title{font-size:var(--fs-sm);font-weight:600;color:var(--primary);margin-bottom:6px;}
   .access-item{display:block;font-size:var(--fs-base);line-height:var(--lh-normal);padding:3px 0;color:var(--text,#333);}
   .access-item input{margin-right:6px;}
+  .access-role-head{cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;margin:0 0 8px;}
+  .access-role-head .chev{font-size:9px;transition:transform .15s ease;opacity:.7;margin-left:8px;flex-shrink:0;}
+  .access-role-panel.collapsed .access-role-head{margin-bottom:0;}
+  .access-role-panel.collapsed .access-role-head .chev{transform:rotate(-90deg);}
+  .access-role-panel.collapsed .access-grid,
+  .access-role-panel.collapsed .access-role-actions{display:none;}
   .inline-edit{border-bottom:1px dashed var(--border);cursor:text;}
   .inline-edit:focus{outline:1px solid var(--primary);background:#fff;}
   tfoot td{font-weight:600;background:var(--bg,#f7f8fa);}

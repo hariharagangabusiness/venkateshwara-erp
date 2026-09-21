@@ -12,6 +12,7 @@ const PAGE_CATALOG = [
   { group: 'Overview', items: [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'approvals', label: 'My Approvals' },
+    { id: 'todos', label: 'To-Do List' },
     { id: 'dept-report', label: 'Department Report' },
   ]},
   { group: 'Sales & Marketing', items: [
