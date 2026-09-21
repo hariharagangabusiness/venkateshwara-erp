@@ -6,40 +6,61 @@ router.use(authRequired);
 
 const STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 
-// A department HOD (is_supervisor), Admin, or Management can log a To-Do,
-// hand it to someone, and act on ANY To-Do (change its status, redefine it,
-// reassign it) - same access-control convention already used for
-// supervisor-only actions elsewhere (routes/finance.js, routes/tickets.js),
-// extended to Management by role rather than the per-user is_supervisor flag.
-// A regular employee can see and update the status of To-Dos assigned to
-// them, but can't create new ones or act on someone else's.
-function canLog(user) {
-  return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
+// Only Admin/Management get company-wide reach - every other role's To-Do
+// access (logging, oversight, managing someone else's item) is scoped to
+// their own department below, never the whole org.
+function isGlobal(user) {
+  return user.role_name === 'Admin' || user.role_name === 'Management';
 }
-// Who may see every To-Do and its full update log without owning it. Kept as
-// a separate function from canLog even though the two sets currently match -
-// they answer different questions (view vs. act), and future roles may need
-// one without the other.
+// A department HOD (is_supervisor), Admin, or Management can log a To-Do,
+// hand it to someone, and act on one - same access-control convention
+// already used for supervisor-only actions elsewhere (routes/finance.js,
+// routes/tickets.js), extended to Management by role rather than the
+// per-user is_supervisor flag. A regular employee can see and update the
+// status of To-Dos assigned to them, but can't create new ones or act on
+// someone else's. This only says whether a user has manager-level
+// capability at all - canManageTodo() below decides it per To-Do, scoped to
+// their own department for anyone who isn't Admin/Management.
+function canLog(user) {
+  return isGlobal(user) || !!user.is_supervisor;
+}
+// Who may reach the oversight views (the "All To-Dos Logged" panel,
+// scoped to their own department unless isGlobal) at all.
 function canView(user) {
-  return user.role_name === 'Admin' || user.role_name === 'Management' || !!user.is_supervisor;
+  return isGlobal(user) || !!user.is_supervisor;
+}
+// Whether `user` may act as manager (redefine, reassign, add a note as
+// manager) on `t` - a HOD/supervisor only for a To-Do logged against their
+// own department; Admin/Management for any. `t` must carry a
+// `hod_department_id` column (the joined HOD's department) and `created_by`.
+// A To-Do logged with no HOD at all has no department to scope against, so
+// it falls back to whoever logged it.
+function canManageTodo(user, t) {
+  if (isGlobal(user)) return true;
+  if (!canLog(user)) return false;
+  return t.hod_department_id != null ? t.hod_department_id === user.department_id : t.created_by === user.id;
 }
 // Anyone who'd see this To-Do in their own list (the assignee, a department-
-// mate of the HOD it's logged against, or anyone with the oversight view)
-// can read its activity log - matches the visibility rule GET /mine applies.
-// `t` must carry a `hod_department_id` column (the joined HOD's department).
+// mate of the HOD it's logged against, or Admin/Management) can read its
+// activity log - matches the visibility rule GET /mine applies.
 function canSeeTodo(user, t) {
-  return t.assigned_to === user.id || canView(user) ||
+  return t.assigned_to === user.id || isGlobal(user) ||
     (t.hod_department_id != null && t.hod_department_id === user.department_id);
 }
 
-// People pickers for the "Log a New To-Do" form.
+// People pickers for the "Log a New To-Do" form. A department-scoped
+// supervisor can only log against their own department's HOD (see POST /
+// below), so the HOD picker itself is narrowed to match - no point letting
+// them pick one the submit will just reject. The assignee picker stays
+// company-wide: handing the action itself to someone in another department
+// is a normal coordination pattern and isn't restricted.
 router.get('/people', (req, res) => {
   const hods = db.prepare(`
     SELECT u.id, u.full_name, d.name as department
     FROM users u LEFT JOIN departments d ON d.id = u.department_id
-    WHERE u.is_active = 1 AND u.is_supervisor = 1
+    WHERE u.is_active = 1 AND u.is_supervisor = 1 ${isGlobal(req.user) ? '' : 'AND u.department_id = ?'}
     ORDER BY d.name, u.full_name
-  `).all();
+  `).all(...(isGlobal(req.user) ? [] : [req.user.department_id]));
   const assignees = db.prepare(`
     SELECT u.id, u.full_name, d.name as department
     FROM users u LEFT JOIN departments d ON d.id = u.department_id
@@ -59,8 +80,7 @@ router.get('/people', (req, res) => {
 // not from anything the client sends), so it can't be widened by request
 // params.
 router.get('/mine', (req, res) => {
-  const isGlobal = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
-  const rows = isGlobal
+  const rows = isGlobal(req.user)
     ? db.prepare(`
         SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
         FROM todos t
@@ -79,18 +99,32 @@ router.get('/mine', (req, res) => {
   res.json(rows.map(t => ({ ...t, is_mine: t.assigned_to === req.user.id })));
 });
 
-// Every To-Do logged, across everyone - Management/HOD/Admin oversight view.
-// A regular employee only ever sees their own via /mine.
+// Oversight view: every To-Do for Admin/Management, or a HOD/supervisor's
+// own department only (plus anything directly assigned to them, same as
+// /mine) - "All To-Dos Logged" is department-scoped, not company-wide, for
+// everyone below Admin/Management. A regular employee with no oversight
+// capability at all only ever sees their own via /mine.
 router.get('/', (req, res) => {
   if (!canView(req.user)) return res.status(403).json({ error: 'Access denied' });
-  res.json(db.prepare(`
-    SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name, c.full_name as created_by_name
-    FROM todos t
-    LEFT JOIN users h ON h.id = t.hod_id
-    JOIN users a ON a.id = t.assigned_to
-    LEFT JOIN users c ON c.id = t.created_by
-    ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-  `).all());
+  const rows = isGlobal(req.user)
+    ? db.prepare(`
+        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name, c.full_name as created_by_name
+        FROM todos t
+        LEFT JOIN users h ON h.id = t.hod_id
+        JOIN users a ON a.id = t.assigned_to
+        LEFT JOIN users c ON c.id = t.created_by
+        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
+      `).all()
+    : db.prepare(`
+        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name, c.full_name as created_by_name
+        FROM todos t
+        LEFT JOIN users h ON h.id = t.hod_id
+        JOIN users a ON a.id = t.assigned_to
+        LEFT JOIN users c ON c.id = t.created_by
+        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id = ?)
+        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
+      `).all(req.user.id, req.user.department_id);
+  res.json(rows);
 });
 
 router.post('/', (req, res) => {
@@ -100,8 +134,11 @@ router.post('/', (req, res) => {
   const assignee = db.prepare('SELECT id FROM users WHERE id = ? AND is_active = 1').get(assigned_to);
   if (!assignee) return res.status(400).json({ error: 'That person no longer has an active login.' });
   if (hod_id) {
-    const hod = db.prepare('SELECT id FROM users WHERE id = ? AND is_supervisor = 1').get(hod_id);
+    const hod = db.prepare('SELECT id, department_id FROM users WHERE id = ? AND is_supervisor = 1').get(hod_id);
     if (!hod) return res.status(400).json({ error: 'That user is not marked as a department HOD.' });
+    if (!isGlobal(req.user) && hod.department_id !== req.user.department_id) {
+      return res.status(400).json({ error: "You can only log a To-Do against your own department's HOD." });
+    }
   }
   if (!start_date || !target_date) return res.status(400).json({ error: 'start_date and target_date are required' });
   const brief = String(brief_description || '').trim();
@@ -117,10 +154,14 @@ router.post('/', (req, res) => {
 });
 
 router.patch('/:id', (req, res) => {
-  const t = db.prepare('SELECT * FROM todos WHERE id = ?').get(req.params.id);
+  const t = db.prepare(`
+    SELECT tt.*, h.department_id as hod_department_id
+    FROM todos tt LEFT JOIN users h ON h.id = tt.hod_id
+    WHERE tt.id = ?
+  `).get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Not found' });
   const isOwner = t.assigned_to === req.user.id;
-  const isManager = canLog(req.user);
+  const isManager = canManageTodo(req.user, t);
   if (!isOwner && !isManager) return res.status(403).json({ error: 'Access denied' });
   const { status, start_date, target_date, brief_description, details, hod_id, assigned_to, priority } = req.body;
   const updates = []; const params = [];
@@ -132,6 +173,12 @@ router.patch('/:id', (req, res) => {
     params.push(status, status === 'Completed' ? new Date().toISOString() : null);
   }
   if (isManager) {
+    if (hod_id !== undefined && hod_id && !isGlobal(req.user)) {
+      const hod = db.prepare('SELECT department_id FROM users WHERE id = ? AND is_supervisor = 1').get(hod_id);
+      if (!hod || hod.department_id !== req.user.department_id) {
+        return res.status(400).json({ error: "You can only reassign a To-Do to your own department's HOD." });
+      }
+    }
     if (start_date !== undefined) { updates.push('start_date = ?'); params.push(start_date); }
     if (target_date !== undefined) { updates.push('target_date = ?'); params.push(target_date); }
     if (brief_description !== undefined) { updates.push('brief_description = ?'); params.push(String(brief_description).trim()); }
@@ -171,10 +218,14 @@ router.get('/:id/updates', (req, res) => {
   `).all(t.id));
 });
 router.post('/:id/updates', (req, res) => {
-  const t = db.prepare('SELECT * FROM todos WHERE id = ?').get(req.params.id);
+  const t = db.prepare(`
+    SELECT tt.*, h.department_id as hod_department_id
+    FROM todos tt LEFT JOIN users h ON h.id = tt.hod_id
+    WHERE tt.id = ?
+  `).get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Not found' });
   const isOwner = t.assigned_to === req.user.id;
-  if (!isOwner && !canLog(req.user)) return res.status(403).json({ error: 'Only the assignee or the logging HOD/Admin can add an update.' });
+  if (!isOwner && !canManageTodo(req.user, t)) return res.status(403).json({ error: 'Only the assignee or the logging HOD/Admin can add an update.' });
   const note = String(req.body.note || '').trim();
   if (!note) return res.status(400).json({ error: 'note is required' });
   const info = db.prepare(`INSERT INTO todo_updates (todo_id, user_id, note, status_at_update) VALUES (?,?,?,?)`)
