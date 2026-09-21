@@ -471,6 +471,53 @@ const MIGRATIONS = [
   // client), and no note of *why* a version was revised. See lib/offerVersioning.js.
   `ALTER TABLE offers ADD COLUMN lead_id INTEGER REFERENCES leads(id)`,
   `ALTER TABLE offers ADD COLUMN revision_reason TEXT`,
+  // ---- Round 27: Automated Statement of Accounts. sales_invoices.mark-paid
+  // only ever flipped a whole invoice to Paid with no record of when/how much/
+  // by what mode money actually arrived - not enough to build a real
+  // per-client running balance. payment_receipts is the missing credit side;
+  // a Statement of Accounts is (non-cancelled sales_invoices as debits) +
+  // (payment_receipts as credits), sorted by date. See lib/soaLedger.js.
+  `CREATE TABLE IF NOT EXISTS payment_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    receipt_no TEXT UNIQUE,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    sales_invoice_id INTEGER REFERENCES sales_invoices(id),
+    amount REAL NOT NULL,
+    receipt_date TEXT NOT NULL,
+    mode TEXT NOT NULL,                -- Cash, Cheque, NEFT, RTGS, UPI, Other
+    reference_no TEXT,
+    notes TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // SOA dispatch cadence config: one row with client_id NULL is the org-wide
+  // default; a row with client_id set overrides it for that client only
+  // (enforced application-side for the NULL row, and by a partial unique
+  // index below for client rows - see routes/soa.js).
+  `CREATE TABLE IF NOT EXISTS soa_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER REFERENCES clients(id),
+    frequency TEXT NOT NULL DEFAULT 'Off',   -- Off, Monthly, Quarterly
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // A generated-but-not-yet-emailed statement, mirroring bg_reminder_log's
+  // internal-verify-then-email pattern so no statement reaches a customer's
+  // inbox without a human checking it first. See lib/soaScan.js.
+  `CREATE TABLE IF NOT EXISTS soa_dispatch_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    closing_balance REAL,
+    status TEXT DEFAULT 'PendingReview',     -- PendingReview, Verified, EmailSent, Dismissed
+    generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    email_sent_to TEXT,
+    email_sent_at TEXT
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -507,6 +554,10 @@ const UNIQUE_INDEXES = [
   // assigned. Partial (excludes NULL) so clients created before Round 20 are
   // backfilled below without a transient collision window.
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_client_code ON clients(client_code) WHERE client_code IS NOT NULL`,
+  // At most one SOA settings override per client - the NULL-client_id org
+  // default row is deliberately excluded (and kept singular by application
+  // logic in routes/soa.js) since a partial index can't cover it the same way.
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_soa_settings_client ON soa_settings(client_id) WHERE client_id IS NOT NULL`,
 ];
 for (const stmt of UNIQUE_INDEXES) {
   try { raw.exec(stmt); } catch (e) { throw e; }
