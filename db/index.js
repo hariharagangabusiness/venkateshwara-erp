@@ -518,6 +518,48 @@ const MIGRATIONS = [
     email_sent_to TEXT,
     email_sent_at TEXT
   )`,
+  // ---- Round 28: Order Confirmation & Annexure Dual-Approval. Confirming an
+  // offer still creates the Sales Order/Project/job cards instantly (never
+  // gated - production isn't delayed), but the two customer/execution-facing
+  // documents it produces now each need their own review -> approve -> lock
+  // before being considered final. See lib/reviewWorkflow.js and
+  // routes/orderConfirmation.js.
+  `CREATE TABLE IF NOT EXISTS order_confirmations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_order_id INTEGER NOT NULL UNIQUE REFERENCES sales_orders(id),
+    delivery_terms TEXT,
+    payment_terms TEXT,
+    special_instructions TEXT,
+    status TEXT DEFAULT 'Draft',       -- Draft, PendingApproval, Approved, Rejected
+    submitted_by INTEGER REFERENCES users(id),
+    submitted_at TEXT,
+    approved_by INTEGER REFERENCES users(id),
+    approved_at TEXT,
+    rejection_reason TEXT,
+    locked INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // The annexure's actual technical content still comes from its sales
+  // order's (frozen, version-controlled) offer - this row is the review
+  // wrapper around that generated document: notes, an optional manually
+  // revised file, and the approve/lock state. Regenerating or reuploading
+  // the underlying file is blocked once locked (see routes/sales.js and
+  // routes/orderConfirmation.js).
+  `CREATE TABLE IF NOT EXISTS annexure_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_order_id INTEGER NOT NULL UNIQUE REFERENCES sales_orders(id),
+    review_notes TEXT,
+    status TEXT DEFAULT 'Draft',       -- Draft, PendingApproval, Approved, Rejected
+    submitted_by INTEGER REFERENCES users(id),
+    submitted_at TEXT,
+    approved_by INTEGER REFERENCES users(id),
+    approved_at TEXT,
+    rejection_reason TEXT,
+    locked INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

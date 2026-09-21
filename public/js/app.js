@@ -1498,7 +1498,8 @@ function renderOrderRows(rows) {
     <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
-    <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button></td></tr>
+    <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
+    <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button></td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`);
 }
 PAGES.orders = async (el) => {
@@ -1563,6 +1564,113 @@ window.generateAnnexure = async (ev, orderId) => {
     navigate('orders');
   } catch (e) { alert(e.message); }
   return false;
+};
+
+// ---- Order Confirmation letter + Annexure dual-approval ----
+// Two independent review -> approve -> lock workflows over an already-
+// confirmed sales order's customer/execution-facing documents - production
+// (the sales order, project, job cards) already started the moment the
+// offer was confirmed and is never held up by this; see routes/orderConfirmation.js.
+function reviewStatusBlock(doc, approvePerm, onApprove, onReject) {
+  const canApprove = has(approvePerm);
+  return `<div style="margin:6px 0;">Status: ${badge(doc.status)}${doc.locked ? ' <span class="muted">(locked)</span>' : ''}</div>
+    ${doc.status === 'Rejected' && doc.rejection_reason ? `<div class="msg err" style="display:block;">Rejected: ${esc(doc.rejection_reason)}</div>` : ''}
+    ${doc.status === 'PendingApproval' && canApprove ? `
+      <button class="btn small green" type="button" onclick="${onApprove}">Approve</button>
+      <button class="btn small red" type="button" onclick="${onReject}">Reject</button>` : ''}`;
+}
+async function renderOrderConfirmationModal(orderId) {
+  const [oc, ar] = await Promise.all([
+    api(`/order-confirmation/order-confirmations/${orderId}`),
+    api(`/order-confirmation/annexure-reviews/${orderId}`),
+  ]);
+  const body = `
+    <h4>Order Confirmation Letter</h4>
+    ${reviewStatusBlock(oc, 'order_confirmation.approve', `approveOrderConfirmation(${orderId})`, `rejectOrderConfirmation(${orderId})`)}
+    <div class="form-grid">
+      <div><label>Delivery Terms</label><textarea id="oc-delivery-${orderId}" rows="2" style="width:100%;" ${oc.locked ? 'disabled' : ''}>${esc(oc.delivery_terms)}</textarea></div>
+      <div><label>Payment Terms</label><textarea id="oc-payment-${orderId}" rows="2" style="width:100%;" ${oc.locked ? 'disabled' : ''}>${esc(oc.payment_terms)}</textarea></div>
+    </div>
+    <label>Special Instructions</label>
+    <textarea id="oc-notes-${orderId}" rows="2" style="width:100%;" ${oc.locked ? 'disabled' : ''}>${esc(oc.special_instructions)}</textarea>
+    <div style="margin-top:6px;">
+      ${!oc.locked ? `<button class="btn small" onclick="saveOrderConfirmation(${orderId})">Save</button>
+      ${['Draft', 'Rejected'].includes(oc.status) ? `<button class="btn small outline" onclick="submitOrderConfirmation(${orderId})">Submit for Approval</button>` : ''}` : ''}
+      <a href="#" onclick="downloadOrderConfirmationPdf(${orderId});return false;">Download PDF</a>
+    </div>
+
+    <h4 style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px;">Annexure</h4>
+    ${reviewStatusBlock(ar, 'annexure.approve', `approveAnnexure(${orderId})`, `rejectAnnexure(${orderId})`)}
+    <label>Review Notes</label>
+    <textarea id="ar-notes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.review_notes)}</textarea>
+    <div style="margin-top:6px;">
+      ${!ar.locked ? `<button class="btn small" onclick="saveAnnexureNotes(${orderId})">Save Notes</button>
+      <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId})">Regenerate from Offer</button>
+      <input type="file" id="ar-file-${orderId}" style="display:inline-block;width:auto;">
+      <button class="btn small outline" onclick="uploadAnnexureFile(${orderId})">Upload Revised File</button>
+      ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}` : ''}
+      <a href="#" onclick="downloadAnnexure(event, ${orderId});return false;">Download Annexure</a>
+    </div>
+  `;
+  openMiniModal('Order Confirmation & Annexure', body, true);
+}
+window.openOrderConfirmationModal = (orderId) => renderOrderConfirmationModal(orderId);
+window.saveOrderConfirmation = async (orderId) => {
+  try {
+    await api(`/order-confirmation/order-confirmations/${orderId}`, { method: 'PUT', body: JSON.stringify({
+      delivery_terms: val(`oc-delivery-${orderId}`), payment_terms: val(`oc-payment-${orderId}`), special_instructions: val(`oc-notes-${orderId}`),
+    })});
+    await renderOrderConfirmationModal(orderId);
+  } catch (e) { alert(e.message); }
+};
+window.submitOrderConfirmation = async (orderId) => {
+  try { await api(`/order-confirmation/order-confirmations/${orderId}/submit`, { method: 'POST' }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+window.approveOrderConfirmation = async (orderId) => {
+  try { await api(`/order-confirmation/order-confirmations/${orderId}/approve`, { method: 'POST' }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+window.rejectOrderConfirmation = async (orderId) => {
+  const reason = prompt('Reason for rejection (optional):');
+  try { await api(`/order-confirmation/order-confirmations/${orderId}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+window.downloadOrderConfirmationPdf = (orderId) => downloadTemplateFile(`/order-confirmation/order-confirmations/${orderId}/pdf`, `Order-Confirmation-${orderId}.pdf`);
+window.regenerateAnnexureInModal = async (orderId) => {
+  try {
+    await api(`/sales/orders/${orderId}/regenerate-annexure`, { method: 'POST' });
+    await renderOrderConfirmationModal(orderId);
+  } catch (e) { alert(e.message); }
+};
+window.saveAnnexureNotes = async (orderId) => {
+  try {
+    await api(`/order-confirmation/annexure-reviews/${orderId}`, { method: 'PUT', body: JSON.stringify({ review_notes: val(`ar-notes-${orderId}`) }) });
+    await renderOrderConfirmationModal(orderId);
+  } catch (e) { alert(e.message); }
+};
+window.uploadAnnexureFile = async (orderId) => {
+  const fileInput = document.getElementById(`ar-file-${orderId}`);
+  if (!fileInput.files[0]) { alert('Choose a file first.'); return; }
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  try {
+    await apiUpload(`/order-confirmation/annexure-reviews/${orderId}/upload`, fd, 'POST');
+    await renderOrderConfirmationModal(orderId);
+  } catch (e) { alert(e.message); }
+};
+window.submitAnnexure = async (orderId) => {
+  try { await api(`/order-confirmation/annexure-reviews/${orderId}/submit`, { method: 'POST' }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+window.approveAnnexure = async (orderId) => {
+  try { await api(`/order-confirmation/annexure-reviews/${orderId}/approve`, { method: 'POST' }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+window.rejectAnnexure = async (orderId) => {
+  const reason = prompt('Reason for rejection (optional):');
+  try { await api(`/order-confirmation/annexure-reviews/${orderId}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
 };
 
 window.addOrder = async () => {
