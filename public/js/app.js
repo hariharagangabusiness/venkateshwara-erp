@@ -689,7 +689,7 @@ const DASHBOARD_METRIC_REGISTRY = [
     buildDetail: async () => { const d = await api('/sales/analytics'); return `<h3>Avg Sales Cycle: ${d.avgCycleDays ?? '-'} days</h3>${tableHTML(['Rep','Leads Owned','Won Count'], d.repPerf, r => `<tr><td>${esc(r.owner_name)}</td><td>${r.leads_owned}</td><td>${r.won_count||0}</td></tr>`)}`; } },
   { key: 'purchase_pending_pr', label: 'Purchase: Pending Purchase Requests', department: 'Purchase',
     fetchValue: async () => (await api('/purchase/requests')).filter(r => r.status === 'Pending').length,
-    buildDetail: async () => { const reqs = (await api('/purchase/requests')).filter(r => r.status === 'Pending'); const total = reqs.reduce((a,r) => a + (r.estimated_value||0), 0); return `<h3>Pending Purchase Requests (${reqs.length})</h3><p class="muted">Total estimated value: ₹${fmt(total)}</p>${tableHTML(['PR No','Project','Item','Est. Value'], reqs, r => `<tr><td>${esc(r.pr_no)}</td><td>${esc(r.project_code)||'-'}</td><td>${esc(r.item_name)||esc(r.item_text)||'-'}</td><td>₹${fmt(r.estimated_value)}</td></tr>`)}`; } },
+    buildDetail: async () => { const reqs = (await api('/purchase/requests')).filter(r => r.status === 'Pending'); const total = reqs.reduce((a,r) => a + (r.items_total_value != null ? r.items_total_value : (r.estimated_value||0)), 0); return `<h3>Pending Purchase Requests (${reqs.length})</h3><p class="muted">Total estimated value: ₹${fmt(total)}</p>${tableHTML(['PR No','Project','Item(s)','Est. Value'], reqs, r => `<tr><td>${esc(r.pr_no)}</td><td>${esc(r.project_code)||'-'}</td><td>${esc(r.item_summary)||esc(r.item_name)||esc(r.item_text)||'-'}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td></tr>`)}`; } },
   { key: 'store_low_stock', label: 'Store: Low Stock Items', department: 'Store',
     fetchValue: async () => (await api('/purchase/store/low-stock')).length,
     buildDetail: async () => { const items = await api('/purchase/store/low-stock'); return `<h3>Low Stock Items (${items.length})</h3>${tableHTML(['Code','Name','Current','Reorder Level'], items, i => `<tr><td>${esc(i.item_code)}</td><td>${esc(i.name)}</td><td>${fmt(i.current_stock)}</td><td>${fmt(i.reorder_level)}</td></tr>`)}`; } },
@@ -788,11 +788,11 @@ PAGES.dashboard = async (el) => {
     },
     pending_purchase_requests: async () => {
       const reqs = (await api('/purchase/requests')).filter(r => r.status === 'Pending');
-      const total = reqs.reduce((a,r) => a + (r.estimated_value||0), 0);
+      const total = reqs.reduce((a,r) => a + (r.items_total_value != null ? r.items_total_value : (r.estimated_value||0)), 0);
       return `<h3>Pending Purchase Requests (${reqs.length})</h3>
         <p class="muted">Total estimated value: <b>₹${fmt(total)}</b></p>
-        ${tableHTML(['PR No','Project','Item','Qty','Est. Value','Raised By','Pending (days)'], reqs, r => `
-          <tr><td>${esc(r.pr_no)}</td><td>${esc(r.project_code)||'-'}</td><td>${esc(r.item_name)||esc(r.item_text)||'-'}</td><td>${fmt(r.quantity)}</td><td>₹${fmt(r.estimated_value)}</td><td>${esc(r.raised_by_name)||'-'}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
+        ${tableHTML(['PR No','Project','Item(s)','Lines','Est. Value','Raised By','Pending (days)'], reqs, r => `
+          <tr><td>${esc(r.pr_no)}</td><td>${esc(r.project_code)||'-'}</td><td>${esc(r.item_summary)||esc(r.item_name)||esc(r.item_text)||'-'}</td><td>${r.line_count||1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${esc(r.raised_by_name)||'-'}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
     },
     low_stock_items: async () => {
       const items = await api('/purchase/store/low-stock');
@@ -2912,31 +2912,33 @@ window.downloadVendorTemplate = () => downloadTemplateFile('/masters/vendors/tem
 window.uploadVendorTemplate = () => uploadTemplateFile('/masters/vendors/bulk-upload', 've-upload-file', 've-upload-result', () => navigate('vendors'));
 
 // ---- Purchase Requests ----
+let PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
 PAGES['purchase-requests'] = async (el) => {
   const reqs = await api('/purchase/requests');
   const items = await api('/masters/items');
   const projects = await api('/projects');
   const threshold = (await api('/settings/purchase-quote-threshold')).quote_threshold;
   window.__PR_THRESHOLD = threshold;
+  window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
+  PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
   el.innerHTML = `
     <div class="panel"><h3>New Purchase Request</h3>
       <div class="form-grid">
-        <div><label>Item (pick from master)</label><select id="pr-item" onchange="showVendorsForPRItem()"><option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status)).map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')}</select></div>
-        <div><label>Or type an item name</label><input id="pr-item-text" placeholder="Not in the master? Type it here"></div>
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
-        <div><label>Quantity</label><input id="pr-qty" type="number"></div>
-        <div><label>Estimated Value (₹)</label><input id="pr-value" type="number"></div>
       </div>
+      <div id="pr-lines"></div>
+      <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
       <div id="pr-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <button class="btn" onclick="addPR()">Submit Request</button>
+      <div style="margin-top:12px;"><button class="btn" onclick="addPR()">Submit Request</button></div>
+      <div id="pr-err" class="msg err" style="display:none;margin-top:10px;"></div>
       <div class="muted" style="margin-top:8px;">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
-      Requests estimated at ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
+      Requests with a combined value of ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
     </div>
     <div class="panel"><h3 id="pr-count">Purchase Requests (${reqs.length})</h3>
-      <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the item, project, quantity or value.</p>
-      ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_name', 'project_code', 'status'], (rows) => {
+      <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the items, project, quantities or values.</p>
+      ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
@@ -2944,14 +2946,33 @@ PAGES['purchase-requests'] = async (el) => {
     </div>
     <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
-  window.__PR_CACHE = reqs; window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
+  renderPRLines();
+  window.__PR_CACHE = reqs;
 };
+function prItemOptions(selectedId) {
+  const items = window.__PR_ITEMS || [];
+  return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
+    .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join('')}`;
+}
+function renderPRLines() {
+  const el = document.getElementById('pr-lines');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
+    <tr>
+      <td><select onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})">${prItemOptions(l.item_id)}</select></td>
+      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
+      <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
+      <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
+      <td>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</td>
+    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="3" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+}
+window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }); renderPRLines(); };
 function renderPRRows(rows) {
-  return tableHTML(['PR No', 'Item', 'Project', 'Qty', 'Est. Value', 'Status', 'Action'], rows, r => `
+  return tableHTML(['PR No', 'Item(s)', 'Project', 'Lines', 'Total Est. Value', 'Status', 'Action'], rows, r => `
     <tr id="pr-row-${r.id}">
       <td>${esc(r.pr_no)}</td>
-      <td>${esc(r.item_name)}${r.item_master_status === 'Pending' ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
-      <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.quantity}</td><td>₹${fmt(r.estimated_value)}</td><td>${badge(r.status)}</td>
+      <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
+      <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
         ${r.status === 'Pending' ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
@@ -2960,9 +2981,10 @@ function renderPRRows(rows) {
     </tr>
     ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`);
 }
-window.showVendorsForPRItem = async () => {
-  const itemId = val('pr-item');
+window.showVendorsForPRLine = async (i) => {
+  const itemId = PR_LINES[i] && PR_LINES[i].item_id;
   const box = document.getElementById('pr-vendor-suggestions');
+  renderPRLines();
   if (!itemId) { box.style.display = 'none'; return; }
   try {
     const { vendors, fallback } = await api('/purchase/vendors-for-item/' + itemId);
@@ -2979,11 +3001,17 @@ window.togglePRQuotes = (id) => {
 async function renderPRQuotesPanel(prId) {
   const container = document.getElementById('pr-quotes-' + prId);
   const pr = (window.__PR_CACHE || []).find(r => r.id === prId);
-  const [quotes, vendorResult] = await Promise.all([
+  const [quotes, lines] = await Promise.all([
     api(`/purchase/requests/${prId}/quotes`),
-    pr && pr.item_id ? api('/purchase/vendors-for-item/' + pr.item_id) : Promise.resolve({ vendors: [] }),
+    api(`/purchase/requests/${prId}/items`).catch(() => []),
   ]);
-  const vendors = vendorResult.vendors || [];
+  // Suggest vendors across every line's item category, merged/deduped -
+  // a multi-item PR can span more than one vendor category.
+  const itemIds = [...new Set(lines.map(l => l.item_id).filter(Boolean))];
+  const vendorResults = await Promise.all(itemIds.map(id => api('/purchase/vendors-for-item/' + id).catch(() => ({ vendors: [] }))));
+  const vendorMap = new Map();
+  vendorResults.forEach(r => (r.vendors || []).forEach(v => vendorMap.set(v.id, v)));
+  const vendors = [...vendorMap.values()];
   const canSubmit = quotes.length >= 2 && pr && pr.status === 'PendingQuotes';
   container.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
@@ -3035,39 +3063,69 @@ window.submitPRForApproval = async (prId) => {
   catch (e) { alert(e.message); }
 };
 window.addPR = async () => {
+  const errEl = document.getElementById('pr-err');
+  errEl.style.display = 'none';
   try {
+    const lines = PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0 }));
+    if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests', { method: 'POST', body: JSON.stringify({
-      item_id: val('pr-item') || null, item_text: val('pr-item-text'), project_id: val('pr-project') || null, quantity: val('pr-qty'), estimated_value: val('pr-value')
+      project_id: val('pr-project') || null, items: lines
     })});
     navigate('purchase-requests');
-  } catch (e) { alert(e.message); }
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
-window.openEditPR = (id) => {
+let EDIT_PR_LINES = [];
+window.openEditPR = async (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
   if (!r) return;
-  const items = window.__PR_ITEMS || [], projects = window.__PR_PROJECTS || [];
+  const projects = window.__PR_PROJECTS || [];
   const panel = document.getElementById('pr-edit-panel');
+  const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
+  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0 }))
+    : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0 }];
   document.getElementById('pr-edit-body').innerHTML = `
     <div class="form-grid">
-      <div><label>Item</label><select id="pre-item">${items.map(i => `<option value="${i.id}" ${i.id===r.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
       <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
-      <div><label>Quantity</label><input id="pre-qty" type="number" value="${r.quantity}"></div>
-      <div><label>Estimated Value (₹)</label><input id="pre-value" type="number" value="${r.estimated_value}"></div>
     </div>
-    <button class="btn" onclick="saveEditPR(${id})">Save Changes</button>
-    <button class="btn outline" type="button" onclick="document.getElementById('pr-edit-panel').style.display='none'">Cancel</button>
+    <div id="pre-lines"></div>
+    <button class="btn small outline" type="button" onclick="addEditPRLine()">+ Add Line Item</button>
+    <div style="margin-top:12px;">
+      <button class="btn" onclick="saveEditPR(${id})">Save Changes</button>
+      <button class="btn outline" type="button" onclick="document.getElementById('pr-edit-panel').style.display='none'">Cancel</button>
+    </div>
+    <div id="pre-err" class="msg err" style="display:none;margin-top:10px;"></div>
     <div id="pr-attachments-${id}"></div>`;
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderEditPRLines();
   renderAttachmentsWidget('purchase_request', id, document.getElementById(`pr-attachments-${id}`));
 };
+function renderEditPRLines() {
+  const el = document.getElementById('pre-lines');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
+    <tr>
+      <td><select onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()">${prItemOptions(l.item_id)}</select></td>
+      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
+      <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
+      <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;"></td>
+      <td>${EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</td>
+    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="3" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(EDIT_PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+}
+window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }); renderEditPRLines(); };
 window.saveEditPR = async (id) => {
+  const errEl = document.getElementById('pre-err');
+  errEl.style.display = 'none';
   try {
+    const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0 }));
+    if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests/' + id, { method: 'PUT', body: JSON.stringify({
-      item_id: val('pre-item'), project_id: val('pre-project') || null, quantity: val('pre-qty'), estimated_value: val('pre-value')
+      project_id: val('pre-project') || null, items: lines
     })});
     navigate('purchase-requests');
-  } catch (e) { alert(e.message); }
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ---- Purchase Orders ----
@@ -3084,6 +3142,7 @@ PAGES['purchase-orders'] = async (el) => {
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
       <div class="form-grid">
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
+        <div id="po-pr-line-wrap" style="display:none;"><label>PR Line Item</label><select id="po-pr-item" onchange="fillPOFromPRLine()"></select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
         <div><label>Item</label><select id="po-item" onchange="showVendorsForPOItem()">${items.map(i => `<option value="${i.id}">${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join('')}</select></div>
         <div><label>Quantity</label><input id="po-qty" type="number"></div>
@@ -3153,24 +3212,46 @@ window.showVendorsForPOItem = async () => {
     box.innerHTML = `<b>${fallback ? 'All vendors' : 'Vendors matching this item\'s category'}</b> (${vendors.length}): ${vendors.map(v => esc(v.name)).join(', ') || 'None on file yet.'}`;
   } catch (e) { box.style.display = 'none'; }
 };
-window.fillPOFromPR = () => {
+window.fillPOFromPR = async () => {
   const id = Number(val('po-pr'));
   const detail = document.getElementById('po-pr-detail');
-  if (!id) { detail.style.display = 'none'; return; }
+  const lineWrap = document.getElementById('po-pr-line-wrap');
+  if (!id) { detail.style.display = 'none'; lineWrap.style.display = 'none'; return; }
   const r = (window.__PO_PRS || []).find(x => x.id === id);
-  if (!r) { detail.style.display = 'none'; return; }
+  if (!r) { detail.style.display = 'none'; lineWrap.style.display = 'none'; return; }
+  const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
+  window.__PO_PR_LINES = lines;
   detail.style.display = 'block';
-  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — Item: <b>${esc(r.item_name)}</b> &nbsp; Qty requested: <b>${r.quantity}</b> &nbsp;
-    Project: <b>${esc(r.project_code)||'-'}</b> &nbsp; Est. Value: <b>₹${fmt(r.estimated_value)}</b>`;
+  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} &nbsp;
+    Project: <b>${esc(r.project_code)||'-'}</b> &nbsp; Total Est. Value: <b>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</b>`;
+  if (lines.length > 1) {
+    lineWrap.style.display = 'block';
+    const sel = document.getElementById('po-pr-item');
+    sel.innerHTML = lines.map(l => `<option value="${l.id}">${esc(l.item_name || l.item_text || '(item)')} — Qty ${l.quantity} — ₹${fmt(l.estimated_value)}</option>`).join('');
+    window.fillPOFromPRLine();
+  } else {
+    lineWrap.style.display = 'none';
+    if (lines.length === 1) fillPOFromLine(lines[0]);
+  }
+};
+function fillPOFromLine(line) {
   const itemSel = document.getElementById('po-item');
-  if (itemSel && r.item_id) itemSel.value = r.item_id;
+  if (itemSel && line.item_id) itemSel.value = line.item_id;
   const qtyEl = document.getElementById('po-qty');
-  if (qtyEl && !qtyEl.value) qtyEl.value = r.quantity;
+  if (qtyEl) qtyEl.value = line.quantity;
+}
+window.fillPOFromPRLine = () => {
+  const lineId = Number(val('po-pr-item'));
+  const line = (window.__PO_PR_LINES || []).find(l => l.id === lineId);
+  if (line) fillPOFromLine(line);
 };
 window.addPO = async () => {
   try {
+    const lineWrap = document.getElementById('po-pr-line-wrap');
+    const prItemId = lineWrap && lineWrap.style.display !== 'none' ? val('po-pr-item') : ((window.__PO_PR_LINES || [])[0] && window.__PO_PR_LINES[0].id) || null;
     const r = await api('/purchase/orders', { method: 'POST', body: JSON.stringify({
-      purchase_request_id: val('po-pr') || null, vendor_id: val('po-vendor'), item_id: val('po-item'), quantity: val('po-qty'), rate: val('po-rate'),
+      purchase_request_id: val('po-pr') || null, purchase_request_item_id: val('po-pr') ? prItemId : null,
+      vendor_id: val('po-vendor'), item_id: val('po-item'), quantity: val('po-qty'), rate: val('po-rate'),
       hsn_code: val('po-hsn'), gst_rate: val('po-gst'), delivery_date: val('po-delivery'), terms: val('po-terms'),
     })});
     const ldPct = val('po-ld-pct'), ldCap = val('po-ld-cap'), ldNotes = val('po-ld-notes');
