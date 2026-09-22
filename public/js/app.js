@@ -1662,6 +1662,7 @@ PAGES.orders = async (el) => {
         </div>
         <div><label>Trigger Conditions</label><textarea id="so-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       </div>
+      ${bgTermsFormFields('so')}
       <button class="btn" onclick="addOrder()">Create Order</button>
     </div>
     <div class="panel">
@@ -1812,6 +1813,44 @@ window.rejectAnnexure = async (orderId) => {
   catch (e) { alert(e.message); }
 };
 
+// Bank Guarantee terms (Round 28) - shared between the New Sales Order form
+// (prefix 'so', no existing data) and the per-order Commercial Terms editor
+// (prefix `so-terms-${id}`, prefilled from the order row). Declares whether
+// an Advance/Performance BG is owed on this order; the actual BG record it
+// gets satisfied by is still created separately on the BG Dashboard and
+// resolved at read time via bank_guarantees' order_type/order_id link.
+function bgTermsFormFields(prefix, o) {
+  o = o || {};
+  return `<div class="hod-tools" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px;">
+    <h4 style="margin-top:0;">Bank Guarantee Terms (optional)</h4>
+    <div class="form-grid">
+      <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="${prefix}-abg-required" type="checkbox" ${o.abg_required ? 'checked' : ''}> Advance BG (ABG) required</label></div>
+      <div><label>ABG %</label><input id="${prefix}-abg-pct" type="number" step="0.01" value="${o.abg_percentage ?? ''}"></div>
+      <div><label>ABG Amount (₹, if flat)</label><input id="${prefix}-abg-amt" type="number" value="${o.abg_amount ?? ''}"></div>
+      <div><label>ABG Validity (days from issue)</label><input id="${prefix}-abg-days" type="number" value="${o.abg_validity_days ?? ''}"></div>
+    </div>
+    <div class="form-grid">
+      <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="${prefix}-pbg-required" type="checkbox" ${o.pbg_required ? 'checked' : ''}> Performance BG (PBG) required</label></div>
+      <div><label>PBG %</label><input id="${prefix}-pbg-pct" type="number" step="0.01" value="${o.pbg_percentage ?? ''}"></div>
+      <div><label>PBG Amount (₹, if flat)</label><input id="${prefix}-pbg-amt" type="number" value="${o.pbg_amount ?? ''}"></div>
+      <div><label>PBG Validity (days from issue)</label><input id="${prefix}-pbg-days" type="number" value="${o.pbg_validity_days ?? ''}"></div>
+    </div>
+    <div><label>BG Terms Notes</label><textarea id="${prefix}-bg-notes" rows="2" style="width:100%;">${esc(o.bg_terms_notes || '')}</textarea></div>
+  </div>`;
+}
+function readBgTermsFields(prefix) {
+  return {
+    abg_required: document.getElementById(`${prefix}-abg-required`).checked,
+    abg_percentage: val(`${prefix}-abg-pct`) || null,
+    abg_amount: val(`${prefix}-abg-amt`) || null,
+    abg_validity_days: val(`${prefix}-abg-days`) || null,
+    pbg_required: document.getElementById(`${prefix}-pbg-required`).checked,
+    pbg_percentage: val(`${prefix}-pbg-pct`) || null,
+    pbg_amount: val(`${prefix}-pbg-amt`) || null,
+    pbg_validity_days: val(`${prefix}-pbg-days`) || null,
+    bg_terms_notes: val(`${prefix}-bg-notes`) || null,
+  };
+}
 window.addOrder = async () => {
   try {
     const r = await api('/sales/orders', { method: 'POST', body: JSON.stringify({
@@ -1821,9 +1860,12 @@ window.addOrder = async () => {
     // separate/optional, Round 16) - a second call sets them if the user
     // filled any of those fields in.
     const delivery = val('so-delivery'), ldPct = val('so-ld-pct'), ldCap = val('so-ld-cap'), ldNotes = val('so-ld-notes');
-    if (delivery || ldPct || ldCap || ldNotes) {
+    const bgTerms = readBgTermsFields('so');
+    const hasBgTerms = bgTerms.abg_required || bgTerms.pbg_required || bgTerms.abg_percentage || bgTerms.pbg_percentage || bgTerms.bg_terms_notes;
+    if (delivery || ldPct || ldCap || ldNotes || hasBgTerms) {
       await api(`/sales/orders/${r.id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
-        promised_delivery_date: delivery || null, ld_percentage: ldPct || null, ld_cap_percentage: ldCap || null, ld_trigger_notes: ldNotes || null
+        promised_delivery_date: delivery || null, ld_percentage: ldPct || null, ld_cap_percentage: ldCap || null, ld_trigger_notes: ldNotes || null,
+        ...bgTerms,
       })});
     }
     navigate('orders');
@@ -1836,6 +1878,7 @@ function soTermsForm(o) {
     <div><label>LD Cap (%)</label><input id="so-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
   </div>
   <div><label>Trigger Conditions</label><textarea id="so-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+  ${bgTermsFormFields(`so-terms-${o.id}`, o)}
   <button class="btn small" type="button" onclick="saveSOTerms(${o.id})">Save Terms</button>`;
 }
 window.toggleSOTerms = (id) => {
@@ -1849,6 +1892,7 @@ window.saveSOTerms = async (id) => {
       ld_percentage: val(`so-terms-ldpct-${id}`) || null,
       ld_cap_percentage: val(`so-terms-ldcap-${id}`) || null,
       ld_trigger_notes: val(`so-terms-ldnotes-${id}`) || null,
+      ...readBgTermsFields(`so-terms-${id}`),
     })});
     navigate('orders');
   } catch (e) { alert(e.message); }
