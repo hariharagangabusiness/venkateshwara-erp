@@ -377,6 +377,93 @@ router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.m
   res.json({ ok: true });
 });
 
+const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'terms', 'delivery_date'];
+const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', terms: 'Terms', delivery_date: 'Delivery date' };
+function poAuditLog(userId, action, poId, details) {
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(userId, action, 'purchase_order', poId, details || null);
+}
+router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (['Received', 'Cancelled'].includes(existing.status)) {
+    return res.status(400).json({ error: `This order is already ${existing.status} and can no longer be edited.` });
+  }
+  if (req.body.vendor_id) {
+    const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(req.body.vendor_id);
+    if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists - refresh the page and pick a vendor again.' });
+  }
+  if (req.body.item_id) {
+    const item = db.prepare('SELECT id FROM items WHERE id = ?').get(req.body.item_id);
+    if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
+  }
+  const quantity = req.body.quantity !== undefined ? Number(req.body.quantity) : existing.quantity;
+  const rate = req.body.rate !== undefined ? Number(req.body.rate) : existing.rate;
+  if (!quantity || quantity <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  if (!rate || rate <= 0) return res.status(400).json({ error: 'Enter a rate greater than 0.' });
+  const gstRate = req.body.gst_rate !== undefined && req.body.gst_rate !== '' ? Number(req.body.gst_rate) : existing.gst_rate;
+  const total = quantity * rate;
+  const gstAmount = total * (gstRate || 0) / 100;
+
+  const changes = [];
+  PO_EDIT_FIELDS.forEach(f => {
+    if (req.body[f] === undefined) return;
+    const newVal = req.body[f] || null;
+    const oldVal = existing[f];
+    if (String(oldVal || '') !== String(newVal || '')) changes.push(`${PO_EDIT_LABELS[f]}: ${oldVal || '-'} -> ${newVal || '-'}`);
+  });
+
+  db.prepare(`
+    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, terms=?, delivery_date=?
+    WHERE id=?
+  `).run(
+    req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
+    req.body.item_id !== undefined ? (req.body.item_id || null) : existing.item_id,
+    quantity, rate, total,
+    req.body.hsn_code !== undefined ? (req.body.hsn_code || null) : existing.hsn_code,
+    gstRate, gstAmount,
+    req.body.terms !== undefined ? (req.body.terms || null) : existing.terms,
+    req.body.delivery_date !== undefined ? (req.body.delivery_date || null) : existing.delivery_date,
+    existing.id
+  );
+  if (changes.length) poAuditLog(req.user.id, 'po_edit', existing.id, changes.join('; '));
+  res.json({ ok: true });
+});
+
+router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status === 'Cancelled') return res.status(400).json({ error: 'This order is already cancelled.' });
+  if (existing.status === 'Received') return res.status(400).json({ error: 'This order has already been received and can no longer be cancelled.' });
+  const reason = (req.body && req.body.reason) || null;
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE purchase_orders SET status = 'Cancelled' WHERE id = ?`).run(existing.id);
+    // A PR that was sitting at OrderPlaced only because of this PO goes back
+    // to Approved, so it's raisable against a new PO instead of stuck
+    // pointing at a cancelled one - but only when no other live PO still
+    // covers it.
+    if (existing.purchase_request_id) {
+      const otherLivePOs = db.prepare(`
+        SELECT COUNT(*) as n FROM purchase_orders WHERE purchase_request_id = ? AND id != ? AND status != 'Cancelled'
+      `).get(existing.purchase_request_id, existing.id).n;
+      if (otherLivePOs === 0) {
+        db.prepare(`UPDATE purchase_requests SET status = 'Approved' WHERE id = ? AND status = 'OrderPlaced'`).run(existing.purchase_request_id);
+      }
+    }
+  });
+  tx();
+  poAuditLog(req.user.id, 'po_cancel', existing.id, reason);
+  res.json({ ok: true });
+});
+
+router.get('/orders/:id/audit-log', (req, res) => {
+  res.json(db.prepare(`
+    SELECT al.*, u.full_name as actor_name FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+    WHERE al.entity_type = 'purchase_order' AND al.entity_id = ?
+    ORDER BY al.created_at
+  `).all(req.params.id));
+});
+
 // ---- Store: GRN receive & issue to production ----
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   const { item_id, quantity, po_id, project_id } = req.body;

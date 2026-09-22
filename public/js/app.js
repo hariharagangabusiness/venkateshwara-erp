@@ -3196,6 +3196,8 @@ PAGES['purchase-orders'] = async (el) => {
       <div id="po-table-wrap">${renderPORows(orders)}</div>
     </div>`;
   window.__PO_PRS = prs;
+  window.__PO_VENDORS = vendors;
+  window.__PO_ITEMS = items;
 };
 function renderPORows(rows) {
   return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
@@ -3207,10 +3209,67 @@ function renderPORows(rows) {
       <button class="btn small outline" type="button" onclick="emailPo(${o.id})">Email Vendor</button>
     </td>
     <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
-    <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button></td></tr>
+    <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button>
+    ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
+    <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+    <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button></td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-attachments-${o.id}"></div></td></tr>
-    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>`);
+    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>
+    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="10">${poEditForm(o)}</td></tr>
+    <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-history-${o.id}"></div></td></tr>`);
 }
+function poEditForm(o) {
+  const vendors = window.__PO_VENDORS || [];
+  const items = window.__PO_ITEMS || [];
+  return `<div class="form-grid" style="margin-top:8px;">
+    <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
+    <div><label>Item</label><select id="po-edit-item-${o.id}">${items.map(i => `<option value="${i.id}" ${i.id===o.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
+    <div><label>Quantity</label><input id="po-edit-qty-${o.id}" type="number" value="${o.quantity}"></div>
+    <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
+    <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
+    <div><label>GST Rate (%)</label><input id="po-edit-gst-${o.id}" type="number" value="${o.gst_rate}"></div>
+  </div>
+  <div><label>Terms</label><textarea id="po-edit-terms-${o.id}" rows="2" style="width:100%;">${esc(o.terms||'')}</textarea></div>
+  <button class="btn small" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
+  <div id="po-edit-err-${o.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+}
+window.togglePOEdit = (id) => {
+  const row = document.getElementById(`po-edit-row-${id}`);
+  row.style.display = row.style.display !== 'none' ? 'none' : '';
+};
+window.savePOEdit = async (id) => {
+  const errEl = document.getElementById(`po-edit-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/purchase/orders/${id}`, { method: 'PUT', body: JSON.stringify({
+      vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`),
+      quantity: val(`po-edit-qty-${id}`), rate: val(`po-edit-rate-${id}`),
+      hsn_code: val(`po-edit-hsn-${id}`), gst_rate: val(`po-edit-gst-${id}`), terms: val(`po-edit-terms-${id}`),
+    })});
+    navigate('purchase-orders');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.cancelPO = async (id) => {
+  const reason = prompt('Reason for cancelling this order (optional):');
+  if (reason === null) return; // user hit Cancel on the prompt itself
+  try {
+    await api(`/purchase/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+window.togglePOHistory = async (id) => {
+  const row = document.getElementById(`po-history-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) {
+    const log = await api(`/purchase/orders/${id}/audit-log`).catch(() => []);
+    const box = document.getElementById(`po-history-${id}`);
+    box.innerHTML = log.length
+      ? tableHTML(['When', 'By', 'Action', 'Details'], log, l => `
+          <tr><td>${new Date(l.created_at).toLocaleString()}</td><td>${esc(l.actor_name)||'-'}</td><td>${esc(l.action)}</td><td>${esc(l.details)||'-'}</td></tr>`)
+      : '<p class="muted">No edits or cancellation recorded for this order yet.</p>';
+  }
+};
 window.downloadPoPdf = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/pdf`, `${poNo}.pdf`);
 window.downloadPoDocx = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/docx`, `${poNo}.docx`);
 window.emailPo = async (id) => {
