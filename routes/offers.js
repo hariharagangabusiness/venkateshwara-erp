@@ -177,11 +177,15 @@ router.put('/:id', offerPerm(), (req, res) => {
     UPDATE offers SET subject=?, contact_person=?, contact_phone=?, contact_email=?,
       application=?, type_of_system=?, material_of_construction=?, drawing_no=?,
       inclusions=?, exclusions=?, utilities_requirement=?, instrument_air_supply=?,
+      show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?,
       status=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=?
   `).run(f.subject, f.contact_person, f.contact_phone, f.contact_email,
     f.application, f.type_of_system, f.material_of_construction, f.drawing_no,
     f.inclusions, f.exclusions, f.utilities_requirement, f.instrument_air_supply,
+    f.show_tech_specs !== undefined ? (f.show_tech_specs ? 1 : 0) : existing.show_tech_specs,
+    f.show_bought_out !== undefined ? (f.show_bought_out ? 1 : 0) : existing.show_bought_out,
+    f.show_inclusions_exclusions !== undefined ? (f.show_inclusions_exclusions ? 1 : 0) : existing.show_inclusions_exclusions,
     forked ? 'Draft' : (f.status || existing.status || 'Draft'), targetId);
   res.json({ ok: true, newVersion: forked, id: targetId });
 });

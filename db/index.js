@@ -672,6 +672,16 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
   `ALTER TABLE purchase_orders ADD COLUMN company_address_id INTEGER REFERENCES company_addresses(id)`,
+  // ---- Round 26: per-offer section include/exclude toggles for the
+  // generated PDF (Technical Specifications, Make of Bought-Out Items,
+  // Inclusions/Exclusions/Utilities+Instrument Air as one group, since the
+  // Offer Builder already edits all four of those fields together on one
+  // tab). NULL on a pre-existing row (ALTER TABLE doesn't backfill it here)
+  // is treated as "show" in lib/offerPdf.js, same as a fresh DEFAULT 1 row -
+  // no existing offer's PDF changes until someone explicitly unchecks a box.
+  `ALTER TABLE offers ADD COLUMN show_tech_specs INTEGER DEFAULT 1`,
+  `ALTER TABLE offers ADD COLUMN show_bought_out INTEGER DEFAULT 1`,
+  `ALTER TABLE offers ADD COLUMN show_inclusions_exclusions INTEGER DEFAULT 1`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

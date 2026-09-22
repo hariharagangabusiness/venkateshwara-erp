@@ -2026,6 +2026,12 @@ async function renderOfferBuilder(panel) {
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
       <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
     </div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;">
+      <b style="width:100%;">Include in generated PDF:</b>
+      <label style="margin:0;font-weight:normal;"><input id="ob-show-tech" type="checkbox" ${o.show_tech_specs !== 0 ? 'checked' : ''}> Technical Specifications</label>
+      <label style="margin:0;font-weight:normal;"><input id="ob-show-boughtout" type="checkbox" ${o.show_bought_out !== 0 ? 'checked' : ''}> Make of Bought-Out Items</label>
+      <label style="margin:0;font-weight:normal;"><input id="ob-show-inclexcl" type="checkbox" ${o.show_inclusions_exclusions !== 0 ? 'checked' : ''}> Inclusions / Exclusions / Utilities</label>
+    </div>
     <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
@@ -2045,7 +2051,10 @@ window.saveOfferHeader = async () => {
       subject: val('ob-subject'), contact_person: val('ob-contact'), contact_phone: val('ob-phone'), contact_email: val('ob-email'),
       drawing_no: val('ob-drawing'), application: val('ob-application'), type_of_system: val('ob-type'), material_of_construction: val('ob-material'),
       inclusions: data.offer.inclusions, exclusions: data.offer.exclusions, utilities_requirement: data.offer.utilities_requirement,
-      instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status, revision_reason: reason || null
+      instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status, revision_reason: reason || null,
+      show_tech_specs: document.getElementById('ob-show-tech').checked ? 1 : 0,
+      show_bought_out: document.getElementById('ob-show-boughtout').checked ? 1 : 0,
+      show_inclusions_exclusions: document.getElementById('ob-show-inclexcl').checked ? 1 : 0,
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Header saved');
   } catch (e) { alert(e.message); }
@@ -2240,7 +2249,10 @@ window.saveTextTab = async () => {
       subject: data.offer.subject, contact_person: data.offer.contact_person, contact_phone: data.offer.contact_phone, contact_email: data.offer.contact_email,
       drawing_no: data.offer.drawing_no, application: data.offer.application, type_of_system: data.offer.type_of_system, material_of_construction: data.offer.material_of_construction,
       inclusions: val('txt-inclusions'), exclusions: val('txt-exclusions'), utilities_requirement: val('txt-utilities'), instrument_air_supply: val('txt-air'),
-      status: data.offer.status, revision_reason: reason || null
+      status: data.offer.status, revision_reason: reason || null,
+      show_tech_specs: document.getElementById('ob-show-tech').checked ? 1 : 0,
+      show_bought_out: document.getElementById('ob-show-boughtout').checked ? 1 : 0,
+      show_inclusions_exclusions: document.getElementById('ob-show-inclexcl').checked ? 1 : 0,
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Saved');
   } catch (e) { alert(e.message); }
