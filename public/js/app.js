@@ -5059,7 +5059,7 @@ PAGES.access = async (el) => {
   el.innerHTML = `
     <div class="panel">
       <h3>Grant Extra Page Access (Round 3)</h3>
-      <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config.</p>
+      <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config. This only makes a page <b>visible</b> - if it's a page where the user needs to actually submit/approve/manage something (e.g. Service & Spares), also grant Cross-Department Oversight below for that role, or they'll see the page but get "Access denied: missing permission" when they try to act on it.</p>
       <div id="extra-access-form"></div>
       <div id="extra-access-list"></div>
     </div>
