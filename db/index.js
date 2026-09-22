@@ -682,6 +682,23 @@ const MIGRATIONS = [
   `ALTER TABLE offers ADD COLUMN show_tech_specs INTEGER DEFAULT 1`,
   `ALTER TABLE offers ADD COLUMN show_bought_out INTEGER DEFAULT 1`,
   `ALTER TABLE offers ADD COLUMN show_inclusions_exclusions INTEGER DEFAULT 1`,
+  // ---- Round 27: Section Title library - an admin-managed catalog of named
+  // machinery/scope lines (title + description + summary + picture) that the
+  // Offer Builder's "Add Machinery / Scope Line" form can pick from to
+  // auto-fill the description/image instead of retyping them on every
+  // offer. offer_items.section_title/description/image_path stay plain
+  // copied values (same as before) rather than FKs into this table, so
+  // deleting or editing a library entry never touches any offer already
+  // built from it.
+  `CREATE TABLE IF NOT EXISTS section_title_library (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL UNIQUE,
+    description TEXT,
+    summary TEXT,
+    image_path TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
