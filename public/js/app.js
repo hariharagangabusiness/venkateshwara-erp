@@ -3161,6 +3161,7 @@ PAGES['purchase-orders'] = async (el) => {
   const vendors = (await api('/masters/vendors')).filter(v => (v.status || 'Active') === 'Active');
   const items = await api('/masters/items');
   const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
+  const companyAddresses = await api('/settings/company-addresses').catch(() => []);
   el.innerHTML = `
     <div class="panel"><h3>New Purchase Order</h3>
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
@@ -3174,6 +3175,7 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>HSN Code</label><input id="po-hsn"></div>
         <div><label>GST Rate (%)</label><input id="po-gst" type="number" value="18"></div>
         <div><label>Delivery Date</label><input id="po-delivery" type="date"></div>
+        <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-company-address"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}">${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
       </div>
       <div><label>Terms</label><textarea id="po-terms" rows="2" style="width:100%;" placeholder="Standard terms apply..."></textarea></div>
       <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
@@ -3205,6 +3207,7 @@ PAGES['purchase-orders'] = async (el) => {
   window.__PO_PRS = prs;
   window.__PO_VENDORS = vendors;
   window.__PO_ITEMS = items;
+  window.__PO_COMPANY_ADDRESSES = companyAddresses;
 };
 function renderPORows(rows) {
   return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
@@ -3228,6 +3231,7 @@ function renderPORows(rows) {
 function poEditForm(o) {
   const vendors = window.__PO_VENDORS || [];
   const items = window.__PO_ITEMS || [];
+  const companyAddresses = window.__PO_COMPANY_ADDRESSES || [];
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
     <div><label>Item</label><select id="po-edit-item-${o.id}">${items.map(i => `<option value="${i.id}" ${i.id===o.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
@@ -3235,6 +3239,7 @@ function poEditForm(o) {
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
     <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
     <div><label>GST Rate (%)</label><input id="po-edit-gst-${o.id}" type="number" value="${o.gst_rate}"></div>
+    <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-edit-address-${o.id}"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}" ${a.id===o.company_address_id?'selected':''}>${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
   </div>
   <div><label>Terms</label><textarea id="po-edit-terms-${o.id}" rows="2" style="width:100%;">${esc(o.terms||'')}</textarea></div>
   <button class="btn small" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
@@ -3252,6 +3257,7 @@ window.savePOEdit = async (id) => {
       vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`),
       quantity: val(`po-edit-qty-${id}`), rate: val(`po-edit-rate-${id}`),
       hsn_code: val(`po-edit-hsn-${id}`), gst_rate: val(`po-edit-gst-${id}`), terms: val(`po-edit-terms-${id}`),
+      company_address_id: val(`po-edit-address-${id}`) || null,
     })});
     navigate('purchase-orders');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
@@ -3345,6 +3351,7 @@ window.addPO = async () => {
       purchase_request_id: val('po-pr') || null, purchase_request_item_id: val('po-pr') ? prItemId : null,
       vendor_id: val('po-vendor'), item_id: val('po-item'), quantity: val('po-qty'), rate: val('po-rate'),
       hsn_code: val('po-hsn'), gst_rate: val('po-gst'), delivery_date: val('po-delivery'), terms: val('po-terms'),
+      company_address_id: val('po-company-address') || null,
     })});
     const ldPct = val('po-ld-pct'), ldCap = val('po-ld-cap'), ldNotes = val('po-ld-notes');
     if (ldPct || ldCap || ldNotes) {
@@ -5684,6 +5691,7 @@ PAGES['company-settings'] = async (el) => {
       </div>
       <div id="cs-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
+    <div id="co-addresses-panel"></div>
     ${email ? `
     <div class="panel"><h3>Email Settings (SMTP)</h3>
       <p class="muted">DB values here override the SMTP_* environment variables. Leave blank to fall back to env vars. If neither is set, automated emails are skipped gracefully with a clear message.</p>
@@ -5701,6 +5709,55 @@ PAGES['company-settings'] = async (el) => {
       <div id="es-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>` : ''}
   `;
+  renderCompanyAddressesPanel();
+};
+async function renderCompanyAddressesPanel() {
+  const panel = document.getElementById('co-addresses-panel');
+  if (!panel) return;
+  const addresses = await api('/settings/company-addresses');
+  const addrRow = (a) => `<tr>
+      <td>${esc(a.address_type)}${a.is_default ? ' <span class="badge active">Default</span>' : ''}</td>
+      <td>${esc(a.label)||'-'}</td>
+      <td>${[a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).map(esc).join(', ')}</td>
+      <td>${esc(a.gstin)||'-'}</td>
+      <td><button class="btn small outline" onclick="deleteCompanyAddress(${a.id})">Delete</button></td>
+    </tr>`;
+  panel.innerHTML = `
+    <div class="panel"><h3>Company Bill-to / Ship-to Addresses</h3>
+      <p class="muted">Separate factory/office locations, each selectable when creating a Purchase Order so the right address flows into the PO's PDF/Word document.</p>
+      ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
+      <div class="form-grid" style="margin-top:10px;">
+        <div><label>Type</label><select id="coaddr-type"><option value="Billing">Billing</option><option value="Shipping">Shipping</option></select></div>
+        <div><label>Label</label><input id="coaddr-label" placeholder="e.g. Head Office, Factory - Faridabad"></div>
+        <div><label>GSTIN</label><input id="coaddr-gstin"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 1</label><input id="coaddr-line1"></div>
+        <div style="grid-column:1/-1;"><label>Address Line 2</label><input id="coaddr-line2"></div>
+        <div><label>City</label><input id="coaddr-city"></div>
+        <div><label>State</label><input id="coaddr-state"></div>
+        <div><label>State Code</label><input id="coaddr-state-code" placeholder="e.g. 06"></div>
+        <div><label>Pincode</label><input id="coaddr-pincode"></div>
+        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="coaddr-default" type="checkbox"> Set as default for this type</label></div>
+      </div>
+      <button class="btn" onclick="addCompanyAddress()">Add Address</button>
+      <div id="coaddr-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>`;
+}
+window.addCompanyAddress = async () => {
+  const errEl = document.getElementById('coaddr-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/settings/company-addresses', { method: 'POST', body: JSON.stringify({
+      address_type: val('coaddr-type'), label: val('coaddr-label'), line1: val('coaddr-line1'), line2: val('coaddr-line2'),
+      city: val('coaddr-city'), state: val('coaddr-state'), state_code: val('coaddr-state-code'), pincode: val('coaddr-pincode'),
+      gstin: val('coaddr-gstin'), is_default: document.getElementById('coaddr-default').checked,
+    })});
+    renderCompanyAddressesPanel();
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteCompanyAddress = async (id) => {
+  if (!confirm('Delete this address?')) return;
+  try { await api('/settings/company-addresses/' + id, { method: 'DELETE' }); renderCompanyAddressesPanel(); }
+  catch (e) { alert(e.message); }
 };
 window.saveCompanySettings = async () => {
   const errEl = document.getElementById('cs-err'); errEl.style.display = 'none';
