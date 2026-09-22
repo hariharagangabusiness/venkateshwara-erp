@@ -35,17 +35,22 @@ router.get('/requests', (req, res) => {
       (SELECT COALESCE(SUM(pri.estimated_value), 0) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as items_total_value,
       (SELECT GROUP_CONCAT(COALESCE(i2.name, pri.item_text), ', ') FROM purchase_request_items pri LEFT JOIN items i2 ON i2.id = pri.item_id WHERE pri.purchase_request_id = pr.id) as item_summary,
       (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND i3.status = 'Pending') as pending_item_count,
-      (SELECT aa.comment FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
-        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'Rejected'
+      -- Scoped to pr.approval_id (the PR's CURRENT approval cycle), not just
+      -- entity_type/entity_id - a resubmit starts a brand-new approvals row
+      -- (see POST /requests/:id/resubmit), so matching on entity alone would
+      -- keep surfacing a stale rejection from a cycle that's already been
+      -- superseded, even once the PR is freshly Pending again.
+      (SELECT aa.comment FROM approval_actions aa
+        WHERE aa.approval_id = pr.approval_id AND aa.action = 'Rejected'
         ORDER BY aa.acted_at DESC LIMIT 1) as rejection_reason,
-      (SELECT ru.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id LEFT JOIN users ru ON ru.id = aa.actor_user_id
-        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'Rejected'
+      (SELECT ru.full_name FROM approval_actions aa LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE aa.approval_id = pr.approval_id AND aa.action = 'Rejected'
         ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name,
-      (SELECT aa.comment FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
-        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'InfoRequested'
+      (SELECT aa.comment FROM approval_actions aa
+        WHERE aa.approval_id = pr.approval_id AND aa.action = 'InfoRequested'
         ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_note,
-      (SELECT ru.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id LEFT JOIN users ru ON ru.id = aa.actor_user_id
-        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'InfoRequested'
+      (SELECT ru.full_name FROM approval_actions aa LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE aa.approval_id = pr.approval_id AND aa.action = 'InfoRequested'
         ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_by_name
     FROM purchase_requests pr
     LEFT JOIN items i ON i.id = pr.item_id LEFT JOIN projects p ON p.id = pr.project_id
