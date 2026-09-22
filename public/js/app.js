@@ -1099,7 +1099,8 @@ function approvalActionCell(r) {
       <button class="btn small blue" onclick="actOnApprovalTodo(${r.id}, 'Completed')">Complete</button>`;
   }
   return `<button class="btn small green" onclick="actOnApproval(${r.id}, 'Approved')">Approve</button>
-    <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>`;
+    <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>
+    <button class="btn small outline" onclick="actOnApproval(${r.id}, 'InfoRequested')">Ask for More Info</button>`;
 }
 PAGES.approvals = async (el) => {
   const pending = await api('/approvals/pending');
@@ -1126,7 +1127,12 @@ PAGES.approvals = async (el) => {
   }).join('');
 };
 window.actOnApproval = async (id, action) => {
-  const comment = action === 'Rejected' ? prompt('Reason for rejection (optional):') : null;
+  let comment = null;
+  if (action === 'Rejected') comment = prompt('Reason for rejection (optional):');
+  else if (action === 'InfoRequested') {
+    comment = prompt('What information do you need from the requester?');
+    if (!comment || !comment.trim()) return; // required - a blank note means "cancelled"
+  }
   try {
     await api(`/approvals/${id}/act`, { method: 'POST', body: JSON.stringify({ action, comment }) });
     navigate('approvals');
@@ -2974,15 +2980,24 @@ function renderPRRows(rows) {
       <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
       <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
-        ${['Pending', 'Rejected'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${['Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
+        ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
         ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
-        ${!r.status || (!['Pending','Rejected'].includes(r.status) && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
+        ${!r.status || (!['Pending','Rejected','InfoRequested'].includes(r.status) && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
       </td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
+    ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
     ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`);
 }
+window.provideInfoPR = async (id) => {
+  const comment = prompt('Response to the reviewer (optional):');
+  try {
+    await api(`/approvals/${(window.__PR_CACHE || []).find(r => r.id === id).approval_id}/provide-info`, { method: 'POST', body: JSON.stringify({ comment }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
 window.resubmitPR = async (id) => {
   try {
     const r = await api(`/purchase/requests/${id}/resubmit`, { method: 'POST' });
