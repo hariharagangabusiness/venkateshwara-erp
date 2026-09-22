@@ -2054,6 +2054,9 @@ async function renderAttachmentsWidget(entityType, entityId, container) {
 let CURRENT_OFFER_ID = null;
 let CURRENT_OFFER_TAB = 'scope';
 let CURRENT_OFFER = null; // the offer header last fetched for the open builder - used to decide whether an edit will fork a new version
+let OFFER_TERM_LIBRARY = []; // active offer_clause_library rows, category 'term' - refreshed each time renderOfferBuilder runs
+let OFFER_TEXT_LIBRARY = { inclusion: [], exclusion: [], utilities: [], instrument_air: [] };
+let OFFER_REQUIRE_LIBRARY_CLAUSES = false; // governance.require_library_clauses, as of the last renderOfferBuilder
 
 // Any offer edit past Draft forks a new version server-side rather than
 // overwriting a version that may already be with the customer (see
@@ -2148,18 +2151,33 @@ function offerFieldSelect(id, options, current) {
   return `<select id="${id}"><option value="">-- Select --</option>${opts.map(v => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
 }
 async function renderOfferBuilder(panel) {
-  const [data, versions, applicationOpts, typeOpts, materialOpts] = await Promise.all([
+  const [data, versions, applicationOpts, typeOpts, materialOpts, termClauses, inclusionClauses, exclusionClauses, utilitiesClauses, airClauses, governance] = await Promise.all([
     api('/offers/' + CURRENT_OFFER_ID),
     api('/offers/' + CURRENT_OFFER_ID + '/versions'),
     api('/offers/field-options/application'),
     api('/offers/field-options/type_of_system'),
     api('/offers/field-options/material_of_construction'),
+    api('/offers/clause-library/term'),
+    api('/offers/clause-library/inclusion'),
+    api('/offers/clause-library/exclusion'),
+    api('/offers/clause-library/utilities'),
+    api('/offers/clause-library/instrument_air'),
+    api('/offers/governance').catch(() => ({ require_library_clauses: false })), // non-Admin can't read this - assume the lenient default
   ]);
+  // Cached for renderOfferTab()'s terms/text sub-renderers (re-run on tab
+  // switch without a refetch - the clause library rarely changes mid-edit).
+  OFFER_TERM_LIBRARY = termClauses;
+  OFFER_TEXT_LIBRARY = { inclusion: inclusionClauses, exclusion: exclusionClauses, utilities: utilitiesClauses, instrument_air: airClauses };
+  OFFER_REQUIRE_LIBRARY_CLAUSES = !!governance.require_library_clauses;
   const o = data.offer;
   CURRENT_OFFER = o;
   const tabs = [['scope', 'Scope of Supply & Pictures'], ['tech', 'Technical Specification'], ['boughtout', 'Make of Bought Out Items'], ['terms', 'Terms & Conditions'], ['text', 'Inclusions / Exclusions / Utilities']];
   panel.innerHTML = `
-    <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span></h3>
+    <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}</h3>
+    ${o.locked ? `<div class="msg err" style="margin-bottom:10px;">
+      This offer was converted to a Sales Order and is locked against further edits.${o.locked_reason ? ' ' + esc(o.locked_reason) + '.' : ''}
+      ${ME.role === 'Admin' ? '<button class="btn small outline" style="margin-left:10px;" onclick="unlockOffer()">Unlock (Admin)</button>' : ' Ask an Admin to unlock it if this offer genuinely needs a further revision.'}
+    </div>` : ''}
     ${versions.length > 1 ? `<div class="panel" style="background:#f6f7f9;">
       <b>Version History</b>
       ${tableHTML(['Version', 'Status', 'Date', 'Revision Reason', ''], versions, v => `
@@ -2239,6 +2257,15 @@ window.confirmOffer = async () => {
     navigate('projects');
   } catch (e) { alert(e.message); }
 };
+window.unlockOffer = async () => {
+  const reason = prompt('Reason for unlocking this offer (kept in the audit trail):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('Enter a reason.'); return; }
+  try {
+    await api(`/offers/${CURRENT_OFFER_ID}/unlock`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+    await openOfferBuilder(CURRENT_OFFER_ID);
+  } catch (e) { alert(e.message); }
+};
 
 window.switchOfferTab = async (tab) => {
   CURRENT_OFFER_TAB = tab;
@@ -2255,7 +2282,7 @@ function renderOfferTab(data) {
   if (CURRENT_OFFER_TAB === 'scope') return renderScopeTab(el, data);
   if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value');
   if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make');
-  if (CURRENT_OFFER_TAB === 'terms') return renderKvTab(el, data.terms, 'term_key', 'term_value', 'terms', 'Term', 'Value');
+  if (CURRENT_OFFER_TAB === 'terms') return renderKvTab(el, data.terms, 'term_key', 'term_value', 'terms', 'Term', 'Value', OFFER_TERM_LIBRARY);
   if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer);
 }
 
@@ -2360,7 +2387,15 @@ window.deleteOfferItem = async (itemId) => {
   } catch (e) { alert(e.message); }
 };
 
-function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel) {
+function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel, library) {
+  // `library` (offer_clause_library rows, category 'term') is only passed
+  // for the Terms & Conditions tab - tech-specs/bought-out have no library
+  // and keep the plain "+ Add Row" behavior. When Offer Governance's
+  // "require library clauses" is on and this user isn't Admin, the free-
+  // text "+ Add Row" is hidden so a NEW row can only come from the library;
+  // rows already on the offer stay fully editable/removable either way.
+  const hasLibrary = library !== undefined;
+  const strict = hasLibrary && OFFER_REQUIRE_LIBRARY_CLAUSES && ME.role !== 'Admin';
   el.innerHTML = `
     <table><thead><tr><th>${keyLabel}</th><th>${valLabel}</th><th></th></tr></thead>
     <tbody id="kv-rows">${rows.map((r, i) => `
@@ -2369,9 +2404,17 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel)
         <td><input class="kv-val" value="${esc(r[valField])}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
         <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>
       </tr>`).join('')}</tbody></table>
-    <button class="btn small outline" onclick="addKvRow()">+ Add Row</button>
+    ${hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <select id="kv-lib-pick" style="border:1px solid var(--border);border-radius:4px;padding:5px;">
+        <option value="">${library.length ? 'Pick a clause from the library...' : 'No library clauses defined yet'}</option>
+        ${library.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('')}
+      </select>
+      <button class="btn small outline" onclick="addKvRowFromLibrary()">+ Add From Library</button>
+    </div>` : ''}
+    ${!strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
     <button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}')">Save</button>
   `;
+  if (hasLibrary) el.dataset.library = JSON.stringify(library);
 }
 window.addKvRow = () => {
   const tbody = document.getElementById('kv-rows');
@@ -2380,6 +2423,21 @@ window.addKvRow = () => {
     <td><input class="kv-val" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
     <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>`;
   tbody.appendChild(tr);
+};
+window.addKvRowFromLibrary = () => {
+  const select = document.getElementById('kv-lib-pick');
+  const id = select.value;
+  if (!id) return;
+  const library = JSON.parse(document.getElementById('offer-tab-content').dataset.library || '[]');
+  const picked = library.find(c => String(c.id) === id);
+  if (!picked) return;
+  const tbody = document.getElementById('kv-rows');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><input class="kv-key" value="${esc(picked.label)}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+    <td><input class="kv-val" value="${esc(picked.body)}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+    <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>`;
+  tbody.appendChild(tr);
+  select.value = '';
 };
 window.saveKvTab = async (endpoint, keyField, valField) => {
   const rows = Array.from(document.querySelectorAll('#kv-rows tr')).map(tr => ({
@@ -2394,18 +2452,44 @@ window.saveKvTab = async (endpoint, keyField, valField) => {
   } catch (e) { alert(e.message); }
 };
 
+// One (textareaId, clause-library category) pair per free-text field, in
+// display order - reused by renderTextTab() to draw the "insert from
+// library" picker under each field without repeating it four times.
+const OFFER_TEXT_FIELDS = [
+  ['txt-inclusions', 'inclusion', 'Inclusions'],
+  ['txt-exclusions', 'exclusion', 'Exclusions (one per line)'],
+  ['txt-utilities', 'utilities', 'Utilities Requirement'],
+  ['txt-air', 'instrument_air', 'Instrument Air Supply'],
+];
+function textLibraryPicker(textareaId, category) {
+  const clauses = OFFER_TEXT_LIBRARY[category] || [];
+  if (!clauses.length) return '';
+  return `<div style="margin:4px 0 10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    <select id="${textareaId}-lib-pick" style="border:1px solid var(--border);border-radius:4px;padding:4px;font-size:12px;">
+      <option value="">Insert a library clause...</option>
+      ${clauses.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('')}
+    </select>
+    <button class="btn small outline" onclick="insertTextLibraryClause('${textareaId}', '${category}')">Insert</button>
+  </div>`;
+}
+window.insertTextLibraryClause = (textareaId, category) => {
+  const select = document.getElementById(`${textareaId}-lib-pick`);
+  const id = select.value;
+  if (!id) return;
+  const picked = (OFFER_TEXT_LIBRARY[category] || []).find(c => String(c.id) === id);
+  if (!picked) return;
+  const ta = document.getElementById(textareaId);
+  ta.value = ta.value ? (ta.value.replace(/\n+$/, '') + '\n' + picked.body) : picked.body;
+  select.value = '';
+};
 function renderTextTab(el, offer) {
-  el.innerHTML = `
-    <label>Inclusions</label>
-    <textarea id="txt-inclusions" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer.inclusions)}</textarea>
-    <label style="margin-top:10px;display:block;">Exclusions (one per line)</label>
-    <textarea id="txt-exclusions" rows="6" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer.exclusions)}</textarea>
-    <label style="margin-top:10px;display:block;">Utilities Requirement</label>
-    <textarea id="txt-utilities" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer.utilities_requirement)}</textarea>
-    <label style="margin-top:10px;display:block;">Instrument Air Supply</label>
-    <textarea id="txt-air" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer.instrument_air_supply)}</textarea>
-    <div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>
-  `;
+  const fieldMap = { 'txt-inclusions': 'inclusions', 'txt-exclusions': 'exclusions', 'txt-utilities': 'utilities_requirement', 'txt-air': 'instrument_air_supply' };
+  const rowsAttr = { 'txt-inclusions': 3, 'txt-exclusions': 6, 'txt-utilities': 2, 'txt-air': 3 };
+  el.innerHTML = OFFER_TEXT_FIELDS.map(([textareaId, category, label]) => `
+    <label style="margin-top:10px;display:block;">${label}</label>
+    <textarea id="${textareaId}" rows="${rowsAttr[textareaId]}" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer[fieldMap[textareaId]])}</textarea>
+    ${textLibraryPicker(textareaId, category)}
+  `).join('') + `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`;
 }
 window.saveTextTab = async () => {
   try {
@@ -5155,41 +5239,55 @@ window.toggleExpTrackerCategory = async (id, active) => {
 // ---- Offer Field Options (Application / Type of System / Material of Construction) ----
 const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
 let OFFER_OPTIONS_TAB = 'application';
+// ---- Offer Clause Library categories - ids must match routes/offers.js's CLAUSE_CATEGORIES ----
+const CLAUSE_CATEGORIES = [['term', 'Terms & Conditions'], ['inclusion', 'Inclusions'], ['exclusion', 'Exclusions'], ['utilities', 'Utilities Requirement'], ['instrument_air', 'Instrument Air Supply']];
+let CLAUSE_LIBRARY_TAB = 'term';
 PAGES['offer-options'] = async (el) => {
-  const [all, sectionTitles, pdfTemplate] = await Promise.all([
-    api('/offers/field-options'), api('/offers/section-titles'),
+  // Field options / Section Title library are master template controls
+  // (values every Sales user's offers draw from) - only Admin can add,
+  // edit, deactivate or delete entries; everyone else gets a read-only
+  // view to browse what's available while building an offer. The bulk
+  // admin listing (incl. inactive, for toggling) is Admin-only now, so
+  // everyone else reads just the active options for the open tab - the
+  // same endpoint the offer builder itself uses to populate its dropdowns.
+  const isAdmin = ME.role === 'Admin';
+  const [rows, sectionTitles, pdfTemplate, governance, clauses, designTokens] = await Promise.all([
+    isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
+    api('/offers/section-titles'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
+    api('/offers/governance').catch(() => null), // Admin-only - same
+    isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
+    api('/offers/design-tokens').catch(() => null), // Admin-only - same
   ]);
-  const rows = all.filter(o => o.field_name === OFFER_OPTIONS_TAB);
   el.innerHTML = `
     <div class="panel">
       <div class="tabs">${OFFER_OPTION_FIELDS.map(([id, label]) => `<div class="tab ${OFFER_OPTIONS_TAB === id ? 'active' : ''}" onclick="switchOfferOptionsTab('${id}')">${label}</div>`).join('')}</div>
-      <div style="margin-top:14px;" class="form-grid">
+      ${isAdmin ? `<div style="margin-top:14px;" class="form-grid">
         <div><label>New Value</label><input id="oo-value"></div>
         <div><label>Sort Order</label><input id="oo-sort" type="number" value="0"></div>
       </div>
-      <button class="btn" onclick="addOfferOption()">Add Option</button>
-      <table style="margin-top:14px;"><thead><tr><th>Value</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
+      <button class="btn" onclick="addOfferOption()">Add Option</button>` : ''}
+      <table style="margin-top:14px;"><thead><tr><th>Value</th><th>Sort</th><th>Active</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
         ${rows.map(o => `<tr>
-          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'value', this.textContent)">${esc(o.value)}</span></td>
-          <td><span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'sort_order', this.textContent)">${o.sort_order}</span></td>
+          <td>${isAdmin ? `<span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'value', this.textContent)">${esc(o.value)}</span>` : esc(o.value)}</td>
+          <td>${isAdmin ? `<span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'sort_order', this.textContent)">${o.sort_order}</span>` : o.sort_order}</td>
           <td>${o.active ? 'Yes' : 'No'}</td>
-          <td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>
-        </tr>`).join('') || '<tr><td colspan="4" class="empty">No options yet.</td></tr>'}
+          ${isAdmin ? `<td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>` : ''}
+        </tr>`).join('') || `<tr><td colspan="${isAdmin ? 4 : 3}" class="empty">No options yet.</td></tr>`}
       </tbody></table>
     </div>
     <div class="panel"><h3>Section Title Library</h3>
       <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on an offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time.</p>
-      <table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th><th></th></tr></thead><tbody>
+      <table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
         ${sectionTitles.map(s => `<tr>
           <td>${esc(s.title)}</td>
           <td style="white-space:pre-wrap;max-width:220px;">${esc(s.description)||'-'}</td>
           <td style="max-width:180px;">${esc(s.summary)||'-'}</td>
           <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
-          <td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>
-        </tr>`).join('') || '<tr><td colspan="5" class="empty">No section titles yet.</td></tr>'}
+          ${isAdmin ? `<td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>` : ''}
+        </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
       </tbody></table>
-      <h4>Add Section Title</h4>
+      ${isAdmin ? `<h4>Add Section Title</h4>
       <div class="form-grid">
         <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
         <div><label>Summary</label><input id="stl-summary" placeholder="Short reference note"></div>
@@ -5198,8 +5296,31 @@ PAGES['offer-options'] = async (el) => {
       <label>Description</label>
       <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
       <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
-      <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>
+      <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
     </div>
+    ${isAdmin ? `<div class="panel"><h3>Offer Clause Library</h3>
+      <p class="muted">Pre-approved Terms &amp; Conditions / Inclusions / Exclusions / Utilities Requirement / Instrument Air Supply clauses - Sales picks from these on the offer builder's Terms and Inclusions/Exclusions tabs instead of always typing from scratch.</p>
+      <div class="tabs">${CLAUSE_CATEGORIES.map(([id, label]) => `<div class="tab ${CLAUSE_LIBRARY_TAB === id ? 'active' : ''}" onclick="switchClauseLibraryTab('${id}')">${label}</div>`).join('')}</div>
+      <table style="margin-top:14px;"><thead><tr><th>Label</th><th>Clause Text</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
+        ${clauses.filter(c => c.category === CLAUSE_LIBRARY_TAB).map(c => `<tr>
+          <td><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'label', this.textContent)">${esc(c.label)}</span></td>
+          <td style="white-space:pre-wrap;max-width:320px;"><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'body', this.textContent)">${esc(c.body)}</span></td>
+          <td><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'sort_order', this.textContent)">${c.sort_order}</span></td>
+          <td>${c.active ? 'Yes' : 'No'}</td>
+          <td><button class="btn small outline" onclick="editClause(${c.id}, 'active', ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button>
+              <button class="btn small red" onclick="deleteClause(${c.id})">Delete</button></td>
+        </tr>`).join('') || '<tr><td colspan="5" class="empty">No clauses yet in this category.</td></tr>'}
+      </tbody></table>
+      <h4>Add Clause</h4>
+      <div class="form-grid">
+        <div><label>Label</label><input id="cl-label" placeholder="e.g. Payment Terms"></div>
+        <div><label>Sort Order</label><input id="cl-sort" type="number" value="0"></div>
+      </div>
+      <label>Clause Text</label>
+      <textarea id="cl-body" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+      <div style="margin-top:8px;"><button class="btn" onclick="addClause()">Add to Library</button></div>
+      <div id="cl-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
     ${pdfTemplate ? `<div class="panel"><h3>Offer PDF Template (Optional Override)</h3>
       <p class="muted">Offers use the built-in letterhead by default. Upload a header, footer and/or cover page image below and check "Active" to override just that piece - anything left unchecked keeps using the default, pixel-matched letterhead. Checking "Active" with no image uploaded (yet) has no effect.</p>
       <table><thead><tr><th>Piece</th><th>Current</th><th>Active</th><th>Upload New</th></tr></thead><tbody>
@@ -5259,7 +5380,77 @@ PAGES['offer-options'] = async (el) => {
         <button class="btn outline" onclick="resetPdfTemplate()">Reset All to Default</button>
       </div>
       <div id="pt-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
+    ${governance ? `<div class="panel"><h3>Offer Governance</h3>
+      <p class="muted">Compliance kill switches - each is instantly reversible, no code change or redeploy needed.</p>
+      <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-lock-on-so" ${governance.lock_on_so_conversion ? 'checked' : ''}>
+        Lock an offer against further edits once it's converted to a Sales Order (Admin can still unlock a specific offer from its builder page if needed)</label>
+      <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-require-library" ${governance.require_library_clauses ? 'checked' : ''}>
+        Require Sales to pick Terms/Inclusions/Exclusions from the clause library below rather than typing their own</label>
+      <div style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
+      <div id="gov-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}
+    ${designTokens ? `<div class="panel"><h3>Offer PDF Design Tokens</h3>
+      <p class="muted">Centralized typography for the offer PDF - defaults match the built-in letterhead exactly, so nothing changes unless you edit a value here. "Page X of Y" and the legal notice line appear on every footer variant (default, image or rich-text).</p>
+      <div class="form-grid">
+        <div><label>Body Font Family</label><input id="dt-body-font" value="${esc(designTokens.body_font_family)}"></div>
+        <div><label>Body Font Size (px)</label><input id="dt-body-size" type="number" step="0.1" value="${designTokens.body_font_size_px}"></div>
+        <div><label>Body Line Height</label><input id="dt-body-lh" type="number" step="0.1" value="${designTokens.body_line_height}"></div>
+        <div><label>Body / Heading Color</label><input id="dt-body-color" type="color" value="${esc(designTokens.body_color)}"></div>
+        <div><label>Header Title Color</label><input id="dt-header-title-color" type="color" value="${esc(designTokens.header_title_color)}"></div>
+        <div><label>Header Title Size (px)</label><input id="dt-header-title-size" type="number" step="0.1" value="${designTokens.header_title_size_px}"></div>
+        <div><label>Header Subtitle Color</label><input id="dt-header-sub-color" type="color" value="${esc(designTokens.header_subtitle_color)}"></div>
+        <div><label>Header Subtitle Size (px)</label><input id="dt-header-sub-size" type="number" step="0.1" value="${designTokens.header_subtitle_size_px}"></div>
+        <div><label>Footer Font Size (px)</label><input id="dt-footer-size" type="number" step="0.1" value="${designTokens.footer_font_size_px}"></div>
+        <div><label>Footer Color</label><input id="dt-footer-color" type="color" value="${esc(designTokens.footer_color)}"></div>
+      </div>
+      <label style="display:block;margin-top:10px;"><input type="checkbox" id="dt-page-numbers" ${designTokens.show_page_numbers ? 'checked' : ''}> Show "Page X of Y" on every page</label>
+      <label style="margin-top:10px;display:block;">Legal Notice Line (optional, shown next to the page number)</label>
+      <input id="dt-legal-notice" style="width:100%;" value="${esc(designTokens.legal_notice_text)}" placeholder="e.g. This is a computer-generated document and does not require a signature.">
+      <div style="margin-top:8px;">
+        <button class="btn" onclick="saveOfferDesignTokens()">Save Design Tokens</button>
+        <button class="btn outline" onclick="resetOfferDesignTokens()">Reset to Default</button>
+      </div>
+      <div id="dt-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>` : ''}`;
+};
+window.saveOfferGovernance = async () => {
+  const errEl = document.getElementById('gov-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/offers/governance', { method: 'PUT', body: JSON.stringify({
+      lock_on_so_conversion: document.getElementById('gov-lock-on-so').checked,
+      require_library_clauses: document.getElementById('gov-require-library').checked,
+    })});
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.saveOfferDesignTokens = async () => {
+  const errEl = document.getElementById('dt-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/offers/design-tokens', { method: 'PUT', body: JSON.stringify({
+      body_font_family: val('dt-body-font'),
+      body_font_size_px: Number(val('dt-body-size')),
+      body_line_height: Number(val('dt-body-lh')),
+      body_color: val('dt-body-color'),
+      heading_color: val('dt-body-color'),
+      header_title_color: val('dt-header-title-color'),
+      header_title_size_px: Number(val('dt-header-title-size')),
+      header_subtitle_color: val('dt-header-sub-color'),
+      header_subtitle_size_px: Number(val('dt-header-sub-size')),
+      footer_font_size_px: Number(val('dt-footer-size')),
+      footer_color: val('dt-footer-color'),
+      show_page_numbers: document.getElementById('dt-page-numbers').checked,
+      legal_notice_text: val('dt-legal-notice'),
+    })});
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.resetOfferDesignTokens = async () => {
+  if (!confirm('Reset the Offer PDF design tokens to the built-in defaults?')) return;
+  try { await api('/offers/design-tokens', { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
 };
 // Only one source (image / docx / rich-text) makes sense active at a time
 // per piece - checking one here unchecks the others for that same piece,
@@ -5319,6 +5510,26 @@ window.addSectionTitle = async () => {
 window.deleteSectionTitle = async (id) => {
   if (!confirm('Delete this section title from the library?')) return;
   try { await api('/offers/section-titles/' + id, { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.switchClauseLibraryTab = (id) => { CLAUSE_LIBRARY_TAB = id; navigate('offer-options'); };
+window.addClause = async () => {
+  const errEl = document.getElementById('cl-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/offers/clause-library', { method: 'POST', body: JSON.stringify({
+      category: CLAUSE_LIBRARY_TAB, label: val('cl-label'), body: val('cl-body'), sort_order: val('cl-sort'),
+    })});
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.editClause = async (id, field, value) => {
+  try { await api('/offers/clause-library/' + id, { method: 'PUT', body: JSON.stringify({ [field]: value }) }); navigate('offer-options'); }
+  catch (e) { alert(e.message); navigate('offer-options'); }
+};
+window.deleteClause = async (id) => {
+  if (!confirm('Delete this clause from the library?')) return;
+  try { await api('/offers/clause-library/' + id, { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
 window.savePdfTemplate = async () => {

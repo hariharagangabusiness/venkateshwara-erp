@@ -108,6 +108,16 @@ app.use((err, req, res, next) => {
     const friendly = (field && UNIQUE_FIELD_LABELS[field]) || 'This record duplicates one that already exists.';
     return res.status(400).json({ error: friendly });
   }
+  // A route that threw a deliberate, already-friendly error (e.g.
+  // lib/offerVersioning.js's locked-offer guard) carries its intended HTTP
+  // status on err.status - honor it instead of falling through to 500.
+  if (err && err.status) return res.status(err.status).json({ error: err.message });
+  // Belt-and-suspenders: a schema.sql immutability trigger fired directly
+  // (the app-level guard above was somehow bypassed) - same 423 the app-
+  // level guard itself would have returned, not a raw SQLite abort message.
+  if (err && /OFFER_LOCKED/.test(err.message || '')) {
+    return res.status(423).json({ error: 'This record is locked and cannot be modified.' });
+  }
   console.error(err);
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });

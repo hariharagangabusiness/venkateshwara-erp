@@ -560,6 +560,50 @@ CREATE TABLE IF NOT EXISTS offer_terms (
   sort_order INTEGER DEFAULT 0
 );
 
+-- Admin-managed reusable clauses (Round 40) for Terms & Conditions /
+-- Inclusions / Exclusions / Utilities Requirement / Instrument Air Supply -
+-- Sales picks from these instead of always typing free text from scratch,
+-- same "copy the text at use time, don't reference the row" pattern as
+-- section_title_library (Round 27) so editing/removing a library entry
+-- later never changes what's already on an existing offer.
+CREATE TABLE IF NOT EXISTS offer_clause_library (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,             -- term, inclusion, exclusion, utilities, instrument_air
+  label TEXT NOT NULL,                -- short reference name (the term_key, for 'term'; just a menu label otherwise)
+  body TEXT NOT NULL,                 -- the clause text (the term_value, for 'term'; the paragraph text otherwise)
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ===================== Offer immutability (Round 40) =====================
+-- Database-level backstop, on top of the app-level guard in
+-- lib/offerVersioning.js's ensureEditableVersion(), against mutating an
+-- offer once it's locked (offers.locked = 1 - see db/index.js MIGRATIONS
+-- for the column and routes/offers.js for what sets/clears it). Child-table
+-- triggers (offer_items/offer_tech_specs/offer_bought_out_items/offer_terms)
+-- are generated in db/index.js instead of hand-repeated here, since all four
+-- follow the exact same shape.
+--
+-- This UPDATE trigger only fires when the row would REMAIN locked
+-- afterwards (OLD.locked = 1 AND NEW.locked = 1) - an UPDATE that itself
+-- sets locked = 0 (the Admin-only unlock action) is deliberately still
+-- allowed, since NEW.locked would then be 0.
+CREATE TRIGGER IF NOT EXISTS trg_offers_locked_update
+BEFORE UPDATE ON offers
+WHEN OLD.locked = 1 AND NEW.locked = 1
+BEGIN
+  SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_offers_locked_delete
+BEFORE DELETE ON offers
+WHEN OLD.locked = 1
+BEGIN
+  SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be deleted');
+END;
+
 -- ===================== USER ACCESS CONTROL =====================
 -- Which sidebar pages a role is allowed to see. Empty for a role = that
 -- role is unrestricted (sees everything it always did) until an Admin

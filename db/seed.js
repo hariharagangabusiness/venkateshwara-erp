@@ -70,7 +70,13 @@ function grant(roleName, codes) {
   codes.forEach(c => insert.run(role.id, c));
 }
 grant('Marketing', ['lead.manage']);
-grant('Sales', ['lead.manage', 'sales_order.manage', 'offer_options.manage']);
+// offer_options.manage (Section Title library images/descriptions, dropdown
+// field options) is deliberately NOT granted here - those are master
+// template controls (routes/offers.js gates their mutation routes on
+// requireRole('Admin') directly, not this permission), matching the
+// "Admin-only master controls" RBAC requirement. Sales still reads them
+// (offerPerm()) to pick from when building an offer.
+grant('Sales', ['lead.manage', 'sales_order.manage']);
 grant('ProjectManager', ['project.manage', 'job_card.manage', 'report.view_all']);
 grant('Design', ['job_card.manage', 'foc.request']);
 grant('Purchase', ['purchase_request.create', 'purchase_order.manage', 'job_card.manage', 'foc.request']);

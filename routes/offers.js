@@ -9,7 +9,7 @@ const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
-const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE } = require('../lib/settings');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferDesignTokens, setOfferDesignTokens, DEFAULT_OFFER_DESIGN_TOKENS } = require('../lib/settings');
 
 const router = express.Router();
 router.use(authRequired);
@@ -44,7 +44,10 @@ function copyLibraryImage(libraryImagePath) {
 // Application / Type of System / Material of Construction - one generic
 // table for all three fields (see db/index.js Round 21). Values are never
 // hard-deleted (only deactivated) so an offer written before a value was
-// retired still displays it correctly.
+// retired still displays it correctly. Mutation routes are Admin-only (a
+// master template control, not a Sales function, per Round 40's RBAC
+// tightening) - Sales still reads the active list via offerPerm() below to
+// pick a value when building an offer.
 const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction'];
 
 router.get('/field-options/:field', offerPerm(), (req, res) => {
@@ -54,10 +57,10 @@ router.get('/field-options/:field', offerPerm(), (req, res) => {
   `).all(req.params.field));
 });
 // Admin view lists every option (including inactive) so they can be reactivated.
-router.get('/field-options', requirePermission('offer_options.manage'), (req, res) => {
+router.get('/field-options', requireRole('Admin'), (req, res) => {
   res.json(db.prepare(`SELECT * FROM offer_field_options ORDER BY field_name, sort_order, value`).all());
 });
-router.post('/field-options', requirePermission('offer_options.manage'), (req, res) => {
+router.post('/field-options', requireRole('Admin'), (req, res) => {
   const { field_name, value, sort_order } = req.body;
   if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, or material_of_construction' });
   if (!String(value || '').trim()) return res.status(400).json({ error: 'Enter a value.' });
@@ -69,7 +72,7 @@ router.post('/field-options', requirePermission('offer_options.manage'), (req, r
     res.status(400).json({ error: 'That value already exists for this field.' });
   }
 });
-router.put('/field-options/:id', requirePermission('offer_options.manage'), (req, res) => {
+router.put('/field-options/:id', requireRole('Admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM offer_field_options WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const { value, sort_order, active } = req.body;
@@ -89,10 +92,12 @@ router.put('/field-options/:id', requirePermission('offer_options.manage'), (req
 // field-options above) since offer_items copies the text/image at the time
 // a line is added rather than referencing this table by id - nothing on an
 // existing offer breaks if a library entry is later edited or removed.
+// Mutation routes (incl. the image/description asset uploads) are
+// Admin-only - Sales reads it via offerPerm() to pick from, never to edit.
 router.get('/section-titles', offerPerm(), (req, res) => {
   res.json(db.prepare('SELECT * FROM section_title_library ORDER BY title').all());
 });
-router.post('/section-titles', requirePermission('offer_options.manage'), upload.single('image'), (req, res) => {
+router.post('/section-titles', requireRole('Admin'), upload.single('image'), (req, res) => {
   const { title, description, summary } = req.body;
   if (!String(title || '').trim()) return res.status(400).json({ error: 'Enter a title.' });
   const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
@@ -104,7 +109,7 @@ router.post('/section-titles', requirePermission('offer_options.manage'), upload
     res.status(400).json({ error: 'That section title already exists in the library.' });
   }
 });
-router.put('/section-titles/:id', requirePermission('offer_options.manage'), upload.single('image'), (req, res) => {
+router.put('/section-titles/:id', requireRole('Admin'), upload.single('image'), (req, res) => {
   const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const { title, description, summary } = req.body;
@@ -125,11 +130,60 @@ router.put('/section-titles/:id', requirePermission('offer_options.manage'), upl
     res.status(400).json({ error: 'That section title already exists in the library.' });
   }
 });
-router.delete('/section-titles/:id', requirePermission('offer_options.manage'), (req, res) => {
+router.delete('/section-titles/:id', requireRole('Admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
   db.prepare('DELETE FROM section_title_library WHERE id = ?').run(existing.id);
+  res.json({ ok: true });
+});
+
+// ===================== Offer Clause Library =====================
+// Admin-managed reusable clauses for Terms & Conditions / Inclusions /
+// Exclusions / Utilities Requirement / Instrument Air Supply - Sales picks
+// from these (offerPerm(), active-only, one category at a time) instead of
+// only ever typing free text; mutation is Admin-only, same as the other
+// master template controls above. Entries are hard-deletable, same
+// reasoning as Section Title library: offer_terms/offer text fields copy
+// the label/body text at pick time rather than referencing this row.
+const CLAUSE_CATEGORIES = ['term', 'inclusion', 'exclusion', 'utilities', 'instrument_air'];
+
+router.get('/clause-library/:category', offerPerm(), (req, res) => {
+  if (!CLAUSE_CATEGORIES.includes(req.params.category)) return res.status(404).json({ error: 'Unknown category' });
+  res.json(db.prepare(`
+    SELECT * FROM offer_clause_library WHERE category = ? AND active = 1 ORDER BY sort_order, label
+  `).all(req.params.category));
+});
+// Admin view lists every clause (including inactive) across all categories.
+router.get('/clause-library', requireRole('Admin'), (req, res) => {
+  res.json(db.prepare(`SELECT * FROM offer_clause_library ORDER BY category, sort_order, label`).all());
+});
+router.post('/clause-library', requireRole('Admin'), (req, res) => {
+  const { category, label, body, sort_order } = req.body;
+  if (!CLAUSE_CATEGORIES.includes(category)) return res.status(400).json({ error: 'category must be one of: ' + CLAUSE_CATEGORIES.join(', ') });
+  if (!String(label || '').trim()) return res.status(400).json({ error: 'Enter a label.' });
+  if (!String(body || '').trim()) return res.status(400).json({ error: 'Enter the clause text.' });
+  const info = db.prepare(`INSERT INTO offer_clause_library (category, label, body, sort_order, created_by) VALUES (?,?,?,?,?)`)
+    .run(category, label.trim(), body.trim(), Number(sort_order) || 0, req.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+router.put('/clause-library/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_clause_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { label, body, sort_order, active } = req.body;
+  db.prepare(`UPDATE offer_clause_library SET label=?, body=?, sort_order=?, active=? WHERE id=?`).run(
+    label !== undefined ? label : existing.label,
+    body !== undefined ? body : existing.body,
+    sort_order !== undefined ? Number(sort_order) : existing.sort_order,
+    active !== undefined ? (active ? 1 : 0) : existing.active,
+    existing.id
+  );
+  res.json({ ok: true });
+});
+router.delete('/clause-library/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_clause_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  db.prepare('DELETE FROM offer_clause_library WHERE id = ?').run(existing.id);
   res.json({ ok: true });
 });
 
@@ -214,6 +268,45 @@ router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
   res.json(getOfferPdfTemplate());
+});
+
+// ===================== Offer governance (immutability / clause-library toggles) =====================
+// Admin-only kill switches - see lib/settings.js's DEFAULT_OFFER_GOVERNANCE
+// for what each flag controls and why it's deliberately reversible.
+router.get('/governance', requireRole('Admin'), (req, res) => {
+  res.json(getOfferGovernanceSettings());
+});
+router.put('/governance', requireRole('Admin'), (req, res) => {
+  const { lock_on_so_conversion, require_library_clauses } = req.body;
+  const update = {};
+  if (lock_on_so_conversion !== undefined) update.lock_on_so_conversion = !!lock_on_so_conversion;
+  if (require_library_clauses !== undefined) update.require_library_clauses = !!require_library_clauses;
+  setOfferGovernanceSettings(update);
+  res.json(getOfferGovernanceSettings());
+});
+
+// ===================== Offer PDF design tokens (typography governance) =====================
+// Admin-only - see lib/settings.js's DEFAULT_OFFER_DESIGN_TOKENS for what
+// each field controls; every default matches what used to be hardcoded in
+// lib/offerPdf.js exactly, so an untouched installation is unaffected.
+const DESIGN_TOKEN_FIELDS = Object.keys(DEFAULT_OFFER_DESIGN_TOKENS);
+router.get('/design-tokens', requireRole('Admin'), (req, res) => {
+  res.json(getOfferDesignTokens());
+});
+router.put('/design-tokens', requireRole('Admin'), (req, res) => {
+  const update = {};
+  DESIGN_TOKEN_FIELDS.forEach(f => {
+    if (req.body[f] === undefined) return;
+    if (f === 'show_page_numbers') update[f] = !!req.body[f];
+    else if (f === 'body_font_family' || f.endsWith('_color') || f === 'legal_notice_text') update[f] = String(req.body[f]);
+    else update[f] = Number(req.body[f]);
+  });
+  setOfferDesignTokens(update);
+  res.json(getOfferDesignTokens());
+});
+router.delete('/design-tokens', requireRole('Admin'), (req, res) => {
+  setOfferDesignTokens(DEFAULT_OFFER_DESIGN_TOKENS);
+  res.json(getOfferDesignTokens());
 });
 
 // ===================== List / Detail =====================
@@ -494,8 +587,17 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
 
     createJobCardsForProject(db, projectId);
 
-    db.prepare(`UPDATE offers SET status = 'Won', sales_order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(salesOrderId, full.offer.id);
+    // Round 40: lock the offer against further edits/forks the moment it
+    // becomes a real Sales Order - gated by an admin-editable, reversible
+    // setting rather than hardcoded on, so a site that needs the old
+    // "conversion never locks" behavior can flip it off instantly.
+    const governance = getOfferGovernanceSettings();
+    const lockIt = governance.lock_on_so_conversion;
+    db.prepare(`
+      UPDATE offers SET status = 'Won', sales_order_id = ?, locked = ?, locked_at = ?, locked_reason = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(salesOrderId, lockIt ? 1 : 0, lockIt ? new Date().toISOString() : null,
+      lockIt ? ('Converted to Sales Order ' + orderNo) : null, full.offer.id);
 
     return { salesOrderId, orderNo, projectId, projCode };
   });
@@ -519,6 +621,22 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
   }
 
   res.json(result);
+});
+
+// Emergency escape hatch for a locked offer (e.g. a conversion recorded in
+// error) - Admin-only, and requires a reason so the audit_log entry it
+// writes actually explains why. Unlike lock_on_so_conversion above, this
+// reverses a SPECIFIC offer's lock, not the policy that sets it.
+router.post('/:id/unlock', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (!existing.locked) return res.status(400).json({ error: 'This offer is not locked.' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Enter a reason for unlocking this offer.' });
+  db.prepare(`UPDATE offers SET locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(existing.id);
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(req.user.id, 'offer_unlock', 'offer', existing.id, reason);
+  res.json({ ok: true });
 });
 
 module.exports = router;
