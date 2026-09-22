@@ -2827,14 +2827,71 @@ PAGES.vendors = async (el) => {
         document.getElementById('ve-count').textContent = 'Vendors (' + rows.length + ')';
       }, 'Search by name, GSTIN, state, category, contact...')}
       <div id="ve-table-wrap">${renderVendorRows(vendors)}</div>
-    </div>`;
+    </div>
+    <div class="panel" id="ve-edit-panel" style="display:none;"><h3>Edit Vendor</h3><div id="ve-edit-body"></div></div>`;
+  window.__VENDOR_CACHE = vendors;
 };
 function renderVendorRows(rows) {
-  return tableHTML(['Name', 'GSTIN', 'State', 'Category', 'Contact', 'Phone', 'PO Email', 'Terms', 'Status'], rows, v => `<tr>
+  return tableHTML(['Name', 'GSTIN', 'State', 'Category', 'Contact', 'Phone', 'PO Email', 'Terms', 'Status', ''], rows, v => `<tr>
     <td>${esc(v.legal_name || v.name)}</td><td>${esc(v.gstin)||'-'}</td><td>${esc(v.state)||'-'}</td><td>${esc(v.category)||'-'}</td>
     <td>${esc(v.contact_person)||'-'}</td><td>${esc(v.phone)||'-'}</td><td>${esc(v.po_email||v.email)||'-'}</td>
-    <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td></tr>`);
+    <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td>
+    <td><button class="btn small outline" type="button" onclick="openEditVendor(${v.id})">Edit</button>
+    <button class="btn small outline" type="button" onclick="deleteVendor(${v.id})">Delete</button></td></tr>`);
 }
+window.openEditVendor = (id) => {
+  const v = (window.__VENDOR_CACHE || []).find(x => x.id === id);
+  if (!v) return;
+  const panel = document.getElementById('ve-edit-panel');
+  document.getElementById('ve-edit-body').innerHTML = `
+    <div class="form-grid">
+      <div><label>Legal / Trade Name *</label><input id="ve-name" value="${esc(v.legal_name || v.name)}"></div>
+      <div><label>Vendor Type</label><select id="ve-type"><option value="">-</option>${['Manufacturer','Trader','Service Provider','Distributor','Other'].map(t => `<option ${v.vendor_type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div><label>Category</label><input id="ve-category" value="${esc(v.category)}"></div>
+      <div><label>Status</label><select id="ve-status">${['Active','Inactive','Blacklisted'].map(s => `<option ${v.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div><label>GSTIN</label><input id="ve-gstin" value="${esc(v.gstin)}" maxlength="15"></div>
+      <div><label>PAN</label><input id="ve-pan" value="${esc(v.pan)}" maxlength="10"></div>
+      <div><label>Address Line 1</label><input id="ve-addr1" value="${esc(v.address_line1)}"></div>
+      <div><label>Address Line 2</label><input id="ve-addr2" value="${esc(v.address_line2)}"></div>
+      <div><label>City</label><input id="ve-city" value="${esc(v.city)}"></div>
+      <div><label>State</label><input id="ve-state" value="${esc(v.state)}"></div>
+      <div><label>State Code</label><input id="ve-state-code" value="${esc(v.state_code)}" maxlength="2"></div>
+      <div><label>Pincode</label><input id="ve-pincode" value="${esc(v.pincode)}"></div>
+      <div><label>Contact Person</label><input id="ve-contact" value="${esc(v.contact_person)}"></div>
+      <div><label>Phone</label><input id="ve-phone" value="${esc(v.phone)}"></div>
+      <div><label>Email</label><input id="ve-email" value="${esc(v.email)}"></div>
+      <div><label>PO / Document Delivery Email</label><input id="ve-po-email" value="${esc(v.po_email)}"></div>
+      <div><label>Payment Terms</label><input id="ve-terms" value="${esc(v.payment_terms)}"></div>
+      <div><label>Payment Terms (Days)</label><input id="ve-terms-days" type="number" value="${v.payment_terms_days||0}"></div>
+    </div>
+    <button class="btn" onclick="saveEditVendor(${id})">Save Changes</button>
+    <button class="btn outline" type="button" onclick="document.getElementById('ve-edit-panel').style.display='none'">Cancel</button>
+    <div id="ve-edit-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+window.saveEditVendor = async (id) => {
+  const errEl = document.getElementById('ve-edit-err');
+  try {
+    await api('/masters/vendors/' + id, { method: 'PUT', body: JSON.stringify({
+      name: val('ve-name'), legal_name: val('ve-name'), vendor_type: val('ve-type'), category: val('ve-category'), status: val('ve-status'),
+      gstin: val('ve-gstin').toUpperCase(), pan: val('ve-pan').toUpperCase(),
+      address_line1: val('ve-addr1'), address_line2: val('ve-addr2'), city: val('ve-city'), state: val('ve-state'),
+      state_code: val('ve-state-code'), pincode: val('ve-pincode'),
+      contact_person: val('ve-contact'), phone: val('ve-phone'), email: val('ve-email'), po_email: val('ve-po-email'),
+      payment_terms: val('ve-terms'), payment_terms_days: val('ve-terms-days'),
+    })});
+    navigate('vendors');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteVendor = async (id) => {
+  if (!confirm('Delete this vendor? If it has POs or quotes on file, it will be deactivated instead of deleted.')) return;
+  try {
+    const r = await api('/masters/vendors/' + id, { method: 'DELETE' });
+    if (r.message) alert(r.message);
+    navigate('vendors');
+  } catch (e) { alert(e.message); }
+};
 window.addVendor = async () => {
   const errEl = document.getElementById('v-err');
   errEl.style.display = 'none';
@@ -3016,7 +3073,10 @@ window.saveEditPR = async (id) => {
 // ---- Purchase Orders ----
 PAGES['purchase-orders'] = async (el) => {
   const orders = await api('/purchase/orders');
-  const vendors = await api('/masters/vendors');
+  // Only Active vendors are offered when creating a new PO - Inactive/
+  // Blacklisted ones stay visible/editable in Vendor Master (and on POs that
+  // already reference them) but drop out of the picker.
+  const vendors = (await api('/masters/vendors')).filter(v => (v.status || 'Active') === 'Active');
   const items = await api('/masters/items');
   const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
   el.innerHTML = `

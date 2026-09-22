@@ -97,7 +97,7 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
   let matchType = 'fallback';
   if (item.category) {
     const itemNorm = normalizeCategory(item.category);
-    const allVendors = db.prepare('SELECT * FROM vendors ORDER BY name').all();
+    const allVendors = db.prepare(`SELECT * FROM vendors WHERE status = 'Active' OR status IS NULL ORDER BY name`).all();
     if (itemNorm) {
       const exact = allVendors.filter(v => normalizeCategory(v.category) === itemNorm);
       if (exact.length) {
@@ -117,7 +117,7 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
   }
   const fallback = vendors.length === 0;
   if (fallback) {
-    vendors = db.prepare('SELECT * FROM vendors ORDER BY name').all();
+    vendors = db.prepare(`SELECT * FROM vendors WHERE status = 'Active' OR status IS NULL ORDER BY name`).all();
     matchType = 'fallback';
   }
   vendors = vendors.map(v => Object.assign({}, v, { match_type: matchType }));

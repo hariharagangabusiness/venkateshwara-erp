@@ -147,6 +147,25 @@ router.put('/vendors/:id', requirePermission('purchase_order.manage', 'purchase_
   db.prepare(`UPDATE vendors SET ${sets} WHERE id=?`).run(...values, existing.id);
   res.json({ ok: true });
 });
+// A vendor referenced by any PO or quote can't be hard-deleted without
+// orphaning that history, so it's deactivated instead (status='Inactive',
+// same convention as the status field the Add Vendor form already offers) -
+// it drops out of every vendor picker (PO creation, vendor-for-item
+// suggestions) but stays visible/reactivatable in the Vendor Master list and
+// on the historical documents that reference it. Only a vendor with no
+// references at all is actually removed.
+router.delete('/vendors/:id', requirePermission('purchase_order.manage', 'purchase_request.create'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const poCount = db.prepare('SELECT COUNT(*) as n FROM purchase_orders WHERE vendor_id = ?').get(req.params.id).n;
+  const quoteCount = db.prepare('SELECT COUNT(*) as n FROM purchase_request_quotes WHERE vendor_id = ?').get(req.params.id).n;
+  if (poCount > 0 || quoteCount > 0) {
+    db.prepare(`UPDATE vendors SET status = 'Inactive' WHERE id = ?`).run(req.params.id);
+    return res.json({ ok: true, deactivated: true, message: `This vendor has ${poCount} PO(s) and ${quoteCount} quote(s) on file, so it was deactivated instead of deleted - it will no longer appear when picking a vendor.` });
+  }
+  db.prepare('DELETE FROM vendors WHERE id = ?').run(req.params.id);
+  res.json({ ok: true, deactivated: false });
+});
 
 const VENDOR_TEMPLATE_COLUMNS = [
   'name', 'legal_name', 'gstin', 'pan', 'vendor_type', 'is_msme', 'msme_number', 'state', 'state_code',
