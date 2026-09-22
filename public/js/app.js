@@ -2921,7 +2921,7 @@ PAGES['purchase-requests'] = async (el) => {
   el.innerHTML = `
     <div class="panel"><h3>New Purchase Request</h3>
       <div class="form-grid">
-        <div><label>Item (pick from master)</label><select id="pr-item" onchange="showVendorsForPRItem()"><option value="">- type a new item instead -</option>${items.filter(i=>i.status!=='Pending').map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')}</select></div>
+        <div><label>Item (pick from master)</label><select id="pr-item" onchange="showVendorsForPRItem()"><option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status)).map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')}</select></div>
         <div><label>Or type an item name</label><input id="pr-item-text" placeholder="Not in the master? Type it here"></div>
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
         <div><label>Quantity</label><input id="pr-qty" type="number"></div>
@@ -3085,7 +3085,7 @@ PAGES['purchase-orders'] = async (el) => {
       <div class="form-grid">
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
-        <div><label>Item</label><select id="po-item" onchange="showVendorsForPOItem()">${items.map(i => `<option value="${i.id}">${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}</option>`).join('')}</select></div>
+        <div><label>Item</label><select id="po-item" onchange="showVendorsForPOItem()">${items.map(i => `<option value="${i.id}">${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join('')}</select></div>
         <div><label>Quantity</label><input id="po-qty" type="number"></div>
         <div><label>Rate (₹)</label><input id="po-rate" type="number"></div>
         <div><label>HSN Code</label><input id="po-hsn"></div>
@@ -3216,8 +3216,11 @@ PAGES.challans = async (el) => renderChallanSheet(el);
 
 // ---- Sheet 1: Item Master ----
 async function renderItemMasterSheet(el) {
-  const [items, pendingItems] = await Promise.all([api('/masters/items'), api('/masters/items?status=Pending')]);
+  const [items, pendingItems, pendingChanges] = await Promise.all([
+    api('/masters/items'), api('/masters/items?status=Pending'), api('/masters/items/pending-changes').catch(() => []),
+  ]);
   const approvedItems = items.filter(i => i.status !== 'Pending');
+  window.__ITEM_CACHE = items;
   el.innerHTML = `
     <div class="panel"><h3>Add Item Master</h3>
       <div class="form-grid">
@@ -3236,6 +3239,15 @@ async function renderItemMasterSheet(el) {
       <p class="muted">These were typed freehand on a Purchase Request instead of picked from the master. Complete the details and Approve - typically while receiving the goods - to add them to the permanent Item Master (a barcode is generated at that point).</p>
       <div id="pending-items-body"></div>
     </div>` : ''}
+    ${pendingChanges.length ? `<div class="panel"><h3>Pending Item Changes (${pendingChanges.length})</h3>
+      <p class="muted">An edit or delete on an existing item doesn't take effect until an Admin approves it here, so nothing changes underneath a transaction already using the item's current details.</p>
+      ${tableHTML(['Item', 'Change', 'Details', 'Requested By', ''], pendingChanges, c => `
+        <tr><td>${esc(c.item_code)||''} ${esc(c.item_name)}</td><td>${badge(c.change_type)}</td>
+        <td>${c.change_type === 'Edit' ? esc(Object.entries(JSON.parse(c.proposed_fields||'{}')).map(([k,v]) => `${k}: ${v}`).join(', ')) : '<span class="muted">Delete this item</span>'}</td>
+        <td>${esc(c.requested_by_name)||'-'}</td>
+        <td>${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveItemChange(${c.id})">Approve</button>
+          <button class="btn small outline" type="button" onclick="rejectItemChange(${c.id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
+    </div>` : ''}
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per item, then upload it. Barcodes are generated automatically - don't include them in the file.</p>
       <button class="btn outline" type="button" onclick="downloadItemTemplate()">Download Template</button>
@@ -3244,13 +3256,72 @@ async function renderItemMasterSheet(el) {
       <div id="it-upload-result" style="margin-top:10px;"></div>
     </div>
     <div class="panel"><h3>Item Master (${approvedItems.length})</h3>
-      ${tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode'], approvedItems, i => `
+      ${tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode', 'Status', ''], approvedItems, i => `
         <tr><td>${esc(i.item_code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${esc(i.category)||'-'}</td><td>${esc(i.location)||'-'}</td>
           <td>${i.current_stock}${i.current_stock <= i.reorder_level ? ' ⚠️' : ''}</td><td>${i.reorder_level}</td>
-          <td><span class="mono" style="letter-spacing:1px;">${esc(i.barcode)||'-'}</span></td></tr>`)}
-    </div>`;
+          <td><span class="mono" style="letter-spacing:1px;">${esc(i.barcode)||'-'}</span></td>
+          <td>${i.status === 'Discontinued' ? badge('Discontinued') : ''}</td>
+          <td>${i.status === 'Discontinued'
+            ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
+            : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
+               <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}</td></tr>`)}
+    </div>
+    <div class="panel" id="it-edit-panel" style="display:none;"><h3>Edit Item</h3><div id="it-edit-body"></div></div>`;
   if (pendingItems.length) renderPendingItemsPanel(pendingItems);
 }
+window.approveItemChange = async (id) => {
+  try { await api('/masters/items/pending-changes/' + id + '/approve', { method: 'POST' }); navigate('store'); }
+  catch (e) { alert(e.message); }
+};
+window.rejectItemChange = async (id) => {
+  const note = prompt('Reason for rejecting (optional):') || '';
+  try { await api('/masters/items/pending-changes/' + id + '/reject', { method: 'POST', body: JSON.stringify({ review_note: note }) }); navigate('store'); }
+  catch (e) { alert(e.message); }
+};
+window.reactivateItem = async (id) => {
+  try { await api('/masters/items/' + id + '/reactivate', { method: 'POST' }); navigate('store'); }
+  catch (e) { alert(e.message); }
+};
+window.openEditItem = (id) => {
+  const i = (window.__ITEM_CACHE || []).find(x => x.id === id);
+  if (!i) return;
+  const panel = document.getElementById('it-edit-panel');
+  document.getElementById('it-edit-body').innerHTML = `
+    <div class="form-grid">
+      <div><label>Item Code</label><input id="ie-code" value="${esc(i.item_code)}"></div>
+      <div><label>Name</label><input id="ie-name" value="${esc(i.name)}"></div>
+      <div><label>Unit</label><input id="ie-unit" value="${esc(i.unit)}"></div>
+      <div><label>Category</label><input id="ie-cat" value="${esc(i.category)}"></div>
+      <div><label>HSN Code</label><input id="ie-hsn" value="${esc(i.hsn_code)}"></div>
+      <div><label>Rack / Location</label><input id="ie-loc" value="${esc(i.location)}"></div>
+      <div><label>Reorder Level</label><input id="ie-reorder" type="number" value="${i.reorder_level||0}"></div>
+    </div>
+    <button class="btn" onclick="saveEditItem(${id})">Save Changes</button>
+    <button class="btn outline" type="button" onclick="document.getElementById('it-edit-panel').style.display='none'">Cancel</button>
+    <div class="muted" style="margin-top:8px;">${ME.role === 'Admin' ? 'As Admin, this applies immediately.' : "This won't take effect until an Admin approves it - see Pending Item Changes above."}</div>
+    <div id="ie-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+window.saveEditItem = async (id) => {
+  const errEl = document.getElementById('ie-err');
+  try {
+    const r = await api('/masters/items/' + id, { method: 'PUT', body: JSON.stringify({
+      item_code: val('ie-code'), name: val('ie-name'), unit: val('ie-unit'), category: val('ie-cat'),
+      hsn_code: val('ie-hsn'), location: val('ie-loc'), reorder_level: val('ie-reorder'),
+    })});
+    if (r.message) alert(r.message);
+    navigate('store');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteItem = async (id) => {
+  if (!confirm('Delete this item? If it has any purchase/stock history, it will be discontinued instead of deleted.')) return;
+  try {
+    const r = await api('/masters/items/' + id, { method: 'DELETE' });
+    if (r.message) alert(r.message);
+    navigate('store');
+  } catch (e) { alert(e.message); }
+};
 function renderPendingItemsPanel(pendingItems) {
   const body = document.getElementById('pending-items-body');
   if (!body) return;
@@ -3289,7 +3360,7 @@ window.uploadItemTemplate = () => uploadTemplateFile('/masters/items/bulk-upload
 
 // ---- Sheet 2: Stock In / Out ----
 async function renderStockInOutSheet(el) {
-  const items = (await api('/masters/items')).filter(i => i.status !== 'Pending');
+  const items = (await api('/masters/items')).filter(i => !['Pending', 'Discontinued'].includes(i.status));
   const movements = await api('/purchase/store/movements');
   const openPOs = (await api('/purchase/orders')).filter(o => o.status === 'Open');
   const projects = await api('/projects');
@@ -3728,7 +3799,7 @@ window.openServiceReport = async (srId) => {
   ]);
   const sr = srList.find(r => r.id === srId) || {};
   window.__SVC_CENTERS = centers.filter(c => c.status === 'Active');
-  window.__SVC_ITEMS = items.filter(i => i.status !== 'Pending');
+  window.__SVC_ITEMS = items.filter(i => !['Pending', 'Discontinued'].includes(i.status));
   SVC_SPARES = report && report.spares && report.spares.length
     ? report.spares.map(s => ({ item_id: s.item_id, quantity: s.quantity, unit_rate: s.unit_rate }))
     : [];
@@ -5991,7 +6062,7 @@ let SCT_ITEMS = [{ item_id: '', quantity: 1, unit_rate: 0 }];
 PAGES['sc-transfers'] = async (el) => {
   const [centers, items, transfers] = await Promise.all([api('/service-centers'), api('/masters/items'), api('/service-centers/transfers/all')]);
   window.__SCT_CENTERS = centers.filter(c => c.status === 'Active');
-  window.__SCT_ITEMS = items.filter(i => i.status !== 'Pending');
+  window.__SCT_ITEMS = items.filter(i => !['Pending', 'Discontinued'].includes(i.status));
   SCT_ITEMS = [{ item_id: '', quantity: 1, unit_rate: 0 }];
   el.innerHTML = `
     <div class="panel"><h3>Dispatch Spares to a Service Center</h3>
