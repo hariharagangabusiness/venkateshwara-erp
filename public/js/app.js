@@ -2974,13 +2974,22 @@ function renderPRRows(rows) {
       <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
       <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
-        ${r.status === 'Pending' ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${['Pending', 'Rejected'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
-        ${!r.status || (r.status !== 'Pending' && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
+        ${!r.status || (!['Pending','Rejected'].includes(r.status) && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
       </td>
     </tr>
+    ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
     ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`);
 }
+window.resubmitPR = async (id) => {
+  try {
+    const r = await api(`/purchase/requests/${id}/resubmit`, { method: 'POST' });
+    if (r.quotes_required) alert('This request now needs at least 2 vendor quotes before it can go back for approval - use the Vendor Quotes button to add them.');
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
 window.showVendorsForPRLine = async (i) => {
   const itemId = PR_LINES[i] && PR_LINES[i].item_id;
   const box = document.getElementById('pr-vendor-suggestions');
