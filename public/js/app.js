@@ -5332,6 +5332,14 @@ PAGES['offer-options'] = async (el) => {
         </tr>`).join('')}
       </tbody></table>
 
+      <h4 style="margin-top:18px;">PDF Cover Page (.pdf)</h4>
+      <p class="muted">Upload the exact cover page as a PDF - its pages are prepended onto the generated offer PDF as-is, no re-creation needed. Takes priority over the Word cover page and Cover image below when more than one is active. Note: the footer's "Page X of Y" (if enabled under Design Tokens) counts only the generated offer content, not the pages in this uploaded cover.</p>
+      <div class="form-grid">
+        <div><label>Current</label><div>${pdfTemplate.cover_pdf_path ? `<a href="${esc(pdfTemplate.cover_pdf_path)}" target="_blank">Uploaded document</a>` : '<span class="muted">None uploaded</span>'}</div></div>
+        <div><label>Upload New (.pdf)</label><input type="file" id="pt-cover-pdf-file" accept=".pdf"></div>
+        <div><label>Active</label><input type="checkbox" id="pt-cover-pdf-active" onchange="pdfTemplateExclusive('cover','pdf')" ${pdfTemplate.cover_pdf_active ? 'checked' : ''}></div>
+      </div>
+
       <h4 style="margin-top:18px;">Word Cover Page (.docx)</h4>
       <p class="muted">Upload a Word document to use as the offer's cover page instead of a picture - it's parsed and merged in as page 1 of the generated PDF, images and all. Takes priority over the Cover image above when both are active.</p>
       <div class="form-grid">
@@ -5452,13 +5460,14 @@ window.resetOfferDesignTokens = async () => {
   try { await api('/offers/design-tokens', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
-// Only one source (image / docx / rich-text) makes sense active at a time
-// per piece - checking one here unchecks the others for that same piece,
-// so the saved precedence in lib/offerPdf.js never surprises the admin.
+// Only one source (image / docx / pdf / rich-text) makes sense active at a
+// time per piece - checking one here unchecks the others for that same
+// piece, so the saved precedence in lib/offerPdf.js never surprises the admin.
 window.pdfTemplateExclusive = (piece, source) => {
   const boxes = {
     image: document.getElementById(`pt-${piece}-active`),
     docx: piece === 'cover' ? document.getElementById('pt-cover-docx-active') : null,
+    pdf: piece === 'cover' ? document.getElementById('pt-cover-pdf-active') : null,
     richtext: piece !== 'cover' ? document.getElementById(`pt-${piece}-richtext-active`) : null,
   };
   const justChecked = boxes[source];
@@ -5545,6 +5554,9 @@ window.savePdfTemplate = async () => {
     const docxFileEl = document.getElementById('pt-cover-docx-file');
     if (docxFileEl.files[0]) fd.append('cover_docx', docxFileEl.files[0]);
     fd.append('cover_docx_active', document.getElementById('pt-cover-docx-active').checked);
+    const pdfFileEl = document.getElementById('pt-cover-pdf-file');
+    if (pdfFileEl.files[0]) fd.append('cover_pdf', pdfFileEl.files[0]);
+    fd.append('cover_pdf_active', document.getElementById('pt-cover-pdf-active').checked);
     ['header', 'footer'].forEach(piece => {
       fd.append(piece + '_richtext', document.getElementById(`rt-${piece}`).innerHTML);
       fd.append(piece + '_richtext_active', document.getElementById(`pt-${piece}-richtext-active`).checked);
@@ -5554,7 +5566,7 @@ window.savePdfTemplate = async () => {
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.resetPdfTemplate = async () => {
-  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images, the uploaded Word cover page, and the rich-text header/footer.')) return;
+  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images, the uploaded Word and PDF cover pages, and the rich-text header/footer.')) return;
   try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
