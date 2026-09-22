@@ -1104,6 +1104,7 @@ function approvalActionCell(r) {
 }
 PAGES.approvals = async (el) => {
   const pending = await api('/approvals/pending');
+  window.__APPROVALS_CACHE = pending;
   const byChain = {};
   pending.forEach(r => { (byChain[r.chain_name] = byChain[r.chain_name] || []).push(r); });
   el.innerHTML = `<div class="panel"><h3>Pending My Approval (${pending.length})</h3>
@@ -1120,8 +1121,10 @@ PAGES.approvals = async (el) => {
           ${tableHTML(['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'], byDept[dept], r => `
             <tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
             <td>${new Date(r.created_at).toLocaleString()}</td>
-            <td>${approvalActionCell(r)}</td></tr>
+            <td>${approvalActionCell(r)}
+            <button class="btn small outline" type="button" onclick="toggleApprovalDrilldown('${r.source}-${r.id}')">Details</button></td></tr>
             ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
+            <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>
           `)}
         </div>`).join('')}
     </div>`;
@@ -1157,6 +1160,110 @@ window.actOnApprovalTodo = async (id, status) => {
     navigate('approvals');
   } catch (e) { alert(e.message); }
 };
+
+// ---- My Approvals drill-down: full transaction context (line items, extra
+// fields not in the flat summary, attachments where already supported
+// elsewhere, and the approval action history) without leaving the queue.
+function approvalHistoryTable(history) {
+  if (!history || !history.length) return '<p class="muted" style="margin:4px 0;">No approval actions recorded yet.</p>';
+  return tableHTML(['When', 'Step', 'Actor', 'Action', 'Comment'], history, h => `
+    <tr><td>${new Date(h.acted_at).toLocaleString()}</td><td>${h.step_order ?? '-'}</td><td>${esc(h.actor_name)||'-'}</td><td>${esc(h.action)}</td><td>${esc(h.comment)||'-'}</td></tr>`);
+}
+window.toggleApprovalDrilldown = (key) => {
+  const row = document.getElementById(`appr-drill-row-${key}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) renderApprovalDrilldown(key);
+};
+async function renderApprovalDrilldown(key) {
+  const container = document.getElementById(`appr-drill-${key}`);
+  container.innerHTML = '<p class="muted">Loading full details...</p>';
+  const r = (window.__APPROVALS_CACHE || []).find(x => `${x.source}-${x.id}` === key);
+  if (!r) { container.innerHTML = '<p class="muted">Not found - refresh the page.</p>'; return; }
+  try {
+    if (r.source === 'FOC') {
+      const rows = await api('/finance/foc');
+      const f = rows.find(x => x.id === r.entity_id);
+      container.innerHTML = f ? `<div style="padding:10px;background:#f9f9f9;border-radius:6px;font-size:13px;">
+        <b>Item:</b> ${esc(f.item_description)} &nbsp; <b>Qty:</b> ${f.quantity} ${esc(f.unit)} &nbsp; <b>Est. Value:</b> ₹${fmt(f.estimated_value)}<br>
+        <b>Reason:</b> ${esc(f.reason)||'-'}
+      </div>` : '<p class="muted">FOC request not found.</p>';
+      return;
+    }
+    if (r.source === 'BGReminder' || r.source === 'BGClaimTask') {
+      // Everything the backend has on these two is already merged onto the
+      // queue row itself (see routes/approvals.js's unifiedQueueForUser) -
+      // no separate fetch needed, just a fuller read of what's already here.
+      container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;font-size:13px;">
+        <b>Reference:</b> ${esc(r.ref)||'-'} &nbsp; <b>Category:</b> ${esc(r.chain_description)||'-'}<br>
+        <b>Details:</b> ${esc(r.summary)||'-'}${r.amount != null ? ` &nbsp; <b>Value:</b> ₹${fmt(r.amount)}` : ''}${r.target_date ? ` &nbsp; <b>Target Date:</b> ${r.target_date}` : ''}
+      </div>`;
+      return;
+    }
+    // ApprovalChain-sourced: per-entity-type line items/extra fields, plus
+    // the approval action history (for purchase_request this spans every
+    // resubmission, via the same endpoint its own list page uses; the other
+    // types have no resubmit workflow yet, so their single approval's own
+    // history is the complete picture).
+    let extraHtml = '', history = [], attachType = null;
+    if (r.entity_type === 'purchase_request') {
+      const [lines, hist] = await Promise.all([
+        api(`/purchase/requests/${r.entity_id}/items`),
+        api(`/purchase/requests/${r.entity_id}/approval-history`),
+      ]);
+      extraHtml = `<h5 style="margin:8px 0 4px;">Line Items</h5>${tableHTML(['Item', 'Qty', 'Est. Value'], lines, l => `
+        <tr><td>${esc(l.item_name)||esc(l.item_text)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.estimated_value)}</td></tr>`)}`;
+      history = hist;
+      attachType = 'purchase_request';
+    } else if (r.entity_type === 'expense_voucher') {
+      const [rows, hist] = await Promise.all([api('/finance/expense-vouchers'), api(`/approvals/${r.id}/history`)]);
+      const ev = rows.find(x => x.id === r.entity_id);
+      extraHtml = ev ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
+        <b>Voucher No:</b> ${esc(ev.voucher_no)} &nbsp; <b>Date:</b> ${new Date(ev.voucher_date).toLocaleDateString()}<br>
+        <b>Category:</b> ${esc(ev.category_name)||'-'} &nbsp; <b>Payment Mode:</b> ${esc(ev.payment_mode)} &nbsp; <b>Accounted:</b> ${esc(ev.accounted)}<br>
+        <b>Description:</b> ${esc(ev.description)||'-'}<br>
+        ${ev.attachment_path ? `<a href="${esc(ev.attachment_path)}" target="_blank">View Attached Receipt</a>` : '<span class="muted">No receipt on file.</span>'}
+      </p>` : '<p class="muted">Voucher not found.</p>';
+      history = hist;
+    } else if (r.entity_type === 'leave_request') {
+      const [rows, hist] = await Promise.all([api('/hr/leave-requests'), api(`/approvals/${r.id}/history`)]);
+      const lr = rows.find(x => x.id === r.entity_id);
+      extraHtml = lr ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
+        <b>Type:</b> ${esc(lr.leave_type_name)} &nbsp; <b>From:</b> ${lr.from_date} &nbsp; <b>To:</b> ${lr.to_date} &nbsp; <b>Days:</b> ${lr.days}<br>
+        <b>Reason:</b> ${esc(lr.reason)||'-'}
+      </p>` : '<p class="muted">Leave request not found.</p>';
+      history = hist;
+      attachType = 'leave_request';
+    } else if (r.entity_type === 'salary_advance') {
+      const [rows, hist] = await Promise.all([api('/hr/advances'), api(`/approvals/${r.id}/history`)]);
+      const sa = rows.find(x => x.id === r.entity_id);
+      extraHtml = sa ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
+        <b>Amount:</b> ₹${fmt(sa.amount)} &nbsp; <b>Requested:</b> ${new Date(sa.request_date).toLocaleDateString()} &nbsp; <b>Already Recovered:</b> ₹${fmt(sa.recovered_amount)}<br>
+        <b>Reason:</b> ${esc(sa.reason)||'-'}
+      </p>` : '<p class="muted">Advance not found.</p>';
+      history = hist;
+      attachType = 'salary_advance';
+    } else if (r.entity_type === 'salary_schedule') {
+      const [rows, hist] = await Promise.all([api('/hr/salary-schedule'), api(`/approvals/${r.id}/history`)]);
+      const ss = rows.find(x => x.id === r.entity_id);
+      extraHtml = ss ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
+        <b>Employee:</b> ${esc(ss.full_name)} &nbsp; <b>Month:</b> ${esc(ss.month)}<br>
+        <b>Basic:</b> ₹${fmt(ss.basic)} &nbsp; <b>Allowances:</b> ₹${fmt(ss.allowances)} &nbsp; <b>Deductions:</b> ₹${fmt(ss.deductions)} &nbsp; <b>Advance Deduction:</b> ₹${fmt(ss.advance_deduction)}<br>
+        <b>Gross:</b> ₹${fmt(ss.gross)} &nbsp; <b>Net Pay:</b> ₹${fmt(ss.net_pay)} &nbsp; <b>Days Present:</b> ${ss.days_present}
+      </p>` : '<p class="muted">Payroll row not found.</p>';
+      history = hist;
+    }
+    container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+      ${extraHtml}
+      <h5 style="margin:8px 0 4px;">Approval History${r.entity_type === 'purchase_request' ? ' (all submissions)' : ''}</h5>
+      ${approvalHistoryTable(history)}
+      <div id="appr-attach-${key}"></div>
+    </div>`;
+    if (attachType) renderAttachmentsWidget(attachType, r.entity_id, document.getElementById(`appr-attach-${key}`));
+  } catch (e) {
+    container.innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
+  }
+}
 
 // ---- Clients ----
 let EDITING_CLIENT_ID = null;
