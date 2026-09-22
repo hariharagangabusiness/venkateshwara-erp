@@ -699,6 +699,23 @@ const MIGRATIONS = [
     created_by INTEGER REFERENCES users(id),
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Round 28: Sales Order Bank Guarantee terms. bank_guarantees (Round
+  // 17-ish) already tracks an actual BG once someone creates one, but
+  // nothing on the SO itself declares that an ABG/PBG is owed in the first
+  // place - creating one has been a fully manual, disconnected step. These
+  // columns are the SO-side "this order requires a BG" declaration; the
+  // actual BG record it's satisfied by is still resolved at read time via
+  // bank_guarantees WHERE order_type='SO' AND order_id=<so>, same
+  // polymorphic link every other BG consumer already uses (no new FK).
+  `ALTER TABLE sales_orders ADD COLUMN abg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE sales_orders ADD COLUMN abg_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN abg_amount REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN abg_validity_days INTEGER`,
+  `ALTER TABLE sales_orders ADD COLUMN pbg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE sales_orders ADD COLUMN pbg_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN pbg_amount REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN pbg_validity_days INTEGER`,
+  `ALTER TABLE sales_orders ADD COLUMN bg_terms_notes TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

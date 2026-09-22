@@ -271,17 +271,28 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   res.json(result);
 });
 
-// Commercial terms (Round 16): promised delivery date + LD clause. Kept as
-// a lightweight PATCH so it can be filled in any time after order creation,
-// not just at entry.
+// Commercial terms (Round 16): promised delivery date + LD clause, plus
+// (Round 28) Bank Guarantee terms - whether an Advance/Performance BG is
+// required, its percentage/flat amount, and how many days of validity it
+// needs from issue. Kept as a lightweight PATCH so it can be filled in any
+// time after order creation, not just at entry.
 router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.manage'), (req, res) => {
   const order = db.prepare('SELECT id FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const { promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes } = req.body;
+  const {
+    promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
+    abg_required, abg_percentage, abg_amount, abg_validity_days,
+    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
+  } = req.body;
   db.prepare(`
-    UPDATE sales_orders SET promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?
+    UPDATE sales_orders SET promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
+      abg_required = ?, abg_percentage = ?, abg_amount = ?, abg_validity_days = ?,
+      pbg_required = ?, pbg_percentage = ?, pbg_amount = ?, pbg_validity_days = ?, bg_terms_notes = ?
     WHERE id = ?
-  `).run(promised_delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, req.params.id);
+  `).run(promised_delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null,
+    abg_required ? 1 : 0, abg_percentage || null, abg_amount || null, abg_validity_days || null,
+    pbg_required ? 1 : 0, pbg_percentage || null, pbg_amount || null, pbg_validity_days || null, bg_terms_notes || null,
+    req.params.id);
   res.json({ ok: true });
 });
 
