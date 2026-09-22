@@ -6029,10 +6029,16 @@ window.generateProforma = async () => {
   const soId = val('pf-so');
   if (!soId) { errEl.textContent = 'Pick a sales order.'; errEl.style.display = 'block'; return; }
   try {
-    await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
+    const r = await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
       invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null, amount: val('pf-amount') || undefined,
       buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
     })});
+    // Doesn't block creation (Finance may legitimately need to invoice
+    // before the bank paperwork clears) - just surfaces the gap loudly
+    // right when it matters, since the page navigates away immediately
+    // after. The same warning is also filed as a standing notification
+    // (see routes/finance.js) so it isn't lost once this alert is dismissed.
+    if (r.bgWarning) alert(r.bgWarning);
     navigate('sales-invoices');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };

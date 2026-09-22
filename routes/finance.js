@@ -471,7 +471,32 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
     return info.lastInsertRowid;
   });
   const id = tx();
-  res.json({ id, proforma_no: proformaNo });
+
+  // An Advance proforma is a request for the advance payment an ABG is
+  // meant to secure - if the SO's commercial terms say one is required and
+  // no live BG covers it yet, don't block the proforma (Finance may
+  // legitimately need to invoice before the bank paperwork clears) but
+  // raise a clear warning, both inline in this response and as a standing
+  // notification so it isn't lost the moment this screen closes. Guarded
+  // the same way lib/bgReminderScan.js guards its own notifications, so
+  // raising a second Advance proforma against the same SO doesn't spam a
+  // duplicate unread one.
+  let bgWarning = null;
+  if (invoice_type === 'Advance' && so.abg_required) {
+    const hasLiveAbg = db.prepare(`
+      SELECT id FROM bank_guarantees WHERE order_type = 'SO' AND order_id = ? AND bg_type = 'Advance' AND status IN ('Active', 'PendingRelease', 'Extended')
+    `).get(so.id);
+    if (!hasLiveAbg) {
+      bgWarning = `This order's commercial terms require an Advance Bank Guarantee, and none is on file yet - raise it on the Bank Guarantee Dashboard before releasing goods against this advance.`;
+      const alreadyNotified = db.prepare(`SELECT id FROM notifications WHERE source_type = 'BG_PENDING' AND source_id = ? AND is_read = 0`).get(so.id);
+      if (!alreadyNotified) {
+        db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
+          .run(req.user.id, 'BG_PENDING', so.id, `Sales Order ${so.order_no}: Advance proforma ${proformaNo} raised, but the required Advance Bank Guarantee is not yet on file.`);
+      }
+    }
+  }
+
+  res.json({ id, proforma_no: proformaNo, bgWarning });
 });
 
 router.post('/proforma-invoices/:id/mark-received', requirePermission('sales_order.manage', 'report.view_all'), (req, res) => {
