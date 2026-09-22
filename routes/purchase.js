@@ -30,49 +30,93 @@ const uploadQuote = multer({
 // ---- Purchase Requests ----
 router.get('/requests', (req, res) => {
   res.json(db.prepare(`
-    SELECT pr.*, i.name as item_name, i.status as item_master_status, p.project_code, u.full_name as raised_by_name, d.name as department_name
+    SELECT pr.*, i.name as item_name, i.status as item_master_status, p.project_code, u.full_name as raised_by_name, d.name as department_name,
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as line_count,
+      (SELECT COALESCE(SUM(pri.estimated_value), 0) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as items_total_value,
+      (SELECT GROUP_CONCAT(COALESCE(i2.name, pri.item_text), ', ') FROM purchase_request_items pri LEFT JOIN items i2 ON i2.id = pri.item_id WHERE pri.purchase_request_id = pr.id) as item_summary,
+      (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND i3.status = 'Pending') as pending_item_count
     FROM purchase_requests pr
     LEFT JOIN items i ON i.id = pr.item_id LEFT JOIN projects p ON p.id = pr.project_id
     LEFT JOIN users u ON u.id = pr.raised_by LEFT JOIN departments d ON d.id = u.department_id
     ORDER BY pr.id DESC
   `).all());
 });
+
+// Line items for a single PR - drives the Edit panel and the "From PR" line
+// picker on Purchase Order creation.
+router.get('/requests/:id/items', (req, res) => {
+  res.json(db.prepare(`
+    SELECT pri.*, i.name as item_name, i.status as item_master_status, i.unit as item_unit
+    FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
+    WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
+  `).all(req.params.id));
+});
+
+// Resolves a proposed line's item (from the master, or an ad-hoc typed name
+// which becomes a Pending item, same rule as the old single-item flow) and
+// returns { itemId, wasAdhoc }.
+function resolvePRLineItem(line, userId) {
+  if (line.item_id) return { itemId: line.item_id, wasAdhoc: false };
+  const text = String(line.item_text || '').trim();
+  if (!text) throw new Error('Every line needs an item - pick one from the master, or type its name.');
+  const qty = Number(line.quantity);
+  if (!qty || qty <= 0) throw new Error(`"${text}" needs a quantity greater than 0.`);
+  const info = db.prepare(`INSERT INTO items (name, unit, status, submitted_by) VALUES (?, 'Nos', 'Pending', ?)`).run(text, userId);
+  return { itemId: info.lastInsertRowid, wasAdhoc: true };
+}
+
 router.post('/requests', requirePermission('purchase_request.create', 'job_card.manage'), (req, res) => {
-  const { project_id, item_id, item_text, quantity, estimated_value } = req.body;
-  let itemId = item_id || null;
-  // No item picked from the master? The typed name becomes a Pending item -
-  // it shows up under Store & Inventory > Item Master for review, and can be
-  // corrected/completed and approved into the permanent master when the
-  // goods are received, rather than blocking the request on data entry now.
-  if (!itemId) {
-    const text = String(item_text || '').trim();
-    if (!text) return res.status(400).json({ error: 'Pick an item from the master, or type the item name.' });
-    const info = db.prepare(`INSERT INTO items (name, unit, status, submitted_by) VALUES (?, 'Nos', 'Pending', ?)`).run(text, req.user.id);
-    itemId = info.lastInsertRowid;
-  }
+  const { project_id, items } = req.body;
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Add at least one item line.' });
+  let resolved;
+  try {
+    resolved = items.map(line => {
+      const qty = Number(line.quantity);
+      if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
+      const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
+      return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null };
+    });
+  } catch (e) { return res.status(400).json({ error: e.message }); }
+
   const prNo = 'PR-' + Date.now();
-  const value = estimated_value || 0;
+  const totalValue = resolved.reduce((sum, l) => sum + l.estimatedValue, 0);
   // Round 13: a high-value request (>= the configurable quote threshold)
   // must collect at least 2 vendor quotes before it can enter the normal
   // approval chain - it's created here but held at status 'PendingQuotes'
   // instead of calling approvals.startApproval() immediately. Below the
-  // threshold, behavior is unchanged - approval starts right away.
+  // threshold, behavior is unchanged - approval starts right away. The
+  // threshold now applies to the whole request's total value across lines.
   const threshold = getPurchaseSettings().quote_threshold;
-  const quotesRequired = value >= threshold;
-  const info = db.prepare(`
-    INSERT INTO purchase_requests (pr_no, project_id, raised_by, item_id, item_text, quantity, estimated_value, status, quotes_required)
-    VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(prNo, project_id || null, req.user.id, itemId, item_text || null, quantity, value, quotesRequired ? 'PendingQuotes' : 'Pending', quotesRequired ? 1 : 0);
-  if (!item_id) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(info.lastInsertRowid, itemId);
-  if (!quotesRequired) {
-    // Every purchase request goes to the Purchase HOD/Supervisor first,
-    // regardless of value - the approval chain's step 1 always qualifies
-    // (min_amount 0), and step 2 (Management) kicks in only above whatever
-    // threshold is set on the Approval Matrix page.
-    const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', info.lastInsertRowid, value, req.user.id);
-    db.prepare('UPDATE purchase_requests SET approval_id = ? WHERE id = ?').run(approvalId, info.lastInsertRowid);
-  }
-  res.json({ id: info.lastInsertRowid, pr_no: prNo, quotes_required: quotesRequired });
+  const quotesRequired = totalValue >= threshold;
+  const first = resolved[0];
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO purchase_requests (pr_no, project_id, raised_by, item_id, item_text, quantity, estimated_value, status, quotes_required)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(prNo, project_id || null, req.user.id, first.itemId, first.itemText, first.quantity, totalValue,
+      quotesRequired ? 'PendingQuotes' : 'Pending', quotesRequired ? 1 : 0);
+    const prId = info.lastInsertRowid;
+    const insertLine = db.prepare(`
+      INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, sort_order)
+      VALUES (?,?,?,?,?,?)
+    `);
+    resolved.forEach((l, i) => {
+      insertLine.run(prId, l.itemId, l.itemText, l.quantity, l.estimatedValue, i);
+      if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(prId, l.itemId);
+    });
+    if (!quotesRequired) {
+      // Every purchase request goes to the Purchase HOD/Supervisor first,
+      // regardless of value - the approval chain's step 1 always qualifies
+      // (min_amount 0), and step 2 (Management) kicks in only above whatever
+      // threshold is set on the Approval Matrix page.
+      const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', prId, totalValue, req.user.id);
+      db.prepare('UPDATE purchase_requests SET approval_id = ? WHERE id = ?').run(approvalId, prId);
+    }
+    return prId;
+  });
+  const prId = tx();
+  res.json({ id: prId, pr_no: prNo, quotes_required: quotesRequired });
 });
 
 // ---- Vendor discovery for a selected item (Round 13) ----
@@ -174,7 +218,8 @@ router.post('/requests/:id/submit-for-approval', requirePermission('purchase_req
   if (pr.status !== 'PendingQuotes') return res.status(400).json({ error: 'This request has already been submitted for approval.' });
   const quoteCount = db.prepare('SELECT COUNT(*) as c FROM purchase_request_quotes WHERE purchase_request_id = ?').get(pr.id).c;
   if (quoteCount < 2) return res.status(400).json({ error: `At least 2 vendor quotes are required before submitting for approval - only ${quoteCount} on file.` });
-  const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, pr.estimated_value || 0, req.user.id);
+  const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
+  const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, totalValue, req.user.id);
   db.prepare(`UPDATE purchase_requests SET approval_id = ?, status = 'Pending' WHERE id = ?`).run(approvalId, pr.id);
   res.json({ ok: true });
 });
@@ -188,16 +233,42 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   if (existing.status !== 'Pending' && !isPrivileged) {
     return res.status(400).json({ error: 'This request has already been actioned - only Admin/Management can still edit it.' });
   }
-  const { item_id, project_id, quantity, estimated_value } = req.body;
-  db.prepare(`
-    UPDATE purchase_requests SET item_id=?, project_id=?, quantity=?, estimated_value=? WHERE id=?
-  `).run(
-    item_id !== undefined ? item_id : existing.item_id,
-    project_id !== undefined ? (project_id || null) : existing.project_id,
-    quantity !== undefined ? quantity : existing.quantity,
-    estimated_value !== undefined ? estimated_value : existing.estimated_value,
-    existing.id
-  );
+  const { project_id, items } = req.body;
+  let resolved;
+  if (items !== undefined) {
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Add at least one item line.' });
+    try {
+      resolved = items.map(line => {
+        const qty = Number(line.quantity);
+        if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
+        const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
+        return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null };
+      });
+    } catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  const tx = db.transaction(() => {
+    if (resolved) {
+      db.prepare('DELETE FROM purchase_request_items WHERE purchase_request_id = ?').run(existing.id);
+      const insertLine = db.prepare(`
+        INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, sort_order)
+        VALUES (?,?,?,?,?,?)
+      `);
+      resolved.forEach((l, i) => {
+        insertLine.run(existing.id, l.itemId, l.itemText, l.quantity, l.estimatedValue, i);
+        if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(existing.id, l.itemId);
+      });
+      const first = resolved[0];
+      const totalValue = resolved.reduce((sum, l) => sum + l.estimatedValue, 0);
+      db.prepare(`
+        UPDATE purchase_requests SET item_id=?, item_text=?, project_id=?, quantity=?, estimated_value=? WHERE id=?
+      `).run(first.itemId, first.itemText,
+        project_id !== undefined ? (project_id || null) : existing.project_id,
+        first.quantity, totalValue, existing.id);
+    } else if (project_id !== undefined) {
+      db.prepare(`UPDATE purchase_requests SET project_id=? WHERE id=?`).run(project_id || null, existing.id);
+    }
+  });
+  tx();
   res.json({ ok: true });
 });
 
@@ -210,7 +281,7 @@ router.get('/orders', (req, res) => {
   `).all());
 });
 router.post('/orders', requirePermission('purchase_order.manage'), (req, res) => {
-  const { purchase_request_id, vendor_id, item_id, quantity, rate, hsn_code, gst_rate, terms, delivery_date } = req.body;
+  const { purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, hsn_code, gst_rate, terms, delivery_date } = req.body;
   // Validate references before hitting the DB - an empty/missing vendor or
   // item (e.g. no vendors created yet, or a stale item id) otherwise surfaces
   // as a raw "FOREIGN KEY constraint failed" 500, which reads as "Request
@@ -229,10 +300,10 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   const gstRate = gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18;
   const gstAmount = total * gstRate / 100;
   const info = db.prepare(`
-    INSERT INTO purchase_orders (po_no, purchase_request_id, vendor_id, item_id, quantity, rate, total_value, created_by,
+    INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
       hsn_code, gst_rate, gst_amount, terms, delivery_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(poNo, purchase_request_id || null, vendor_id, item_id || null, quantity, rate, total, req.user.id,
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(poNo, purchase_request_id || null, purchase_request_item_id || null, vendor_id, item_id || null, quantity, rate, total, req.user.id,
     hsn_code || null, gstRate, gstAmount, terms || null, delivery_date || null);
   if (purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(purchase_request_id);
   res.json({ id: info.lastInsertRowid, po_no: poNo });

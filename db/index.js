@@ -635,6 +635,23 @@ const MIGRATIONS = [
     reviewed_at TEXT,
     review_note TEXT
   )`,
+  // ---- Round 24: Purchase Requests become multi-line-item. Each PR can now
+  // carry more than one item/qty/value line, mirroring the challan_items
+  // child-table pattern. purchase_requests keeps its own item_id/quantity/
+  // estimated_value columns as a mirror of the first line (+ the summed
+  // value) so any read path not yet updated for multi-line still works.
+  `CREATE TABLE IF NOT EXISTS purchase_request_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_request_id INTEGER NOT NULL REFERENCES purchase_requests(id),
+    item_id INTEGER REFERENCES items(id),
+    item_text TEXT,
+    quantity REAL NOT NULL,
+    estimated_value REAL DEFAULT 0,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // Tracks which PR line a PO was raised against, since Purchase Orders stay
+  // single-item even though a PR can now have several lines.
+  `ALTER TABLE purchase_orders ADD COLUMN purchase_request_item_id INTEGER REFERENCES purchase_request_items(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -732,6 +749,19 @@ for (const col of ['application', 'type_of_system', 'material_of_construction'])
     `);
   } catch (e) {}
 }
+
+// Round 24: every pre-existing single-item purchase_requests row becomes its
+// PR's first (and only) line in purchase_request_items, so nothing already
+// raised loses its item/quantity/value once PRs read from the child table.
+// Guarded by NOT EXISTS so this is safe to re-run on an already-migrated DB.
+try {
+  raw.exec(`
+    INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, sort_order)
+    SELECT pr.id, pr.item_id, pr.item_text, pr.quantity, pr.estimated_value, 0
+    FROM purchase_requests pr
+    WHERE NOT EXISTS (SELECT 1 FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id)
+  `);
+} catch (e) {}
 
 // Backfill `sequence` for any job cards created before that column existed,
 // using their insertion order (id) within each project as the sequence -

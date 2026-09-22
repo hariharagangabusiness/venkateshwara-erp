@@ -269,7 +269,7 @@ const ITEM_EDIT_FIELDS = ['item_code', 'name', 'unit', 'category', 'hsn_code', '
 // delete can actually remove the row or must fall back to discontinuing it
 // (status='Discontinued'), same reasoning as vendor delete just above.
 function itemReferenceCount(itemId) {
-  const tables = ['purchase_requests', 'purchase_orders', 'stock_movements', 'service_center_stock', 'service_center_transfer_items', 'service_report_spares'];
+  const tables = ['purchase_request_items', 'purchase_orders', 'stock_movements', 'service_center_stock', 'service_center_transfer_items', 'service_report_spares'];
   return tables.reduce((sum, t) => sum + db.prepare(`SELECT COUNT(*) as n FROM ${t} WHERE item_id = ?`).get(itemId).n, 0);
 }
 function applyItemEdit(itemId, fields) {

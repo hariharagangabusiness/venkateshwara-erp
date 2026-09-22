@@ -43,11 +43,16 @@ function describeEntity(entityType, entityId) {
     }
     case 'purchase_request': {
       const r = db.prepare(`
-        SELECT pr.pr_no as ref, i.name as item_name, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
-        FROM purchase_requests pr LEFT JOIN items i ON i.id = pr.item_id LEFT JOIN users u ON u.id = pr.raised_by
+        SELECT pr.pr_no as ref, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
+        FROM purchase_requests pr LEFT JOIN users u ON u.id = pr.raised_by
         LEFT JOIN departments d ON d.id = u.department_id WHERE pr.id = ?`).get(entityId);
       if (!r) return {};
-      return { ref: r.ref, summary: r.item_name || 'Purchase request', department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name };
+      const lines = db.prepare(`
+        SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri
+        LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
+      `).all(entityId);
+      const summary = lines.length > 1 ? `${lines[0].name || 'Item'} +${lines.length - 1} more` : ((lines[0] && lines[0].name) || 'Purchase request');
+      return { ref: r.ref, summary, department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name };
     }
     case 'salary_advance': {
       const r = db.prepare(`
