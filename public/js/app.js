@@ -5274,6 +5274,7 @@ PAGES['bg-dashboard'] = async (el) => {
   ]);
   const verified = await api('/bg/reminders?status=Verified');
   window.__BG_ORDERS = orders;
+  BG_CURRENT_FILTER = '';
   el.innerHTML = `
     <div class="cards">
       <div class="card"><div class="num">${summary.live_count}</div><div class="label">Live Bank Guarantees</div></div>
@@ -5320,33 +5321,107 @@ PAGES['bg-dashboard'] = async (el) => {
     </div>
 
     <div class="panel">
-      <div class="tabs" id="bg-tabs">
-        <div class="tab active" onclick="filterBGTab(this,'')">All</div>
-        <div class="tab" onclick="filterBGTab(this,'Advance')">Advance</div>
-        <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
-        <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div class="tabs" id="bg-tabs">
+          <div class="tab active" onclick="filterBGTab(this,'')">All</div>
+          <div class="tab" onclick="filterBGTab(this,'Advance')">Advance</div>
+          <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
+          <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
+        </div>
+        <button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button>
       </div>
       <div id="bg-table-wrap">${bgTableHTML(bgs)}</div>
     </div>`;
   window.__BG_ALL = bgs;
 };
+// ---- BG Dashboard: user-customizable columns ----
+// Each entry maps a toggleable column to the field(s) it reads off a `bg`
+// row (already available from GET /bg's bg.* + the resolved order_label/
+// beneficiary - no backend change needed for any of these, including
+// "Customer/Vendor Name": beneficiary is already populated at BG-creation
+// time from the linked SO/PO's party). Documents/Action stay fixed - they're
+// controls, not data attributes, so they're not part of the toggle set.
+const BG_COLUMN_REGISTRY = [
+  { key: 'bg_no', label: 'BG No', default: true, render: bg => esc(bg.bg_no || '#' + bg.id) },
+  { key: 'bg_type', label: 'Type', default: true, render: bg => esc(bg.bg_type) },
+  { key: 'order', label: 'Order', default: true, render: bg => `[${esc(bg.order_type)}] ${esc(bg.order_label || '')}` },
+  { key: 'beneficiary', label: 'Customer / Vendor Name', default: false, render: bg => esc(bg.beneficiary || bg.order_label || '-') },
+  { key: 'issuing_bank', label: 'Issuing Bank', default: true, render: bg => esc(bg.issuing_bank || '-') },
+  { key: 'value', label: 'Value', default: true, render: bg => '₹' + fmt(bg.value) },
+  { key: 'issue_date', label: 'Issue Date', default: false, render: bg => esc(bg.issue_date || '-') },
+  { key: 'validity_expiry', label: 'Validity Expiry', default: true, render: bg => deliveryBadge(bg.validity_expiry) },
+  { key: 'claim_expiry', label: 'Claim Expiry', default: false, render: bg => esc(bg.claim_expiry || '-') },
+  { key: 'project', label: 'Project', default: false, render: bg => esc(bg.project_code || '-') },
+  { key: 'milestone_link', label: 'Release Condition', default: false, render: bg => esc(bg.milestone_link || '-') },
+  { key: 'status', label: 'Status', default: true, render: bg => badge(bg.status) },
+];
+const BG_COLUMNS_STORAGE_KEY = 'erp_bg_dashboard_columns';
+// Client-side only (per-browser, via localStorage) - same convention as the
+// dashboard's pinned-metrics picker (loadDashboardMetricKeys above): a
+// per-viewer display preference has no reason to live server-side or be
+// shared across users.
+function loadBGColumnKeys() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BG_COLUMNS_STORAGE_KEY) || 'null');
+    if (Array.isArray(saved) && saved.length) return saved.filter(k => BG_COLUMN_REGISTRY.some(c => c.key === k));
+  } catch (e) {}
+  return BG_COLUMN_REGISTRY.filter(c => c.default).map(c => c.key);
+}
+function saveBGColumnKeys(keys) {
+  try { localStorage.setItem(BG_COLUMNS_STORAGE_KEY, JSON.stringify(keys)); } catch (e) {}
+}
 function bgTableHTML(bgs) {
-  return tableHTML(['BG No', 'Type', 'Order', 'Bank', 'Value', 'Validity Expiry', 'Status', 'Documents', 'Action'], bgs, bg => `
-    <tr><td>${esc(bg.bg_no || '#'+bg.id)}</td><td>${esc(bg.bg_type)}</td><td>[${esc(bg.order_type)}] ${esc(bg.order_label || '')}</td><td>${esc(bg.issuing_bank || '-')}</td>
-    <td>₹${fmt(bg.value)}</td><td>${deliveryBadge(bg.validity_expiry)}</td><td>${badge(bg.status)}</td>
+  const activeKeys = loadBGColumnKeys();
+  // Registry order, not selection order, so re-checking a box always puts
+  // the column back where it was rather than at the end.
+  const cols = BG_COLUMN_REGISTRY.filter(c => activeKeys.includes(c.key));
+  const headers = [...cols.map(c => c.label), 'Documents', 'Action'];
+  return tableHTML(headers, bgs, bg => `
+    <tr>${cols.map(c => `<td>${c.render(bg)}</td>`).join('')}
     <td><button class="btn small outline" type="button" onclick="toggleBGAttachments(${bg.id})">Scanned Copy</button></td>
     <td>${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}</td></tr>
-    <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="9"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
+    <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="${headers.length}"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
 }
+window.openBGColumnPicker = () => {
+  const activeKeys = loadBGColumnKeys();
+  const body = `
+    <p class="muted">Choose which columns show in the Bank Guarantee table below. Your choice is remembered on this browser.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${BG_COLUMN_REGISTRY.map(c => `<label style="margin:0;font-weight:normal;">
+        <input type="checkbox" value="${c.key}" ${activeKeys.includes(c.key) ? 'checked' : ''} onchange="toggleBGColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('')}
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+      <button class="btn small outline" type="button" onclick="resetBGColumns()">Reset to Default</button>
+    </div>`;
+  openMiniModal('Customize Columns', body);
+};
+window.toggleBGColumn = (key, checked) => {
+  const keys = loadBGColumnKeys();
+  if (checked && !keys.includes(key)) keys.push(key);
+  if (!checked) { const i = keys.indexOf(key); if (i !== -1) keys.splice(i, 1); }
+  // At least one data column must stay visible, or the table would render
+  // with nothing but the Documents/Action controls.
+  if (!keys.length) { alert('At least one column must stay visible.'); openBGColumnPicker(); return; }
+  saveBGColumnKeys(keys);
+  filterBGTab(document.querySelector('#bg-tabs .tab.active'), BG_CURRENT_FILTER);
+};
+window.resetBGColumns = () => {
+  try { localStorage.removeItem(BG_COLUMNS_STORAGE_KEY); } catch (e) {}
+  closeMiniModal();
+  filterBGTab(document.querySelector('#bg-tabs .tab.active'), BG_CURRENT_FILTER);
+};
 window.toggleBGAttachments = (id) => {
   const row = document.getElementById(`bg-att-row-${id}`);
   const showing = row.style.display !== 'none';
   row.style.display = showing ? 'none' : '';
   if (!showing) renderAttachmentsWidget('bank_guarantee', id, document.getElementById(`bg-attachments-${id}`));
 };
+let BG_CURRENT_FILTER = '';
 window.filterBGTab = (tabEl, filter) => {
+  BG_CURRENT_FILTER = filter;
   document.querySelectorAll('#bg-tabs .tab').forEach(t => t.classList.remove('active'));
-  tabEl.classList.add('active');
+  if (tabEl) tabEl.classList.add('active');
   const all = window.__BG_ALL || [];
   const filtered = !filter ? all : (filter === 'PendingRelease' ? all.filter(b => b.status === 'PendingRelease') : all.filter(b => b.bg_type === filter));
   document.getElementById('bg-table-wrap').innerHTML = bgTableHTML(filtered);
