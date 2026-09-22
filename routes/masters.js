@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { generateItemBarcode } = require('../lib/barcode');
 const { generateTempPassword } = require('../lib/passwordReset');
 const { sendMail } = require('../lib/mailer');
@@ -261,6 +261,94 @@ router.put('/items/:id/review', requirePermission('item.manage', 'store.manage')
   if (approve && !existing.barcode) {
     db.prepare('UPDATE items SET barcode = ? WHERE id = ?').run(generateItemBarcode(existing.id), existing.id);
   }
+  res.json({ ok: true });
+});
+
+const ITEM_EDIT_FIELDS = ['item_code', 'name', 'unit', 'category', 'hsn_code', 'location', 'reorder_level'];
+// How many live transactions reference an item - used to decide whether a
+// delete can actually remove the row or must fall back to discontinuing it
+// (status='Discontinued'), same reasoning as vendor delete just above.
+function itemReferenceCount(itemId) {
+  const tables = ['purchase_requests', 'purchase_orders', 'stock_movements', 'service_center_stock', 'service_center_transfer_items', 'service_report_spares'];
+  return tables.reduce((sum, t) => sum + db.prepare(`SELECT COUNT(*) as n FROM ${t} WHERE item_id = ?`).get(itemId).n, 0);
+}
+function applyItemEdit(itemId, fields) {
+  const existing = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
+  const sets = ITEM_EDIT_FIELDS.map(c => `${c}=?`).join(',');
+  const values = ITEM_EDIT_FIELDS.map(c => (fields[c] !== undefined ? fields[c] : existing[c]));
+  db.prepare(`UPDATE items SET ${sets} WHERE id=?`).run(...values, itemId);
+}
+function applyItemDelete(itemId) {
+  if (itemReferenceCount(itemId) > 0) {
+    db.prepare(`UPDATE items SET status = 'Discontinued' WHERE id = ?`).run(itemId);
+    return { deleted: false };
+  }
+  db.prepare('DELETE FROM items WHERE id = ?').run(itemId);
+  return { deleted: true };
+}
+
+// General edit for an item already in the master (distinct from
+// PUT /items/:id/review, which is specifically for completing a Pending
+// item created ad hoc from a Purchase Request). Admin applies immediately;
+// anyone else with item.manage/store.manage queues the change instead -
+// the live item is untouched until an Admin/reviewer approves it, so a
+// transaction already using this item's current values can't be changed
+// out from under it mid-flight.
+router.put('/items/:id', requirePermission('item.manage', 'store.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status === 'Pending') return res.status(400).json({ error: 'This item is still awaiting its first-time review - use the Pending Item Master Review panel instead.' });
+  const fields = {};
+  ITEM_EDIT_FIELDS.forEach(c => { if (req.body[c] !== undefined) fields[c] = req.body[c] || null; });
+  if (req.user.role_name === 'Admin') {
+    applyItemEdit(existing.id, fields);
+    return res.json({ ok: true, applied: true });
+  }
+  db.prepare(`INSERT INTO item_pending_changes (item_id, change_type, proposed_fields, requested_by) VALUES (?,'Edit',?,?)`)
+    .run(existing.id, JSON.stringify(fields), req.user.id);
+  res.json({ ok: true, applied: false, message: 'Change submitted for approval - the item stays as-is until an Admin reviews it.' });
+});
+router.delete('/items/:id', requirePermission('item.manage', 'store.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (req.user.role_name === 'Admin') {
+    const result = applyItemDelete(existing.id);
+    return res.json({ ok: true, applied: true, deleted: result.deleted });
+  }
+  db.prepare(`INSERT INTO item_pending_changes (item_id, change_type, requested_by) VALUES (?,'Delete',?)`).run(existing.id, req.user.id);
+  res.json({ ok: true, applied: false, message: 'Delete request submitted for approval.' });
+});
+
+router.get('/items/pending-changes', requirePermission('item.manage', 'store.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT c.*, i.name as item_name, i.item_code, u.full_name as requested_by_name
+    FROM item_pending_changes c JOIN items i ON i.id = c.item_id LEFT JOIN users u ON u.id = c.requested_by
+    WHERE c.status = 'Pending' ORDER BY c.id DESC
+  `).all());
+});
+router.post('/items/pending-changes/:id/approve', requireRole('Admin'), (req, res) => {
+  const change = db.prepare('SELECT * FROM item_pending_changes WHERE id = ?').get(req.params.id);
+  if (!change) return res.status(404).json({ error: 'Not found' });
+  if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
+  let result = {};
+  if (change.change_type === 'Edit') applyItemEdit(change.item_id, JSON.parse(change.proposed_fields || '{}'));
+  else result = applyItemDelete(change.item_id);
+  db.prepare(`UPDATE item_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?`).run(req.user.id, change.id);
+  res.json({ ok: true, deleted: result.deleted });
+});
+router.post('/items/pending-changes/:id/reject', requireRole('Admin'), (req, res) => {
+  const change = db.prepare('SELECT * FROM item_pending_changes WHERE id = ?').get(req.params.id);
+  if (!change) return res.status(404).json({ error: 'Not found' });
+  if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
+  db.prepare(`UPDATE item_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, review_note=? WHERE id=?`)
+    .run(req.user.id, req.body.review_note || null, change.id);
+  res.json({ ok: true });
+});
+
+router.post('/items/:id/reactivate', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE items SET status = 'Approved' WHERE id = ?`).run(req.params.id);
   res.json({ ok: true });
 });
 

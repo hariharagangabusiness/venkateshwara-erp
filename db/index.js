@@ -616,6 +616,25 @@ const MIGRATIONS = [
   )`,
   `ALTER TABLE daily_work_logs ADD COLUMN status TEXT`,
   `ALTER TABLE daily_work_logs ADD COLUMN assigned_by INTEGER REFERENCES users(id)`,
+  // ---- Round 23: Item Master edit/delete approval gate. Editing or
+  // deleting an item already in the (Approved) master doesn't touch the
+  // live row directly for a non-Admin - it's queued here and only applied
+  // once approved, so nothing changes underneath a transaction already in
+  // flight against that item. Admin edits/deletes apply immediately (same
+  // "Admin bypasses the gate" convention used throughout this app). See
+  // routes/masters.js.
+  `CREATE TABLE IF NOT EXISTS item_pending_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    change_type TEXT NOT NULL,          -- Edit, Delete
+    proposed_fields TEXT,               -- JSON of {field: value} - null for Delete
+    status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
+    requested_by INTEGER REFERENCES users(id),
+    requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    review_note TEXT
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
