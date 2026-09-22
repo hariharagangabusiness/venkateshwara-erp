@@ -171,11 +171,11 @@ router.get('/:id/history', (req, res) => {
 
 function syncEntityStatus(entityType, entityId, result) {
   const map = {
-    expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected' },
-    leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected' },
-    purchase_request: { table: 'purchase_requests', approved: 'Approved', rejected: 'Rejected' },
-    salary_advance: { table: 'salary_advances', approved: 'Approved', rejected: 'Rejected' },
-    salary_schedule: { table: 'salary_schedule', approved: 'Approved', rejected: 'Draft' },
+    expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
+    leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
+    purchase_request: { table: 'purchase_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
+    salary_advance: { table: 'salary_advances', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
+    salary_schedule: { table: 'salary_schedule', approved: 'Approved', rejected: 'Draft', infoRequested: 'InfoRequested' },
   };
   const m = map[entityType];
   if (!m) return;
@@ -183,21 +183,38 @@ function syncEntityStatus(entityType, entityId, result) {
     db.prepare(`UPDATE ${m.table} SET status = ? WHERE id = ?`).run(m.approved, entityId);
   } else if (result === 'Rejected') {
     db.prepare(`UPDATE ${m.table} SET status = ? WHERE id = ?`).run(m.rejected, entityId);
+  } else if (result === 'InfoRequested' || result === 'Pending') {
+    db.prepare(`UPDATE ${m.table} SET status = ? WHERE id = ?`).run(result === 'InfoRequested' ? m.infoRequested : 'Pending', entityId);
   }
 }
 
 router.post('/:id/act', (req, res) => {
-  const { action, comment } = req.body; // action: 'Approved' | 'Rejected'
+  const { action, comment } = req.body; // action: 'Approved' | 'Rejected' | 'InfoRequested'
   try {
     const approval = db.prepare('SELECT * FROM approvals WHERE id = ?').get(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
     const result = approvalsLib.act(req.params.id, req.user, action, comment);
-    if (result === 'Approved' || result === 'Rejected') {
-      syncEntityStatus(approval.entity_type, approval.entity_id, result);
-    }
+    syncEntityStatus(approval.entity_type, approval.entity_id, result);
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:' + action, approval.entity_type, approval.entity_id, comment || null);
     res.json({ status: result });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// The original requester answers a reviewer's "ask for more information" -
+// resumes the same approval at the same step.
+router.post('/:id/provide-info', (req, res) => {
+  const { comment } = req.body;
+  try {
+    const approval = db.prepare('SELECT * FROM approvals WHERE id = ?').get(req.params.id);
+    if (!approval) return res.status(404).json({ error: 'Not found' });
+    approvalsLib.provideMoreInfo(req.params.id, req.user, comment);
+    syncEntityStatus(approval.entity_type, approval.entity_id, 'Pending');
+    db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+      .run(req.user.id, 'approval_action:InfoProvided', approval.entity_type, approval.entity_id, comment || null);
+    res.json({ status: 'Pending' });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

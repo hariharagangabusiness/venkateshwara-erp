@@ -40,7 +40,13 @@ router.get('/requests', (req, res) => {
         ORDER BY aa.acted_at DESC LIMIT 1) as rejection_reason,
       (SELECT ru.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id LEFT JOIN users ru ON ru.id = aa.actor_user_id
         WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'Rejected'
-        ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name
+        ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name,
+      (SELECT aa.comment FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
+        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'InfoRequested'
+        ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_note,
+      (SELECT ru.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'InfoRequested'
+        ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_by_name
     FROM purchase_requests pr
     LEFT JOIN items i ON i.id = pr.item_id LEFT JOIN projects p ON p.id = pr.project_id
     LEFT JOIN users u ON u.id = pr.raised_by LEFT JOIN departments d ON d.id = u.department_id
@@ -236,10 +242,11 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   const isOwner = existing.raised_by === req.user.id;
   const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
   if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can edit this.' });
-  // A rejected request stays editable for its own requester (not just
-  // Admin/Management) so they can fix it and resubmit, instead of having to
-  // raise a brand new PR from scratch.
-  if (!['Pending', 'Rejected'].includes(existing.status) && !isPrivileged) {
+  // A rejected request, or one a reviewer paused to ask for more info, stays
+  // editable for its own requester (not just Admin/Management) so they can
+  // fix/complete it and send it back, instead of having to raise a brand new
+  // PR from scratch.
+  if (!['Pending', 'Rejected', 'InfoRequested'].includes(existing.status) && !isPrivileged) {
     return res.status(400).json({ error: 'This request has already been actioned - only Admin/Management can still edit it.' });
   }
   const { project_id, items } = req.body;
