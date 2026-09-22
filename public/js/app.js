@@ -2866,13 +2866,14 @@ PAGES['purchase-requests'] = async (el) => {
       <div class="form-grid">
         <div><label>Item (pick from master)</label><select id="pr-item" onchange="showVendorsForPRItem()"><option value="">- type a new item instead -</option>${items.filter(i=>i.status!=='Pending').map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')}</select></div>
         <div><label>Or type an item name</label><input id="pr-item-text" placeholder="Not in the master? Type it here"></div>
-        <div><label>Project</label><select id="pr-project"><option value="">-</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
+        <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
         <div><label>Quantity</label><input id="pr-qty" type="number"></div>
         <div><label>Estimated Value (₹)</label><input id="pr-value" type="number"></div>
       </div>
       <div id="pr-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
       <button class="btn" onclick="addPR()">Submit Request</button>
       <div class="muted" style="margin-top:8px;">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
+      Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests estimated at ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
     </div>
@@ -2893,7 +2894,7 @@ function renderPRRows(rows) {
     <tr id="pr-row-${r.id}">
       <td>${esc(r.pr_no)}</td>
       <td>${esc(r.item_name)}${r.item_master_status === 'Pending' ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
-      <td>${esc(r.project_code)||'-'}</td><td>${r.quantity}</td><td>₹${fmt(r.estimated_value)}</td><td>${badge(r.status)}</td>
+      <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.quantity}</td><td>₹${fmt(r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
         ${r.status === 'Pending' ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
@@ -2992,7 +2993,7 @@ window.openEditPR = (id) => {
   document.getElementById('pr-edit-body').innerHTML = `
     <div class="form-grid">
       <div><label>Item</label><select id="pre-item">${items.map(i => `<option value="${i.id}" ${i.id===r.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
-      <div><label>Project</label><select id="pre-project"><option value="">-</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
+      <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
       <div><label>Quantity</label><input id="pre-qty" type="number" value="${r.quantity}"></div>
       <div><label>Estimated Value (₹)</label><input id="pre-value" type="number" value="${r.estimated_value}"></div>
     </div>
