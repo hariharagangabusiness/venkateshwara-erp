@@ -652,6 +652,26 @@ const MIGRATIONS = [
   // Tracks which PR line a PO was raised against, since Purchase Orders stay
   // single-item even though a PR can now have several lines.
   `ALTER TABLE purchase_orders ADD COLUMN purchase_request_item_id INTEGER REFERENCES purchase_request_items(id)`,
+  // ---- Round 25: multiple company Bill-To/Ship-To address profiles (e.g.
+  // separate factory/office locations), mirroring the existing
+  // client_addresses pattern but with no parent - there's only ever one
+  // company. A PO can pick which one applies instead of the single flat
+  // registered_address on lib/settings.js's company blob.
+  `CREATE TABLE IF NOT EXISTS company_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address_type TEXT NOT NULL,        -- 'Billing' or 'Shipping'
+    label TEXT,                        -- e.g. "Head Office", "Factory - Faridabad"
+    line1 TEXT NOT NULL,
+    line2 TEXT,
+    city TEXT,
+    state TEXT,
+    state_code TEXT,
+    pincode TEXT,
+    gstin TEXT,
+    is_default INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `ALTER TABLE purchase_orders ADD COLUMN company_address_id INTEGER REFERENCES company_addresses(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
