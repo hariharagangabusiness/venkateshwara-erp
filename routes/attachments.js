@@ -23,7 +23,7 @@ const upload = multer({
 });
 
 const VALID_TYPES = new Set([
-  'purchase_request', 'purchase_order', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket',
+  'purchase_request', 'purchase_order', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
 ]);
 
 router.get('/:entityType/:entityId', (req, res) => {

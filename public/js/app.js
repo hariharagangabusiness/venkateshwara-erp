@@ -5205,6 +5205,7 @@ PAGES['bg-dashboard'] = async (el) => {
         <div><label>Issue Date</label><input id="bg-issue" type="date"></div>
         <div><label>Validity Expiry</label><input id="bg-expiry" type="date"></div>
         <div><label>Claim Expiry (optional)</label><input id="bg-claim" type="date"></div>
+        <div><label>Scanned Copy (optional)</label><input id="bg-scan-file" type="file" accept="image/*,.pdf"></div>
       </div>
       <div><label>Release Condition / Milestone Link</label><textarea id="bg-milestone" rows="2" style="width:100%;" placeholder="e.g. release on final acceptance / installation completion"></textarea></div>
       <button class="btn" onclick="addBG()">Add Bank Guarantee</button>
@@ -5222,11 +5223,19 @@ PAGES['bg-dashboard'] = async (el) => {
   window.__BG_ALL = bgs;
 };
 function bgTableHTML(bgs) {
-  return tableHTML(['BG No', 'Type', 'Order', 'Bank', 'Value', 'Validity Expiry', 'Status', 'Action'], bgs, bg => `
+  return tableHTML(['BG No', 'Type', 'Order', 'Bank', 'Value', 'Validity Expiry', 'Status', 'Documents', 'Action'], bgs, bg => `
     <tr><td>${esc(bg.bg_no || '#'+bg.id)}</td><td>${esc(bg.bg_type)}</td><td>[${esc(bg.order_type)}] ${esc(bg.order_label || '')}</td><td>${esc(bg.issuing_bank || '-')}</td>
     <td>₹${fmt(bg.value)}</td><td>${deliveryBadge(bg.validity_expiry)}</td><td>${badge(bg.status)}</td>
-    <td>${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}</td></tr>`);
+    <td><button class="btn small outline" type="button" onclick="toggleBGAttachments(${bg.id})">Scanned Copy</button></td>
+    <td>${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}</td></tr>
+    <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="9"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
 }
+window.toggleBGAttachments = (id) => {
+  const row = document.getElementById(`bg-att-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) renderAttachmentsWidget('bank_guarantee', id, document.getElementById(`bg-attachments-${id}`));
+};
 window.filterBGTab = (tabEl, filter) => {
   document.querySelectorAll('#bg-tabs .tab').forEach(t => t.classList.remove('active'));
   tabEl.classList.add('active');
@@ -5239,11 +5248,23 @@ window.addBG = async () => {
   if (!orderSel) { alert('No open SO/PO to attach this BG to.'); return; }
   const [order_type, order_id] = orderSel.split(':');
   try {
-    await api('/bg', { method: 'POST', body: JSON.stringify({
+    const r = await api('/bg', { method: 'POST', body: JSON.stringify({
       bg_no: val('bg-no'), bg_type: val('bg-type'), order_type, order_id,
       issuing_bank: val('bg-bank'), value: val('bg-value'), issue_date: val('bg-issue'),
       validity_expiry: val('bg-expiry'), claim_expiry: val('bg-claim'), milestone_link: val('bg-milestone'),
     })});
+    // The BG record needs to exist before a file can be attached to it (the
+    // generic attachments table is keyed by entity id) - so this uploads
+    // right after creation instead of making it a separate manual step,
+    // same as-you-go feel as filling in the rest of the form. Extra/later
+    // scans (a renewal, an extension letter) still go through the
+    // dashboard's own "Scanned Copy" toggle on that row.
+    const scanFile = document.getElementById('bg-scan-file');
+    if (scanFile.files[0]) {
+      const fd = new FormData();
+      fd.append('file', scanFile.files[0]);
+      await apiUpload(`/attachments/bank_guarantee/${r.id}`, fd, 'POST');
+    }
     navigate('bg-dashboard');
   } catch (e) { alert(e.message); }
 };
