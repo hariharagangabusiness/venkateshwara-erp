@@ -34,7 +34,13 @@ router.get('/requests', (req, res) => {
       (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as line_count,
       (SELECT COALESCE(SUM(pri.estimated_value), 0) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as items_total_value,
       (SELECT GROUP_CONCAT(COALESCE(i2.name, pri.item_text), ', ') FROM purchase_request_items pri LEFT JOIN items i2 ON i2.id = pri.item_id WHERE pri.purchase_request_id = pr.id) as item_summary,
-      (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND i3.status = 'Pending') as pending_item_count
+      (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND i3.status = 'Pending') as pending_item_count,
+      (SELECT aa.comment FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
+        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'Rejected'
+        ORDER BY aa.acted_at DESC LIMIT 1) as rejection_reason,
+      (SELECT ru.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = pr.id AND aa.action = 'Rejected'
+        ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name
     FROM purchase_requests pr
     LEFT JOIN items i ON i.id = pr.item_id LEFT JOIN projects p ON p.id = pr.project_id
     LEFT JOIN users u ON u.id = pr.raised_by LEFT JOIN departments d ON d.id = u.department_id
@@ -230,7 +236,10 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   const isOwner = existing.raised_by === req.user.id;
   const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
   if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can edit this.' });
-  if (existing.status !== 'Pending' && !isPrivileged) {
+  // A rejected request stays editable for its own requester (not just
+  // Admin/Management) so they can fix it and resubmit, instead of having to
+  // raise a brand new PR from scratch.
+  if (!['Pending', 'Rejected'].includes(existing.status) && !isPrivileged) {
     return res.status(400).json({ error: 'This request has already been actioned - only Admin/Management can still edit it.' });
   }
   const { project_id, items } = req.body;
@@ -270,6 +279,45 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   });
   tx();
   res.json({ ok: true });
+});
+
+// ---- Resubmit a rejected PR: starts a fresh approval cycle from step 1
+// (the old, rejected approval stays on file as history - see GET
+// /requests/:id/approval-history). Goes through the same value-threshold
+// check as a brand new PR, so a resubmission that's since grown past the
+// quote threshold correctly lands back in PendingQuotes instead of skipping
+// straight to approval.
+router.post('/requests/:id/resubmit', requirePermission('purchase_request.create', 'job_card.manage', 'purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const isOwner = existing.raised_by === req.user.id;
+  const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
+  if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can resubmit this.' });
+  if (existing.status !== 'Rejected') return res.status(400).json({ error: 'Only a rejected request can be resubmitted.' });
+  const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(existing.id).t;
+  const threshold = getPurchaseSettings().quote_threshold;
+  const quotesRequired = totalValue >= threshold;
+  if (quotesRequired) {
+    db.prepare(`UPDATE purchase_requests SET status = 'PendingQuotes', quotes_required = 1, approval_id = NULL WHERE id = ?`).run(existing.id);
+    return res.json({ ok: true, quotes_required: true });
+  }
+  const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', existing.id, totalValue, req.user.id);
+  db.prepare(`UPDATE purchase_requests SET status = 'Pending', quotes_required = 0, approval_id = ? WHERE id = ?`).run(approvalId, existing.id);
+  res.json({ ok: true, quotes_required: false });
+});
+
+// Full approval trail for a PR across every submission/resubmission -
+// each resubmit starts a brand-new `approvals` row, so a single PR's history
+// spans more than one approval id once it's been rejected and tried again.
+router.get('/requests/:id/approval-history', (req, res) => {
+  res.json(db.prepare(`
+    SELECT aa.*, ap.id as approval_id, u.full_name as actor_name
+    FROM approval_actions aa
+    JOIN approvals ap ON ap.id = aa.approval_id
+    LEFT JOIN users u ON u.id = aa.actor_user_id
+    WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = ?
+    ORDER BY aa.acted_at
+  `).all(req.params.id));
 });
 
 // ---- Purchase Orders ----
