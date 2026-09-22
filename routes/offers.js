@@ -3,12 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE } = require('../lib/settings');
 
 const router = express.Router();
 router.use(authRequired);
@@ -130,6 +131,51 @@ router.delete('/section-titles/:id', requirePermission('offer_options.manage'), 
   if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
   db.prepare('DELETE FROM section_title_library WHERE id = ?').run(existing.id);
   res.json({ ok: true });
+});
+
+// ===================== Offer PDF Template override (optional) =====================
+// Admin-uploaded header/footer/cover images that can OPTIONALLY replace
+// pieces of the hand-tuned, pixel-matched default letterhead in
+// lib/offerPdf.js. Every piece starts - and stays, until an admin
+// explicitly uploads an image AND switches it on - inactive, so this
+// feature existing never changes what any offer's PDF looks like on its
+// own. Admin-only, same as the rest of Company/branding settings.
+router.get('/pdf-template', requireRole('Admin'), (req, res) => {
+  res.json(getOfferPdfTemplate());
+});
+const uploadPdfTemplate = upload.fields([
+  { name: 'header_image', maxCount: 1 },
+  { name: 'footer_image', maxCount: 1 },
+  { name: 'cover_image', maxCount: 1 },
+]);
+router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res) => {
+  const current = getOfferPdfTemplate();
+  const files = req.files || {};
+  const update = {};
+  ['header', 'footer', 'cover'].forEach(piece => {
+    const uploaded = files[piece + '_image'] && files[piece + '_image'][0];
+    if (uploaded) {
+      const newPath = '/uploads/offers/' + uploaded.filename;
+      if (current[piece + '_image_path']) fs.unlink(path.join(__dirname, '..', 'public', current[piece + '_image_path']), () => {});
+      update[piece + '_image_path'] = newPath;
+    }
+    const activeField = piece + '_active';
+    if (req.body[activeField] !== undefined) {
+      update[activeField] = req.body[activeField] === 'true' || req.body[activeField] === true;
+    }
+  });
+  setOfferPdfTemplate(update);
+  res.json(getOfferPdfTemplate());
+});
+// Reset to the default letterhead - clears every uploaded override image
+// and switches all three pieces back off.
+router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
+  const current = getOfferPdfTemplate();
+  ['header_image_path', 'footer_image_path', 'cover_image_path'].forEach(f => {
+    if (current[f]) fs.unlink(path.join(__dirname, '..', 'public', current[f]), () => {});
+  });
+  setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
+  res.json(getOfferPdfTemplate());
 });
 
 // ===================== List / Detail =====================
