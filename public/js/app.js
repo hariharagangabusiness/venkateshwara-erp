@@ -2107,8 +2107,10 @@ function renderOfferTab(data) {
   if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer);
 }
 
-function renderScopeTab(el, data) {
+async function renderScopeTab(el, data) {
   const items = data.items;
+  const sectionTitles = await api('/offers/section-titles').catch(() => []);
+  window.__SECTION_TITLES = sectionTitles;
   el.innerHTML = `
     <table><thead><tr><th>Item</th><th>Section</th><th>Description</th><th>Picture</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
     <tbody>${items.map(it => `
@@ -2128,11 +2130,13 @@ function renderScopeTab(el, data) {
     <h4 id="it-form-title">Add Machinery / Scope Line</h4>
     <div class="form-grid">
       <div><label>Item Code</label><input id="it-code" placeholder="A / B / C"></div>
-      <div><label>Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
+      <div><label>Section Title (from library)</label><select id="it-section-select" onchange="applySectionTitleTemplate()"><option value="">- type a new one below -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
+      <div><label>Or type a new Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
       <div><label>Qty</label><input id="it-qty" type="number" value="1"></div>
       <div><label>Unit Price (₹)</label><input id="it-price" type="number" value="0"></div>
-      <div><label>Picture (optional)</label><input id="it-image" type="file" accept="image/*"></div>
+      <div><label>Picture (optional, overrides the library picture)</label><input id="it-image" type="file" accept="image/*"></div>
     </div>
+    <div id="it-image-preview" style="margin:6px 0;"></div>
     <label>Description</label>
     <textarea id="it-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
     <div style="margin-top:8px;">
@@ -2141,6 +2145,16 @@ function renderScopeTab(el, data) {
     </div>
   `;
 }
+window.applySectionTitleTemplate = () => {
+  const id = val('it-section-select');
+  const preview = document.getElementById('it-image-preview');
+  if (!id) { preview.innerHTML = ''; return; }
+  const lib = (window.__SECTION_TITLES || []).find(s => s.id === Number(id));
+  if (!lib) return;
+  document.getElementById('it-section').value = lib.title;
+  document.getElementById('it-desc').value = lib.description || '';
+  preview.innerHTML = lib.image_path ? `<img src="${esc(lib.image_path)}" style="max-height:80px;max-width:140px;"> <span class="muted">Library picture - will be used unless you upload your own above.</span>` : '';
+};
 let EDITING_OFFER_ITEM_ID = null;
 window.editOfferItem = async (itemId) => {
   const data = await api('/offers/' + CURRENT_OFFER_ID);
@@ -2172,6 +2186,7 @@ window.addOfferItem = async () => {
     fd.append('qty', val('it-qty'));
     fd.append('unit_price', val('it-price'));
     fd.append('revision_reason', reason || '');
+    if (val('it-section-select')) fd.append('section_title_id', val('it-section-select'));
     const fileInput = document.getElementById('it-image');
     if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
     let r;
@@ -4989,7 +5004,7 @@ window.toggleExpTrackerCategory = async (id, active) => {
 const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
 let OFFER_OPTIONS_TAB = 'application';
 PAGES['offer-options'] = async (el) => {
-  const all = await api('/offers/field-options');
+  const [all, sectionTitles] = await Promise.all([api('/offers/field-options'), api('/offers/section-titles')]);
   const rows = all.filter(o => o.field_name === OFFER_OPTIONS_TAB);
   el.innerHTML = `
     <div class="panel">
@@ -5007,6 +5022,28 @@ PAGES['offer-options'] = async (el) => {
           <td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>
         </tr>`).join('') || '<tr><td colspan="4" class="empty">No options yet.</td></tr>'}
       </tbody></table>
+    </div>
+    <div class="panel"><h3>Section Title Library</h3>
+      <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on an offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time.</p>
+      <table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th><th></th></tr></thead><tbody>
+        ${sectionTitles.map(s => `<tr>
+          <td>${esc(s.title)}</td>
+          <td style="white-space:pre-wrap;max-width:220px;">${esc(s.description)||'-'}</td>
+          <td style="max-width:180px;">${esc(s.summary)||'-'}</td>
+          <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
+          <td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>
+        </tr>`).join('') || '<tr><td colspan="5" class="empty">No section titles yet.</td></tr>'}
+      </tbody></table>
+      <h4>Add Section Title</h4>
+      <div class="form-grid">
+        <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
+        <div><label>Summary</label><input id="stl-summary" placeholder="Short reference note"></div>
+        <div><label>Picture (optional)</label><input id="stl-image" type="file" accept="image/*"></div>
+      </div>
+      <label>Description</label>
+      <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+      <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
+      <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>`;
 };
 window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
@@ -5019,6 +5056,25 @@ window.addOfferOption = async () => {
 window.editOfferOption = async (id, field, value) => {
   try { await api('/offers/field-options/' + id, { method: 'PUT', body: JSON.stringify({ [field]: value }) }); navigate('offer-options'); }
   catch (e) { alert(e.message); navigate('offer-options'); }
+};
+window.addSectionTitle = async () => {
+  const errEl = document.getElementById('stl-err');
+  errEl.style.display = 'none';
+  try {
+    const fd = new FormData();
+    fd.append('title', val('stl-title'));
+    fd.append('description', val('stl-desc'));
+    fd.append('summary', val('stl-summary'));
+    const fileInput = document.getElementById('stl-image');
+    if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
+    await apiUpload('/offers/section-titles', fd, 'POST');
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteSectionTitle = async (id) => {
+  if (!confirm('Delete this section title from the library?')) return;
+  try { await api('/offers/section-titles/' + id, { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
 };
 
 // ---- Bank Guarantee Dashboard (Round 16) ----

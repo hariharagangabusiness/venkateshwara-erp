@@ -25,6 +25,20 @@ const upload = multer({
 
 function offerPerm() { return requirePermission('sales_order.manage', 'lead.manage'); }
 
+// A scope line picked from the Section Title library needs its own copy of
+// the library's picture, not a shared reference to it - editing/deleting an
+// offer_items row already unlinks its image_path from disk (see PUT/DELETE
+// /:id/items/:itemId below), which would otherwise take the library's own
+// picture out from under every other line and the library entry itself.
+function copyLibraryImage(libraryImagePath) {
+  if (!libraryImagePath) return null;
+  const srcAbs = path.join(__dirname, '..', 'public', libraryImagePath);
+  if (!fs.existsSync(srcAbs)) return null;
+  const destName = Date.now() + '-libcopy' + path.extname(libraryImagePath);
+  fs.copyFileSync(srcAbs, path.join(uploadDir, destName));
+  return '/uploads/offers/' + destName;
+}
+
 // ===================== Admin-editable dropdown options =====================
 // Application / Type of System / Material of Construction - one generic
 // table for all three fields (see db/index.js Round 21). Values are never
@@ -64,6 +78,57 @@ router.put('/field-options/:id', requirePermission('offer_options.manage'), (req
     active !== undefined ? (active ? 1 : 0) : existing.active,
     existing.id
   );
+  res.json({ ok: true });
+});
+
+// ===================== Section Title library =====================
+// Admin-managed catalog (title + description + summary + picture) the Offer
+// Builder's "Add Machinery / Scope Line" form picks from to auto-fill the
+// line's description/image. Entries are hard-deletable (unlike the
+// field-options above) since offer_items copies the text/image at the time
+// a line is added rather than referencing this table by id - nothing on an
+// existing offer breaks if a library entry is later edited or removed.
+router.get('/section-titles', offerPerm(), (req, res) => {
+  res.json(db.prepare('SELECT * FROM section_title_library ORDER BY title').all());
+});
+router.post('/section-titles', requirePermission('offer_options.manage'), upload.single('image'), (req, res) => {
+  const { title, description, summary } = req.body;
+  if (!String(title || '').trim()) return res.status(400).json({ error: 'Enter a title.' });
+  const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
+  try {
+    const info = db.prepare(`INSERT INTO section_title_library (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
+      .run(title.trim(), description || null, summary || null, imagePath, req.user.id);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: 'That section title already exists in the library.' });
+  }
+});
+router.put('/section-titles/:id', requirePermission('offer_options.manage'), upload.single('image'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { title, description, summary } = req.body;
+  let imagePath = existing.image_path;
+  if (req.file) {
+    imagePath = '/uploads/offers/' + req.file.filename;
+    if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+  }
+  try {
+    db.prepare(`UPDATE section_title_library SET title=?, description=?, summary=?, image_path=? WHERE id=?`).run(
+      title !== undefined ? title.trim() : existing.title,
+      description !== undefined ? description : existing.description,
+      summary !== undefined ? summary : existing.summary,
+      imagePath, existing.id
+    );
+    res.json({ ok: true, image_path: imagePath });
+  } catch (e) {
+    res.status(400).json({ error: 'That section title already exists in the library.' });
+  }
+});
+router.delete('/section-titles/:id', requirePermission('offer_options.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+  db.prepare('DELETE FROM section_title_library WHERE id = ?').run(existing.id);
   res.json({ ok: true });
 });
 
@@ -193,10 +258,17 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason } = req.body;
+  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
   const q = Number(qty || 1), rate = Number(unit_price || 0);
-  const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
+  let imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
+  // No file uploaded by hand, but a library entry was picked and it has a
+  // picture on file - a browser can't pre-fill a file input for security
+  // reasons, so this is how the picture actually carries over.
+  if (!imagePath && section_title_id) {
+    const lib = db.prepare('SELECT image_path FROM section_title_library WHERE id = ?').get(section_title_id);
+    if (lib) imagePath = copyLibraryImage(lib.image_path);
+  }
   const info = db.prepare(`
     INSERT INTO offer_items (offer_id, item_code, section_title, description, image_path, qty, unit_price, total_price, sort_order)
     VALUES (?,?,?,?,?,?,?,?,?)
@@ -205,7 +277,7 @@ router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason } = req.body;
+  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
@@ -219,6 +291,17 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res)
     // earlier version needs it to keep existing.
     if (existing.image_path && !version.forked) {
       fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+    }
+  } else if (section_title_id) {
+    // Same "no manual file, but a library entry was picked" fallback as
+    // create - gets its own fresh copy, same unlink-the-old-one rule as above.
+    const lib = db.prepare('SELECT image_path FROM section_title_library WHERE id = ?').get(section_title_id);
+    const copied = lib ? copyLibraryImage(lib.image_path) : null;
+    if (copied) {
+      if (existing.image_path && !version.forked) {
+        fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+      }
+      imagePath = copied;
     }
   }
   db.prepare(`
