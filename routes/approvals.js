@@ -43,7 +43,7 @@ function describeEntity(entityType, entityId) {
     }
     case 'purchase_request': {
       const r = db.prepare(`
-        SELECT pr.pr_no as ref, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
+        SELECT pr.pr_no as ref, pr.approval_id as approval_id, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
         FROM purchase_requests pr LEFT JOIN users u ON u.id = pr.raised_by
         LEFT JOIN departments d ON d.id = u.department_id WHERE pr.id = ?`).get(entityId);
       if (!r) return {};
@@ -52,7 +52,25 @@ function describeEntity(entityType, entityId) {
         LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
       `).all(entityId);
       const summary = lines.length > 1 ? `${lines[0].name || 'Item'} +${lines.length - 1} more` : ((lines[0] && lines[0].name) || 'Purchase request');
-      return { ref: r.ref, summary, department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name };
+      // A PR under review right now can still carry a prior rejection from
+      // an earlier, already-superseded approval cycle (see
+      // POST /requests/:id/resubmit) - the approver reviewing it again
+      // benefits from seeing why it bounced last time and who rejected it,
+      // without leaving the queue to dig through the PR's own page.
+      // Deliberately excludes the CURRENT cycle (r.approval_id) so this
+      // only ever shows genuinely prior, closed-out history.
+      const prior = db.prepare(`
+        SELECT aa.comment, ru.full_name as rejected_by_name
+        FROM approval_actions aa
+        JOIN approvals ap ON ap.id = aa.approval_id
+        LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE ap.entity_type = 'purchase_request' AND ap.entity_id = ? AND aa.action = 'Rejected' AND ap.id != COALESCE(?, 0)
+        ORDER BY aa.acted_at DESC LIMIT 1
+      `).get(entityId, r.approval_id);
+      return {
+        ref: r.ref, summary, department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+        is_resubmission: !!prior, prior_rejection_reason: prior ? prior.comment : null, prior_rejected_by_name: prior ? prior.rejected_by_name : null,
+      };
     }
     case 'salary_advance': {
       const r = db.prepare(`
