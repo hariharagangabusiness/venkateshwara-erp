@@ -716,11 +716,52 @@ const MIGRATIONS = [
   `ALTER TABLE sales_orders ADD COLUMN pbg_amount REAL`,
   `ALTER TABLE sales_orders ADD COLUMN pbg_validity_days INTEGER`,
   `ALTER TABLE sales_orders ADD COLUMN bg_terms_notes TEXT`,
+  // ---- Round 40: Offer immutability. Set once an offer is converted to a
+  // Sales Order (routes/offers.js POST /:id/confirm) - the schema.sql
+  // triggers below (and the app-level guard in lib/offerVersioning.js) both
+  // refuse any further UPDATE/DELETE/INSERT against a locked offer or its
+  // items/tech-specs/bought-out/terms, short of an Admin-only, audited
+  // unlock (POST /:id/unlock). Whether conversion sets this flag at all is
+  // itself an admin-editable, easily reversible setting - see
+  // lib/settings.js's getOfferGovernanceSettings().
+  `ALTER TABLE offers ADD COLUMN locked INTEGER DEFAULT 0`,
+  `ALTER TABLE offers ADD COLUMN locked_at TEXT`,
+  `ALTER TABLE offers ADD COLUMN locked_reason TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
+}
+
+// ---- Round 40: Offer immutability - child-table triggers ----
+// offers' own two triggers live in schema.sql; these four child tables all
+// follow the exact same shape (block UPDATE/DELETE on an existing row, and
+// INSERT of a new one, once the parent offer is locked), so they're
+// generated here instead of hand-repeating 12 near-identical blocks of SQL.
+// Placed after the MIGRATIONS loop above (not immediately after schema.sql)
+// because these triggers' bodies reference offers.locked, which the
+// migration just added - CREATE TRIGGER resolves that column reference at
+// creation time, so the column must already exist.
+for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms']) {
+  raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_update
+    BEFORE UPDATE ON ${table}
+    WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
+    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+  `);
+  raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_delete
+    BEFORE DELETE ON ${table}
+    WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
+    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+  `);
+  raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_insert
+    BEFORE INSERT ON ${table}
+    WHEN (SELECT locked FROM offers WHERE id = NEW.offer_id) = 1
+    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+  `);
 }
 
 // ---- Round 14: Duplicate-prevention UNIQUE indexes ----
@@ -865,6 +906,19 @@ raw.exec(`
     });
   }
 }
+
+// Round 40: offer_options.manage (Section Title library images/descriptions,
+// dropdown field options) used to be granted to Sales, letting a non-admin
+// edit master template controls - db/seed.js only runs on a brand-new
+// database, so a carried-forward DB needs this explicit one-time revoke to
+// actually lose the grant. Deleting an already-absent row is a harmless
+// no-op, so this is safe to run on every boot.
+try {
+  raw.exec(`
+    DELETE FROM role_permissions WHERE role_id = (SELECT id FROM roles WHERE name = 'Sales')
+      AND permission_id = (SELECT id FROM permissions WHERE code = 'offer_options.manage')
+  `);
+} catch (e) {}
 
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
