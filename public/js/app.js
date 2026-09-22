@@ -5004,7 +5004,10 @@ window.toggleExpTrackerCategory = async (id, active) => {
 const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
 let OFFER_OPTIONS_TAB = 'application';
 PAGES['offer-options'] = async (el) => {
-  const [all, sectionTitles] = await Promise.all([api('/offers/field-options'), api('/offers/section-titles')]);
+  const [all, sectionTitles, pdfTemplate] = await Promise.all([
+    api('/offers/field-options'), api('/offers/section-titles'),
+    api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
+  ]);
   const rows = all.filter(o => o.field_name === OFFER_OPTIONS_TAB);
   el.innerHTML = `
     <div class="panel">
@@ -5044,7 +5047,23 @@ PAGES['offer-options'] = async (el) => {
       <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
       <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
       <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>`;
+    </div>
+    ${pdfTemplate ? `<div class="panel"><h3>Offer PDF Template (Optional Override)</h3>
+      <p class="muted">Offers use the built-in letterhead by default. Upload a header, footer and/or cover page image below and check "Active" to override just that piece - anything left unchecked keeps using the default, pixel-matched letterhead. Checking "Active" with no image uploaded (yet) has no effect.</p>
+      <table><thead><tr><th>Piece</th><th>Current</th><th>Active</th><th>Upload New</th></tr></thead><tbody>
+        ${['header', 'footer', 'cover'].map(piece => `<tr>
+          <td style="text-transform:capitalize;">${piece}</td>
+          <td>${pdfTemplate[piece + '_image_path'] ? `<img src="${esc(pdfTemplate[piece + '_image_path'])}" style="max-height:40px;max-width:120px;">` : '<span class="muted">Default (built-in)</span>'}</td>
+          <td><input type="checkbox" id="pt-${piece}-active" ${pdfTemplate[piece + '_active'] ? 'checked' : ''}></td>
+          <td><input type="file" id="pt-${piece}-file" accept="image/*"></td>
+        </tr>`).join('')}
+      </tbody></table>
+      <div style="margin-top:8px;">
+        <button class="btn" onclick="savePdfTemplate()">Save Template Settings</button>
+        <button class="btn outline" onclick="resetPdfTemplate()">Reset All to Default</button>
+      </div>
+      <div id="pt-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>` : ''}`;
 };
 window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
 window.addOfferOption = async () => {
@@ -5074,6 +5093,25 @@ window.addSectionTitle = async () => {
 window.deleteSectionTitle = async (id) => {
   if (!confirm('Delete this section title from the library?')) return;
   try { await api('/offers/section-titles/' + id, { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.savePdfTemplate = async () => {
+  const errEl = document.getElementById('pt-err');
+  errEl.style.display = 'none';
+  try {
+    const fd = new FormData();
+    ['header', 'footer', 'cover'].forEach(piece => {
+      fd.append(piece + '_active', document.getElementById(`pt-${piece}-active`).checked);
+      const fileEl = document.getElementById(`pt-${piece}-file`);
+      if (fileEl.files[0]) fd.append(piece + '_image', fileEl.files[0]);
+    });
+    await apiUpload('/offers/pdf-template', fd, 'POST');
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.resetPdfTemplate = async () => {
+  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images.')) return;
+  try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
 
