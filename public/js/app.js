@@ -3188,6 +3188,13 @@ PAGES['purchase-orders'] = async (el) => {
       <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
       <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Create PO</button>
     </div>
+    <div class="panel"><h3>Bulk Import Open POs</h3>
+      <p class="muted">Bring in orders already open with a vendor before this system was used - each row becomes a real PO you can then receive, edit, cancel, or print, same as one created here. Vendor names not on file are added automatically; items are matched by Item Code or barcode.</p>
+      <button class="btn outline" type="button" onclick="downloadPOImportTemplate()">Download Template</button>
+      ${bulkUploadPanelHTML('po-upload-file')}
+      <button class="btn" onclick="uploadPOImportTemplate()" style="margin-top:6px;">Upload Filled Template</button>
+      <div id="po-upload-result" style="margin-top:10px;"></div>
+    </div>
     <div class="panel"><h3 id="po-count">Purchase Orders (${orders.length})</h3>
       ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
         document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
@@ -3270,6 +3277,8 @@ window.togglePOHistory = async (id) => {
       : '<p class="muted">No edits or cancellation recorded for this order yet.</p>';
   }
 };
+window.downloadPOImportTemplate = () => downloadTemplateFile('/purchase/orders/import-template', 'open_po_import_template.xlsx');
+window.uploadPOImportTemplate = () => uploadTemplateFile('/purchase/orders/bulk-upload', 'po-upload-file', 'po-upload-result', () => navigate('purchase-orders'));
 window.downloadPoPdf = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/pdf`, `${poNo}.pdf`);
 window.downloadPoDocx = (id, poNo) => downloadTemplateFile(`/purchase/orders/${id}/docx`, `${poNo}.docx`);
 window.emailPo = async (id) => {

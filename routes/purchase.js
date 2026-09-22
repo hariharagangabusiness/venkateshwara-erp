@@ -464,6 +464,92 @@ router.get('/orders/:id/audit-log', (req, res) => {
   `).all(req.params.id));
 });
 
+// ---- Bulk import existing/legacy Open POs (Excel) ----
+// No real legacy-ERP export format was specified, so this mirrors the
+// established stock-movements bulk-upload pattern: a downloadable template,
+// per-row validation that skips-and-reports rather than fails the whole
+// file, and vendor/item resolution by name/code so the import doesn't
+// require knowing this system's internal ids. Every imported row lands as
+// a real purchase_orders row (status defaults to Open, i.e. "not yet
+// received") so it behaves identically to a PO raised natively - GRN
+// receive, edit, cancel, PDF/Word/email all just work on it afterwards.
+const PO_IMPORT_STATUSES = ['Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled'];
+const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date'];
+router.get('/orders/import-template', requirePermission('purchase_order.manage'), (req, res) => {
+  const exampleRow = {
+    po_no: 'PO-LEGACY-1024', vendor_name: 'Acme Steel Traders', item_code_or_barcode: 'ITM-1001', quantity: 50, rate: 250,
+    hsn_code: '7208', gst_rate: 18, delivery_date: '2025-06-30', terms: 'Standard terms apply', status: 'Open', po_date: '2025-04-01',
+  };
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: PO_IMPORT_COLUMNS });
+  XLSX.utils.book_append_sheet(wb, ws, 'OpenPOs');
+  const note = XLSX.utils.aoa_to_sheet([['Notes'],
+    ['po_no is optional - leave blank to auto-generate one; if supplied it must not already exist in this system.'],
+    ['vendor_name is matched against Vendor Master by name (case-insensitive) - an unmatched name creates a new vendor automatically.'],
+    ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.'],
+    ['status is optional (defaults to Open) - one of: ' + PO_IMPORT_STATUSES.join(', ') + '.'],
+    ['po_date is optional (defaults to today) - the order\'s original date, so imported history sorts correctly.'],
+  ]);
+  XLSX.utils.book_append_sheet(wb, note, 'Notes');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', 'attachment; filename="open_po_import_template.xlsx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), uploadMemory.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  let rows;
+  try {
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+  } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
+  const findItem = db.prepare('SELECT * FROM items WHERE item_code = ? OR barcode = ?');
+  const findVendorByName = db.prepare('SELECT * FROM vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
+  const findPoByNo = db.prepare('SELECT id FROM purchase_orders WHERE po_no = ?');
+  const insertVendor = db.prepare(`INSERT INTO vendors (name, legal_name, status) VALUES (?, ?, 'Active')`);
+  const insertPO = db.prepare(`
+    INSERT INTO purchase_orders (po_no, vendor_id, item_id, quantity, rate, total_value, status, created_by,
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `);
+  let inserted = 0; const errors = [];
+  rows.forEach((row, i) => {
+    const rowNum = i + 2;
+    const vendorName = String(row.vendor_name || '').trim();
+    if (!vendorName) { errors.push(`Row ${rowNum}: vendor_name is required - skipped.`); return; }
+    const itemKey = String(row.item_code_or_barcode || '').trim();
+    if (!itemKey) { errors.push(`Row ${rowNum}: item_code_or_barcode is required - skipped.`); return; }
+    const item = findItem.get(itemKey, itemKey);
+    if (!item) { errors.push(`Row ${rowNum}: no item matches "${itemKey}" - skipped.`); return; }
+    const qty = Number(row.quantity) || 0;
+    if (qty <= 0) { errors.push(`Row ${rowNum}: quantity must be greater than 0 - skipped.`); return; }
+    const rate = Number(row.rate) || 0;
+    if (rate <= 0) { errors.push(`Row ${rowNum}: rate must be greater than 0 - skipped.`); return; }
+    let poNo = String(row.po_no || '').trim() || ('PO-' + Date.now() + '-' + rowNum);
+    if (findPoByNo.get(poNo)) { errors.push(`Row ${rowNum}: PO number "${poNo}" already exists - skipped.`); return; }
+    let status = String(row.status || '').trim();
+    status = PO_IMPORT_STATUSES.includes(status) ? status : 'Open';
+    let vendor = findVendorByName.get(vendorName);
+    if (!vendor) {
+      const info = insertVendor.run(vendorName, vendorName);
+      vendor = { id: info.lastInsertRowid };
+    }
+    const gstRate = row.gst_rate !== '' && row.gst_rate !== undefined ? Number(row.gst_rate) : 18;
+    const total = qty * rate;
+    const gstAmount = total * (gstRate || 0) / 100;
+    // Match SQLite's own CURRENT_TIMESTAMP format ('YYYY-MM-DD HH:MM:SS') so
+    // an imported row sorts/compares consistently against natively-created
+    // ones rather than mixing in ISO8601 with a 'T'/'Z'.
+    const poDate = String(row.po_date || '').trim();
+    const createdAt = poDate ? poDate + ' 00:00:00' : new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    insertPO.run(poNo, vendor.id, item.id, qty, rate, total, status, req.user.id,
+      String(row.hsn_code || '') || null, gstRate, gstAmount, String(row.terms || '') || null,
+      String(row.delivery_date || '') || null, createdAt);
+    inserted++;
+  });
+  res.json({ inserted, skipped: errors.length, errors });
+});
+
 // ---- Store: GRN receive & issue to production ----
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   const { item_id, quantity, po_id, project_id } = req.body;
