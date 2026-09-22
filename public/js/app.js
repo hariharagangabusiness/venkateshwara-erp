@@ -5206,16 +5206,90 @@ PAGES['offer-options'] = async (el) => {
         ${['header', 'footer', 'cover'].map(piece => `<tr>
           <td style="text-transform:capitalize;">${piece}</td>
           <td>${pdfTemplate[piece + '_image_path'] ? `<img src="${esc(pdfTemplate[piece + '_image_path'])}" style="max-height:40px;max-width:120px;">` : '<span class="muted">Default (built-in)</span>'}</td>
-          <td><input type="checkbox" id="pt-${piece}-active" ${pdfTemplate[piece + '_active'] ? 'checked' : ''}></td>
+          <td><input type="checkbox" id="pt-${piece}-active" onchange="pdfTemplateExclusive('${piece}','image')" ${pdfTemplate[piece + '_active'] ? 'checked' : ''}></td>
           <td><input type="file" id="pt-${piece}-file" accept="image/*"></td>
         </tr>`).join('')}
       </tbody></table>
-      <div style="margin-top:8px;">
+
+      <h4 style="margin-top:18px;">Word Cover Page (.docx)</h4>
+      <p class="muted">Upload a Word document to use as the offer's cover page instead of a picture - it's parsed and merged in as page 1 of the generated PDF, images and all. Takes priority over the Cover image above when both are active.</p>
+      <div class="form-grid">
+        <div><label>Current</label><div>${pdfTemplate.cover_docx_path ? `<a href="${esc(pdfTemplate.cover_docx_path)}" target="_blank">Uploaded document</a>` : '<span class="muted">None uploaded</span>'}</div></div>
+        <div><label>Upload New (.docx)</label><input type="file" id="pt-cover-docx-file" accept=".docx"></div>
+        <div><label>Active</label><input type="checkbox" id="pt-cover-docx-active" onchange="pdfTemplateExclusive('cover','docx')" ${pdfTemplate.cover_docx_active ? 'checked' : ''}></div>
+      </div>
+
+      <h4 style="margin-top:18px;">Rich-Text Header &amp; Footer</h4>
+      <p class="muted">Format custom header/footer text (notes, disclaimers, metadata) with full styling controls - it's rendered on every page of the PDF. Takes priority over the Header/Footer image above when both are active.</p>
+      ${['header', 'footer'].map(piece => `
+      <div style="margin-top:10px;">
+        <label style="text-transform:capitalize;">${piece} Text</label>
+        <div class="rt-toolbar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0;">
+          <select onchange="richTextExec('rt-${piece}','fontName', this.value)">
+            <option value="Calibri">Calibri</option>
+            <option value="Arial">Arial</option>
+            <option value="'Times New Roman'">Times New Roman</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Verdana">Verdana</option>
+          </select>
+          <select onchange="richTextSetFontSize('rt-${piece}', this.value)">
+            <option value="8">8px</option>
+            <option value="9">9px</option>
+            <option value="10" selected>10px</option>
+            <option value="12">12px</option>
+            <option value="14">14px</option>
+            <option value="18">18px</option>
+            <option value="24">24px</option>
+          </select>
+          <input type="color" title="Text color" value="#000000" onchange="richTextExec('rt-${piece}','foreColor', this.value)">
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','bold')"><b>B</b></button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','italic')"><i>I</i></button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','underline')"><u>U</u></button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyLeft')">Left</button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyCenter')">Center</button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyRight')">Right</button>
+          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyFull')">Justify</button>
+        </div>
+        <div id="rt-${piece}" class="rt-editor" contenteditable="true" style="border:1px solid var(--border);min-height:60px;padding:8px;border-radius:5px;font-family:Calibri,Arial,sans-serif;">${pdfTemplate[piece + '_richtext'] || ''}</div>
+        <label style="display:block;margin-top:4px;"><input type="checkbox" id="pt-${piece}-richtext-active" onchange="pdfTemplateExclusive('${piece}','richtext')" ${pdfTemplate[piece + '_richtext_active'] ? 'checked' : ''}> Active</label>
+      </div>`).join('')}
+
+      <div style="margin-top:14px;">
         <button class="btn" onclick="savePdfTemplate()">Save Template Settings</button>
         <button class="btn outline" onclick="resetPdfTemplate()">Reset All to Default</button>
       </div>
       <div id="pt-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>` : ''}`;
+};
+// Only one source (image / docx / rich-text) makes sense active at a time
+// per piece - checking one here unchecks the others for that same piece,
+// so the saved precedence in lib/offerPdf.js never surprises the admin.
+window.pdfTemplateExclusive = (piece, source) => {
+  const boxes = {
+    image: document.getElementById(`pt-${piece}-active`),
+    docx: piece === 'cover' ? document.getElementById('pt-cover-docx-active') : null,
+    richtext: piece !== 'cover' ? document.getElementById(`pt-${piece}-richtext-active`) : null,
+  };
+  const justChecked = boxes[source];
+  if (!justChecked || !justChecked.checked) return;
+  Object.entries(boxes).forEach(([key, box]) => { if (box && key !== source) box.checked = false; });
+};
+window.richTextExec = (editorId, cmd, value) => {
+  document.getElementById(editorId).focus();
+  document.execCommand(cmd, false, value);
+};
+// execCommand('fontSize') only accepts the legacy 1-7 HTML size scale, not
+// pixel values - the standard workaround is to apply the largest scale (7,
+// so it's unambiguous to find again) then replace the resulting <font
+// size="7"> elements' size attribute with a real inline pixel size.
+window.richTextSetFontSize = (editorId, px) => {
+  const ed = document.getElementById(editorId);
+  ed.focus();
+  document.execCommand('fontSize', false, '7');
+  ed.querySelectorAll('font[size="7"]').forEach(f => {
+    f.removeAttribute('size');
+    f.style.fontSize = px + 'px';
+  });
 };
 window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
 window.addOfferOption = async () => {
@@ -5257,12 +5331,19 @@ window.savePdfTemplate = async () => {
       const fileEl = document.getElementById(`pt-${piece}-file`);
       if (fileEl.files[0]) fd.append(piece + '_image', fileEl.files[0]);
     });
+    const docxFileEl = document.getElementById('pt-cover-docx-file');
+    if (docxFileEl.files[0]) fd.append('cover_docx', docxFileEl.files[0]);
+    fd.append('cover_docx_active', document.getElementById('pt-cover-docx-active').checked);
+    ['header', 'footer'].forEach(piece => {
+      fd.append(piece + '_richtext', document.getElementById(`rt-${piece}`).innerHTML);
+      fd.append(piece + '_richtext_active', document.getElementById(`pt-${piece}-richtext-active`).checked);
+    });
     await apiUpload('/offers/pdf-template', fd, 'POST');
     navigate('offer-options');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.resetPdfTemplate = async () => {
-  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images.')) return;
+  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images, the uploaded Word cover page, and the rich-text header/footer.')) return;
   try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };

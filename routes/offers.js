@@ -147,7 +147,16 @@ const uploadPdfTemplate = upload.fields([
   { name: 'header_image', maxCount: 1 },
   { name: 'footer_image', maxCount: 1 },
   { name: 'cover_image', maxCount: 1 },
+  { name: 'cover_docx', maxCount: 1 },
 ]);
+// Rich-text header/footer HTML comes from a contenteditable toolbar
+// (public/js/app.js) that only ever runs execCommand/DOM APIs against its
+// own editor - it can't itself produce a <script> tag, but this strips one
+// anyway as a defense-in-depth floor before the HTML is stored and later
+// injected as-is into the PDF's header/footer template.
+function stripScriptTags(html) {
+  return String(html || '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+}
 router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res) => {
   const current = getOfferPdfTemplate();
   const files = req.files || {};
@@ -164,14 +173,43 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
       update[activeField] = req.body[activeField] === 'true' || req.body[activeField] === true;
     }
   });
+
+  // Word cover page (.docx) - a separate upload slot from cover_image above;
+  // lib/offerPdf.js's coverPage() parses it via mammoth at render time.
+  const docxFile = files.cover_docx && files.cover_docx[0];
+  if (docxFile) {
+    if (!/\.docx$/i.test(docxFile.originalname)) {
+      fs.unlink(docxFile.path, () => {});
+      return res.status(400).json({ error: 'Cover page upload must be a .docx file.' });
+    }
+    if (current.cover_docx_path) fs.unlink(path.join(__dirname, '..', 'public', current.cover_docx_path), () => {});
+    update.cover_docx_path = '/uploads/offers/' + docxFile.filename;
+  }
+  if (req.body.cover_docx_active !== undefined) {
+    update.cover_docx_active = req.body.cover_docx_active === 'true' || req.body.cover_docx_active === true;
+  }
+
+  // Rich-text header/footer overrides - formatted HTML from the toolbar,
+  // stored as-is (Admin-only input) and injected directly into the PDF's
+  // header/footer template by lib/offerPdf.js.
+  ['header', 'footer'].forEach(piece => {
+    const field = piece + '_richtext';
+    if (req.body[field] !== undefined) update[field] = stripScriptTags(req.body[field]);
+    const activeField = field + '_active';
+    if (req.body[activeField] !== undefined) {
+      update[activeField] = req.body[activeField] === 'true' || req.body[activeField] === true;
+    }
+  });
+
   setOfferPdfTemplate(update);
   res.json(getOfferPdfTemplate());
 });
-// Reset to the default letterhead - clears every uploaded override image
-// and switches all three pieces back off.
+// Reset to the default letterhead - clears every uploaded override image,
+// the uploaded Word cover page, and the rich-text header/footer, switching
+// every piece back off.
 router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   const current = getOfferPdfTemplate();
-  ['header_image_path', 'footer_image_path', 'cover_image_path'].forEach(f => {
+  ['header_image_path', 'footer_image_path', 'cover_image_path', 'cover_docx_path'].forEach(f => {
     if (current[f]) fs.unlink(path.join(__dirname, '..', 'public', current[f]), () => {});
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
