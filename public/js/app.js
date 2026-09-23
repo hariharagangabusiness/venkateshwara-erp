@@ -3294,13 +3294,13 @@ function renderPRRows(rows) {
         ${['Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
-        ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
+        <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
         <button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>
       </td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
-    ${r.quotes_required ? `<tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>` : ''}`);
+    <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>`);
 }
 window.provideInfoPR = async (id) => {
   const comment = prompt('Response to the reviewer (optional):');
@@ -3355,6 +3355,7 @@ window.togglePRQuotes = (id) => {
   row.style.display = showing ? 'none' : '';
   if (!showing) renderPRQuotesPanel(id);
 };
+const PR_QUOTES_LINES_CACHE = {};
 async function renderPRQuotesPanel(prId) {
   const container = document.getElementById('pr-quotes-' + prId);
   const pr = (window.__PR_CACHE || []).find(r => r.id === prId);
@@ -3362,6 +3363,7 @@ async function renderPRQuotesPanel(prId) {
     api(`/purchase/requests/${prId}/quotes`),
     api(`/purchase/requests/${prId}/items`).catch(() => []),
   ]);
+  PR_QUOTES_LINES_CACHE[prId] = lines;
   // Suggest vendors across every line's item category, merged/deduped -
   // a multi-item PR can span more than one vendor category.
   const itemIds = [...new Set(lines.map(l => l.item_id).filter(Boolean))];
@@ -3370,12 +3372,18 @@ async function renderPRQuotesPanel(prId) {
   vendorResults.forEach(r => (r.vendors || []).forEach(v => vendorMap.set(v.id, v)));
   const vendors = [...vendorMap.values()];
   const canSubmit = quotes.length >= 2 && pr && pr.status === 'PendingQuotes';
+  const lineLabel = l => esc(l.item_name || l.item_text || 'Item') + ` (Qty: ${l.quantity}${l.item_unit ? ' ' + esc(l.item_unit) : ''})`;
   container.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
-      ${tableHTML(['Vendor', 'Quoted Amount', 'File', 'Notes', 'Selected', ''], quotes, q => `
+      ${tableHTML(['Vendor', 'Line Item', 'Quoted Amount', 'Qty Offered', 'Payment Terms', 'Delivery Commit', 'File', 'Notes', 'Selected', ''], quotes, q => `
         <tr>
-          <td>${esc(q.vendor_name)}</td><td>₹${fmt(q.quoted_amount)}</td>
+          <td>${esc(q.vendor_name)}</td>
+          <td>${q.purchase_request_item_id ? esc(q.pr_item_name || q.pr_item_text || 'Item') : '<span class="muted">Whole PR</span>'}</td>
+          <td>₹${fmt(q.quoted_amount)}</td>
+          <td>${q.quoted_qty != null ? q.quoted_qty : '-'}</td>
+          <td>${esc(q.payment_terms)||'-'}</td>
+          <td>${q.delivery_commit_date ? esc(q.delivery_commit_date) : '-'}</td>
           <td>${q.quote_file_path ? `<a href="${esc(q.quote_file_path)}" target="_blank">View</a>` : '-'}</td>
           <td>${esc(q.notes)||''}</td>
           <td>${q.is_selected ? '✓' : ''}</td>
@@ -3386,14 +3394,78 @@ async function renderPRQuotesPanel(prId) {
         </tr>`)}
       <div class="form-grid" style="margin-top:10px;">
         <div><label>Vendor</label><select id="prq-vendor-${prId}">${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No vendors -</option>'}</select></div>
+        <div><label>Line Item (optional)</label><select id="prq-item-${prId}"><option value="">- Whole PR (lump sum) -</option>${lines.map(l => `<option value="${l.id}">${lineLabel(l)}</option>`).join('')}</select></div>
         <div><label>Quoted Amount (₹)</label><input id="prq-amount-${prId}" type="number"></div>
+        <div><label>Qty Offered</label><input id="prq-qty-${prId}" type="number"></div>
+        <div><label>Payment Terms</label><input id="prq-terms-${prId}" placeholder="e.g. Net 30"></div>
+        <div><label>Delivery Commit</label><input id="prq-delivery-${prId}" type="date"></div>
         <div><label>Quote File</label><input id="prq-file-${prId}" type="file"></div>
         <div><label>Notes</label><input id="prq-notes-${prId}"></div>
       </div>
       <button class="btn small" type="button" onclick="addPRQuote(${prId})" ${!vendors.length ? 'disabled' : ''}>Add Quote</button>
-      <button class="btn" type="button" style="margin-left:10px;" onclick="submitPRForApproval(${prId})" ${canSubmit ? '' : 'disabled'}>Submit for Approval</button>
-      ${!canSubmit && pr && pr.status === 'PendingQuotes' ? `<span class="muted" style="margin-left:8px;">Need at least 2 quotes (have ${quotes.length}).</span>` : ''}
+      ${pr && pr.quotes_required ? `<button class="btn" type="button" style="margin-left:10px;" onclick="submitPRForApproval(${prId})" ${canSubmit ? '' : 'disabled'}>Submit for Approval</button>
+      ${!canSubmit && pr.status === 'PendingQuotes' ? `<span class="muted" style="margin-left:8px;">Need at least 2 quotes (have ${quotes.length}).</span>` : ''}` : ''}
+    </div>
+    <div style="padding:10px;background:#f4f8fb;border-radius:6px;margin-top:10px;">
+      <h4 style="margin:0 0 8px;">Request for Quotation (RFQ)</h4>
+      <p class="muted" style="margin-top:0;">Select line items and vendors, then edit and send an RFQ email. A vendor's reply still comes back by phone/email outside the system - type it in as a quote above once you have it.</p>
+      <div style="margin-bottom:8px;"><b>Line Items</b><br>
+        ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
+      </div>
+      <div style="margin-bottom:8px;"><b>Vendors</b><br>
+        ${vendors.map(v => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-vendor-cb-${prId}" value="${v.id}"> ${esc(v.name)}${!v.po_email && !v.email ? ' <span class="muted">(no email on file)</span>' : ''}</label>`).join('') || '<span class="muted">No suggested vendors - add one in Vendor Master.</span>'}
+      </div>
+      <button class="btn small outline" type="button" onclick="loadRFQTemplate(${prId})">Load Default Template</button>
+      <div class="form-grid" style="margin-top:8px;">
+        <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
+        <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10" style="width:100%;"></textarea></div>
+      </div>
+      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!vendors.length || !lines.length ? 'disabled' : ''}>Send RFQ</button>
+      <div id="rfq-send-result-${prId}" style="margin-top:8px;"></div>
+      <div id="rfq-history-${prId}" style="margin-top:14px;"></div>
     </div>`;
+  if (lines.length) loadRFQTemplate(prId);
+  renderRFQHistory(prId);
+}
+function defaultRFQBody(pr, lines, selectedItemIds) {
+  const selected = lines.filter(l => selectedItemIds.includes(l.id));
+  const itemLines = selected.map(l => `- ${l.item_name || l.item_text || 'Item'} : Qty ${l.quantity}${l.item_unit ? ' ' + l.item_unit : ''}`).join('\n');
+  return `Dear {{vendor_name}},\n\nWe would like to request your quotation for the following item(s) against our Purchase Request ${pr ? pr.pr_no : ''}:\n\n${itemLines}\n\nPlease share in your quotation:\n- Unit price and total price\n- Payment terms\n- Delivery commitment (lead time / date)\n\nKindly send your quotation at the earliest.\n\nRegards,\nVenkateshwara Engineers - Purchase Department`;
+}
+window.loadRFQTemplate = (prId) => {
+  const pr = (window.__PR_CACHE || []).find(r => r.id === prId);
+  const lines = PR_QUOTES_LINES_CACHE[prId] || [];
+  const selectedItemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
+  document.getElementById('rfq-subject-' + prId).value = `Request for Quotation - PR ${pr ? pr.pr_no : ''}`;
+  document.getElementById('rfq-body-' + prId).value = defaultRFQBody(pr, lines, selectedItemIds);
+};
+window.sendRFQ = async (prId) => {
+  const resultEl = document.getElementById('rfq-send-result-' + prId);
+  resultEl.innerHTML = '';
+  const itemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
+  const vendorIds = [...document.querySelectorAll(`.rfq-vendor-cb-${prId}:checked`)].map(cb => Number(cb.value));
+  const subject = val('rfq-subject-' + prId);
+  const body = document.getElementById('rfq-body-' + prId).value;
+  if (!itemIds.length) { alert('Select at least one line item.'); return; }
+  if (!vendorIds.length) { alert('Select at least one vendor.'); return; }
+  try {
+    const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, subject, body }) });
+    const anyFailed = result.results.some(r => r.email_status === 'Failed' || r.email_status === 'NoEmail');
+    resultEl.innerHTML = `<div class="msg ${anyFailed ? 'err' : 'ok'}">
+      ${result.results.map(r => `${esc(r.vendor_name)}: ${esc(r.email_status)}${r.email_error ? ' - ' + esc(r.email_error) : ''}`).join('<br>')}
+    </div>`;
+    renderRFQHistory(prId);
+  } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+};
+async function renderRFQHistory(prId) {
+  const el = document.getElementById('rfq-history-' + prId);
+  if (!el) return;
+  const rfqs = await api(`/purchase/requests/${prId}/rfq`).catch(() => []);
+  if (!rfqs.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<b>RFQ History</b>` + tableHTML(['Sent', 'Subject', 'Vendors', 'By'], rfqs, r => `
+    <tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.subject)}</td>
+    <td>${r.vendors.map(v => `${esc(v.vendor_name)} (${esc(v.email_status)})`).join(', ')}</td>
+    <td>${esc(r.created_by_name)||'-'}</td></tr>`);
 }
 window.addPRQuote = async (prId) => {
   try {
@@ -3401,6 +3473,10 @@ window.addPRQuote = async (prId) => {
     fd.append('vendor_id', val('prq-vendor-' + prId));
     fd.append('quoted_amount', val('prq-amount-' + prId));
     fd.append('notes', val('prq-notes-' + prId));
+    fd.append('purchase_request_item_id', val('prq-item-' + prId));
+    fd.append('quoted_qty', val('prq-qty-' + prId));
+    fd.append('payment_terms', val('prq-terms-' + prId));
+    fd.append('delivery_commit_date', val('prq-delivery-' + prId));
     const fileEl = document.getElementById('prq-file-' + prId);
     if (fileEl.files.length) fd.append('quote_file', fileEl.files[0]);
     await apiUpload(`/purchase/requests/${prId}/quotes`, fd, 'POST');
