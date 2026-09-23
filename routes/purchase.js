@@ -188,8 +188,9 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
 // ---- Multi-vendor quotes for a Purchase Request (Round 13) ----
 router.get('/requests/:id/quotes', (req, res) => {
   res.json(db.prepare(`
-    SELECT q.*, v.name as vendor_name, u.full_name as created_by_name
+    SELECT q.*, v.name as vendor_name, u.full_name as created_by_name, pri.item_text as pr_item_text, i.name as pr_item_name
     FROM purchase_request_quotes q LEFT JOIN vendors v ON v.id = q.vendor_id LEFT JOIN users u ON u.id = q.created_by
+      LEFT JOIN purchase_request_items pri ON pri.id = q.purchase_request_item_id LEFT JOIN items i ON i.id = pri.item_id
     WHERE q.purchase_request_id = ? ORDER BY q.id DESC
   `).all(req.params.id));
 });
@@ -197,15 +198,27 @@ router.get('/requests/:id/quotes', (req, res) => {
 router.post('/requests/:id/quotes', requirePermission('purchase_request.create', 'purchase_order.manage'), uploadQuote.single('quote_file'), (req, res) => {
   const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
   if (!pr) return res.status(404).json({ error: 'Not found' });
-  const { vendor_id, quoted_amount, notes } = req.body;
+  const { vendor_id, quoted_amount, notes, purchase_request_item_id, payment_terms, delivery_commit_date, quoted_qty, rfq_request_id } = req.body;
   if (!vendor_id) return res.status(400).json({ error: 'Pick a vendor.' });
   const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(vendor_id);
   if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists.' });
+  // Optional: this quote is for one specific line item rather than a whole-PR
+  // lump sum - must belong to this same PR, same guard as everywhere else
+  // that accepts a purchase_request_item_id from the client.
+  let itemId = null;
+  if (purchase_request_item_id) {
+    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ?').get(purchase_request_item_id, pr.id);
+    if (!line) return res.status(400).json({ error: 'That line item does not belong to this Purchase Request.' });
+    itemId = line.id;
+  }
   const filePath = req.file ? '/uploads/purchase-quotes/' + req.file.filename : null;
   const info = db.prepare(`
-    INSERT INTO purchase_request_quotes (purchase_request_id, vendor_id, quoted_amount, quote_file_path, notes, created_by)
-    VALUES (?,?,?,?,?,?)
-  `).run(pr.id, vendor_id, quoted_amount ? Number(quoted_amount) : null, filePath, notes || null, req.user.id);
+    INSERT INTO purchase_request_quotes (purchase_request_id, vendor_id, quoted_amount, quote_file_path, notes,
+      purchase_request_item_id, payment_terms, delivery_commit_date, quoted_qty, rfq_request_id, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `).run(pr.id, vendor_id, quoted_amount ? Number(quoted_amount) : null, filePath, notes || null,
+    itemId, payment_terms || null, delivery_commit_date || null, quoted_qty ? Number(quoted_qty) : null,
+    rfq_request_id || null, req.user.id);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -225,6 +238,69 @@ router.put('/requests/:id/quotes/:quoteId/select', requirePermission('purchase_r
   });
   tx();
   res.json({ ok: true });
+});
+
+// ---- RFQ: select PR line items + vendors, send an editable email template ----
+// Outbound only - see the rfq_requests/rfq_request_vendors comment in
+// db/schema.sql. A vendor's reply still comes back by phone/email outside
+// the system and gets typed into POST /requests/:id/quotes as before,
+// optionally against the specific line item and carrying payment_terms/
+// delivery_commit_date/quoted_qty this RFQ asked for.
+router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const requests = db.prepare(`
+    SELECT r.*, u.full_name as created_by_name FROM rfq_requests r LEFT JOIN users u ON u.id = r.created_by
+    WHERE r.purchase_request_id = ? ORDER BY r.id DESC
+  `).all(req.params.id);
+  const vendorsByRfq = db.prepare(`
+    SELECT rv.*, v.name as vendor_name FROM rfq_request_vendors rv JOIN vendors v ON v.id = rv.vendor_id
+    WHERE rv.rfq_request_id = ? ORDER BY rv.id
+  `);
+  res.json(requests.map(r => ({ ...r, item_ids: JSON.parse(r.item_ids || '[]'), vendors: vendorsByRfq.all(r.id) })));
+});
+
+router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
+  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'Not found' });
+  const { item_ids, vendor_ids, subject, body } = req.body;
+  if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
+  if (!Array.isArray(vendor_ids) || !vendor_ids.length) return res.status(400).json({ error: 'Select at least one vendor to send the RFQ to.' });
+  if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
+  if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
+  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(pr.id).map(r => r.id);
+  const badItems = item_ids.filter(id => !lines.includes(Number(id)));
+  if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
+  const vendors = db.prepare(`SELECT * FROM vendors WHERE id IN (${vendor_ids.map(() => '?').join(',')})`).all(...vendor_ids);
+  if (vendors.length !== vendor_ids.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
+
+  const info = db.prepare(`INSERT INTO rfq_requests (purchase_request_id, item_ids, subject, body, created_by) VALUES (?,?,?,?,?)`)
+    .run(pr.id, JSON.stringify(item_ids.map(Number)), subject.trim(), body, req.user.id);
+  const rfqId = info.lastInsertRowid;
+  const insertVendorRow = db.prepare(`INSERT INTO rfq_request_vendors (rfq_request_id, vendor_id, email_status) VALUES (?,?,'Pending')`);
+  const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
+
+  const results = [];
+  for (const vendor of vendors) {
+    const rowId = insertVendorRow.run(rfqId, vendor.id).lastInsertRowid;
+    const to = vendor.po_email || vendor.email;
+    if (!to) {
+      updateVendorRow.run('NoEmail', 'This vendor has no PO/general email on file.', null, rowId);
+      results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'NoEmail' });
+      continue;
+    }
+    // {{vendor_name}} is the only personalization token - simple mail-merge,
+    // not a template engine, since the editable body is meant to stay
+    // readable/predictable for whoever wrote it.
+    const personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
+    const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody });
+    if (result.sent) {
+      updateVendorRow.run('Sent', null, new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''), rowId);
+      results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Sent' });
+    } else {
+      updateVendorRow.run('Failed', result.reason || 'Unknown error', null, rowId);
+      results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Failed', email_error: result.reason });
+    }
+  }
+  res.json({ id: rfqId, results });
 });
 
 // ---- Submit a high-value (quotes-required) PR into the normal approval chain ----

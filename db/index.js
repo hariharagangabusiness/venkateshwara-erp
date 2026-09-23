@@ -727,6 +727,19 @@ const MIGRATIONS = [
   `ALTER TABLE offers ADD COLUMN locked INTEGER DEFAULT 0`,
   `ALTER TABLE offers ADD COLUMN locked_at TEXT`,
   `ALTER TABLE offers ADD COLUMN locked_reason TEXT`,
+  // ---- RFQ workflow: a quote can now optionally be tied to one specific PR
+  // line item (purchase_request_item_id) instead of only ever being a
+  // whole-PR lump sum - NULL keeps the original behavior (whole-PR quote)
+  // so the existing 2-quotes-required threshold flow is untouched. The
+  // payment_terms/delivery_commit_date/quoted_qty columns capture what the
+  // RFQ actually asked vendors for; rfq_request_id is a soft trace back to
+  // the rfq_requests row that prompted this quote, when there was one (a
+  // quote can still be entered by hand with no RFQ ever sent, same as today).
+  `ALTER TABLE purchase_request_quotes ADD COLUMN purchase_request_item_id INTEGER REFERENCES purchase_request_items(id)`,
+  `ALTER TABLE purchase_request_quotes ADD COLUMN payment_terms TEXT`,
+  `ALTER TABLE purchase_request_quotes ADD COLUMN delivery_commit_date TEXT`,
+  `ALTER TABLE purchase_request_quotes ADD COLUMN quoted_qty REAL`,
+  `ALTER TABLE purchase_request_quotes ADD COLUMN rfq_request_id INTEGER REFERENCES rfq_requests(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

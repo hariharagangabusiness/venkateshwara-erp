@@ -858,6 +858,34 @@ CREATE TABLE IF NOT EXISTS purchase_request_quotes (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ===================== PURCHASE: RFQ (REQUEST FOR QUOTATION) =====================
+-- Outbound-only vendor RFQ: a Purchase Executive selects some or all of a
+-- PR's line items and one or more vendors, edits a default email template,
+-- and sends it (via lib/mailer.js). There is no inbound email parsing or
+-- vendor portal here - a vendor's reply still comes back outside the
+-- system and gets typed in as a quote (purchase_request_quotes below),
+-- same as before this feature existed. rfq_requests is the "what/who was
+-- asked" record; rfq_request_vendors is one row per vendor the RFQ went
+-- to, so a partial send failure (bad email, SMTP hiccup) is visible per
+-- vendor instead of an all-or-nothing send.
+CREATE TABLE IF NOT EXISTS rfq_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_request_id INTEGER NOT NULL REFERENCES purchase_requests(id),
+  item_ids TEXT NOT NULL,             -- JSON array of purchase_request_items.id this RFQ covers
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS rfq_request_vendors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rfq_request_id INTEGER NOT NULL REFERENCES rfq_requests(id),
+  vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+  email_status TEXT DEFAULT 'Pending',  -- Pending, Sent, Failed, NoEmail (vendor has no email on file)
+  email_error TEXT,
+  sent_at TEXT
+);
+
 -- ===================== AUDIT LOG =====================
 
 CREATE TABLE IF NOT EXISTS audit_log (
