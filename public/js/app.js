@@ -3373,6 +3373,12 @@ async function renderPRQuotesPanel(prId) {
   const vendors = [...vendorMap.values()];
   const canSubmit = quotes.length >= 2 && pr && pr.status === 'PendingQuotes';
   const lineLabel = l => esc(l.item_name || l.item_text || 'Item') + ` (Qty: ${l.quantity}${l.item_unit ? ' ' + esc(l.item_unit) : ''})`;
+  // Only a vendor with an email on file can actually receive an RFQ -
+  // filtering them out of the picker (rather than just graying them out)
+  // keeps the list short, since vendors-for-item's own fallback (no
+  // category match) can otherwise suggest the entire Vendor Master.
+  const vendorsWithEmail = vendors.filter(v => v.po_email || v.email);
+  const vendorsNoEmail = vendors.filter(v => !v.po_email && !v.email);
   container.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
@@ -3412,15 +3418,24 @@ async function renderPRQuotesPanel(prId) {
       <div style="margin-bottom:8px;"><b>Line Items</b><br>
         ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
       </div>
-      <div style="margin-bottom:8px;"><b>Vendors</b><br>
-        ${vendors.map(v => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-vendor-cb-${prId}" value="${v.id}"> ${esc(v.name)}${!v.po_email && !v.email ? ' <span class="muted">(no email on file)</span>' : ''}</label>`).join('') || '<span class="muted">No suggested vendors - add one in Vendor Master.</span>'}
+      <div style="margin-bottom:8px;">
+        <label><b>Vendors</b> (Ctrl/Cmd-click, or type a name to jump, to select more than one)</label>
+        <select id="rfq-vendor-select-${prId}" multiple size="8" style="width:100%;max-width:420px;">
+          ${vendorsWithEmail.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || ''}
+        </select>
+        <div class="muted" style="margin-top:4px;">
+          ${vendors.length ? `${vendorsWithEmail.length} of ${vendors.length} suggested vendor(s) have an email on file and can be sent an RFQ.` : 'No suggested vendors - add one in Vendor Master.'}
+          ${vendorsNoEmail.length ? (vendorsNoEmail.length <= 10
+            ? ` ${vendorsNoEmail.length} excluded for having none: ${vendorsNoEmail.map(v => esc(v.name)).join(', ')}.`
+            : ` ${vendorsNoEmail.length} excluded for having none - add one in Vendor Master to include them here.`) : ''}
+        </div>
       </div>
       <button class="btn small outline" type="button" onclick="loadRFQTemplate(${prId})">Load Default Template</button>
       <div class="form-grid" style="margin-top:8px;">
         <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
         <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10" style="width:100%;"></textarea></div>
       </div>
-      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!vendors.length || !lines.length ? 'disabled' : ''}>Send RFQ</button>
+      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!vendorsWithEmail.length || !lines.length ? 'disabled' : ''}>Send RFQ</button>
       <div id="rfq-send-result-${prId}" style="margin-top:8px;"></div>
       <div id="rfq-history-${prId}" style="margin-top:14px;"></div>
     </div>`;
@@ -3443,7 +3458,8 @@ window.sendRFQ = async (prId) => {
   const resultEl = document.getElementById('rfq-send-result-' + prId);
   resultEl.innerHTML = '';
   const itemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
-  const vendorIds = [...document.querySelectorAll(`.rfq-vendor-cb-${prId}:checked`)].map(cb => Number(cb.value));
+  const vendorSelect = document.getElementById('rfq-vendor-select-' + prId);
+  const vendorIds = [...(vendorSelect ? vendorSelect.selectedOptions : [])].map(o => Number(o.value));
   const subject = val('rfq-subject-' + prId);
   const body = document.getElementById('rfq-body-' + prId).value;
   if (!itemIds.length) { alert('Select at least one line item.'); return; }
