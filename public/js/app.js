@@ -3473,8 +3473,10 @@ PAGES['purchase-orders'] = async (el) => {
   window.__PO_COMPANY_ADDRESSES = companyAddresses;
 };
 function renderPORows(rows) {
-  return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
-    <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td><td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
+  return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
+    <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td>
+    <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
+    <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
     <td>${deliveryBadge(o.delivery_date)}</td>
     <td>
       <button class="btn small outline" type="button" onclick="downloadPoPdf(${o.id}, '${esc(o.po_no)}')">PDF</button>
@@ -3486,10 +3488,10 @@ function renderPORows(rows) {
     ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
     <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button></td></tr>
-    <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-attachments-${o.id}"></div></td></tr>
-    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="10">${poTermsForm(o)}</td></tr>
-    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="10">${poEditForm(o)}</td></tr>
-    <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="10"><div id="po-history-${o.id}"></div></td></tr>`);
+    <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
+    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11">${poTermsForm(o)}</td></tr>
+    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11">${poEditForm(o)}</td></tr>
+    <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`);
 }
 function poEditForm(o) {
   const vendors = window.__PO_VENDORS || [];
@@ -3805,7 +3807,7 @@ window.uploadItemTemplate = () => uploadTemplateFile('/masters/items/bulk-upload
 async function renderStockInOutSheet(el) {
   const items = (await api('/masters/items')).filter(i => !['Pending', 'Discontinued'].includes(i.status));
   const movements = await api('/purchase/store/movements');
-  const openPOs = (await api('/purchase/orders')).filter(o => o.status === 'Open');
+  const openPOs = (await api('/purchase/orders')).filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
   const projects = await api('/projects');
   window.__OPEN_POS = openPOs;
   window.__STOCK_ITEMS = items;
@@ -3821,7 +3823,7 @@ async function renderStockInOutSheet(el) {
         <div><label>Receive against PO (optional)</label>
           <select id="st-po" onchange="fillStockFromPO()" ${!openPOs.length ? 'disabled' : ''}>
             <option value="">- Not against a PO -</option>
-            ${openPOs.map(o => `<option value="${o.id}">${esc(o.po_no)} - ${esc(o.vendor_name)} - ${esc(o.item_name)||'-'} (ordered: ${o.quantity})</option>`).join('')}
+            ${openPOs.map(o => `<option value="${o.id}">${esc(o.po_no)} - ${esc(o.vendor_name)} - ${esc(o.item_name)||'-'} (ordered: ${o.quantity}, received: ${o.received_qty}${o.received_qty > 0 ? ', remaining: ' + (o.quantity - o.received_qty) : ''})</option>`).join('')}
           </select>
           ${!openPOs.length ? `<div class="muted" style="margin-top:4px;">No Purchase Orders are currently Open - once one is created and not yet fully received, it will show up here.</div>` : ''}
         </div>
@@ -3875,7 +3877,10 @@ window.fillStockFromPO = () => {
   if (!po) return;
   if (po.item_id) { const itemSel = document.getElementById('st-item'); if (itemSel) itemSel.value = po.item_id; }
   const qtyEl = document.getElementById('st-qty');
-  if (qtyEl) qtyEl.value = po.quantity;
+  // Pre-fill the REMAINING quantity, not the full ordered amount - a PO
+  // already partially received (received_qty > 0) would otherwise default
+  // to over-receiving it by that much every time.
+  if (qtyEl) qtyEl.value = Math.max(0, po.quantity - (po.received_qty || 0));
 };
 window.filterStockItemOptions = () => {
   const q = (val('st-item-search') || '').toLowerCase().trim();

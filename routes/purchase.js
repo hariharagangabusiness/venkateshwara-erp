@@ -335,7 +335,8 @@ router.get('/requests/:id/approval-history', (req, res) => {
 // ---- Purchase Orders ----
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
-    SELECT po.*, v.name as vendor_name, i.name as item_name, ca.label as company_address_label, ca.address_type as company_address_type
+    SELECT po.*, v.name as vendor_name, i.name as item_name, ca.label as company_address_label, ca.address_type as company_address_type,
+      COALESCE((SELECT SUM(sm.quantity) FROM stock_movements sm WHERE sm.movement_type = 'IN' AND sm.reference = 'PO#' || po.id), 0) as received_qty
     FROM purchase_orders po
     JOIN vendors v ON v.id = po.vendor_id LEFT JOIN items i ON i.id = po.item_id
     LEFT JOIN company_addresses ca ON ca.id = po.company_address_id
@@ -567,6 +568,14 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
 });
 
 // ---- Store: GRN receive & issue to production ----
+// A PO's own `quantity` is the ordered amount; how much has actually come
+// in is derived from stock_movements (movement_type='IN', reference =
+// 'PO#'+id) rather than stored redundantly on the PO row - same "derive,
+// don't duplicate" reasoning as everywhere else in this codebase that
+// tracks a running total against a source document.
+function poReceivedQty(poId) {
+  return db.prepare(`SELECT COALESCE(SUM(quantity), 0) as n FROM stock_movements WHERE movement_type = 'IN' AND reference = ?`).get('PO#' + poId).n;
+}
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   const { item_id, quantity, po_id, project_id } = req.body;
   // Validate before hitting the DB - an empty/missing item_id (e.g. the Item
@@ -576,10 +585,15 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   if (!item_id) return res.status(400).json({ error: 'Pick an item. If the Item Master is empty, add one there first.' });
   const item = db.prepare('SELECT id FROM items WHERE id = ?').get(item_id);
   if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
-  if (!quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  const qty = Number(quantity);
+  if (!qty || qty <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  let po = null;
   if (po_id) {
-    const po = db.prepare('SELECT id FROM purchase_orders WHERE id = ?').get(po_id);
+    po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(po_id);
     if (!po) return res.status(400).json({ error: 'That Purchase Order no longer exists - refresh the page and try again.' });
+    if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
+      return res.status(400).json({ error: `This Purchase Order is already ${po.status} and can no longer receive stock against it.` });
+    }
   }
   if (project_id) {
     const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(project_id);
@@ -587,10 +601,17 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   }
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, moved_by) VALUES (?, 'IN', ?, ?, ?, ?)`)
-      .run(item_id, quantity, po_id ? 'PO#' + po_id : null, project_id || null, req.user.id);
-    db.prepare(`UPDATE items SET current_stock = current_stock + ? WHERE id = ?`).run(quantity, item_id);
+      .run(item_id, qty, po_id ? 'PO#' + po_id : null, project_id || null, req.user.id);
+    db.prepare(`UPDATE items SET current_stock = current_stock + ? WHERE id = ?`).run(qty, item_id);
     if (po_id) {
-      db.prepare(`UPDATE purchase_orders SET status = 'Received' WHERE id = ?`).run(po_id);
+      // Receiving less than the full ordered quantity used to still mark
+      // the PO fully 'Received' outright - which then also dropped it out
+      // of the "Receive against PO" picker (Open-only), silently blocking
+      // ever receiving the remainder through the normal flow again. Now
+      // reflects the real cumulative total instead.
+      const receivedSoFar = poReceivedQty(po_id);
+      const newStatus = receivedSoFar >= po.quantity ? 'Received' : 'PartiallyReceived';
+      db.prepare(`UPDATE purchase_orders SET status = ? WHERE id = ?`).run(newStatus, po_id);
     }
   });
   tx();
