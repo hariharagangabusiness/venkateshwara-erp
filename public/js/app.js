@@ -3358,6 +3358,7 @@ window.togglePRQuotes = (id) => {
 const PR_QUOTES_LINES_CACHE = {};
 const RFQ_VENDOR_LOOKUP = {};
 const RFQ_SELECTED_VENDORS = {};
+const RFQ_SELECTED_EMAILS = {};
 async function renderPRQuotesPanel(prId) {
   const container = document.getElementById('pr-quotes-' + prId);
   const pr = (window.__PR_CACHE || []).find(r => r.id === prId);
@@ -3383,6 +3384,7 @@ async function renderPRQuotesPanel(prId) {
   const vendorsNoEmail = vendors.filter(v => !v.po_email && !v.email);
   RFQ_VENDOR_LOOKUP[prId] = vendorsWithEmail;
   RFQ_SELECTED_VENDORS[prId] = [];
+  RFQ_SELECTED_EMAILS[prId] = [];
   container.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
@@ -3432,6 +3434,10 @@ async function renderPRQuotesPanel(prId) {
             ? ` ${vendorsNoEmail.length} excluded for having none: ${vendorsNoEmail.map(v => esc(v.name)).join(', ')}.`
             : ` ${vendorsNoEmail.length} excluded for having none - add one in Vendor Master to include them here.`) : ''}
         </div>
+        <div style="margin-top:8px;">
+          <input type="email" id="rfq-email-add-${prId}" placeholder="or type an email address not on file" style="max-width:320px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addRFQEmail(${prId});}">
+          <button class="btn small outline" type="button" onclick="addRFQEmail(${prId})">+ Add Email</button>
+        </div>
         <div id="rfq-vendor-list-${prId}" style="margin-top:8px;"></div>
       </div>
       <button class="btn small outline" type="button" onclick="loadRFQTemplate(${prId})">Load Default Template</button>
@@ -3439,7 +3445,7 @@ async function renderPRQuotesPanel(prId) {
         <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
         <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10" style="width:100%;"></textarea></div>
       </div>
-      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!vendorsWithEmail.length || !lines.length ? 'disabled' : ''}>Send RFQ</button>
+      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!lines.length ? 'disabled' : ''}>Send RFQ</button>
       <div id="rfq-send-result-${prId}" style="margin-top:8px;"></div>
       <div id="rfq-history-${prId}" style="margin-top:14px;"></div>
     </div>`;
@@ -3460,10 +3466,15 @@ function renderRFQVendorList(prId) {
   const selectedIds = RFQ_SELECTED_VENDORS[prId] || [];
   const selected = selectedIds.map(id => all.find(v => v.id === id)).filter(Boolean);
   const available = all.filter(v => !selectedIds.includes(v.id));
+  const emails = RFQ_SELECTED_EMAILS[prId] || [];
   addEl.innerHTML = available.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No more vendors to add -</option>';
-  listEl.innerHTML = selected.length
-    ? selected.map(v => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;background:#eee;border-radius:10px;font-size:var(--fs-sm);">${esc(v.name)} <a href="#" onclick="removeRFQVendor(${prId},${v.id});return false;" style="margin-left:4px;">✕</a></span>`).join('')
-    : '<span class="muted">No vendors added yet - pick one above and click "+ Add Vendor".</span>';
+  const chip = (label, onRemove) => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;background:#eee;border-radius:10px;font-size:var(--fs-sm);">${label} <a href="#" onclick="${onRemove};return false;" style="margin-left:4px;">✕</a></span>`;
+  const chips = [
+    ...selected.map(v => chip(esc(v.name), `removeRFQVendor(${prId},${v.id})`)),
+    ...emails.map(e => chip(esc(e), `removeRFQEmail(${prId},'${esc(e)}')`)),
+  ];
+  listEl.innerHTML = chips.length ? chips.join('')
+    : '<span class="muted">No recipients added yet - pick a vendor or type an email address above.</span>';
 }
 window.addRFQVendor = (prId) => {
   const addEl = document.getElementById('rfq-vendor-add-' + prId);
@@ -3474,6 +3485,20 @@ window.addRFQVendor = (prId) => {
 };
 window.removeRFQVendor = (prId, vendorId) => {
   RFQ_SELECTED_VENDORS[prId] = (RFQ_SELECTED_VENDORS[prId] || []).filter(id => id !== vendorId);
+  renderRFQVendorList(prId);
+};
+window.addRFQEmail = (prId) => {
+  const inputEl = document.getElementById('rfq-email-add-' + prId);
+  const email = inputEl.value.trim().toLowerCase();
+  if (!email) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { alert(`"${email}" doesn't look like a valid email address.`); return; }
+  if ((RFQ_SELECTED_EMAILS[prId] || []).includes(email)) { inputEl.value = ''; return; }
+  RFQ_SELECTED_EMAILS[prId] = [...(RFQ_SELECTED_EMAILS[prId] || []), email];
+  inputEl.value = '';
+  renderRFQVendorList(prId);
+};
+window.removeRFQEmail = (prId, email) => {
+  RFQ_SELECTED_EMAILS[prId] = (RFQ_SELECTED_EMAILS[prId] || []).filter(e => e !== email);
   renderRFQVendorList(prId);
 };
 function defaultRFQBody(pr, lines, selectedItemIds) {
@@ -3493,15 +3518,16 @@ window.sendRFQ = async (prId) => {
   resultEl.innerHTML = '';
   const itemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
   const vendorIds = RFQ_SELECTED_VENDORS[prId] || [];
+  const extraEmails = RFQ_SELECTED_EMAILS[prId] || [];
   const subject = val('rfq-subject-' + prId);
   const body = document.getElementById('rfq-body-' + prId).value;
   if (!itemIds.length) { alert('Select at least one line item.'); return; }
-  if (!vendorIds.length) { alert('Add at least one vendor.'); return; }
+  if (!vendorIds.length && !extraEmails.length) { alert('Add at least one vendor or email address.'); return; }
   try {
-    const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, subject, body }) });
+    const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, extra_emails: extraEmails, subject, body }) });
     const anyFailed = result.results.some(r => r.email_status === 'Failed' || r.email_status === 'NoEmail');
     resultEl.innerHTML = `<div class="msg ${anyFailed ? 'err' : 'ok'}">
-      ${result.results.map(r => `${esc(r.vendor_name)}: ${esc(r.email_status)}${r.email_error ? ' - ' + esc(r.email_error) : ''}`).join('<br>')}
+      ${result.results.map(r => `${esc(r.vendor_name || r.email)}: ${esc(r.email_status)}${r.email_error ? ' - ' + esc(r.email_error) : ''}`).join('<br>')}
     </div>`;
     renderRFQHistory(prId);
   } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
@@ -3511,9 +3537,9 @@ async function renderRFQHistory(prId) {
   if (!el) return;
   const rfqs = await api(`/purchase/requests/${prId}/rfq`).catch(() => []);
   if (!rfqs.length) { el.innerHTML = ''; return; }
-  el.innerHTML = `<b>RFQ History</b>` + tableHTML(['Sent', 'Subject', 'Vendors', 'By'], rfqs, r => `
+  el.innerHTML = `<b>RFQ History</b>` + tableHTML(['Sent', 'Subject', 'Recipients', 'By'], rfqs, r => `
     <tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.subject)}</td>
-    <td>${r.vendors.map(v => `${esc(v.vendor_name)} (${esc(v.email_status)})`).join(', ')}</td>
+    <td>${[...r.vendors.map(v => `${esc(v.vendor_name)} (${esc(v.email_status)})`), ...(r.emails||[]).map(e => `${esc(e.email)} (${esc(e.email_status)})`)].join(', ')}</td>
     <td>${esc(r.created_by_name)||'-'}</td></tr>`);
 }
 window.addPRQuote = async (prId) => {

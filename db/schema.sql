@@ -885,6 +885,19 @@ CREATE TABLE IF NOT EXISTS rfq_request_vendors (
   email_error TEXT,
   sent_at TEXT
 );
+-- A manually-typed recipient not on file in Vendor Master at all (a new
+-- vendor's buyer, a broker, an alternate contact) - kept as its own table
+-- rather than loosening rfq_request_vendors.vendor_id's NOT NULL, since
+-- that table's rows already went out under the earlier RFQ PRs and a
+-- column can't be added mid-flight without a full table rebuild in SQLite.
+CREATE TABLE IF NOT EXISTS rfq_request_emails (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rfq_request_id INTEGER NOT NULL REFERENCES rfq_requests(id),
+  email TEXT NOT NULL,
+  email_status TEXT DEFAULT 'Pending',  -- Pending, Sent, Failed
+  email_error TEXT,
+  sent_at TEXT
+);
 
 -- ===================== AUDIT LOG =====================
 
