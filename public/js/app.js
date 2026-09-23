@@ -3356,6 +3356,8 @@ window.togglePRQuotes = (id) => {
   if (!showing) renderPRQuotesPanel(id);
 };
 const PR_QUOTES_LINES_CACHE = {};
+const RFQ_VENDOR_LOOKUP = {};
+const RFQ_SELECTED_VENDORS = {};
 async function renderPRQuotesPanel(prId) {
   const container = document.getElementById('pr-quotes-' + prId);
   const pr = (window.__PR_CACHE || []).find(r => r.id === prId);
@@ -3379,6 +3381,8 @@ async function renderPRQuotesPanel(prId) {
   // category match) can otherwise suggest the entire Vendor Master.
   const vendorsWithEmail = vendors.filter(v => v.po_email || v.email);
   const vendorsNoEmail = vendors.filter(v => !v.po_email && !v.email);
+  RFQ_VENDOR_LOOKUP[prId] = vendorsWithEmail;
+  RFQ_SELECTED_VENDORS[prId] = [];
   container.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
@@ -3419,16 +3423,16 @@ async function renderPRQuotesPanel(prId) {
         ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
       </div>
       <div style="margin-bottom:8px;">
-        <label><b>Vendors</b> (Ctrl/Cmd-click, or type a name to jump, to select more than one)</label>
-        <select id="rfq-vendor-select-${prId}" multiple size="8" style="width:100%;max-width:420px;">
-          ${vendorsWithEmail.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || ''}
-        </select>
+        <label><b>Vendors</b></label><br>
+        <select id="rfq-vendor-add-${prId}" style="max-width:320px;"></select>
+        <button class="btn small outline" type="button" onclick="addRFQVendor(${prId})">+ Add Vendor</button>
         <div class="muted" style="margin-top:4px;">
           ${vendors.length ? `${vendorsWithEmail.length} of ${vendors.length} suggested vendor(s) have an email on file and can be sent an RFQ.` : 'No suggested vendors - add one in Vendor Master.'}
           ${vendorsNoEmail.length ? (vendorsNoEmail.length <= 10
             ? ` ${vendorsNoEmail.length} excluded for having none: ${vendorsNoEmail.map(v => esc(v.name)).join(', ')}.`
             : ` ${vendorsNoEmail.length} excluded for having none - add one in Vendor Master to include them here.`) : ''}
         </div>
+        <div id="rfq-vendor-list-${prId}" style="margin-top:8px;"></div>
       </div>
       <button class="btn small outline" type="button" onclick="loadRFQTemplate(${prId})">Load Default Template</button>
       <div class="form-grid" style="margin-top:8px;">
@@ -3439,9 +3443,39 @@ async function renderPRQuotesPanel(prId) {
       <div id="rfq-send-result-${prId}" style="margin-top:8px;"></div>
       <div id="rfq-history-${prId}" style="margin-top:14px;"></div>
     </div>`;
+  renderRFQVendorList(prId);
   if (lines.length) loadRFQTemplate(prId);
   renderRFQHistory(prId);
 }
+// Re-renders both the "already added" vendor list (with a remove button
+// each) and the add-dropdown's own options, excluding whichever vendors
+// are already in the list - picking one at a time from a dropdown reads
+// far more clearly than a multi-select or a wall of checkboxes once there
+// are more than a handful of candidates.
+function renderRFQVendorList(prId) {
+  const listEl = document.getElementById('rfq-vendor-list-' + prId);
+  const addEl = document.getElementById('rfq-vendor-add-' + prId);
+  if (!listEl || !addEl) return;
+  const all = RFQ_VENDOR_LOOKUP[prId] || [];
+  const selectedIds = RFQ_SELECTED_VENDORS[prId] || [];
+  const selected = selectedIds.map(id => all.find(v => v.id === id)).filter(Boolean);
+  const available = all.filter(v => !selectedIds.includes(v.id));
+  addEl.innerHTML = available.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No more vendors to add -</option>';
+  listEl.innerHTML = selected.length
+    ? selected.map(v => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;background:#eee;border-radius:10px;font-size:var(--fs-sm);">${esc(v.name)} <a href="#" onclick="removeRFQVendor(${prId},${v.id});return false;" style="margin-left:4px;">✕</a></span>`).join('')
+    : '<span class="muted">No vendors added yet - pick one above and click "+ Add Vendor".</span>';
+}
+window.addRFQVendor = (prId) => {
+  const addEl = document.getElementById('rfq-vendor-add-' + prId);
+  const vendorId = Number(addEl.value);
+  if (!vendorId) return;
+  RFQ_SELECTED_VENDORS[prId] = [...(RFQ_SELECTED_VENDORS[prId] || []), vendorId];
+  renderRFQVendorList(prId);
+};
+window.removeRFQVendor = (prId, vendorId) => {
+  RFQ_SELECTED_VENDORS[prId] = (RFQ_SELECTED_VENDORS[prId] || []).filter(id => id !== vendorId);
+  renderRFQVendorList(prId);
+};
 function defaultRFQBody(pr, lines, selectedItemIds) {
   const selected = lines.filter(l => selectedItemIds.includes(l.id));
   const itemLines = selected.map(l => `- ${l.item_name || l.item_text || 'Item'} : Qty ${l.quantity}${l.item_unit ? ' ' + l.item_unit : ''}`).join('\n');
@@ -3458,12 +3492,11 @@ window.sendRFQ = async (prId) => {
   const resultEl = document.getElementById('rfq-send-result-' + prId);
   resultEl.innerHTML = '';
   const itemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
-  const vendorSelect = document.getElementById('rfq-vendor-select-' + prId);
-  const vendorIds = [...(vendorSelect ? vendorSelect.selectedOptions : [])].map(o => Number(o.value));
+  const vendorIds = RFQ_SELECTED_VENDORS[prId] || [];
   const subject = val('rfq-subject-' + prId);
   const body = document.getElementById('rfq-body-' + prId).value;
   if (!itemIds.length) { alert('Select at least one line item.'); return; }
-  if (!vendorIds.length) { alert('Select at least one vendor.'); return; }
+  if (!vendorIds.length) { alert('Add at least one vendor.'); return; }
   try {
     const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, subject, body }) });
     const anyFailed = result.results.some(r => r.email_status === 'Failed' || r.email_status === 'NoEmail');
