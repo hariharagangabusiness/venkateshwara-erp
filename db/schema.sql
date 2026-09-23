@@ -869,3 +869,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Bank Guarantee edit/delete approval gate, same shape and reasoning as
+-- item_pending_changes (Round 23): a bg.manage holder who isn't Admin can
+-- request an edit or delete, but the live row isn't touched until an Admin
+-- reviews it here - nothing changes underneath a reminder/claim workflow
+-- already in flight against that BG. See routes/bankGuarantees.js.
+CREATE TABLE IF NOT EXISTS bg_pending_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bg_id INTEGER NOT NULL REFERENCES bank_guarantees(id),
+  change_type TEXT NOT NULL,          -- Edit, Delete
+  proposed_fields TEXT,               -- JSON of {field: value} - null for Delete
+  status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
+  requested_by INTEGER REFERENCES users(id),
+  requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  reviewed_by INTEGER REFERENCES users(id),
+  reviewed_at TEXT,
+  review_note TEXT
+);

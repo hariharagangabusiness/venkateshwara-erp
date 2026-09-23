@@ -5573,8 +5573,9 @@ window.resetPdfTemplate = async () => {
 
 // ---- Bank Guarantee Dashboard (Round 16) ----
 PAGES['bg-dashboard'] = async (el) => {
-  const [summary, bgs, reminders, orders] = await Promise.all([
+  const [summary, bgs, reminders, orders, pendingChanges] = await Promise.all([
     api('/bg/summary'), api('/bg'), api('/bg/reminders?status=PendingReview'), api('/bg/orders'),
+    api('/bg/pending-changes').catch(() => []),
   ]);
   const verified = await api('/bg/reminders?status=Verified');
   window.__BG_ORDERS = orders;
@@ -5606,6 +5607,16 @@ PAGES['bg-dashboard'] = async (el) => {
           ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
           <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
         </td></tr>`)}
+    </div>` : ''}
+
+    ${pendingChanges.length ? `<div class="panel"><h3>Pending BG Changes (${pendingChanges.length})</h3>
+      <p class="muted">An edit or delete requested by a non-Admin doesn't take effect until an Admin approves it here, so nothing changes underneath a reminder or claim-filing workflow already in flight.</p>
+      ${tableHTML(['BG No', 'Change', 'Details', 'Requested By', ''], pendingChanges, c => `
+        <tr><td>${esc(c.bg_no || '#' + c.bg_id)}</td><td>${badge(c.change_type)}</td>
+        <td>${c.change_type === 'Edit' ? esc(Object.entries(JSON.parse(c.proposed_fields||'{}')).map(([k,v]) => `${k}: ${v}`).join(', ')) : '<span class="muted">Delete this Bank Guarantee</span>'}</td>
+        <td>${esc(c.requested_by_name)||'-'}</td>
+        <td>${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveBGChange(${c.id})">Approve</button>
+          <button class="btn small outline" type="button" onclick="rejectBGChange(${c.id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
     </div>` : ''}
 
     <div class="panel"><h3>Add Bank Guarantee</h3>
@@ -5683,7 +5694,11 @@ function bgTableHTML(bgs) {
   return tableHTML(headers, bgs, bg => `
     <tr>${cols.map(c => `<td>${c.render(bg)}</td>`).join('')}
     <td><button class="btn small outline" type="button" onclick="toggleBGAttachments(${bg.id})">Scanned Copy</button></td>
-    <td>${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}</td></tr>
+    <td>
+      ${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}
+      ${bg.status !== 'Released' ? `<button class="btn small outline" onclick="openEditBG(${bg.id})">Edit</button>` : ''}
+      <button class="btn small outline" onclick="deleteBG(${bg.id})">Delete</button>
+    </td></tr>
     <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="${headers.length}"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
 }
 window.openBGColumnPicker = () => {
@@ -5761,6 +5776,61 @@ window.releaseBG = async (id) => {
     await api(`/bg/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'Released' }) });
     navigate('bg-dashboard');
   } catch (e) { alert(e.message); }
+};
+// Editing/deleting a BG is approval-gated for anyone but Admin (see
+// routes/bankGuarantees.js) - the form itself is identical either way,
+// only the resulting message differs (applied immediately vs. queued).
+window.openEditBG = (id) => {
+  const bg = (window.__BG_ALL || []).find(b => b.id === id);
+  if (!bg) return;
+  const body = `
+    <div class="form-grid">
+      <div><label>BG No</label><input id="ebg-no" value="${esc(bg.bg_no)}"></div>
+      <div><label>Issuing Bank</label><input id="ebg-bank" value="${esc(bg.issuing_bank)}"></div>
+      <div><label>Value (₹)</label><input id="ebg-value" type="number" value="${bg.value}"></div>
+      <div><label>Issue Date</label><input id="ebg-issue" type="date" value="${esc(bg.issue_date)}"></div>
+      <div><label>Validity Expiry</label><input id="ebg-expiry" type="date" value="${esc(bg.validity_expiry)}"></div>
+      <div><label>Claim Expiry</label><input id="ebg-claim" type="date" value="${esc(bg.claim_expiry)}"></div>
+    </div>
+    <label>Release Condition / Milestone Link</label>
+    <textarea id="ebg-milestone" rows="2" style="width:100%;">${esc(bg.milestone_link)}</textarea>
+    <div style="margin-top:10px;">
+      <button class="btn" type="button" onclick="saveEditBG(${id})">Save Changes</button>
+      <button class="btn outline" type="button" onclick="closeMiniModal()">Cancel</button>
+    </div>
+    <div class="muted" style="margin-top:8px;">${ME.role === 'Admin' ? 'As Admin, this applies immediately.' : "This won't take effect until an Admin approves it - see Pending BG Changes above."}</div>
+    <div id="ebg-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  openMiniModal('Edit Bank Guarantee', body);
+};
+window.saveEditBG = async (id) => {
+  const errEl = document.getElementById('ebg-err');
+  try {
+    const r = await api('/bg/' + id, { method: 'PUT', body: JSON.stringify({
+      bg_no: val('ebg-no'), issuing_bank: val('ebg-bank'), value: val('ebg-value'),
+      issue_date: val('ebg-issue'), validity_expiry: val('ebg-expiry'), claim_expiry: val('ebg-claim'),
+      milestone_link: val('ebg-milestone'),
+    })});
+    closeMiniModal();
+    if (r.message) alert(r.message);
+    navigate('bg-dashboard');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteBG = async (id) => {
+  if (!confirm('Delete this Bank Guarantee? This is only allowed while it has no reminder/claim activity on file.')) return;
+  try {
+    const r = await api('/bg/' + id, { method: 'DELETE' });
+    if (r.message) alert(r.message);
+    navigate('bg-dashboard');
+  } catch (e) { alert(e.message); }
+};
+window.approveBGChange = async (id) => {
+  try { await api('/bg/pending-changes/' + id + '/approve', { method: 'POST' }); navigate('bg-dashboard'); }
+  catch (e) { alert(e.message); }
+};
+window.rejectBGChange = async (id) => {
+  const review_note = prompt('Reason for rejecting (optional):') || '';
+  try { await api('/bg/pending-changes/' + id + '/reject', { method: 'POST', body: JSON.stringify({ review_note }) }); navigate('bg-dashboard'); }
+  catch (e) { alert(e.message); }
 };
 window.verifyBGReminder = async (id) => {
   try {

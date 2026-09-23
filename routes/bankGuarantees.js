@@ -1,6 +1,6 @@
 const express = require('express');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { sendMail } = require('../lib/mailer');
 const router = express.Router();
 router.use(authRequired);
@@ -122,24 +122,140 @@ router.post('/', canManage, (req, res) => {
   res.json({ id: info.lastInsertRowid });
 });
 
+// Status-lifecycle transitions only (currently just "Mark Released" from
+// the BG Dashboard) - NOT a general field editor. Editing the BG's own
+// details (bg_no/issuing_bank/value/dates/milestone_link) goes exclusively
+// through PUT /:id below, which is approval-gated; this route used to also
+// accept those same fields with no such gate, which would have let anyone
+// with bg.manage bypass that gate entirely by calling PATCH instead of PUT.
 router.patch('/:id', canManage, (req, res) => {
   const bg = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(req.params.id);
   if (!bg) return res.status(404).json({ error: 'Not found' });
-  const { status, issuing_bank, value, validity_expiry, claim_expiry, milestone_link } = req.body;
-  const updates = [];
-  const params = [];
-  if (status !== undefined) {
-    updates.push('status = ?'); params.push(status);
-    if (status === 'Released') { updates.push('released_at = ?', 'released_by = ?'); params.push(new Date().toISOString(), req.user.id); }
+  const { status } = req.body;
+  if (status === undefined) return res.json({ ok: true });
+  if (status === 'Released') {
+    db.prepare(`UPDATE bank_guarantees SET status = ?, released_at = ?, released_by = ? WHERE id = ?`)
+      .run(status, new Date().toISOString(), req.user.id, req.params.id);
+  } else {
+    db.prepare(`UPDATE bank_guarantees SET status = ? WHERE id = ?`).run(status, req.params.id);
   }
-  if (issuing_bank !== undefined) { updates.push('issuing_bank = ?'); params.push(issuing_bank); }
-  if (value !== undefined) { updates.push('value = ?'); params.push(Number(value)); }
-  if (validity_expiry !== undefined) { updates.push('validity_expiry = ?'); params.push(validity_expiry); }
-  if (claim_expiry !== undefined) { updates.push('claim_expiry = ?'); params.push(claim_expiry); }
-  if (milestone_link !== undefined) { updates.push('milestone_link = ?'); params.push(milestone_link); }
-  if (!updates.length) return res.json({ ok: true });
-  params.push(req.params.id);
-  db.prepare(`UPDATE bank_guarantees SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  res.json({ ok: true });
+});
+
+// ---- Edit / Delete, with an approval-gated access-control restriction ----
+// A bg.manage holder (Accounts) can always REQUEST an edit or delete, but
+// only an Admin's own request applies immediately - anyone else's is
+// queued in bg_pending_changes and only takes effect once an Admin reviews
+// it, so the live record (and its role in the claim/reminder compliance
+// workflow) can't change out from under an in-flight reminder or email.
+// Same convention as Item Master's edit/delete gate (routes/masters.js).
+const BG_EDIT_FIELDS = ['bg_no', 'issuing_bank', 'value', 'issue_date', 'validity_expiry', 'claim_expiry', 'milestone_link'];
+
+// A BG that already has real activity against it - a reminder ever raised,
+// a notification, a Finance claim-filing to-do, or a scanned document -
+// can't be deleted outright. Unlike vendor/item delete, there's no
+// "Discontinued"-style soft fallback state for a BG, so this blocks the
+// delete entirely rather than downgrading it, on the same "protect the
+// audit trail" reasoning.
+function bgHasActivity(bgId) {
+  const counts = [
+    db.prepare(`SELECT COUNT(*) as n FROM bg_reminder_log WHERE bg_id = ?`).get(bgId).n,
+    db.prepare(`SELECT COUNT(*) as n FROM notifications WHERE source_type IN ('BG_EXPIRY','BG_CLAIM_EXPIRY') AND source_id = ?`).get(bgId).n,
+    db.prepare(`SELECT COUNT(*) as n FROM todos WHERE source_type = 'BG_CLAIM_EXPIRY' AND source_id = ?`).get(bgId).n,
+    db.prepare(`SELECT COUNT(*) as n FROM attachments WHERE entity_type = 'bank_guarantee' AND entity_id = ?`).get(bgId).n,
+  ];
+  return counts.some(n => n > 0);
+}
+function applyBGEdit(bgId, fields) {
+  const existing = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(bgId);
+  const sets = BG_EDIT_FIELDS.map(c => `${c}=?`).join(',');
+  const values = BG_EDIT_FIELDS.map(c => (fields[c] !== undefined ? fields[c] : existing[c]));
+  db.prepare(`UPDATE bank_guarantees SET ${sets} WHERE id=?`).run(...values, bgId);
+}
+function canDeleteBG(bg) {
+  return bg.status === 'Active' && !bgHasActivity(bg.id);
+}
+// bg_pending_changes.bg_id is a hard FK (no ON DELETE CASCADE), so any row
+// referencing this BG - including past Approved/Rejected requests kept
+// only as history - would otherwise block the delete outright. Once the
+// BG itself is actually gone there's nothing left for those rows to be
+// history of, so they're cleared in the same transaction.
+function deleteBGCompletely(bgId) {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM bg_pending_changes WHERE bg_id = ?').run(bgId);
+    db.prepare('DELETE FROM bank_guarantees WHERE id = ?').run(bgId);
+  });
+  tx();
+}
+
+router.put('/:id', canManage, (req, res) => {
+  const existing = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status === 'Released') return res.status(400).json({ error: 'This Bank Guarantee has been released and is closed - it can no longer be edited.' });
+  const fields = {};
+  BG_EDIT_FIELDS.forEach(c => { if (req.body[c] !== undefined) fields[c] = req.body[c] || null; });
+  if ('validity_expiry' in fields && !fields.validity_expiry) return res.status(400).json({ error: 'validity_expiry is required' });
+  if ('value' in fields) fields.value = Number(fields.value) || 0;
+  if (req.user.role_name === 'Admin') {
+    applyBGEdit(existing.id, fields);
+    return res.json({ ok: true, applied: true });
+  }
+  db.prepare(`INSERT INTO bg_pending_changes (bg_id, change_type, proposed_fields, requested_by) VALUES (?,'Edit',?,?)`)
+    .run(existing.id, JSON.stringify(fields), req.user.id);
+  res.json({ ok: true, applied: false, message: 'Change submitted for approval - the Bank Guarantee stays as-is until an Admin reviews it.' });
+});
+
+router.delete('/:id', canManage, (req, res) => {
+  const existing = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (!canDeleteBG(existing)) {
+    return res.status(400).json({ error: 'This Bank Guarantee has activity on file (a reminder, notification, to-do, or scanned document) or is past its initial Active status, so it can no longer be deleted - it can still be edited or marked Released.' });
+  }
+  if (req.user.role_name === 'Admin') {
+    deleteBGCompletely(existing.id);
+    return res.json({ ok: true, applied: true, deleted: true });
+  }
+  db.prepare(`INSERT INTO bg_pending_changes (bg_id, change_type, requested_by) VALUES (?,'Delete',?)`).run(existing.id, req.user.id);
+  res.json({ ok: true, applied: false, message: 'Delete request submitted for approval.' });
+});
+
+router.get('/pending-changes', canManage, (req, res) => {
+  res.json(db.prepare(`
+    SELECT c.*, bg.bg_no, bg.bg_type, bg.value, u.full_name as requested_by_name
+    FROM bg_pending_changes c JOIN bank_guarantees bg ON bg.id = c.bg_id LEFT JOIN users u ON u.id = c.requested_by
+    WHERE c.status = 'Pending' ORDER BY c.id DESC
+  `).all());
+});
+router.post('/pending-changes/:id/approve', requireRole('Admin'), (req, res) => {
+  const change = db.prepare('SELECT * FROM bg_pending_changes WHERE id = ?').get(req.params.id);
+  if (!change) return res.status(404).json({ error: 'Not found' });
+  if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
+  if (change.change_type === 'Delete') {
+    const bg = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(change.bg_id);
+    if (!bg) return res.status(400).json({ error: 'This Bank Guarantee no longer exists.' });
+    if (!canDeleteBG(bg)) {
+      return res.status(400).json({ error: 'This Bank Guarantee now has activity on file and can no longer be deleted - reject this request instead.' });
+    }
+    // deleteBGCompletely() also removes this very change_type='Delete' row
+    // (bg_pending_changes.bg_id is a hard FK) - there's nothing left to
+    // mark Approved afterward, so return here instead of falling through
+    // to the shared "mark Approved" update below.
+    deleteBGCompletely(change.bg_id);
+    return res.json({ ok: true });
+  }
+  const bg = db.prepare('SELECT * FROM bank_guarantees WHERE id = ?').get(change.bg_id);
+  if (!bg) return res.status(400).json({ error: 'This Bank Guarantee no longer exists.' });
+  if (bg.status === 'Released') return res.status(400).json({ error: 'This Bank Guarantee has since been released and is closed - reject this request instead.' });
+  applyBGEdit(change.bg_id, JSON.parse(change.proposed_fields || '{}'));
+  db.prepare(`UPDATE bg_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?`).run(req.user.id, change.id);
+  res.json({ ok: true });
+});
+router.post('/pending-changes/:id/reject', requireRole('Admin'), (req, res) => {
+  const change = db.prepare('SELECT * FROM bg_pending_changes WHERE id = ?').get(req.params.id);
+  if (!change) return res.status(404).json({ error: 'Not found' });
+  if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
+  db.prepare(`UPDATE bg_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, review_note=? WHERE id=?`)
+    .run(req.user.id, (req.body && req.body.review_note) || null, change.id);
   res.json({ ok: true });
 });
 
