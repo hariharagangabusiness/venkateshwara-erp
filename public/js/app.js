@@ -3247,7 +3247,7 @@ function renderPRRows(rows) {
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
         ${r.quotes_required ? `<button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Vendor Quotes</button>` : ''}
-        ${!r.status || (!['Pending','Rejected','InfoRequested'].includes(r.status) && !r.quotes_required) ? (r.quotes_required ? '' : '-') : ''}
+        <button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>
       </td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
@@ -3266,6 +3266,28 @@ window.resubmitPR = async (id) => {
     const r = await api(`/purchase/requests/${id}/resubmit`, { method: 'POST' });
     if (r.quotes_required) alert('This request now needs at least 2 vendor quotes before it can go back for approval - use the Vendor Quotes button to add them.');
     navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
+// "Repeat" a past PR (any status - the whole point is reordering something
+// already bought before, rejected/completed/cancelled included) by
+// pre-filling the New Purchase Request form above with its same lines and
+// project. Nothing is submitted here - it's a starting point the user
+// reviews/adjusts like any other new request, reusing the existing create
+// flow rather than a separate clone endpoint.
+window.repeatPR = async (id) => {
+  const r = (window.__PR_CACHE || []).find(x => x.id === id);
+  if (!r) return;
+  try {
+    const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
+    PR_LINES = lines.length
+      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0 }))
+      : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0 }];
+    renderPRLines();
+    const projectSel = document.getElementById('pr-project');
+    if (projectSel) projectSel.value = r.project_id || '';
+    const errEl = document.getElementById('pr-err');
+    if (errEl) errEl.style.display = 'none';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (e) { alert(e.message); }
 };
 window.showVendorsForPRLine = async (i) => {
