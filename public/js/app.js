@@ -3467,7 +3467,14 @@ function renderRFQVendorList(prId) {
   const selected = selectedIds.map(id => all.find(v => v.id === id)).filter(Boolean);
   const available = all.filter(v => !selectedIds.includes(v.id));
   const emails = RFQ_SELECTED_EMAILS[prId] || [];
-  addEl.innerHTML = available.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No more vendors to add -</option>';
+  // A real empty placeholder as the first option, not just omitted - a
+  // native <select> otherwise defaults its value to whatever option ends
+  // up first (the first available vendor), which would make sendRFQ's
+  // "pick up whatever's pending" auto-add silently email a vendor nobody
+  // actually chose.
+  addEl.innerHTML = available.length
+    ? `<option value="">- Select a vendor to add -</option>${available.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}`
+    : '<option value="">- No more vendors to add -</option>';
   const chip = (label, onRemove) => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;background:#eee;border-radius:10px;font-size:var(--fs-sm);">${label} <a href="#" onclick="${onRemove};return false;" style="margin-left:4px;">✕</a></span>`;
   const chips = [
     ...selected.map(v => chip(esc(v.name), `removeRFQVendor(${prId},${v.id})`)),
@@ -3516,6 +3523,15 @@ window.loadRFQTemplate = (prId) => {
 window.sendRFQ = async (prId) => {
   const resultEl = document.getElementById('rfq-send-result-' + prId);
   resultEl.innerHTML = '';
+  // A vendor picked in the dropdown or an email typed into the box but
+  // never explicitly "+ Add"ed is still an obvious intent to send to it -
+  // pick it up here instead of silently ignoring it and telling the user
+  // "add at least one vendor or email" when they just did.
+  const pendingVendorSel = document.getElementById('rfq-vendor-add-' + prId);
+  if (pendingVendorSel && pendingVendorSel.value) addRFQVendor(prId);
+  const pendingEmailInput = document.getElementById('rfq-email-add-' + prId);
+  if (pendingEmailInput && pendingEmailInput.value.trim()) addRFQEmail(prId);
+
   const itemIds = [...document.querySelectorAll(`.rfq-item-cb-${prId}:checked`)].map(cb => Number(cb.value));
   const vendorIds = RFQ_SELECTED_VENDORS[prId] || [];
   const extraEmails = RFQ_SELECTED_EMAILS[prId] || [];
