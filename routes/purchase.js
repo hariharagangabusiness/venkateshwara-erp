@@ -491,11 +491,12 @@ router.get('/orders/:id/audit-log', (req, res) => {
 // received") so it behaves identically to a PO raised natively - GRN
 // receive, edit, cancel, PDF/Word/email all just work on it afterwards.
 const PO_IMPORT_STATUSES = ['Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled'];
-const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date'];
+const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date', 'bill_ship_address'];
 router.get('/orders/import-template', requirePermission('purchase_order.manage'), (req, res) => {
   const exampleRow = {
     po_no: 'PO-LEGACY-1024', vendor_name: 'Acme Steel Traders', item_code_or_barcode: 'ITM-1001', quantity: 50, rate: 250,
     hsn_code: '7208', gst_rate: 18, delivery_date: '2025-06-30', terms: 'Standard terms apply', status: 'Open', po_date: '2025-04-01',
+    bill_ship_address: 'Head Office',
   };
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet([exampleRow], { header: PO_IMPORT_COLUMNS });
@@ -506,6 +507,7 @@ router.get('/orders/import-template', requirePermission('purchase_order.manage')
     ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.'],
     ['status is optional (defaults to Open) - one of: ' + PO_IMPORT_STATUSES.join(', ') + '.'],
     ['po_date is optional (defaults to today) - the order\'s original date, so imported history sorts correctly.'],
+    ['bill_ship_address is optional - matched by its Label in Company Settings > Bill-To/Ship-To Addresses (case-insensitive); leave blank to import without one.'],
   ]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -523,13 +525,14 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
   const findItem = db.prepare('SELECT * FROM items WHERE item_code = ? OR barcode = ?');
   const findVendorByName = db.prepare('SELECT * FROM vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
   const findPoByNo = db.prepare('SELECT id FROM purchase_orders WHERE po_no = ?');
+  const findAddressByLabel = db.prepare('SELECT id FROM company_addresses WHERE LOWER(TRIM(label)) = LOWER(TRIM(?))');
   const insertVendor = db.prepare(`INSERT INTO vendors (name, legal_name, status) VALUES (?, ?, 'Active')`);
   const insertPO = db.prepare(`
     INSERT INTO purchase_orders (po_no, vendor_id, item_id, quantity, rate, total_value, status, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at, company_address_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
-  let inserted = 0; const errors = [];
+  let inserted = 0; const errors = []; const warnings = [];
   rows.forEach((row, i) => {
     const rowNum = i + 2;
     const vendorName = String(row.vendor_name || '').trim();
@@ -551,6 +554,13 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
       const info = insertVendor.run(vendorName, vendorName);
       vendor = { id: info.lastInsertRowid };
     }
+    const addressLabel = String(row.bill_ship_address || '').trim();
+    let addressId = null;
+    if (addressLabel) {
+      const addr = findAddressByLabel.get(addressLabel);
+      if (!addr) { warnings.push(`Row ${rowNum}: no Bill-To/Ship-To address matches "${addressLabel}" - imported without one.`); }
+      else addressId = addr.id;
+    }
     const gstRate = row.gst_rate !== '' && row.gst_rate !== undefined ? Number(row.gst_rate) : 18;
     const total = qty * rate;
     const gstAmount = total * (gstRate || 0) / 100;
@@ -561,10 +571,10 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
     const createdAt = poDate ? poDate + ' 00:00:00' : new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     insertPO.run(poNo, vendor.id, item.id, qty, rate, total, status, req.user.id,
       String(row.hsn_code || '') || null, gstRate, gstAmount, String(row.terms || '') || null,
-      String(row.delivery_date || '') || null, createdAt);
+      String(row.delivery_date || '') || null, createdAt, addressId);
     inserted++;
   });
-  res.json({ inserted, skipped: errors.length, errors });
+  res.json({ inserted, skipped: errors.length, errors, warnings });
 });
 
 // ---- Store: GRN receive & issue to production ----
@@ -644,15 +654,17 @@ router.get('/store/movements', (req, res) => {
   `).all());
 });
 
-const STOCK_TEMPLATE_COLUMNS = ['item_code_or_barcode', 'movement_type', 'quantity', 'reference'];
+const STOCK_TEMPLATE_COLUMNS = ['item_code_or_barcode', 'movement_type', 'quantity', 'po_no', 'reference'];
 router.get('/store/movements/template', requirePermission('store.manage'), (req, res) => {
-  const exampleRow = { item_code_or_barcode: 'ITM-1001', movement_type: 'IN', quantity: 50, reference: 'GRN against PO-1024' };
+  const exampleRow = { item_code_or_barcode: 'ITM-1001', movement_type: 'IN', quantity: 50, po_no: 'PO-1024', reference: 'GRN against PO-1024' };
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet([exampleRow], { header: STOCK_TEMPLATE_COLUMNS });
   XLSX.utils.book_append_sheet(wb, ws, 'StockMovements');
   const note = XLSX.utils.aoa_to_sheet([['Notes'],
     ['movement_type must be IN (stock received) or OUT (issued to production).'],
-    ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.']]);
+    ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.'],
+    ['po_no is optional and only applies to IN movements - when it matches an open Purchase Order, this receipt counts toward that PO\'s received quantity and updates its status (Open/PartiallyReceived/Received), same as receiving against it from the Purchase Orders page.'],
+  ]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Disposition', 'attachment; filename="stock_in_out_upload_template.xlsx"');
@@ -667,25 +679,52 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
   const findItem = db.prepare('SELECT * FROM items WHERE item_code = ? OR barcode = ?');
+  const findPoByNo = db.prepare('SELECT * FROM purchase_orders WHERE po_no = ?');
   const insertMove = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, moved_by) VALUES (?,?,?,?,?)`);
   const adjustStock = db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = ?');
-  let inserted = 0; const errors = [];
-  rows.forEach((row, i) => {
-    const rowNum = i + 2;
-    const key = String(row.item_code_or_barcode || '').trim();
-    if (!key) { errors.push(`Row ${rowNum}: item_code_or_barcode is required - skipped.`); return; }
-    const item = findItem.get(key, key);
-    if (!item) { errors.push(`Row ${rowNum}: no item matches "${key}" - skipped.`); return; }
-    const type = String(row.movement_type || '').trim().toUpperCase();
-    if (type !== 'IN' && type !== 'OUT') { errors.push(`Row ${rowNum}: movement_type must be IN or OUT - skipped.`); return; }
-    const qty = Number(row.quantity) || 0;
-    if (qty <= 0) { errors.push(`Row ${rowNum}: quantity must be greater than 0 - skipped.`); return; }
-    if (type === 'OUT' && item.current_stock < qty) { errors.push(`Row ${rowNum}: insufficient stock for "${item.name}" - skipped.`); return; }
-    insertMove.run(item.id, type, qty, String(row.reference || '') || null, req.user.id);
-    adjustStock.run(type === 'IN' ? qty : -qty, item.id);
-    inserted++;
+  const updatePoStatus = db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?');
+  let inserted = 0; const errors = []; const warnings = [];
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const key = String(row.item_code_or_barcode || '').trim();
+      if (!key) { errors.push(`Row ${rowNum}: item_code_or_barcode is required - skipped.`); return; }
+      const item = findItem.get(key, key);
+      if (!item) { errors.push(`Row ${rowNum}: no item matches "${key}" - skipped.`); return; }
+      const type = String(row.movement_type || '').trim().toUpperCase();
+      if (type !== 'IN' && type !== 'OUT') { errors.push(`Row ${rowNum}: movement_type must be IN or OUT - skipped.`); return; }
+      const qty = Number(row.quantity) || 0;
+      if (qty <= 0) { errors.push(`Row ${rowNum}: quantity must be greater than 0 - skipped.`); return; }
+      if (type === 'OUT' && item.current_stock < qty) { errors.push(`Row ${rowNum}: insufficient stock for "${item.name}" - skipped.`); return; }
+      const poNo = String(row.po_no || '').trim();
+      let po = null;
+      let reference = String(row.reference || '') || null;
+      if (poNo) {
+        if (type !== 'IN') {
+          warnings.push(`Row ${rowNum}: po_no is only applied to IN movements - ignored for this OUT row.`);
+        } else {
+          po = findPoByNo.get(poNo);
+          if (!po) { warnings.push(`Row ${rowNum}: no Purchase Order matches "${poNo}" - imported without linking to a PO.`); }
+          else if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
+            warnings.push(`Row ${rowNum}: PO "${poNo}" is already ${po.status} - imported without linking to it.`);
+            po = null;
+          } else {
+            reference = 'PO#' + po.id;
+          }
+        }
+      }
+      insertMove.run(item.id, type, qty, reference, req.user.id);
+      adjustStock.run(type === 'IN' ? qty : -qty, item.id);
+      if (po) {
+        const receivedSoFar = poReceivedQty(po.id);
+        const newStatus = receivedSoFar >= po.quantity ? 'Received' : 'PartiallyReceived';
+        updatePoStatus.run(newStatus, po.id);
+      }
+      inserted++;
+    });
   });
-  res.json({ inserted, skipped: errors.length, errors });
+  tx();
+  res.json({ inserted, skipped: errors.length, errors, warnings });
 });
 
 router.get('/store/low-stock', (req, res) => {
