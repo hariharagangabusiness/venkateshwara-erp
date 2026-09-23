@@ -82,39 +82,20 @@ const ENTITIES = {
       return { insert: { name, contact_person: row.contact_person || null, phone: row.phone ? String(row.phone) : null, email: row.email || null, address: row.address || null, gstin: row.gstin || null, source: row.source || null } };
     },
   },
-  vendors: {
-    label: 'Vendors',
-    table: 'vendors',
-    columns: ['name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'category'],
-    example: { name: 'Steel Traders Pvt Ltd', contact_person: 'Suresh Kumar', phone: '9812345678', email: 'sales@steeltraders.example', address: 'Industrial Area, Faridabad', gstin: '06XYZAB5678G1Z9', category: 'Raw Material' },
-    notes: ['name is required.', 'category is a free-text tag (e.g. Raw Material, Spares, Services) - it is matched against an item\'s category on the vendor-comparison page.'],
-    importRow(row) {
-      const name = String(row.name || '').trim();
-      if (!name) return { error: 'name is required' };
-      if (row.gstin) {
-        const existing = db.prepare('SELECT id FROM vendors WHERE gstin = ?').get(String(row.gstin));
-        if (existing) return { error: `duplicate GSTIN of vendor #${existing.id} - skipped` };
-      }
-      return { insert: { name, contact_person: row.contact_person || null, phone: row.phone ? String(row.phone) : null, email: row.email || null, address: row.address || null, gstin: row.gstin || null, category: row.category || null } };
-    },
-  },
-  items: {
-    label: 'Items (Item Master)',
-    table: 'items',
-    columns: ['item_code', 'name', 'unit', 'category', 'reorder_level', 'current_stock'],
-    example: { item_code: 'ITM-2001', name: 'MS Angle 50x50x6', unit: 'Kg', category: 'Raw Material', reorder_level: 100, current_stock: 250 },
-    notes: ['name is required. item_code, if given, must be unique - a row reusing an existing item_code is skipped.'],
-    importRow(row) {
-      const name = String(row.name || '').trim();
-      if (!name) return { error: 'name is required' };
-      const code = row.item_code ? String(row.item_code).trim() : null;
-      if (code) {
-        const existing = db.prepare('SELECT id FROM items WHERE item_code = ?').get(code);
-        if (existing) return { error: `duplicate item_code "${code}" (item #${existing.id}) - skipped` };
-      }
-      return { insert: { item_code: code, name, unit: row.unit || 'Nos', category: row.category || null, reorder_level: Number(row.reorder_level) || 0, current_stock: Number(row.current_stock) || 0, status: 'Approved' } };
-    },
-  },
+  // Vendors and Items deliberately do NOT have entries here, even though
+  // this framework could support them. Vendor Master and Item Master
+  // already have their own dedicated bulk-upload (routes/masters.js,
+  // POST /vendors/bulk-upload and /items/bulk-upload) with a template that
+  // covers every field on those master pages (GSTIN/PAN/bank details/MSME/
+  // state/payment terms for vendors; HSN/location for items) and upsert
+  // semantics (a re-upload updates an existing vendor/item instead of
+  // erroring or creating a duplicate). A second, narrower "Vendors"/"Items"
+  // entry here used to exist with a much smaller column set that didn't
+  // match either the real master page or the dedicated importer - exactly
+  // the "fields don't match the page" confusion this generic tool should
+  // never cause. Use the Vendor Master / Item Master pages' own upload
+  // panels for those two; this generic importer is for entities that have
+  // no dedicated page of their own.
   employees: {
     label: 'Employees',
     table: 'employees',

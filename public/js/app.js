@@ -600,11 +600,16 @@ async function uploadTemplateFile(apiPath, fileInputId, resultElId, afterSuccess
     const fd = new FormData();
     fd.append('file', fileEl.files[0]);
     const result = await apiUpload(apiPath, fd, 'POST');
+    // `updated` is only present on the importers that support upsert
+    // (re-uploading the same file to fix/complete existing records) -
+    // shown only when present so importers that are strictly insert-only
+    // don't show a misleading "Updated: 0".
     resultEl.innerHTML = `<div class="msg ${result.errors.length ? 'err' : 'ok'}">
-      Inserted: <b>${result.inserted}</b>, Skipped: <b>${result.skipped}</b>
+      Inserted: <b>${result.inserted}</b>${result.updated !== undefined ? `, Updated: <b>${result.updated}</b>` : ''}, Skipped: <b>${result.skipped}</b>
       ${result.errors.length ? '<br>' + result.errors.map(e => esc(e)).join('<br>') : ''}
+      ${result.warnings && result.warnings.length ? '<br>' + result.warnings.map(w => esc(w)).join('<br>') : ''}
     </div>`;
-    if (result.inserted > 0 && afterSuccess) afterSuccess();
+    if ((result.inserted > 0 || result.updated > 0) && afterSuccess) afterSuccess();
   } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
 }
 

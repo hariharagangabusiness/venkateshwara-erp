@@ -198,24 +198,54 @@ router.post('/vendors/bulk-upload', requirePermission('purchase_order.manage', '
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
   const cols = VENDOR_FIELDS.filter(c => c !== 'address');
   const insert = db.prepare(`INSERT INTO vendors (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
-  let inserted = 0; const errors = [];
-  rows.forEach((row, i) => {
-    const rowNum = i + 2;
-    const name = String(row.name || row.legal_name || '').trim();
-    if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
-    const gstin = String(row.gstin || '').trim();
-    if (!validGstin(gstin)) { errors.push(`Row ${rowNum}: GSTIN "${gstin}" looks invalid - skipped.`); return; }
-    const values = cols.map(c => {
-      if (c === 'name') return name;
-      if (c === 'is_msme') return /^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0;
-      if (c === 'country') return String(row.country || '') || 'India';
-      if (c === 'status') return 'Active';
-      return String(row[c] || '') || null;
+  const findByGstin = db.prepare('SELECT * FROM vendors WHERE gstin = ?');
+  const findByName = db.prepare('SELECT * FROM vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
+  let inserted = 0, updated = 0; const errors = [];
+  // Wrapped in a transaction: without one, a mid-file failure (e.g. the DB's
+  // own GSTIN unique index rejecting an old-style duplicate row) used to
+  // throw straight out of this handler, leaving whatever rows had already
+  // been inserted committed with no summary response at all.
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const name = String(row.name || row.legal_name || '').trim();
+      if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
+      const gstin = String(row.gstin || '').trim();
+      if (!validGstin(gstin)) { errors.push(`Row ${rowNum}: GSTIN "${gstin}" looks invalid - skipped.`); return; }
+      // Re-uploading the same file (e.g. after exporting, filling in a
+      // missing field, and re-importing) updates the existing vendor
+      // instead of failing on the GSTIN unique index or creating a
+      // duplicate-by-name row. Matched by GSTIN first (the real durable
+      // identifier), falling back to an exact name match when no GSTIN is
+      // given. A blank cell never overwrites an existing value, so a
+      // partial re-export/re-import can't accidentally wipe a field the
+      // file just didn't happen to carry.
+      const existing = (gstin && findByGstin.get(gstin)) || findByName.get(name);
+      if (existing) {
+        const sets = cols.map(c => `${c} = ?`).join(',');
+        const values = cols.map(c => {
+          if (c === 'name') return name;
+          if (c === 'is_msme') return row.is_msme !== '' ? (/^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0) : existing.is_msme;
+          const raw = row[c];
+          return (raw !== undefined && String(raw).trim() !== '') ? String(raw).trim() : existing[c];
+        });
+        db.prepare(`UPDATE vendors SET ${sets} WHERE id = ?`).run(...values, existing.id);
+        updated++;
+        return;
+      }
+      const values = cols.map(c => {
+        if (c === 'name') return name;
+        if (c === 'is_msme') return /^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0;
+        if (c === 'country') return String(row.country || '') || 'India';
+        if (c === 'status') return 'Active';
+        return String(row[c] || '') || null;
+      });
+      insert.run(...values);
+      inserted++;
     });
-    insert.run(...values);
-    inserted++;
   });
-  res.json({ inserted, skipped: errors.length, errors });
+  tx();
+  res.json({ inserted, updated, skipped: errors.length, errors });
 });
 
 router.get('/items', (req, res) => {
@@ -374,21 +404,44 @@ router.post('/items/bulk-upload', requirePermission('item.manage'), uploadMemory
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
   const insert = db.prepare(`INSERT INTO items (item_code, name, unit, category, reorder_level, hsn_code, location) VALUES (?,?,?,?,?,?,?)`);
-  const existingCodes = new Set(db.prepare('SELECT item_code FROM items WHERE item_code IS NOT NULL').all().map(r => r.item_code));
-  let inserted = 0; const errors = [];
-  rows.forEach((row, i) => {
-    const rowNum = i + 2;
-    const name = String(row.name || '').trim();
-    if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
-    const code = String(row.item_code || '').trim() || null;
-    if (code && existingCodes.has(code)) { errors.push(`Row ${rowNum}: item_code "${code}" already exists - skipped.`); return; }
-    const info = insert.run(code, name, String(row.unit || '') || 'Nos', String(row.category || '') || null,
-      Number(row.reorder_level) || 0, String(row.hsn_code || '') || null, String(row.location || '') || null);
-    db.prepare('UPDATE items SET barcode = ? WHERE id = ?').run(generateItemBarcode(info.lastInsertRowid), info.lastInsertRowid);
-    if (code) existingCodes.add(code);
-    inserted++;
+  const findByCode = db.prepare('SELECT * FROM items WHERE item_code = ?');
+  let inserted = 0, updated = 0; const errors = [];
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const name = String(row.name || '').trim();
+      if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
+      const code = String(row.item_code || '').trim() || null;
+      // Re-uploading the same file (e.g. after exporting, filling in a
+      // missing hsn_code/location, and re-importing) updates the existing
+      // item instead of skipping it as a duplicate - matched by item_code,
+      // the master's own natural key. A row with no item_code has nothing
+      // to match against, so it always inserts as new, same as before.
+      // Barcode and status are never touched by an update - a barcode is
+      // permanent once assigned, and a bulk data correction shouldn't
+      // silently flip an item back to Approved from Discontinued.
+      const existing = code ? findByCode.get(code) : null;
+      if (existing) {
+        db.prepare(`UPDATE items SET name=?, unit=?, category=?, reorder_level=?, hsn_code=?, location=? WHERE id=?`).run(
+          name,
+          row.unit && String(row.unit).trim() ? String(row.unit).trim() : existing.unit,
+          row.category && String(row.category).trim() ? String(row.category).trim() : existing.category,
+          row.reorder_level !== undefined && String(row.reorder_level).trim() !== '' ? Number(row.reorder_level) : existing.reorder_level,
+          row.hsn_code && String(row.hsn_code).trim() ? String(row.hsn_code).trim() : existing.hsn_code,
+          row.location && String(row.location).trim() ? String(row.location).trim() : existing.location,
+          existing.id
+        );
+        updated++;
+        return;
+      }
+      const info = insert.run(code, name, String(row.unit || '') || 'Nos', String(row.category || '') || null,
+        Number(row.reorder_level) || 0, String(row.hsn_code || '') || null, String(row.location || '') || null);
+      db.prepare('UPDATE items SET barcode = ? WHERE id = ?').run(generateItemBarcode(info.lastInsertRowid), info.lastInsertRowid);
+      inserted++;
+    });
   });
-  res.json({ inserted, skipped: errors.length, errors });
+  tx();
+  res.json({ inserted, updated, skipped: errors.length, errors });
 });
 
 // Users management (Admin/HR)
