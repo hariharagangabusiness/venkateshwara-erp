@@ -43,6 +43,18 @@ function optionalDate(value) {
   const normalized = normalizeDate(value);
   return normalized ? { ok: true, value: normalized } : { ok: false, value: null };
 }
+// Real-world amount cells often carry a currency symbol, thousands
+// separators, or get typed/formatted as text ("₹2,50,000" and "250,000"
+// are both common when a user fills the template in Excel) - plain
+// Number() chokes on any of that and silently returns NaN, which then
+// reads identically to "blank" to the caller with no clue why. Strips
+// that noise before parsing, same reasoning as normalizeDate()'s
+// tolerance for Excel's own date-formatting quirks above.
+function parseAmount(value) {
+  if (typeof value === 'number') return value;
+  const cleaned = String(value === null || value === undefined ? '' : value).replace(/[₹$,\s]/g, '');
+  return cleaned === '' ? NaN : Number(cleaned);
+}
  
 // ===================== Entity registry =====================
 // Each entity defines: key, label, table, columns (with an example row for
@@ -145,8 +157,8 @@ const ENTITIES = {
       if (!cat) return { error: `no expense tracker category named "${catName}"` };
       const date = normalizeDate(row.entry_date);
       if (!date) return { error: 'entry_date must be YYYY-MM-DD' };
-      const amount = Number(row.amount);
-      if (!amount) return { error: 'amount must be a non-zero number' };
+      const amount = parseAmount(row.amount);
+      if (!amount) return { error: `amount must be a non-zero number (got ${JSON.stringify(row.amount)})` };
       return { upsert: { category_id: cat.id, entry_date: date, amount, notes: row.notes || null } };
     },
   },
@@ -210,8 +222,8 @@ const ENTITIES = {
       if (!['Advance', 'Performance'].includes(bgType)) return { error: 'bg_type must be Advance or Performance' };
       const orderType = String(row.order_type || '').trim();
       if (!['SO', 'PO', 'LEGACY'].includes(orderType)) return { error: 'order_type must be SO, PO or LEGACY' };
-      const value = Number(row.value);
-      if (!value) return { error: 'value must be a non-zero number' };
+      const value = parseAmount(row.value);
+      if (!value) return { error: `value must be a non-zero number (got ${JSON.stringify(row.value)})` };
       const validityExpiry = normalizeDate(row.validity_expiry);
       if (!validityExpiry) return { error: 'validity_expiry must be a valid date (YYYY-MM-DD)' };
       const issueDate = optionalDate(row.issue_date);
@@ -311,7 +323,24 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
- 
+
+  // A renamed, reordered-with-a-column-dropped, or otherwise altered
+  // header row makes the same field read as undefined on every single data
+  // row - which then fails the exact same per-row validation error dozens
+  // of times over, with nothing pointing at the real cause. sheet_to_json's
+  // defval only fills in a key for a header that actually exists in the
+  // sheet, so comparing the template's own column list against the parsed
+  // header keys catches this once, up front, before processing any rows.
+  if (rows.length) {
+    const gotColumns = new Set(Object.keys(rows[0]));
+    const missing = entity.columns.filter(c => !gotColumns.has(c));
+    if (missing.length) {
+      return res.status(400).json({
+        error: `This file's column headers don't match the ${entity.label} template - missing: ${missing.join(', ')}. Re-download the template and fill it in without renaming, reordering, or removing columns.`,
+      });
+    }
+  }
+
   let inserted = 0; const errors = [];
   const tx = db.transaction(() => {
     rows.forEach((row, i) => {
