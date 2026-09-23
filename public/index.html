@@ -55,6 +55,11 @@
   .nav-group h4 .chev{font-size:9px;transition:transform .15s ease;opacity:.8;}
   .nav-group.collapsed h4 .chev{transform:rotate(-90deg);}
   .nav-group.collapsed .nav-items{display:none;}
+  .panel.collapsible .panel-head{cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;}
+  .panel.collapsible .panel-head .chev{font-size:11px;transition:transform .15s ease;opacity:.6;margin-left:8px;}
+  .panel.collapsible.collapsed .panel-head{margin-bottom:0;}
+  .panel.collapsible.collapsed .panel-head .chev{transform:rotate(-90deg);}
+  .panel.collapsible.collapsed .panel-body{display:none;}
   .nav-item{display:block;padding:9px 16px;font-size:var(--fs-base);line-height:var(--lh-tight);color:#e2e8f0;text-decoration:none;cursor:pointer;border-left:3px solid transparent;}
   .nav-item:hover{background:rgba(255,255,255,.08);}
   .nav-item.active{background:rgba(255,255,255,.14);border-left-color:var(--accent);font-weight:600;}

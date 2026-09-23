@@ -405,26 +405,63 @@ const DEPT_JOBCARDS_GROUPS = [];
 // fresh in boot() for whoever's currently logged in.
 const DEPT_OWN_GROUP = { group: '', items: [] };
 
-// Which sidebar groups the user has collapsed, keyed by group label,
-// persisted per-browser so it survives navigation and page reloads. A group
-// containing the page currently being opened is always force-expanded (see
-// navigate()) even if the user had previously collapsed it - collapsing a
-// group is a "get it out of my way for now" choice, not "hide this forever".
-function loadCollapsedNavGroups() {
-  try { return JSON.parse(localStorage.getItem('erp_collapsed_nav_groups') || '{}'); } catch (e) { return {}; }
+// Which sidebar groups the user has explicitly EXPANDED, keyed by group
+// label, persisted per-browser so it survives navigation and page reloads.
+// Every group defaults to collapsed (a missing/falsy key) unless the user
+// has opened it before - the inverse of an earlier "collapsed" map, kept as
+// an expanded-set instead so a fresh browser starts with the whole sidebar
+// collapsed rather than everything open. A group containing the page
+// currently being opened is always force-expanded (see navigate()) even if
+// the user had previously collapsed it - collapsing a group is a "get it
+// out of my way for now" choice, not "hide this forever".
+function loadExpandedNavGroups() {
+  try { return JSON.parse(localStorage.getItem('erp_expanded_nav_groups') || '{}'); } catch (e) { return {}; }
 }
-function saveCollapsedNavGroups(map) {
-  try { localStorage.setItem('erp_collapsed_nav_groups', JSON.stringify(map)); } catch (e) {}
+function saveExpandedNavGroups(map) {
+  try { localStorage.setItem('erp_expanded_nav_groups', JSON.stringify(map)); } catch (e) {}
 }
 window.toggleNavGroup = (label) => {
-  const map = loadCollapsedNavGroups();
+  const map = loadExpandedNavGroups();
   map[label] = !map[label];
-  saveCollapsedNavGroups(map);
+  saveExpandedNavGroups(map);
   renderSidebar();
   if (CURRENT_PAGE) {
     const navEl = document.getElementById('nav-' + CURRENT_PAGE);
     if (navEl) navEl.classList.add('active');
   }
+};
+
+// Generic default-collapsed panel wrapper for the handful of high-traffic
+// list panels (Vendors, Purchase Orders, Item Master, etc.) that are long
+// enough to want out of the way until the user actually needs them - same
+// "collapsed by default, remembered once expanded" behavior as the sidebar
+// nav groups above, just keyed per-panel instead of per-nav-group. `key`
+// must be a stable, unique, attribute-safe id for this panel across the
+// app (e.g. 'vendors-list'). `headHtml` is rendered inside the clickable
+// header next to the chevron - callers put any dynamic count span there
+// with its own id so search/filter handlers can keep updating just that
+// text without needing to know about the collapsible wrapper.
+function loadExpandedPanels() {
+  try { return JSON.parse(localStorage.getItem('erp_expanded_panels') || '{}'); } catch (e) { return {}; }
+}
+function saveExpandedPanels(map) {
+  try { localStorage.setItem('erp_expanded_panels', JSON.stringify(map)); } catch (e) {}
+}
+function collapsiblePanel(key, headHtml, bodyHtml) {
+  const expanded = loadExpandedPanels();
+  const isCollapsed = !expanded[key];
+  return `<div class="panel collapsible${isCollapsed ? ' collapsed' : ''}" id="cp-${key}">
+    <h3 class="panel-head" onclick="toggleCollapsiblePanel('${key}')">${headHtml}<span class="chev">&#9660;</span></h3>
+    <div class="panel-body">${bodyHtml}</div>
+  </div>`;
+}
+window.toggleCollapsiblePanel = (key) => {
+  const el = document.getElementById('cp-' + key);
+  if (!el) return;
+  const expanded = loadExpandedPanels();
+  expanded[key] = !expanded[key];
+  saveExpandedPanels(expanded);
+  el.classList.toggle('collapsed');
 };
 // ===================== Mobile sidebar drawer =====================
 // On screens <=768px the sidebar becomes an off-canvas drawer (see the
@@ -453,11 +490,11 @@ function renderSidebar() {
   // department is its own separate group/tab, in pipeline order, rather than
   // combined into one "Department Job Cards" group.
   if (DEPT_JOBCARDS_GROUPS.length) groups.splice(3, 0, ...DEPT_JOBCARDS_GROUPS);
-  const collapsed = loadCollapsedNavGroups();
+  const expanded = loadExpandedNavGroups();
   groups.forEach(g => {
     const items = ALLOWED_PAGES ? g.items.filter(it => ALLOWED_PAGES.has(it.id)) : g.items;
     if (!items.length) return; // hide an empty group entirely rather than showing a bare heading
-    const isCollapsed = !!collapsed[g.group];
+    const isCollapsed = !expanded[g.group];
     const div = document.createElement('div');
     div.className = 'nav-group' + (isCollapsed ? ' collapsed' : '');
     const h4 = document.createElement('h4');
@@ -496,9 +533,9 @@ async function navigate(id) {
       const labelSpan = groupDiv.querySelector('h4 span');
       const label = labelSpan ? labelSpan.textContent : null;
       if (label) {
-        const collapsed = loadCollapsedNavGroups();
-        delete collapsed[label];
-        saveCollapsedNavGroups(collapsed);
+        const expanded = loadExpandedNavGroups();
+        expanded[label] = true;
+        saveExpandedNavGroups(expanded);
         renderSidebar();
         navEl = document.getElementById('nav-' + id);
       }
@@ -2794,6 +2831,12 @@ async function renderDeptJobCards(el, stage, label, onlyStage) {
         ${sec.rows.length ? tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], sec.rows, cardRow)
           : '<p class="muted">No job cards in this section.</p>'}
       </div>`).join('');
+  } else if (stage === 'Store') {
+    // Collapsed by default like the rest of Store & Inventory's list panels
+    // (Item Master, Recent Movements) - this one's keyed on the stage
+    // rather than every dept's job card board, since only Store's was asked for.
+    body = collapsiblePanel('store-job-cards', `${esc(label)} (${cards.length})`,
+      tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], cards, cardRow));
   } else {
     body = `<div class="panel"><h3>${esc(label)} (${cards.length})</h3>
       ${tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], cards, cardRow)}
@@ -3095,13 +3138,13 @@ PAGES.vendors = async (el) => {
       <button class="btn" onclick="uploadVendorTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="ve-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3 id="ve-count">Vendors (${vendors.length})</h3>
+    ${collapsiblePanel('vendors-list', `<span id="ve-count">Vendors (${vendors.length})</span>`, `
       ${renderListSearch('vendors', vendors, ['legal_name', 'name', 'gstin', 'state', 'category', 'contact_person', 'phone', 'po_email', 'email'], (rows) => {
         document.getElementById('ve-table-wrap').innerHTML = renderVendorRows(rows);
         document.getElementById('ve-count').textContent = 'Vendors (' + rows.length + ')';
       }, 'Search by name, GSTIN, state, category, contact...')}
       <div id="ve-table-wrap">${renderVendorRows(vendors)}</div>
-    </div>
+    `)}
     <div class="panel" id="ve-edit-panel" style="display:none;"><h3>Edit Vendor</h3><div id="ve-edit-body"></div></div>`;
   window.__VENDOR_CACHE = vendors;
 };
@@ -3487,13 +3530,13 @@ PAGES['purchase-orders'] = async (el) => {
       <button class="btn" onclick="uploadPOImportTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="po-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3 id="po-count">Purchase Orders (${orders.length})</h3>
+    ${collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${orders.length})</span>`, `
       ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
         document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
         document.getElementById('po-count').textContent = 'Purchase Orders (' + rows.length + ')';
       }, 'Search by PO no, vendor, item, status...')}
       <div id="po-table-wrap">${renderPORows(orders)}</div>
-    </div>`;
+    `)}`;
   window.__PO_PRS = prs;
   window.__PO_VENDORS = vendors;
   window.__PO_ITEMS = items;
@@ -3707,10 +3750,10 @@ async function renderItemMasterSheet(el) {
       <button class="btn" onclick="addItem()">Add Item</button>
       <div class="muted" style="margin-top:8px;">A unique barcode (EAN-13, internal-use 20-prefix range) is generated automatically for every item.</div>
     </div>
-    ${pendingItems.length ? `<div class="panel"><h3>Pending Item Master Review (${pendingItems.length})</h3>
+    ${pendingItems.length ? collapsiblePanel('pending-item-review', `Pending Item Master Review (${pendingItems.length})`, `
       <p class="muted">These were typed freehand on a Purchase Request instead of picked from the master. Complete the details and Approve - typically while receiving the goods - to add them to the permanent Item Master (a barcode is generated at that point).</p>
       <div id="pending-items-body"></div>
-    </div>` : ''}
+    `) : ''}
     ${pendingChanges.length ? `<div class="panel"><h3>Pending Item Changes (${pendingChanges.length})</h3>
       <p class="muted">An edit or delete on an existing item doesn't take effect until an Admin approves it here, so nothing changes underneath a transaction already using the item's current details.</p>
       ${tableHTML(['Item', 'Change', 'Details', 'Requested By', ''], pendingChanges, c => `
@@ -3727,7 +3770,7 @@ async function renderItemMasterSheet(el) {
       <button class="btn" onclick="uploadItemTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="it-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>Item Master (${approvedItems.length})</h3>
+    ${collapsiblePanel('item-master-list', `Item Master (${approvedItems.length})`, `
       ${tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode', 'Status', ''], approvedItems, i => `
         <tr><td>${esc(i.item_code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${esc(i.category)||'-'}</td><td>${esc(i.location)||'-'}</td>
           <td>${i.current_stock}${i.current_stock <= i.reorder_level ? ' ⚠️' : ''}</td><td>${i.reorder_level}</td>
@@ -3737,7 +3780,7 @@ async function renderItemMasterSheet(el) {
             ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
             : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
                <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}</td></tr>`)}
-    </div>
+    `)}
     <div class="panel" id="it-edit-panel" style="display:none;"><h3>Edit Item</h3><div id="it-edit-body"></div></div>`;
   if (pendingItems.length) renderPendingItemsPanel(pendingItems);
 }
@@ -3877,10 +3920,10 @@ async function renderStockInOutSheet(el) {
       <button class="btn" onclick="uploadStockTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="st-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>Recent Movements</h3>
+    ${collapsiblePanel('recent-movements', 'Recent Movements', `
       ${tableHTML(['Item', 'Type', 'Qty', 'Reference', 'Date'], movements.slice(0, 30), m => `
         <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
-    </div>`;
+    `)}`;
   const scanEl = document.getElementById('st-scan');
   scanEl.addEventListener('keydown', async (ev) => {
     if (ev.key !== 'Enter') return;
@@ -7019,12 +7062,12 @@ PAGES['service-centers'] = async (el) => {
       <button class="btn" onclick="saveServiceCenter()">${EDITING_SC_ID ? 'Save Changes' : 'Add Service Center'}</button>
       ${EDITING_SC_ID ? `<button class="btn outline" onclick="EDITING_SC_ID=null;navigate('service-centers')">Cancel</button>` : ''}
     </div>
-    <div class="panel"><h3>Service Centers (${centers.length})</h3>
+    ${collapsiblePanel('service-centers-list', `Service Centers (${centers.length})`, `
       ${tableHTML(['Name', 'City', 'Contact', 'Phone', 'Status', ''], centers, c => `
         <tr><td>${esc(c.name)}</td><td>${esc(c.city)||'-'}</td><td>${esc(c.contact_person)||'-'}</td><td>${esc(c.phone)||'-'}</td>
         <td>${badge(c.status)}</td>
         <td><button class="btn small outline" onclick="editServiceCenter(${c.id})">Edit</button></td></tr>`)}
-    </div>`;
+    `)}`;
   window.__SC_LIST = centers;
 };
 window.editServiceCenter = (id) => {
@@ -7072,11 +7115,11 @@ PAGES['sc-transfers'] = async (el) => {
       <div style="margin-top:12px;"><button class="btn green" onclick="saveSCTransfer()">Dispatch Transfer</button></div>
       <div id="sct-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>Transfers (${transfers.length})</h3>
+    ${collapsiblePanel('transfers-list', `Transfers (${transfers.length})`, `
       ${tableHTML(['Transfer No', 'Service Center', 'Items', 'Status', 'Dispatched By', 'Dispatched At'], transfers, t => `
         <tr><td>${esc(t.transfer_no)}</td><td>${esc(t.service_center_name)} (${esc(t.service_center_city)||'-'})</td><td>${t.item_count}</td>
         <td>${badge(t.status)}</td><td>${esc(t.dispatched_by_name)||'-'}</td><td>${new Date(t.dispatched_at).toLocaleString()}</td></tr>`)}
-    </div>`;
+    `)}`;
   renderSCTLines();
 };
 function renderSCTLines() {
