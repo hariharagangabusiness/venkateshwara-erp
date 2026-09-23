@@ -246,6 +246,7 @@ router.put('/requests/:id/quotes/:quoteId/select', requirePermission('purchase_r
 // the system and gets typed into POST /requests/:id/quotes as before,
 // optionally against the specific line item and carrying payment_terms/
 // delivery_commit_date/quoted_qty this RFQ asked for.
+const RFQ_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
   const requests = db.prepare(`
     SELECT r.*, u.full_name as created_by_name FROM rfq_requests r LEFT JOIN users u ON u.id = r.created_by
@@ -255,28 +256,45 @@ router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'pu
     SELECT rv.*, v.name as vendor_name FROM rfq_request_vendors rv JOIN vendors v ON v.id = rv.vendor_id
     WHERE rv.rfq_request_id = ? ORDER BY rv.id
   `);
-  res.json(requests.map(r => ({ ...r, item_ids: JSON.parse(r.item_ids || '[]'), vendors: vendorsByRfq.all(r.id) })));
+  const emailsByRfq = db.prepare(`SELECT * FROM rfq_request_emails WHERE rfq_request_id = ? ORDER BY id`);
+  res.json(requests.map(r => ({
+    ...r, item_ids: JSON.parse(r.item_ids || '[]'),
+    vendors: vendorsByRfq.all(r.id), emails: emailsByRfq.all(r.id),
+  })));
 });
 
 router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
   const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
   if (!pr) return res.status(404).json({ error: 'Not found' });
   const { item_ids, vendor_ids, subject, body } = req.body;
+  // Manually-typed recipients not on file in Vendor Master at all (a new
+  // vendor's buyer, a broker, an alternate contact) - optional, alongside
+  // (not instead of) picking from Vendor Master.
+  const extraEmails = [...new Set((Array.isArray(req.body.extra_emails) ? req.body.extra_emails : [])
+    .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
+  const badEmails = extraEmails.filter(e => !RFQ_EMAIL_RE.test(e));
+  if (badEmails.length) return res.status(400).json({ error: `"${badEmails.join('", "')}" doesn't look like a valid email address.` });
   if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
-  if (!Array.isArray(vendor_ids) || !vendor_ids.length) return res.status(400).json({ error: 'Select at least one vendor to send the RFQ to.' });
+  if ((!Array.isArray(vendor_ids) || !vendor_ids.length) && !extraEmails.length) {
+    return res.status(400).json({ error: 'Add at least one vendor or email address to send the RFQ to.' });
+  }
   if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
   if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
   const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(pr.id).map(r => r.id);
   const badItems = item_ids.filter(id => !lines.includes(Number(id)));
   if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
-  const vendors = db.prepare(`SELECT * FROM vendors WHERE id IN (${vendor_ids.map(() => '?').join(',')})`).all(...vendor_ids);
-  if (vendors.length !== vendor_ids.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
+  const vendorIds = Array.isArray(vendor_ids) ? vendor_ids : [];
+  const vendors = vendorIds.length ? db.prepare(`SELECT * FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).all(...vendorIds) : [];
+  if (vendors.length !== vendorIds.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
 
   const info = db.prepare(`INSERT INTO rfq_requests (purchase_request_id, item_ids, subject, body, created_by) VALUES (?,?,?,?,?)`)
     .run(pr.id, JSON.stringify(item_ids.map(Number)), subject.trim(), body, req.user.id);
   const rfqId = info.lastInsertRowid;
   const insertVendorRow = db.prepare(`INSERT INTO rfq_request_vendors (rfq_request_id, vendor_id, email_status) VALUES (?,?,'Pending')`);
   const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
+  const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
+  const updateEmailRow = db.prepare(`UPDATE rfq_request_emails SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
+  const now = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 
   const results = [];
   for (const vendor of vendors) {
@@ -293,11 +311,24 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     const personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
     const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody });
     if (result.sent) {
-      updateVendorRow.run('Sent', null, new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''), rowId);
+      updateVendorRow.run('Sent', null, now(), rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Sent' });
     } else {
       updateVendorRow.run('Failed', result.reason || 'Unknown error', null, rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Failed', email_error: result.reason });
+    }
+  }
+  for (const email of extraEmails) {
+    const rowId = insertEmailRow.run(rfqId, email).lastInsertRowid;
+    // No vendor name to personalize with for a manually-typed address.
+    const personalizedBody = body.split('{{vendor_name}}').join('');
+    const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody });
+    if (result.sent) {
+      updateEmailRow.run('Sent', null, now(), rowId);
+      results.push({ email, email_status: 'Sent' });
+    } else {
+      updateEmailRow.run('Failed', result.reason || 'Unknown error', null, rowId);
+      results.push({ email, email_status: 'Failed', email_error: result.reason });
     }
   }
   res.json({ id: rfqId, results });
