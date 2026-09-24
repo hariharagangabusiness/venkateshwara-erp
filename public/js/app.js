@@ -367,10 +367,13 @@ const NAV = [
     { id: 'sales-invoices', label: 'Sales Invoices' },
     { id: 'soa', label: 'Statement of Accounts' },
     { id: 'operating-expenses', label: 'Operating Expenses' },
+    // Monthly Expense Tracker / Year Summary / Categories retired here -
+    // its categories and historical entries were folded into Operating
+    // Expenses above (see db/index.js's one-time migration), which is now
+    // the single continuous record. routes/expenseTracker.js and its
+    // tables are left completely intact, just no longer linked from the
+    // sidebar, so this is reversible by re-adding these 3 lines.
     { id: 'gst-summary', label: 'GST Summary' },
-    { id: 'expense-tracker', label: 'Monthly Expense Tracker' },
-    { id: 'expense-tracker-summary', label: 'Expense Tracker - Year Summary' },
-    { id: 'expense-tracker-categories', label: 'Expense Tracker - Categories' },
     { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
     { id: 'foreign-payments', label: 'Foreign Payments' },
   ]},
@@ -7292,6 +7295,7 @@ PAGES['operating-expenses'] = async (el) => {
       </div>
       <div><label>Description</label><input id="oe-desc" style="width:100%;"></div>
       <button class="btn" onclick="addOperatingExpense()" style="margin-top:8px;">Add Expense</button>
+      <button class="btn small outline" type="button" onclick="openOeBulkGrid()" style="margin-top:8px;margin-left:8px;">Bulk Entry Grid</button>
       ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()" style="margin-top:8px;margin-left:8px;">Manage Categories</button>` : ''}
       <div id="oe-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
@@ -7341,6 +7345,112 @@ window.toggleOeCategory = async (id, active) => {
   await api('/finance/operating-expense-categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
   const categories = await api('/finance/operating-expense-categories');
   document.getElementById('oec-list-wrap').innerHTML = oeCategoryListHTML(categories);
+};
+
+// ---- Bulk pivot-grid entry (replaces the Monthly Expense Tracker's daily/
+// fixed grids, generalized to a single configurable Category x Date grid
+// with a swappable orientation, since Operating Expenses now covers both
+// kinds of category in one unified list). Every filled cell becomes its
+// own operating_expenses row via POST /finance/operating-expenses/bulk -
+// see that route for why there's no upsert/edit semantics here (plain
+// transaction log, not a rollup).
+window.openOeBulkGrid = async () => {
+  const categories = (await api('/finance/operating-expense-categories')).filter(c => c.active);
+  window.OE_BULK_CATEGORIES = categories;
+  window.OE_BULK_SELECTED = new Set(categories.map(c => c.id));
+  const body = `
+    <div class="form-grid">
+      <div><label>Month</label><input type="month" id="oebulk-month" value="${new Date().toISOString().slice(0, 7)}"></div>
+      <div><label>Orientation</label><select id="oebulk-orientation">
+        <option value="cat-rows">Category rows / Date columns</option>
+        <option value="date-rows">Date rows / Category columns</option>
+      </select></div>
+      <div><label>Paid Via (applies to this batch)</label><select id="oebulk-paidvia"><option>Bank</option><option>Cash</option></select></div>
+    </div>
+    <div style="margin:8px 0;">
+      <b>Categories to include:</b>
+      <button class="btn small outline" type="button" onclick="oeBulkSelectAll(true)">Select All</button>
+      <button class="btn small outline" type="button" onclick="oeBulkSelectAll(false)">Clear All</button>
+      <div style="max-height:130px;overflow-y:auto;border:1px solid var(--border);border-radius:5px;padding:6px;margin-top:6px;display:grid;grid-template-columns:repeat(3,1fr);gap:2px;">
+        ${categories.map(c => `<label style="font-size:12px;font-weight:normal;"><input type="checkbox" checked data-oebulk-cat="${c.id}" onchange="if(this.checked) window.OE_BULK_SELECTED.add(${c.id}); else window.OE_BULK_SELECTED.delete(${c.id});"> ${esc(c.name)}</label>`).join('')}
+      </div>
+    </div>
+    <button class="btn small" type="button" onclick="renderOeBulkGrid()">Generate Grid</button>
+    <div id="oebulk-grid-wrap" style="margin-top:12px;overflow-x:auto;"></div>`;
+  openMiniModal('Bulk Entry Grid', body, true);
+};
+window.oeBulkSelectAll = (select) => {
+  document.querySelectorAll('[data-oebulk-cat]').forEach(cb => {
+    cb.checked = select;
+    const id = Number(cb.getAttribute('data-oebulk-cat'));
+    if (select) window.OE_BULK_SELECTED.add(id); else window.OE_BULK_SELECTED.delete(id);
+  });
+};
+window.renderOeBulkGrid = () => {
+  const month = val('oebulk-month');
+  if (!month) { alert('Pick a month first.'); return; }
+  const [y, m] = month.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const dates = Array.from({ length: daysInMonth }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const selectedCats = window.OE_BULK_CATEGORIES.filter(c => window.OE_BULK_SELECTED.has(c.id));
+  if (!selectedCats.length) { alert('Select at least one category.'); return; }
+  const orientation = document.getElementById('oebulk-orientation').value;
+  const rows = orientation === 'date-rows' ? dates.map(d => ({ type: 'date', value: d })) : selectedCats.map(c => ({ type: 'cat', value: c }));
+  const cols = orientation === 'date-rows' ? selectedCats.map(c => ({ type: 'cat', value: c })) : dates.map(d => ({ type: 'date', value: d }));
+  window.OE_BULK_ROWS = rows;
+  window.OE_BULK_COLS = cols;
+  let html = '<table><thead><tr><th></th>';
+  cols.forEach(c => { html += `<th>${c.type === 'date' ? c.value.slice(8) : esc(c.value.name)}</th>`; });
+  html += '<th>Row Total</th></tr></thead><tbody>';
+  rows.forEach((r, ri) => {
+    html += `<tr><td><b>${r.type === 'date' ? r.value : esc(r.value.name)}</b></td>`;
+    cols.forEach((c, ci) => {
+      html += `<td><input type="number" id="oebulk-cell-${ri}-${ci}" style="width:75px;" oninput="oeBulkRecalc()"></td>`;
+    });
+    html += `<td id="oebulk-rowtotal-${ri}">0</td></tr>`;
+  });
+  html += `<tr><td><b>Column Total</b></td>`;
+  cols.forEach((c, ci) => { html += `<td id="oebulk-coltotal-${ci}">0</td>`; });
+  html += `<td id="oebulk-grandtotal"><b>0</b></td></tr></tbody></table>`;
+  document.getElementById('oebulk-grid-wrap').innerHTML = html +
+    `<button class="btn" style="margin-top:10px;" onclick="saveOeBulkGrid()">Save All</button>
+     <div id="oebulk-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+};
+window.oeBulkRecalc = () => {
+  const rows = window.OE_BULK_ROWS, cols = window.OE_BULK_COLS;
+  let grand = 0;
+  cols.forEach((c, ci) => {
+    let colSum = 0;
+    rows.forEach((r, ri) => { colSum += Number(val(`oebulk-cell-${ri}-${ci}`)) || 0; });
+    document.getElementById(`oebulk-coltotal-${ci}`).textContent = fmt(colSum);
+    grand += colSum;
+  });
+  rows.forEach((r, ri) => {
+    let rowSum = 0;
+    cols.forEach((c, ci) => { rowSum += Number(val(`oebulk-cell-${ri}-${ci}`)) || 0; });
+    document.getElementById(`oebulk-rowtotal-${ri}`).textContent = fmt(rowSum);
+  });
+  document.getElementById('oebulk-grandtotal').textContent = fmt(grand);
+};
+window.saveOeBulkGrid = async () => {
+  const rows = window.OE_BULK_ROWS, cols = window.OE_BULK_COLS;
+  const entries = [];
+  rows.forEach((r, ri) => {
+    cols.forEach((c, ci) => {
+      const amt = Number(val(`oebulk-cell-${ri}-${ci}`));
+      if (!amt) return;
+      const category = r.type === 'cat' ? r.value.name : c.value.name;
+      const expense_date = r.type === 'date' ? r.value : c.value;
+      entries.push({ category, expense_date, amount: amt });
+    });
+  });
+  const errEl = document.getElementById('oebulk-err');
+  if (!entries.length) { errEl.textContent = 'Enter at least one amount.'; errEl.style.display = 'block'; return; }
+  try {
+    await api('/finance/operating-expenses/bulk', { method: 'POST', body: JSON.stringify({ paid_via: val('oebulk-paidvia'), entries }) });
+    closeMiniModal();
+    navigate('operating-expenses');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ===================== Round 5: GST Summary =====================
