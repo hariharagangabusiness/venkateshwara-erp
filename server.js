@@ -32,7 +32,15 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 // Explicit mount so uploaded files stay servable at /uploads/... even when
 // UPLOADS_DIR points outside public/ (e.g. a Render persistent disk).
-app.use('/uploads', express.static(getUploadsDir()));
+const uploadsDir = getUploadsDir();
+app.use('/uploads', express.static(uploadsDir));
+// Printed once at boot specifically so a deploy log makes it obvious
+// whether UPLOADS_DIR is actually in effect on THIS running container -
+// a variable saved but not yet deployed on Railway looks identical from
+// the dashboard, but this line would still show the ephemeral default.
+console.log(process.env.UPLOADS_DIR
+  ? `[uploads] using persistent UPLOADS_DIR: ${uploadsDir}`
+  : `[uploads] UPLOADS_DIR not set - using ephemeral default: ${uploadsDir}`);
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/masters', require('./routes/masters'));
