@@ -761,6 +761,14 @@ const MIGRATIONS = [
   // NULL for every attachment type that existed before this (BG scans,
   // expense voucher receipts, etc.), which just never show a category.
   `ALTER TABLE attachments ADD COLUMN document_type TEXT`,
+  // ---- Per-department outgoing email identity ----
+  // Lets a department's own name/address show as the "From" on the mail it
+  // sends (PO/RFQ emails from Purchase, Invoice/Proforma emails from Sales,
+  // SOA/BG reminder emails from Accounts) while still relaying through the
+  // one shared SMTP account in lib/settings.js - NULL (the default) falls
+  // back to that global From Name/Address, so this is opt-in per department.
+  `ALTER TABLE departments ADD COLUMN email_from_name TEXT`,
+  `ALTER TABLE departments ADD COLUMN email_from_address TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

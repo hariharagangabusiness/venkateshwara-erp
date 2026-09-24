@@ -10,6 +10,7 @@ const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
 const { generateFocAnnexurePdf } = require('../lib/focAnnexurePdf');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
+const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const router = express.Router();
 router.use(authRequired);
 
@@ -478,6 +479,7 @@ router.post('/invoices/:id/email', requirePermission('sales_order.manage'), asyn
       subject: `Tax Invoice ${inv.invoice_no} - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached Tax Invoice ${inv.invoice_no} for ₹${Number(inv.total_value).toLocaleString('en-IN')}.\n\nRegards,\nVenkateshwara Engineers`,
       attachments: [{ filename: `${inv.invoice_no.replace(/\//g, '-')}.pdf`, content: pdfBuffer }],
+      ...getDepartmentEmailIdentity('Sales'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
     return res.json({ ok: false, sent: false, message: result.reason });
@@ -662,6 +664,7 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
       subject: `Proforma Invoice ${pf.proforma_no} - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached Proforma Invoice ${pf.proforma_no} for ₹${Number(pf.total_value).toLocaleString('en-IN')}.\n\nRegards,\nVenkateshwara Engineers`,
       attachments: [{ filename: `${pf.proforma_no.replace(/\//g, '-')}.pdf`, content: pdfBuffer }],
+      ...getDepartmentEmailIdentity('Sales'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
     return res.json({ ok: false, sent: false, message: result.reason });

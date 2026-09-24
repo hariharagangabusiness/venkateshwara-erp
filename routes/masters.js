@@ -12,6 +12,18 @@ const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 
 // Simple read-only + admin-managed master lists
 router.get('/departments', (req, res) => res.json(db.prepare('SELECT * FROM departments ORDER BY name').all()));
+// A department's own outgoing-email identity (see lib/departmentEmail.js) -
+// Admin-only, since it changes what recipients see as the "From" on PO/
+// invoice/BG/SOA emails. Both fields are optional; clearing email_from_address
+// reverts that department to the global Email Settings identity.
+router.put('/departments/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { email_from_name, email_from_address } = req.body;
+  db.prepare(`UPDATE departments SET email_from_name = ?, email_from_address = ? WHERE id = ?`)
+    .run(email_from_name || null, email_from_address || null, existing.id);
+  res.json({ ok: true });
+});
 router.get('/roles', (req, res) => res.json(db.prepare('SELECT * FROM roles ORDER BY name').all()));
 router.get('/leave-types', (req, res) => res.json(db.prepare('SELECT * FROM leave_types').all()));
 router.get('/expense-categories', (req, res) => res.json(db.prepare('SELECT * FROM expense_categories').all()));
