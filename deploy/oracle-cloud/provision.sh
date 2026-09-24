@@ -21,8 +21,12 @@ apt-get install -y nodejs nginx git build-essential
 echo "== Installing headless-Chromium's shared library dependencies =="
 # Same list Railway's railpack.json installs - needed for @sparticuz/chromium
 # (PDF generation: offers, challans, purchase orders, invoices, service reports).
+# libasound2t64, not libasound2: Ubuntu 24.04's 64-bit time_t transition
+# renamed the concrete package, leaving "libasound2" a virtual name with two
+# ambiguous providers (libasound2t64 / liboss4-salsa-asound2) that apt
+# refuses to auto-resolve - "has no installation candidate" otherwise.
 apt-get install -y \
-  fonts-liberation libappindicator3-1 libasound2 libatk-bridge2.0-0 \
+  fonts-liberation libappindicator3-1 libasound2t64 libatk-bridge2.0-0 \
   libatk1.0-0 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 \
   libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 libxrandr2 \
   libxss1 libxtst6 xdg-utils
