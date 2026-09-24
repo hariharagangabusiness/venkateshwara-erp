@@ -697,8 +697,20 @@ router.put('/operating-expense-categories/:id', requireRole('Admin'), (req, res)
   }
 });
 
+// Scoped to one month by default (?month=YYYY-MM, defaulting to the
+// current month) rather than returning every row ever recorded - as this
+// table grows into the thousands, an unscoped SELECT * would mean
+// fetching and rendering the entire history on every page load just to
+// show this month's transactions. ?month=all is the explicit opt-out for
+// the rare case of actually needing to browse everything at once; the new
+// Monthly Category Summary below already covers "totals across months"
+// without needing the raw list to load unscoped.
 router.get('/operating-expenses', requirePermission('report.view_all', 'expense_voucher.view_all'), (req, res) => {
-  res.json(db.prepare('SELECT * FROM operating_expenses ORDER BY id DESC').all());
+  if (req.query.month === 'all') {
+    return res.json(db.prepare('SELECT * FROM operating_expenses ORDER BY id DESC').all());
+  }
+  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : new Date().toISOString().slice(0, 7);
+  res.json(db.prepare(`SELECT * FROM operating_expenses WHERE expense_date LIKE ? ORDER BY id DESC`).all(month + '%'));
 });
 router.post('/operating-expenses', requirePermission('expense_voucher.create'), (req, res) => {
   const { expense_date, category, description, amount, paid_via } = req.body;
@@ -720,52 +732,49 @@ router.post('/operating-expenses', requirePermission('expense_voucher.create'), 
   res.json({ id: info.lastInsertRowid });
 });
 
-// Bulk pivot-grid entry (Round: Expense Tracker consolidation) - lets
-// someone fill in many (category, date) amounts at once, e.g. a month's
-// worth of Diesel/Sweeper entries or all of a month's Fixed & Overhead
-// costs in one sitting, the same convenience the retired Monthly Expense
-// Tracker grid gave for those categories. Every cell just becomes its own
-// ordinary operating_expenses row via the same insert this single-entry
-// route above uses - there is no upsert-by-(category,date) here, because
-// unlike the old tracker's one-value-per-day-per-category rollup,
-// Operating Expenses is a plain transaction log where two genuine separate
-// expenses on the same day/category (e.g. two Diesel fills) are both
-// valid rows, not a conflict to resolve. Re-opening the grid later always
-// starts blank and only ever adds new rows, matching how the single-entry
-// form already behaves (no edit/delete exists for operating_expenses
-// today either).
-router.post('/operating-expenses/bulk', requirePermission('expense_voucher.create'), (req, res) => {
-  const { paid_via, entries } = req.body;
-  if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ error: 'No entries to save.' });
-  const mode = paid_via === 'Cash' ? 'Cash' : 'Bank';
-  const activeCategories = new Set(db.prepare(`SELECT name FROM operating_expense_categories WHERE active = 1`).all().map(c => c.name));
-  for (const e of entries) {
-    if (!e.category || !activeCategories.has(e.category)) {
-      return res.status(400).json({ error: `"${e.category || ''}" is not an active category. Pick one from the dropdown.` });
-    }
-    if (!e.expense_date || !/^\d{4}-\d{2}-\d{2}$/.test(e.expense_date)) {
-      return res.status(400).json({ error: `Invalid date for "${e.category}": ${e.expense_date || '(none)'}` });
-    }
-    if (!e.amount || Number(e.amount) <= 0) {
-      return res.status(400).json({ error: `Enter an amount greater than 0 for "${e.category}" on ${e.expense_date}.` });
-    }
-  }
-  const insertOe = db.prepare(`
-    INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
-    VALUES (?,?,?,?,?,?)
-  `);
-  const insertLedger = db.prepare(`
-    INSERT INTO finance_ledger (type, reference_table, reference_id, amount, direction, description, created_by)
-    VALUES ('OperatingExpense', 'operating_expenses', ?, ?, 'Outflow', ?, ?)
-  `);
-  const tx = db.transaction(() => {
-    entries.forEach(e => {
-      const info = insertOe.run(e.expense_date, e.category, e.description || null, e.amount, mode, req.user.id);
-      try { insertLedger.run(info.lastInsertRowid, e.amount, e.description || e.category, req.user.id); } catch (err) { /* best-effort ledger hook */ }
-    });
+// Month x Category review report (replaces the bulk pivot-entry grid,
+// which turned out not to be useful in practice - a read-only summary for
+// scanning spend patterns is what was actually wanted). Mirrors the old
+// Monthly Expense Tracker's /summary route, adapted for one unified
+// category list and operating_expenses' plain transaction shape:
+//  - An active category always appears, even at zero for months with no
+//    spend, so the list scans consistently across a full year.
+//  - A category that's since been deactivated only appears if it actually
+//    has spend that year - so reviewing an old year keeps its real
+//    history without cluttering a current year with a zeroed-out leftover.
+//  - A transaction with no category (allowed - see POST above) is bucketed
+//    under "(Uncategorized)" rather than silently dropped, so the grand
+//    total always reconciles with real total spend.
+router.get('/operating-expenses/summary', requirePermission('report.view_all', 'expense_voucher.view_all', 'expense_voucher.create'), (req, res) => {
+  const year = /^\d{4}$/.test(req.query.year || '') ? req.query.year : String(new Date().getFullYear());
+  const allCategories = db.prepare(`SELECT * FROM operating_expense_categories ORDER BY sort_order, name`).all();
+  const rows = db.prepare(`
+    SELECT COALESCE(category, '(Uncategorized)') as category, substr(expense_date, 1, 7) as month, SUM(amount) as total
+    FROM operating_expenses
+    WHERE substr(expense_date, 1, 4) = ?
+    GROUP BY COALESCE(category, '(Uncategorized)'), substr(expense_date, 1, 7)
+  `).all(year);
+  const byCategory = {};
+  const namesWithData = new Set();
+  rows.forEach(r => {
+    byCategory[r.category] = byCategory[r.category] || {};
+    byCategory[r.category][r.month] = r.total;
+    namesWithData.add(r.category);
   });
-  tx();
-  res.json({ ok: true, count: entries.length });
+  const namesToShow = [];
+  allCategories.forEach(c => {
+    if (c.active || namesWithData.has(c.name)) namesToShow.push(c.name);
+    namesWithData.delete(c.name);
+  });
+  Array.from(namesWithData).sort().forEach(name => namesToShow.push(name));
+
+  const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const grid = namesToShow.map(name => ({
+    category: name,
+    months: months.map(m => (byCategory[name] && byCategory[name][m]) || 0),
+  }));
+  const monthTotals = months.map((m, i) => grid.reduce((s, r) => s + r.months[i], 0));
+  res.json({ year, months, categories: grid, monthTotals, grandTotal: monthTotals.reduce((a, b) => a + b, 0) });
 });
 
 // ===================== GST Summary (reporting aid only) =====================

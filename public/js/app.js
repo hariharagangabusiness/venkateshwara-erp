@@ -2675,13 +2675,13 @@ PAGES.projects = async (el) => {
       </div>
       <button class="btn" onclick="addProject()">Create Project (auto-generates full department pipeline)</button>
     </div>
-    <div class="panel"><h3>Projects (${projects.length})</h3>
+    ${collapsiblePanel('projects-list', `Projects (${projects.length})`, `
       ${tableHTML(['Code', 'Title', 'Client', 'Status', 'PM', 'Target Completion', ''], projects, p => `
         <tr data-project-row="${p.id}"><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${badge(p.status)}</td><td>${esc(p.pm_name)}</td>
         <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td>
         <td><button class="btn small outline" onclick="viewProjectCards(${p.id}, '${esc(p.project_code)}')">View Pipeline</button></td></tr>`)}
       <p class="muted" style="margin-top:10px;">Set or edit each project's department targets from the <a href="#" onclick="navigate('targets');return false;">Targets</a> tab.</p>
-    </div>
+    `)}
     <div class="panel" id="pj-cards-panel" style="display:none;"><h3 id="pj-cards-title"></h3><div id="pj-cards"></div></div>
   `;
 };
@@ -2722,11 +2722,11 @@ PAGES.targets = async (el) => {
   const projects = await api('/projects');
   const canPlan = has('project.manage');
   el.innerHTML = `
-    <div class="panel"><h3>Targets by Project (${projects.length})</h3>
+    ${collapsiblePanel('targets-by-project', `Targets by Project (${projects.length})`, `
       ${tableHTML(['Code', 'Title', 'Client', 'Status', 'Target Completion'], projects, p => `
         <tr data-project-row="${p.id}"><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${badge(p.status)}</td>
         <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td></tr>`)}
-    </div>
+    `)}
     <div class="panel">
       <h3>Plan / Edit Department Targets</h3>
       ${canPlan ? `
@@ -4344,7 +4344,7 @@ PAGES.service = async (el) => {
       </div>
       <button class="btn" onclick="addSR()">Log Request</button>
     </div>
-    <div class="panel"><h3>Service Request Queue (${reqs.length})</h3>
+    ${collapsiblePanel('service-request-queue', `Service Request Queue (${reqs.length})`, `
       <p class="muted">Newly logged requests appear here first. The Service HOD/Supervisor opens one and schedules it (assigns an employee + date) - only then does it move to In Progress.</p>
       ${tableHTML(['SR No', 'Customer', 'Contact', 'Scheduled', 'Assigned', 'Issue', 'Status', 'Prev. Report', 'Action'], reqs, r => `
         <tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name || r.customer_name)}</td>
@@ -4353,7 +4353,7 @@ PAGES.service = async (el) => {
         <td>${esc(r.issue_description)}</td><td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
         <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
         <td>${srActions(r)} <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`)}
-    </div>
+    `)}
     <div class="panel" id="sr-schedule-panel" style="display:none;"><h3>Schedule Service Request</h3><div id="sr-schedule-body"></div></div>
     <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
     <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>`;
@@ -4827,11 +4827,11 @@ PAGES['service-reopenings'] = async (el) => {
     <div class="panel"><h3>Reopenings by Technician</h3>
       ${tableHTML(['Technician', 'Reopen Count'], data.summary, s => `<tr><td>${esc(s.technician_name)}</td><td>${s.count}</td></tr>`)}
     </div>
-    <div class="panel"><h3>All Reopenings (${data.rows.length})</h3>
+    ${collapsiblePanel('service-reopenings-list', `All Reopenings (${data.rows.length})`, `
       ${tableHTML(['SR No', 'Technician', 'Original Closed At', 'Reopened At', 'Reason'], data.rows, r => `
         <tr><td>${esc(r.sr_no)}</td><td>${esc(r.technician_name)||'-'}</td><td>${esc(r.original_closed_at)}</td>
         <td>${esc(r.reopened_at)}</td><td>${esc(r.reason)||'-'}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 
 // ---- Service Reports Dashboard ----
@@ -4941,7 +4941,7 @@ PAGES.employees = async (el) => {
       </div>
       <div id="em-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>Employees (${emps.length})</h3>
+    ${collapsiblePanel('employees-list', `Employees (${emps.length})`, `
       ${emps.some(e => !e.full_name || !e.full_name.trim()) ? '<div class="msg err">One or more employees below have a blank name (created before this was required) - click Edit on the highlighted row(s) and fill in Full Name.</div>' : ''}
       ${tableHTML(['Code', 'Name', 'Department', 'Designation', 'Type', 'Salary', 'Status', 'Action'], emps, e => {
         const blank = !e.full_name || !e.full_name.trim();
@@ -4949,7 +4949,7 @@ PAGES.employees = async (el) => {
           <td>${esc(e.employment_type)||'Full-time'}</td><td>₹${fmt(e.monthly_salary)}</td><td>${badge(e.status)}</td>
           <td><button class="btn small outline" onclick="openEditEmployee(${e.id})">Edit</button></td></tr>`;
       })}
-    </div>
+    `)}
     <div class="panel" id="emp-edit-panel" style="display:none;"><h3>Edit Employee</h3><div id="emp-edit-body"></div></div>`;
   window.__EMP_CACHE = emps; window.__EMP_DEPTS = depts;
 };
@@ -5052,9 +5052,9 @@ PAGES.attendance = async (el) => {
       <button class="btn" onclick="uploadAttendanceTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="at-upload-result" style="margin-top:10px;"></div>
     </div>
-    <div class="panel"><h3>This Month's Records (${records.length})</h3>
+    ${collapsiblePanel('attendance-records', `This Month's Records (${records.length})`, `
       ${tableHTML(['Employee', 'Date', 'Status'], records, r => `<tr><td>${esc(r.full_name)}</td><td>${r.work_date}</td><td>${badge(r.status==='Present'?'Approved':r.status==='Absent'?'Rejected':'Pending')}${r.status}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.markAttendance = async () => {
   try {
@@ -5083,12 +5083,12 @@ PAGES.leave = async (el) => {
       </div>
       <button class="btn" onclick="addLeave()">Submit Request</button>
     </div>
-    <div class="panel"><h3>Leave Requests (${reqs.length})</h3>
+    ${collapsiblePanel('leave-requests-list', `Leave Requests (${reqs.length})`, `
       ${tableHTML(['Employee', 'Type', 'From', 'To', 'Days', 'Status', ''], reqs, r => `
         <tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${r.from_date}</td><td>${r.to_date}</td><td>${r.days}</td><td>${badge(r.status)}</td>
         <td><button class="btn small outline" type="button" onclick="toggleLeaveAttachments(${r.id})">Attachments</button></td></tr>
         <tr id="lv-att-row-${r.id}" style="display:none;"><td colspan="7"><div id="lv-attachments-${r.id}"></div></td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.toggleLeaveAttachments = (id) => {
   const row = document.getElementById(`lv-att-row-${id}`);
@@ -7278,10 +7278,28 @@ window.sendSoaEmail = async (id) => {
 };
 
 // ===================== Round 5: Operating Expenses =====================
+// The list is scoped to one month at a time (server-side - see GET
+// /operating-expenses in routes/finance.js) so a growing transaction
+// history never means fetching and rendering everything on every visit;
+// "Show All" is an explicit, occasional opt-out. Both this list and the
+// summary panel below default to collapsed, per the app-wide convention
+// (see collapsiblePanel) that a long transaction list stays out of the
+// way until actually needed.
+let OE_LIST_MONTH = null;
+let OE_SUMMARY_YEAR = null;
 PAGES['operating-expenses'] = async (el) => {
-  const [rows, categories] = await Promise.all([api('/finance/operating-expenses'), api('/finance/operating-expense-categories')]);
+  const listMonth = OE_LIST_MONTH || new Date().toISOString().slice(0, 7);
+  OE_LIST_MONTH = listMonth;
+  const summaryYear = OE_SUMMARY_YEAR || String(new Date().getFullYear());
+  OE_SUMMARY_YEAR = summaryYear;
+  const [rows, categories, summary] = await Promise.all([
+    api('/finance/operating-expenses?month=' + listMonth),
+    api('/finance/operating-expense-categories'),
+    api('/finance/operating-expenses/summary?year=' + summaryYear),
+  ]);
   const activeCats = categories.filter(c => c.active);
   const isAdmin = ME && ME.role === 'Admin';
+  const monthLabels = summary.months.map(m => m.slice(5));
   el.innerHTML = `
     <div class="panel"><h3>New Operating Expense</h3>
       <div class="form-grid">
@@ -7295,14 +7313,28 @@ PAGES['operating-expenses'] = async (el) => {
       </div>
       <div><label>Description</label><input id="oe-desc" style="width:100%;"></div>
       <button class="btn" onclick="addOperatingExpense()" style="margin-top:8px;">Add Expense</button>
-      <button class="btn small outline" type="button" onclick="openOeBulkGrid()" style="margin-top:8px;margin-left:8px;">Bulk Entry Grid</button>
       ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()" style="margin-top:8px;margin-left:8px;">Manage Categories</button>` : ''}
       <div id="oe-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
-    <div class="panel"><h3>Operating Expenses (${rows.length})</h3>
+    ${collapsiblePanel('operating-expenses-list', `Operating Expenses - ${listMonth === 'all' ? 'All Time' : listMonth} (${rows.length})`, `
+      <div class="form-grid" style="margin-bottom:10px;">
+        <div><label>Month</label><input type="month" id="oe-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="OE_LIST_MONTH=this.value;navigate('operating-expenses')"></div>
+        <div style="align-self:end;"><button class="btn small outline" type="button" onclick="OE_LIST_MONTH='all';navigate('operating-expenses')">Show All</button></div>
+      </div>
       ${tableHTML(['Date', 'Category', 'Description', 'Amount', 'Paid Via'], rows, r => `
         <tr><td>${new Date(r.expense_date).toLocaleDateString()}</td><td>${esc(r.category)}</td><td>${esc(r.description)}</td><td>₹${fmt(r.amount)}</td><td>${esc(r.paid_via)}</td></tr>`)}
-    </div>`;
+    `)}
+    ${collapsiblePanel('operating-expenses-summary', `Monthly Category Summary - ${summaryYear}`, `
+      <div class="form-grid" style="margin-bottom:10px;">
+        <div><label>Year</label><input type="number" id="oe-summary-year" value="${summaryYear}" onchange="OE_SUMMARY_YEAR=this.value;navigate('operating-expenses')" style="width:100px;"></div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table><thead><tr><th>Category</th>${monthLabels.map(m => `<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
+        <tbody>${summary.categories.map(r => `<tr><td>${esc(r.category)}</td>${r.months.map(v => `<td>₹${fmt(v)}</td>`).join('')}<td><b>₹${fmt(r.months.reduce((a, b) => a + b, 0))}</b></td></tr>`).join('')}</tbody>
+        <tfoot><tr><td><b>Total</b></td>${summary.monthTotals.map(v => `<td><b>₹${fmt(v)}</b></td>`).join('')}<td><b>₹${fmt(summary.grandTotal)}</b></td></tr></tfoot>
+        </table>
+      </div>
+    `)}`;
 };
 window.addOperatingExpense = async () => {
   const errEl = document.getElementById('oe-err'); errEl.style.display = 'none';
@@ -7345,112 +7377,6 @@ window.toggleOeCategory = async (id, active) => {
   await api('/finance/operating-expense-categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
   const categories = await api('/finance/operating-expense-categories');
   document.getElementById('oec-list-wrap').innerHTML = oeCategoryListHTML(categories);
-};
-
-// ---- Bulk pivot-grid entry (replaces the Monthly Expense Tracker's daily/
-// fixed grids, generalized to a single configurable Category x Date grid
-// with a swappable orientation, since Operating Expenses now covers both
-// kinds of category in one unified list). Every filled cell becomes its
-// own operating_expenses row via POST /finance/operating-expenses/bulk -
-// see that route for why there's no upsert/edit semantics here (plain
-// transaction log, not a rollup).
-window.openOeBulkGrid = async () => {
-  const categories = (await api('/finance/operating-expense-categories')).filter(c => c.active);
-  window.OE_BULK_CATEGORIES = categories;
-  window.OE_BULK_SELECTED = new Set(categories.map(c => c.id));
-  const body = `
-    <div class="form-grid">
-      <div><label>Month</label><input type="month" id="oebulk-month" value="${new Date().toISOString().slice(0, 7)}"></div>
-      <div><label>Orientation</label><select id="oebulk-orientation">
-        <option value="cat-rows">Category rows / Date columns</option>
-        <option value="date-rows">Date rows / Category columns</option>
-      </select></div>
-      <div><label>Paid Via (applies to this batch)</label><select id="oebulk-paidvia"><option>Bank</option><option>Cash</option></select></div>
-    </div>
-    <div style="margin:8px 0;">
-      <b>Categories to include:</b>
-      <button class="btn small outline" type="button" onclick="oeBulkSelectAll(true)">Select All</button>
-      <button class="btn small outline" type="button" onclick="oeBulkSelectAll(false)">Clear All</button>
-      <div style="max-height:130px;overflow-y:auto;border:1px solid var(--border);border-radius:5px;padding:6px;margin-top:6px;display:grid;grid-template-columns:repeat(3,1fr);gap:2px;">
-        ${categories.map(c => `<label style="font-size:12px;font-weight:normal;"><input type="checkbox" checked data-oebulk-cat="${c.id}" onchange="if(this.checked) window.OE_BULK_SELECTED.add(${c.id}); else window.OE_BULK_SELECTED.delete(${c.id});"> ${esc(c.name)}</label>`).join('')}
-      </div>
-    </div>
-    <button class="btn small" type="button" onclick="renderOeBulkGrid()">Generate Grid</button>
-    <div id="oebulk-grid-wrap" style="margin-top:12px;overflow-x:auto;"></div>`;
-  openMiniModal('Bulk Entry Grid', body, true);
-};
-window.oeBulkSelectAll = (select) => {
-  document.querySelectorAll('[data-oebulk-cat]').forEach(cb => {
-    cb.checked = select;
-    const id = Number(cb.getAttribute('data-oebulk-cat'));
-    if (select) window.OE_BULK_SELECTED.add(id); else window.OE_BULK_SELECTED.delete(id);
-  });
-};
-window.renderOeBulkGrid = () => {
-  const month = val('oebulk-month');
-  if (!month) { alert('Pick a month first.'); return; }
-  const [y, m] = month.split('-').map(Number);
-  const daysInMonth = new Date(y, m, 0).getDate();
-  const dates = Array.from({ length: daysInMonth }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
-  const selectedCats = window.OE_BULK_CATEGORIES.filter(c => window.OE_BULK_SELECTED.has(c.id));
-  if (!selectedCats.length) { alert('Select at least one category.'); return; }
-  const orientation = document.getElementById('oebulk-orientation').value;
-  const rows = orientation === 'date-rows' ? dates.map(d => ({ type: 'date', value: d })) : selectedCats.map(c => ({ type: 'cat', value: c }));
-  const cols = orientation === 'date-rows' ? selectedCats.map(c => ({ type: 'cat', value: c })) : dates.map(d => ({ type: 'date', value: d }));
-  window.OE_BULK_ROWS = rows;
-  window.OE_BULK_COLS = cols;
-  let html = '<table><thead><tr><th></th>';
-  cols.forEach(c => { html += `<th>${c.type === 'date' ? c.value.slice(8) : esc(c.value.name)}</th>`; });
-  html += '<th>Row Total</th></tr></thead><tbody>';
-  rows.forEach((r, ri) => {
-    html += `<tr><td><b>${r.type === 'date' ? r.value : esc(r.value.name)}</b></td>`;
-    cols.forEach((c, ci) => {
-      html += `<td><input type="number" id="oebulk-cell-${ri}-${ci}" style="width:75px;" oninput="oeBulkRecalc()"></td>`;
-    });
-    html += `<td id="oebulk-rowtotal-${ri}">0</td></tr>`;
-  });
-  html += `<tr><td><b>Column Total</b></td>`;
-  cols.forEach((c, ci) => { html += `<td id="oebulk-coltotal-${ci}">0</td>`; });
-  html += `<td id="oebulk-grandtotal"><b>0</b></td></tr></tbody></table>`;
-  document.getElementById('oebulk-grid-wrap').innerHTML = html +
-    `<button class="btn" style="margin-top:10px;" onclick="saveOeBulkGrid()">Save All</button>
-     <div id="oebulk-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
-};
-window.oeBulkRecalc = () => {
-  const rows = window.OE_BULK_ROWS, cols = window.OE_BULK_COLS;
-  let grand = 0;
-  cols.forEach((c, ci) => {
-    let colSum = 0;
-    rows.forEach((r, ri) => { colSum += Number(val(`oebulk-cell-${ri}-${ci}`)) || 0; });
-    document.getElementById(`oebulk-coltotal-${ci}`).textContent = fmt(colSum);
-    grand += colSum;
-  });
-  rows.forEach((r, ri) => {
-    let rowSum = 0;
-    cols.forEach((c, ci) => { rowSum += Number(val(`oebulk-cell-${ri}-${ci}`)) || 0; });
-    document.getElementById(`oebulk-rowtotal-${ri}`).textContent = fmt(rowSum);
-  });
-  document.getElementById('oebulk-grandtotal').textContent = fmt(grand);
-};
-window.saveOeBulkGrid = async () => {
-  const rows = window.OE_BULK_ROWS, cols = window.OE_BULK_COLS;
-  const entries = [];
-  rows.forEach((r, ri) => {
-    cols.forEach((c, ci) => {
-      const amt = Number(val(`oebulk-cell-${ri}-${ci}`));
-      if (!amt) return;
-      const category = r.type === 'cat' ? r.value.name : c.value.name;
-      const expense_date = r.type === 'date' ? r.value : c.value;
-      entries.push({ category, expense_date, amount: amt });
-    });
-  });
-  const errEl = document.getElementById('oebulk-err');
-  if (!entries.length) { errEl.textContent = 'Enter at least one amount.'; errEl.style.display = 'block'; return; }
-  try {
-    await api('/finance/operating-expenses/bulk', { method: 'POST', body: JSON.stringify({ paid_via: val('oebulk-paidvia'), entries }) });
-    closeMiniModal();
-    navigate('operating-expenses');
-  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ===================== Round 5: GST Summary =====================
