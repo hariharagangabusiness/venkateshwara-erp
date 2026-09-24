@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew, bootstrapForeignPayments } = require('./db');
+const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -24,6 +24,7 @@ if (isNew) {
 // role_id that doesn't exist yet if run any earlier (e.g. from inside
 // db/index.js at require() time).
 bootstrapForeignPayments();
+bootstrapBgManageGrant();
 
 const app = express();
 app.use(cors());
