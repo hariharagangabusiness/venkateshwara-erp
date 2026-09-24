@@ -5127,14 +5127,14 @@ PAGES.advances = async (el) => {
       <button class="btn" onclick="addAdvance()">Submit Request</button>
       <div class="muted" style="margin-top:8px;">Approval chain: HR then Accounts.</div>
     </div>
-    <div class="panel"><h3>Advances (${advs.length})</h3>
+    ${collapsiblePanel('advances-list', `Advances (${advs.length})`, `
       ${tableHTML(['Employee', 'Amount', 'Recovered', 'Installments', 'Status', 'Date', ''], advs, a => `
         <tr><td>${esc(a.full_name)}</td><td>₹${fmt(a.amount)}</td><td>₹${fmt(a.recovered_amount)} / ₹${fmt(a.amount)}</td>
         <td>${a.installments_paid || 0} / ${a.installments || 1} (₹${fmt(a.installment_amount)} each)</td>
         <td>${badge(a.status)}</td><td>${new Date(a.request_date).toLocaleDateString()}</td>
         <td><button class="btn small outline" type="button" onclick="toggleAdvanceAttachments(${a.id})">Attachments</button></td></tr>
         <tr id="ad-att-row-${a.id}" style="display:none;"><td colspan="7"><div id="ad-attachments-${a.id}"></div></td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.toggleAdvanceAttachments = (id) => {
   const row = document.getElementById(`ad-att-row-${id}`);
@@ -5168,11 +5168,11 @@ PAGES.payroll = async (el) => {
       </div>
       <button class="btn" onclick="genPayroll()">Generate Draft (from attendance & advances)</button>
     </div>
-    <div class="panel"><h3>Salary Schedule &mdash; ${month} (${schedule.length})</h3>
+    ${collapsiblePanel('salary-schedule', `Salary Schedule &mdash; ${month} (${schedule.length})`, `
       ${tableHTML(['Employee', 'Days Present', 'Gross', 'Leave Ded.', 'Advance Ded.', 'Net Pay', 'Status', 'Action'], schedule, s => `
         <tr><td>${esc(s.full_name)}</td><td>${s.days_present}</td><td>₹${fmt(s.gross)}</td><td>₹${fmt(s.leave_deduction)}</td><td>₹${fmt(s.advance_deduction)}</td><td>₹${fmt(s.net_pay)}</td><td>${badge(s.status)}</td>
         <td>${payrollActions(s)}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 function payrollActions(s) {
   if (s.status === 'Draft') return `<button class="btn small" onclick="submitPayrollApproval(${s.id})">Submit for Approval</button>`;
@@ -5341,12 +5341,12 @@ PAGES.expenses = async (el) => {
       <button class="btn" onclick="addExpense()">Submit Voucher</button>
       <div class="muted" style="margin-top:8px;">Approval chain: Accounts, plus Admin for vouchers ≥ ₹25,000.</div>
     </div>
-    <div class="panel"><h3>Expense Vouchers (${vouchers.length})</h3>
+    ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers (${vouchers.length})`, `
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Bill', 'Status', 'Action'], vouchers, v => `
         <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td>
         <td>${v.attachment_path ? `<a href="${v.attachment_path}" target="_blank">View</a>` : '-'}</td><td>${badge(v.status)}</td>
         <td>${v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : '-'}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.addExpense = async () => {
   try {
@@ -6517,7 +6517,7 @@ PAGES.users = async (el) => {
       <div id="us-dept-warning" class="msg err" style="display:none;margin-top:8px;"></div>
       <button class="btn" onclick="addUser()">Create User</button>
     </div>
-    <div class="panel"><h3>Users (${users.length})</h3>
+    ${collapsiblePanel('users-list', `Users (${users.length})`, `
       ${tableHTML(['Username', 'Name', 'Email', 'Role', 'Department', 'Supervisor', 'Linked Employee', 'Status', 'Action'], users, u => `
         <tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)||'<span class="muted">Not set</span>'}</td><td>${esc(u.role)}</td><td>${esc(u.department)||'<span class="muted">Not set</span>'}</td>
         <td>${u.is_supervisor ? badge('active') : '-'}</td>
@@ -6528,7 +6528,7 @@ PAGES.users = async (el) => {
           <button class="btn small outline" onclick="toggleUser(${u.id})">${u.is_active ? 'Deactivate' : 'Activate'}</button>
           <button class="btn small outline" onclick="linkUserEmployee(${u.id})">${u.employee_id ? 'Change Link' : 'Link Employee'}</button>
         </td></tr>`)}
-    </div>
+    `)}
     <div class="panel" id="user-edit-panel" style="display:none;"><h3>Edit User</h3><div id="user-edit-body"></div></div>`;
 };
 // A role like Design/Purchase/LaserBending/etc. only gets its own "Job
@@ -6856,7 +6856,7 @@ PAGES.foc = async (el) => {
       <button class="btn" onclick="addFOC()">Submit Request</button>
       <div class="muted" style="margin-top:8px;">Approval: Management/Admin.</div>
     </div>` : ''}
-    <div class="panel"><h3>FOC Requests (${reqs.length})</h3>
+    ${collapsiblePanel('foc-requests-list', `FOC Requests (${reqs.length})`, `
       ${tableHTML(['FOC No', 'Order', 'Customer', 'Requesting Dept', 'Item', 'Qty', 'Value', 'Requested By', 'Fulfilling Dept', 'Status', 'Action', ''], reqs, r => `
         <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
         <td>${focEditableCell(r, 'item_description')}</td><td>${focEditableCell(r, 'quantity')} ${esc(r.unit)}</td><td>₹${fmt(r.estimated_value)}</td>
@@ -6867,7 +6867,7 @@ PAGES.foc = async (el) => {
           ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}
         </td></tr>
         <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="12"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.toggleFOCAttachments = (id) => {
   const row = document.getElementById(`foc-att-row-${id}`);
@@ -7086,7 +7086,7 @@ PAGES['sales-invoices'] = async (el) => {
       <button class="btn" onclick="generateInvoice()">Generate Invoice</button>
       <div id="inv-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
-    <div class="panel"><h3>Invoices (${invoices.length})</h3>
+    ${collapsiblePanel('sales-invoices-list', `Invoices (${invoices.length})`, `
       ${tableHTML(['Invoice No', 'Client', 'Date', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total', 'Status', ''], invoices, i => `
         <tr><td>${esc(i.invoice_no)}</td><td>${esc(i.client_name)}</td><td>${new Date(i.invoice_date).toLocaleDateString()}</td>
         <td>₹${fmt(i.taxable_value)}</td><td>₹${fmt(i.cgst)}</td><td>₹${fmt(i.sgst)}</td><td>₹${fmt(i.igst)}</td><td>₹${fmt(i.total_value)}</td><td>${badge(i.status)}</td>
@@ -7096,7 +7096,7 @@ PAGES['sales-invoices'] = async (el) => {
           ${i.status !== 'Paid' ? `<button class="btn small" type="button" onclick="markInvoicePaid(${i.id})">Mark Paid</button>` : ''}
           ${i.status === 'Draft' ? `<button class="btn small outline" type="button" onclick="cancelInvoice(${i.id})">Cancel</button>` : ''}
         </td></tr>`)}
-    </div>
+    `)}
     <div class="panel"><h3>Generate Proforma Invoice (Advance / Pre-Dispatch)</h3>
       <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
       <div class="form-grid">
@@ -7110,7 +7110,7 @@ PAGES['sales-invoices'] = async (el) => {
       <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
       <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
-    <div class="panel"><h3>Proforma Invoices (${proformas.length})</h3>
+    ${collapsiblePanel('proforma-invoices-list', `Proforma Invoices (${proformas.length})`, `
       ${tableHTML(['Proforma No', 'Client', 'Order', 'Type', 'Milestone', 'Total', 'Status', ''], proformas, p => `
         <tr><td>${esc(p.proforma_no)}</td><td>${esc(p.client_name)}</td><td>${esc(p.order_no)}</td><td>${p.invoice_type === 'Advance' ? 'Advance' : 'Pre-Dispatch'}</td>
         <td>${esc(p.milestone_name)||'-'}</td><td>₹${fmt(p.total_value)}</td><td>${badge(p.status)}</td>
@@ -7120,7 +7120,7 @@ PAGES['sales-invoices'] = async (el) => {
           ${p.status === 'Draft' ? `<button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
           <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
         </td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.loadPFMilestones = async () => {
   const sel = document.getElementById('pf-milestone');
@@ -7437,12 +7437,12 @@ PAGES['assets'] = async (el) => {
         <div><label>Status</label><select id="as-filter-status" onchange="navigateAssetsFilter()"><option value="">All</option><option>Active</option><option>UnderMaintenance</option><option>Disposed</option><option>EOL</option></select></div>
       </div>
     </div>
-    <div class="panel"><h3>Asset Register (${assets.length})</h3>
+    ${collapsiblePanel('asset-register-list', `Asset Register (${assets.length})`, `
       ${tableHTML(['Code', 'Name', 'Category', 'Dept', 'Custodian', 'Purchase Value', 'Book Value', 'Status', ''], assets, a => `
         <tr><td>${esc(a.asset_code)}</td><td>${esc(a.name)}</td><td>${esc(a.category)||'-'}</td><td>${esc(a.department_name)||'-'}</td>
         <td>${esc(a.custodian_name)||'-'}</td><td>₹${fmt(a.purchase_value)}</td><td>₹${fmt(a.book_value)}</td><td>${badge(a.status)}</td>
         <td><button class="btn small outline" type="button" onclick="viewAsset(${a.id})">Maintenance Log</button></td></tr>`)}
-    </div>
+    `)}
     <div class="panel" id="as-detail-panel" style="display:none;"><h3>Asset Detail</h3><div id="as-detail-body"></div></div>`;
 };
 window.navigateAssetsFilter = () => navigate('assets');
