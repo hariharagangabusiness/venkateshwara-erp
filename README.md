@@ -56,6 +56,8 @@ By default the SQLite DB (`db/erp.db`) and uploaded files (`public/uploads/`) li
 
 Both are optional and unset by default, which keeps local dev behavior unchanged.
 
+On Railway specifically: saving a new/changed variable in the dashboard does **not** by itself update the running container - it only takes effect once you click **Deploy** on the pending change shown at the top of the service. A variable that's saved but never deployed leaves the old (unset) value in effect, so uploads keep landing on the container's ephemeral disk and vanish on the next deploy even though the dashboard shows the "fixed" value. Always deploy right after saving `DATA_DIR`/`UPLOADS_DIR`, then confirm by uploading a test file, deploying once more, and checking that file still loads.
+
 ### Backups & migration
 
 The app takes a **daily automated backup** — a consistent SQLite snapshot of `erp.db` (via `VACUUM INTO`, safe to run against a live, concurrently-written database) plus a full copy of the uploads directory, bundled into one `.tar.gz` when the `tar` binary is available. It runs once at boot and every 24 hours after (see `server.js`/`lib/backup.js`), and every attempt — success or failure — is logged to the `backup_runs` table, viewable under **Admin > Backups**, which also has a "Run Backup Now" button, per-backup download, and delete.
