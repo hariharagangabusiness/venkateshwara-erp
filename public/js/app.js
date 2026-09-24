@@ -390,6 +390,7 @@ const NAV = [
     { id: 'data-import', label: 'Data Import' },
     { id: 'full-data-export', label: 'Full Data Export' },
     { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
+    { id: 'backups', label: 'Backups' },
   ]},
 ];
 // Per-department Job Cards groups are injected dynamically in boot() for
@@ -7670,6 +7671,71 @@ PAGES['full-data-export'] = async (el) => {
 window.downloadFullTableExport = () => {
   const table = val('fde-table');
   downloadTemplateFile(`/reports/export/${table}`, `${table}_full_export.xlsx`);
+};
+
+// ===================== Backups (Admin only) =====================
+// Daily automated backup (DB snapshot + uploaded files) plus a manual
+// "run now" - see lib/backup.js for what each run actually does. This page
+// is the audit log an Admin uses to check backup health and grab the
+// right file to migrate to a new server.
+function fmtBytes(n) {
+  if (n === null || n === undefined) return '-';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+PAGES['backups'] = async (el) => {
+  el.innerHTML = `
+    <div class="panel"><h3>Daily Backups</h3>
+      <p class="muted">Runs automatically once a day (DB snapshot via SQLite's own VACUUM INTO, safe against a live database, plus a copy of every uploaded file), bundled into one .tar.gz when possible. Kept for the retention window (default 14 days, <code>BACKUP_RETENTION_DAYS</code>), optionally emailed offsite if <code>BACKUP_EMAIL_TO</code> is set.</p>
+      <p class="muted"><b>To migrate to a new server:</b> download a backup below, stop the app there, replace its <code>erp.db</code> with the backup's <code>erp.db</code> and its uploads folder with the backup's <code>uploads</code> folder, then start it again. Nothing proprietary - it's a plain SQLite file and a plain folder of files.</p>
+      <button class="btn" onclick="runBackupNow()">Run Backup Now</button>
+      <div id="backup-run-result" style="margin-top:8px;"></div>
+    </div>
+    <div class="panel"><h3>Backup History</h3>
+      <div id="backup-history-body"></div>
+    </div>`;
+  renderBackupHistory();
+};
+async function renderBackupHistory() {
+  const bodyEl = document.getElementById('backup-history-body');
+  if (!bodyEl) return;
+  const runs = await api('/backups');
+  bodyEl.innerHTML = tableHTML(['Started', 'Finished', 'Status', 'Trigger', 'By', 'DB Size', 'Uploads Size', 'Total Size', 'Emailed', ''], runs, r => `
+    <tr>
+      <td>${new Date(r.started_at).toLocaleString()}</td>
+      <td>${r.finished_at ? new Date(r.finished_at).toLocaleString() : '-'}</td>
+      <td>${badge(r.status)}</td>
+      <td>${esc(r.trigger_type)}</td>
+      <td>${esc(r.triggered_by_name) || '-'}</td>
+      <td>${fmtBytes(r.db_size_bytes)}</td>
+      <td>${fmtBytes(r.uploads_size_bytes)}</td>
+      <td>${fmtBytes(r.total_size_bytes)}</td>
+      <td>${r.emailed ? '✓' : (r.email_error ? `<span class="muted" title="${esc(r.email_error)}">No</span>` : '-')}</td>
+      <td>
+        ${r.status === 'Success' && r.is_archive ? `<button class="btn small outline" type="button" onclick="downloadBackup(${r.id})">Download</button>` : ''}
+        <button class="btn small outline" type="button" onclick="deleteBackup(${r.id})">Delete</button>
+      </td>
+    </tr>
+    ${r.status === 'Failed' && r.error_message ? `<tr><td></td><td colspan="9" style="padding-top:0;"><span class="muted" style="font-size:12px;">${esc(r.error_message)}</span></td></tr>` : ''}
+  `);
+}
+window.runBackupNow = async () => {
+  const resultEl = document.getElementById('backup-run-result');
+  resultEl.innerHTML = '<span class="muted">Running - this can take a moment for a large uploads folder...</span>';
+  try {
+    const result = await api('/backups/run', { method: 'POST' });
+    resultEl.innerHTML = `<div class="msg ok">Backup complete: ${fmtBytes(result.totalSize)}${result.emailed ? ', emailed offsite' : (result.emailError ? ' - ' + esc(result.emailError) : '')}.</div>`;
+    renderBackupHistory();
+  } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+};
+window.downloadBackup = (id) => {
+  downloadTemplateFile(`/backups/${id}/download`, `erp-backup-${id}.tar.gz`);
+};
+window.deleteBackup = async (id) => {
+  if (!confirm('Delete this backup? This removes the file from disk and its log entry.')) return;
+  try { await api(`/backups/${id}`, { method: 'DELETE' }); renderBackupHistory(); }
+  catch (e) { alert(e.message); }
 };
 
 // ===================== Organizational Hierarchy =====================

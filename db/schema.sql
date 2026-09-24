@@ -899,6 +899,30 @@ CREATE TABLE IF NOT EXISTS rfq_request_emails (
   sent_at TEXT
 );
 
+-- ===================== BACKUPS =====================
+-- One row per backup attempt (scheduled or manual) - the durable audit log
+-- an Admin can use to see backup health at a glance and know exactly which
+-- artifact on disk (or emailed copy) to use when migrating to a new
+-- environment. Kept even after the underlying file is purged by retention
+-- cleanup, so the log itself is a permanent record independent of what
+-- still physically exists - see lib/backup.js.
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  status TEXT DEFAULT 'Running',        -- Running, Success, Failed
+  trigger_type TEXT NOT NULL,           -- Scheduled, Manual
+  triggered_by INTEGER REFERENCES users(id),  -- NULL for a scheduled run
+  artifact_path TEXT,                   -- .tar.gz file, or a plain folder if `tar` isn't available
+  is_archive INTEGER DEFAULT 0,         -- 1 if artifact_path is a single .tar.gz file, 0 if a folder
+  db_size_bytes INTEGER,
+  uploads_size_bytes INTEGER,
+  total_size_bytes INTEGER,
+  emailed INTEGER DEFAULT 0,
+  email_error TEXT,
+  error_message TEXT
+);
+
 -- ===================== AUDIT LOG =====================
 
 CREATE TABLE IF NOT EXISTS audit_log (

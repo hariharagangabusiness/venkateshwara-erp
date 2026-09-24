@@ -52,6 +52,7 @@ app.use('/api/todos', require('./routes/todos'));
 app.use('/api/org-hierarchy', require('./routes/orgHierarchy'));
 app.use('/api/soa', require('./routes/soa'));
 app.use('/api/order-confirmation', require('./routes/orderConfirmation'));
+app.use('/api/backups', require('./routes/backups'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -82,6 +83,27 @@ function runReminderScanSafely() {
 }
 setTimeout(runReminderScanSafely, 5000); // let the server finish booting first
 setInterval(runReminderScanSafely, 6 * 60 * 60 * 1000);
+
+// Daily backup (DB snapshot + uploads). Same plain-timer approach as the
+// scan above - no cron dependency needed for a single-process app. Skips
+// the boot-time run if a scheduled backup already ran today, so frequent
+// restarts during active deploys don't produce several backups a day;
+// steady-state production still gets exactly one per day via the 24h
+// interval. Never lets a failure crash the process - runBackup itself
+// already logs failures to backup_runs for the Admin Backups page to show.
+const { runBackup, ranToday } = require('./lib/backup');
+async function runDailyBackupSafely() {
+  try {
+    if (ranToday()) return;
+    const result = await runBackup({ triggerType: 'Scheduled' });
+    if (result.ok) console.log(`[backup] scheduled backup succeeded: ${result.artifactPath} (${(result.totalSize / 1024 / 1024).toFixed(1)}MB)`);
+    else console.error('[backup] scheduled backup failed:', result.error);
+  } catch (e) {
+    console.error('[backup] scheduled backup threw:', e.message);
+  }
+}
+setTimeout(runDailyBackupSafely, 15000); // after the reminder scan's own boot delay
+setInterval(runDailyBackupSafely, 24 * 60 * 60 * 1000);
 
 
 // Friendly names for UNIQUE-indexed columns, so a raw SQLite constraint
