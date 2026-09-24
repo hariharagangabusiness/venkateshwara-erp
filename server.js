@@ -70,6 +70,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // 6 hours. Never let a scan failure crash the process.
 const { runScan } = require('./lib/bgReminderScan');
 const { runSoaScan } = require('./lib/soaScan');
+const { runFpBoeScan } = require('./lib/foreignPaymentBoeScan');
 function runReminderScanSafely() {
   try {
     const result = runScan();
@@ -87,6 +88,14 @@ function runReminderScanSafely() {
     if (soaResult.created) console.log(`[soa-scan] ${soaResult.created} statement(s) queued for review`);
   } catch (e) {
     console.error('[soa-scan] failed:', e.message);
+  }
+  // Foreign Payment BOE (Bill of Entry) 3-month compliance deadline - same
+  // piggyback reasoning as the SOA scan above.
+  try {
+    const boeCreated = runFpBoeScan();
+    if (boeCreated) console.log(`[fp-boe-scan] ${boeCreated} Bill of Entry reminder(s) raised`);
+  } catch (e) {
+    console.error('[fp-boe-scan] failed:', e.message);
   }
 }
 setTimeout(runReminderScanSafely, 5000); // let the server finish booting first
