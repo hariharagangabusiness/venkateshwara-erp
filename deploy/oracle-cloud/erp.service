@@ -1,0 +1,32 @@
+# systemd unit for running the ERP on a self-managed VM (Oracle Cloud or
+# any other Ubuntu/Debian box). Copy to /etc/systemd/system/erp.service,
+# adjust WorkingDirectory/User if you didn't follow the default layout in
+# deploy/oracle-cloud's provisioning notes (see README.md's Deployment
+# section), then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now erp
+#
+# The app loads /opt/venkateshwara-erp/.env itself via dotenv (same as
+# running it locally) - no separate EnvironmentFile= is needed here as
+# long as that .env file exists in WorkingDirectory.
+
+[Unit]
+Description=Venkateshwara Engineers ERP
+After=network.target
+
+[Service]
+Type=simple
+User=erp
+WorkingDirectory=/opt/venkateshwara-erp
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+
+# Basic hardening - harmless for this app (no unusual OS access needed
+# beyond its own data/uploads directories and outbound network).
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -47,7 +47,7 @@ node server.js       # starts on http://localhost:4000
 
 Open `http://localhost:4000` in a browser.
 
-### Deployment (Render or similar)
+### Deployment (Render, Railway, or similar PaaS)
 
 By default the SQLite DB (`db/erp.db`) and uploaded files (`public/uploads/`) live inside the app directory, which is fine for local use but gets wiped on every redeploy on platforms like Render that use an ephemeral container filesystem. To persist data across redeploys, mount a persistent disk and set:
 
@@ -57,6 +57,21 @@ By default the SQLite DB (`db/erp.db`) and uploaded files (`public/uploads/`) li
 Both are optional and unset by default, which keeps local dev behavior unchanged.
 
 On Railway specifically: saving a new/changed variable in the dashboard does **not** by itself update the running container - it only takes effect once you click **Deploy** on the pending change shown at the top of the service. A variable that's saved but never deployed leaves the old (unset) value in effect, so uploads keep landing on the container's ephemeral disk and vanish on the next deploy even though the dashboard shows the "fixed" value. Always deploy right after saving `DATA_DIR`/`UPLOADS_DIR`, then confirm by uploading a test file, deploying once more, and checking that file still loads.
+
+### Deployment (Oracle Cloud or any self-managed Ubuntu VM)
+
+Moving off a PaaS onto a plain VM you fully control (e.g. Oracle Cloud's Always Free Ampere A1) trades one-click deploys for direct SSH access and no per-request/build pricing. There's no ephemeral-filesystem problem to work around here — a VM's disk is persistent by default — but everything else (Node, HTTPS, the process staying up, PDF generation's headless-Chromium dependencies) has to be set up by hand instead of by a buildpack. `deploy/oracle-cloud/` has the pieces:
+
+- **`provision.sh`** — one-time setup for a fresh Ubuntu 22.04/24.04 VM: installs Node.js 22, nginx, and the shared libraries `@sparticuz/chromium` needs (the same list Railway's `railpack.json` installs); creates a dedicated `erp` system user; clones the repo to `/opt/venkateshwara-erp`; points `DATA_DIR`/`UPLOADS_DIR` at `/opt/venkateshwara-erp-data` (outside the git checkout, so a `git pull` never touches live data); installs the systemd service; and optionally runs `certbot --nginx` for HTTPS if you set a `DOMAIN`. Review it, fill in `REPO_URL`/`DOMAIN`, then `sudo bash provision.sh`.
+- **`erp.service`** — the systemd unit `provision.sh` installs (`sudo systemctl status|restart erp`, logs via `journalctl -u erp`).
+- **`nginx-erp.conf`** — the reverse-proxy vhost template (port 80 → the app's port 4000; certbot rewrites it in place to add the 443/TLS block).
+- **`redeploy.sh`** — the day-to-day update: `git pull`, `npm install`, restart the service.
+
+Two Oracle-specific gotchas worth knowing before you start:
+1. **Two separate firewalls.** The VCN's Security List (in the OCI console) and the VM's own `iptables` rules both have to allow ports 80/443 — Oracle's Ubuntu marketplace image ships `iptables` rules that permit only SSH (22) in by default, independent of whatever you open in the console. If the app is unreachable after opening the Security List, check `sudo iptables -L` next (the commented-out fix is in `provision.sh`).
+2. **Moving cloud host does not, by itself, fix an SMTP block.** If email was timing out on Railway because the mail provider is blocking connections from cloud/datacenter IP ranges generally, Oracle Cloud's IPs are just as likely to be flagged as "cloud" as Railway's — that's a mail-provider/relay problem, not a hosting-platform one (see the Email/SMTP section below).
+
+**Migrating existing data**: on the old host, go to **Admin > Backups** and download the latest `.tar.gz` (or click "Run Backup Now" first) — extracting it gives you a single timestamped folder containing `erp.db` and an `uploads/` folder, which is the entire migration format (see `lib/backup.js`). Copy the archive to the new VM (`scp`), then on the VM: stop the service (`sudo systemctl stop erp`), extract it (`tar -xzf backup.tar.gz`), copy that folder's `erp.db` to `$DATA_DIR/erp.db` and its `uploads/` contents into `$UPLOADS_DIR`, then start the service back up (`sudo systemctl start erp`).
 
 ### Backups & migration
 
