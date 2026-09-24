@@ -746,6 +746,12 @@ const MIGRATIONS = [
   `ALTER TABLE backup_runs ADD COLUMN zoho_uploaded INTEGER DEFAULT 0`,
   `ALTER TABLE backup_runs ADD COLUMN zoho_file_id TEXT`,
   `ALTER TABLE backup_runs ADD COLUMN zoho_error TEXT`,
+  // ---- Foreign Payments: lets an uploaded attachment declare which of the
+  // ARIM-style document categories it is (Payment Advice, Bill of Entry,
+  // Bill of Lading, Vendor Invoice, Proforma Invoice, Other) - optional and
+  // NULL for every attachment type that existed before this (BG scans,
+  // expense voucher receipts, etc.), which just never show a category.
+  `ALTER TABLE attachments ADD COLUMN document_type TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -981,4 +987,37 @@ const db = {
   }
 };
 
-module.exports = { db, isNew, dataDir, dbPath };
+// Foreign Payments module: db/seed.js only runs on a brand-new database, so
+// a carried-forward one needs this explicit bootstrap for the new permission
+// code, its grant to Accounts (the role that already owns bg.manage/
+// payment_receipt.manage/soa.manage - the same finance-ops role), and the
+// 'ForeignPayment' approval chain (Accounts signs off any amount; above
+// 500000 [INR-equivalent] Management also has to) - all guarded by
+// INSERT OR IGNORE / ON CONFLICT so re-running this on every boot is safe,
+// and an Admin can still retune the chain afterwards from the Approval
+// Matrix page without this stomping their changes on the next boot.
+// Must run AFTER db/seed.js on a brand-new database (roles/permissions don't
+// exist yet at require('./db') time), so server.js calls this itself right
+// after its own isNew-gated seed step, on every boot either way.
+function bootstrapForeignPayments() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('foreign_payment.manage')`);
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT (SELECT id FROM roles WHERE name = 'Accounts'), (SELECT id FROM permissions WHERE code = 'foreign_payment.manage')
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('ForeignPayment', 'Foreign advance remittance approval')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'ForeignPayment'`).get().id;
+    const accountsRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Accounts'`).get()?.id;
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const upsertFpStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, 0)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    if (accountsRoleId) upsertFpStep.run(chainId, 1, accountsRoleId, 0);
+    if (managementRoleId) upsertFpStep.run(chainId, 2, managementRoleId, 500000);
+  } catch (e) { console.error('[db] Foreign Payments bootstrap failed:', e.message); }
+}
+
+module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments };

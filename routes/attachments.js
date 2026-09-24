@@ -24,7 +24,14 @@ const upload = multer({
 
 const VALID_TYPES = new Set([
   'purchase_request', 'purchase_order', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
+  'foreign_payment',
 ]);
+
+// Free-form category tag, currently only used by foreign_payment uploads
+// (Payment Advice, Bill of Entry, Bill of Lading, Vendor Invoice, Proforma
+// Invoice, Other) - every other entity type leaves this NULL and just
+// doesn't show a category, same as before this column existed.
+const VALID_DOCUMENT_TYPES = new Set(['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'Other']);
 
 router.get('/:entityType/:entityId', (req, res) => {
   const { entityType, entityId } = req.params;
@@ -39,11 +46,12 @@ router.post('/:entityType/:entityId', upload.single('file'), (req, res) => {
   const { entityType, entityId } = req.params;
   if (!VALID_TYPES.has(entityType)) return res.status(400).json({ error: 'Unknown entity type' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const documentType = req.body.document_type && VALID_DOCUMENT_TYPES.has(req.body.document_type) ? req.body.document_type : null;
   const filePath = '/uploads/attachments/' + req.file.filename;
   const info = db.prepare(`
-    INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by) VALUES (?,?,?,?,?)
-  `).run(entityType, entityId, filePath, req.file.originalname, req.user.id);
-  res.json({ id: info.lastInsertRowid, file_path: filePath });
+    INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES (?,?,?,?,?,?)
+  `).run(entityType, entityId, filePath, req.file.originalname, req.user.id, documentType);
+  res.json({ id: info.lastInsertRowid, file_path: filePath, document_type: documentType });
 });
 
 router.delete('/:id', (req, res) => {

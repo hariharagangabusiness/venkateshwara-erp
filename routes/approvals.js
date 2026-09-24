@@ -83,6 +83,17 @@ function describeEntity(entityType, entityId) {
     case 'salary_schedule': {
       return { ref: 'PR-' + entityId, summary: 'Payroll run', department_id: null, department_name: null, raised_by_name: null };
     }
+    case 'foreign_payment': {
+      const r = db.prepare(`
+        SELECT fp.request_no as ref, fp.beneficiary_name, fp.currency, fp.amount, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
+        FROM foreign_payment_requests fp LEFT JOIN users u ON u.id = fp.created_by
+        LEFT JOIN departments d ON d.id = u.department_id WHERE fp.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `${r.currency} ${r.amount} to ${r.beneficiary_name}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+      };
+    }
     default:
       return {};
   }
@@ -194,6 +205,7 @@ function syncEntityStatus(entityType, entityId, result) {
     purchase_request: { table: 'purchase_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     salary_advance: { table: 'salary_advances', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     salary_schedule: { table: 'salary_schedule', approved: 'Approved', rejected: 'Draft', infoRequested: 'InfoRequested' },
+    foreign_payment: { table: 'foreign_payment_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
   };
   const m = map[entityType];
   if (!m) return;
@@ -249,7 +261,7 @@ const SLA_DAYS = {
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
-  salary_advance: 'salary_advances', salary_schedule: 'salary_schedule',
+  salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

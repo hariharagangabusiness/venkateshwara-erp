@@ -955,3 +955,133 @@ CREATE TABLE IF NOT EXISTS bg_pending_changes (
   reviewed_at TEXT,
   review_note TEXT
 );
+
+-- ===================== FOREIGN PAYMENTS (Advance Remittance Against Imports) =====================
+-- Mirrors the fields on an AD bank's standard "Application for Advance
+-- Remittance Against Imports" (ARIM) form (the RBI/FEMA-mandated form used
+-- to request an authorized dealer bank to wire an advance payment abroad
+-- for an import purchase) - see routes/foreignPayments.js. One row per
+-- remittance application; foreign_payment_invoice_lines is the form's own
+-- repeatable Invoice Details table. Static legal/declaration boilerplate
+-- (FEMA/OFAC/sanctions text) is printed verbatim by the PDF generator, not
+-- stored here - only the two real blanks inside it (import_on_behalf_of,
+-- ofac_sanctioned_country) are data fields.
+CREATE TABLE IF NOT EXISTS foreign_payment_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT UNIQUE,
+  vendor_id INTEGER REFERENCES vendors(id),     -- optional link for reporting; beneficiary/bank fields below are always the source of truth
+  status TEXT DEFAULT 'Draft',                  -- Draft, Pending, Approved, Rejected, InfoRequested, PaymentMade, Closed
+  approval_id INTEGER REFERENCES approvals(id),
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+  -- For Office Use (bank-assigned; usually filled in after the bank processes it)
+  ad_code TEXT,
+  bank_name TEXT,
+  branch TEXT,
+  bank_form_no TEXT,
+  customer_id TEXT,
+  transaction_type TEXT DEFAULT 'TT',
+  tr_fwc_amount REAL,
+  tr_fwc_rate REAL,
+  tr_fwc_ref_no TEXT,
+  equivalent_inr REAL,
+
+  -- I. Currency and Amount
+  currency TEXT NOT NULL,
+  amount REAL NOT NULL,
+
+  -- Beneficiary Name, Address and Country
+  beneficiary_name TEXT NOT NULL,
+  beneficiary_address_line1 TEXT,
+  beneficiary_address_line2 TEXT,
+  beneficiary_pincode TEXT,
+  beneficiary_city TEXT,
+  beneficiary_state TEXT,
+  beneficiary_country TEXT,
+
+  -- Beneficiary Bank Name, Address and Swift Code
+  beneficiary_bank_name TEXT,
+  beneficiary_bank_address_line1 TEXT,
+  beneficiary_bank_address_line2 TEXT,
+  beneficiary_bank_pincode TEXT,
+  beneficiary_bank_city TEXT,
+  beneficiary_bank_state TEXT,
+  beneficiary_bank_country TEXT,
+  beneficiary_bank_swift_code TEXT,
+  beneficiary_bank_account_no TEXT,
+  iban_sort_code_bsb_transit TEXT,
+  correspondent_bank_name_bic TEXT,
+
+  -- II. Debit Authority
+  foreign_bank_charges TEXT,          -- OUR / BEN / SHA
+  goods_freely_importable TEXT,       -- Y / N
+  license_no TEXT,
+  license_issue_date TEXT,
+  license_expiry_date TEXT,
+  license_face_value REAL,
+  license_amount_endorsed REAL,
+  debit_account_no TEXT,
+  debit_balance_account_no TEXT,
+  forward_contract_no TEXT,
+  forward_contract_booked_date TEXT,
+  part_payment_reason TEXT,
+
+  -- III. Import Particulars - FBG/SBLC waiver justification
+  fbg_sblc_reason TEXT,                -- ParentSubsidiary, LongStanding, Fortune500, Other
+  long_standing_since TEXT,
+  fbg_sblc_other_reason TEXT,
+
+  -- IV. Details of Transaction (Mandatory)
+  port_of_loading TEXT,
+  port_of_discharge TEXT,
+  is_merchanting_trade TEXT,          -- Y / N
+
+  -- V. Nature of goods
+  goods_nature TEXT,                  -- Capital / NonCapital
+
+  -- VI. FBG Waiver request
+  fbg_waiver_requested TEXT,          -- Y / N
+
+  -- VII. Declaration blanks (the only two data fields inside the static legal text)
+  import_on_behalf_of TEXT,
+  ofac_sanctioned_country TEXT,
+
+  -- Final signatory block
+  signatory_name TEXT,
+  signatory_address_line1 TEXT,
+  signatory_address_line2 TEXT,
+  signatory_pincode TEXT,
+  signatory_city TEXT,
+  signatory_state TEXT,
+  signatory_country TEXT,
+  ie_code TEXT,
+  declaration_date TEXT,
+  declaration_place TEXT,
+
+  -- Post-payment
+  payment_made_at TEXT,
+  payment_made_by INTEGER REFERENCES users(id),
+  payment_reference TEXT,             -- UTR / SWIFT reference
+  actual_debited_amount REAL,
+  actual_exchange_rate REAL,
+  boe_due_date TEXT                   -- payment date + 3 months (11 days for gold-via-IIBX) - see lib/foreignPaymentScan.js
+);
+
+CREATE TABLE IF NOT EXISTS foreign_payment_invoice_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  foreign_payment_request_id INTEGER NOT NULL REFERENCES foreign_payment_requests(id),
+  invoice_no TEXT,
+  invoice_date TEXT,
+  terms TEXT,                         -- CIF, FOB, C&F, etc.
+  currency TEXT,
+  amount REAL,
+  qty_of_goods REAL,
+  description_of_goods TEXT,
+  hs_classification TEXT,
+  country_of_origin TEXT,
+  country_consigned_from TEXT,
+  mode_of_shipment TEXT,
+  date_of_shipment TEXT,
+  sort_order INTEGER DEFAULT 0
+);

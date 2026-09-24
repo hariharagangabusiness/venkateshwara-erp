@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew } = require('./db');
+const { isNew, bootstrapForeignPayments } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -17,6 +17,13 @@ if (isNew) {
   console.log('New database detected - running seed...');
   require('./db/seed');
 }
+
+// Must run after the seed step above: on a brand-new database, roles/
+// permissions don't exist until db/seed.js just created them, and this
+// bootstrap's own INSERT OR IGNORE grants would silently no-op against a
+// role_id that doesn't exist yet if run any earlier (e.g. from inside
+// db/index.js at require() time).
+bootstrapForeignPayments();
 
 const app = express();
 app.use(cors());
@@ -53,6 +60,7 @@ app.use('/api/org-hierarchy', require('./routes/orgHierarchy'));
 app.use('/api/soa', require('./routes/soa'));
 app.use('/api/order-confirmation', require('./routes/orderConfirmation'));
 app.use('/api/backups', require('./routes/backups'));
+app.use('/api/foreign-payments', require('./routes/foreignPayments'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
