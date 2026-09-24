@@ -56,6 +56,17 @@ By default the SQLite DB (`db/erp.db`) and uploaded files (`public/uploads/`) li
 
 Both are optional and unset by default, which keeps local dev behavior unchanged.
 
+### Backups & migration
+
+The app takes a **daily automated backup** — a consistent SQLite snapshot of `erp.db` (via `VACUUM INTO`, safe to run against a live, concurrently-written database) plus a full copy of the uploads directory, bundled into one `.tar.gz` when the `tar` binary is available. It runs once at boot and every 24 hours after (see `server.js`/`lib/backup.js`), and every attempt — success or failure — is logged to the `backup_runs` table, viewable under **Admin > Backups**, which also has a "Run Backup Now" button, per-backup download, and delete.
+
+Configuration (all optional, see `.env.example`):
+- `BACKUP_DIR` — where backups are written. Defaults to a `backups/` folder next to `erp.db`. Point this at a **separate** volume/disk if you want backups to survive the loss of the main data volume — a backup that lives on the same disk it's backing up doesn't protect against that disk failing.
+- `BACKUP_RETENTION_DAYS` — how many days of backup files to keep before they're deleted (default 14). The log entries in Admin > Backups are kept regardless, so the audit trail survives even after a file is purged.
+- `BACKUP_EMAIL_TO` — email each day's backup as an offsite copy (only when SMTP is configured and the archive is under ~20MB). This is the only "off this volume" copy the app can make without adding cloud-storage credentials.
+
+**To migrate to a new server**: download a backup from Admin > Backups (or grab one directly from `BACKUP_DIR` on the server), stop the app on the new server, replace its `erp.db` with the backup's `erp.db` and its uploads directory with the backup's `uploads/` folder, then start it there with `DATA_DIR`/`UPLOADS_DIR` pointed at those paths. Nothing proprietary — it's a plain SQLite file and a plain folder of files, the same as this app already reads and writes every day.
+
 ### Demo logins
 
 | Username | Password | Role |
@@ -101,7 +112,7 @@ This is a functional foundation, not a finished production system. Before real d
 - File uploads for voucher attachments and drawings (currently a placeholder column)
 - Multi-currency / GST-compliant invoicing if needed beyond internal vouchers
 - Real reporting/exports (PDF/Excel) for payroll slips, PO printouts, vouchers
-- A proper production database (Postgres/MySQL) and backups once beyond single-machine use
+- A proper production database (Postgres/MySQL) once beyond single-machine use — daily backups exist (see "Backups & migration" above), but SQLite itself remains a single-writer, single-file bottleneck at scale
 - Row-level scoping (e.g., a Sales user only seeing their own leads) if headcount grows
 - HTTPS + a real deployment target (this listens on plain HTTP on port 4000)
 

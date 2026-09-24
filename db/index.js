@@ -975,4 +975,4 @@ const db = {
   }
 };
 
-module.exports = { db, isNew };
+module.exports = { db, isNew, dataDir, dbPath };
