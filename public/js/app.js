@@ -813,7 +813,7 @@ PAGES.dashboard = async (el) => {
           <tr><td>${esc(l.client_name)||'-'}</td><td>${esc(l.product_interest)||'-'}</td><td>${badge(l.stage)}</td><td>₹${fmt(l.expected_value)}</td><td>${esc(l.owner_name)||'-'}</td><td>${daysSince(l.created_at)}</td></tr>`)}`;
     },
     pending_expense_vouchers: async () => {
-      const vouchers = (await api('/finance/expense-vouchers')).filter(v => v.status === 'Pending');
+      const vouchers = (await api('/finance/expense-vouchers?status=Pending')).filter(v => v.status === 'Pending');
       const total = vouchers.reduce((a,v) => a + (v.amount||0), 0);
       const byDept = {};
       vouchers.forEach(v => { const dpt = v.department_name || 'Unassigned'; byDept[dpt] = (byDept[dpt]||0) + 1; });
@@ -1283,8 +1283,7 @@ async function renderApprovalDrilldown(key) {
       history = hist;
       attachType = 'purchase_request';
     } else if (r.entity_type === 'expense_voucher') {
-      const [rows, hist] = await Promise.all([api('/finance/expense-vouchers'), api(`/approvals/${r.id}/history`)]);
-      const ev = rows.find(x => x.id === r.entity_id);
+      const [ev, hist] = await Promise.all([api(`/finance/expense-vouchers/${r.entity_id}`).catch(() => null), api(`/approvals/${r.id}/history`)]);
       extraHtml = ev ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
         <b>Voucher No:</b> ${esc(ev.voucher_no)} &nbsp; <b>Date:</b> ${new Date(ev.voucher_date).toLocaleDateString()}<br>
         <b>Category:</b> ${esc(ev.category_name)||'-'} &nbsp; <b>Payment Mode:</b> ${esc(ev.payment_mode)} &nbsp; <b>Accounted:</b> ${esc(ev.accounted)}<br>
@@ -5323,8 +5322,11 @@ window.saveLeaveBalance = async (employeeId, leaveTypeId, year) => {
 };
 
 // ---- Expense Vouchers ----
+let EV_LIST_MONTH = null;
 PAGES.expenses = async (el) => {
-  const vouchers = await api('/finance/expense-vouchers');
+  const listMonth = EV_LIST_MONTH || new Date().toISOString().slice(0, 7);
+  EV_LIST_MONTH = listMonth;
+  const vouchers = await api('/finance/expense-vouchers?month=' + listMonth);
   const depts = await api('/masters/departments');
   const cats = await api('/masters/expense-categories');
   el.innerHTML = `
@@ -5341,7 +5343,11 @@ PAGES.expenses = async (el) => {
       <button class="btn" onclick="addExpense()">Submit Voucher</button>
       <div class="muted" style="margin-top:8px;">Approval chain: Accounts, plus Admin for vouchers ≥ ₹25,000.</div>
     </div>
-    ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers (${vouchers.length})`, `
+    ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
+      <div class="form-grid" style="margin-bottom:10px;">
+        <div><label>Month</label><input type="month" id="ex-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="EV_LIST_MONTH=this.value;navigate('expenses')"></div>
+        <div style="align-self:end;"><button class="btn small outline" type="button" onclick="EV_LIST_MONTH='all';navigate('expenses')">Show All</button></div>
+      </div>
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Bill', 'Status', 'Action'], vouchers, v => `
         <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td>
         <td>${v.attachment_path ? `<a href="${v.attachment_path}" target="_blank">View</a>` : '-'}</td><td>${badge(v.status)}</td>
@@ -5856,8 +5862,9 @@ window.resetPdfTemplate = async () => {
 
 // ---- Bank Guarantee Dashboard (Round 16) ----
 PAGES['bg-dashboard'] = async (el) => {
+  const showReleased = !!window.BG_INCLUDE_RELEASED;
   const [summary, bgs, reminders, orders, pendingChanges] = await Promise.all([
-    api('/bg/summary'), api('/bg'), api('/bg/reminders?status=PendingReview'), api('/bg/orders'),
+    api('/bg/summary'), api('/bg' + (showReleased ? '?all=1' : '')), api('/bg/reminders?status=PendingReview'), api('/bg/orders'),
     api('/bg/pending-changes').catch(() => []),
   ]);
   const verified = await api('/bg/reminders?status=Verified');
@@ -5926,8 +5933,12 @@ PAGES['bg-dashboard'] = async (el) => {
           <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
           <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
         </div>
-        <button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <label style="margin:0;font-weight:normal;"><input type="checkbox" id="bg-show-released" ${showReleased ? 'checked' : ''} onchange="toggleBGShowReleased(this.checked)"> Show Released</label>
+          <button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button>
+        </div>
       </div>
+      ${!showReleased ? `<p class="muted" style="margin-top:8px;">Showing live Bank Guarantees only (Active / Pending Release). Check "Show Released" above to include closed ones.</p>` : ''}
       <div id="bg-table-wrap">${bgTableHTML(bgs)}</div>
     </div>`;
   window.__BG_ALL = bgs;
@@ -6018,6 +6029,10 @@ window.toggleBGAttachments = (id) => {
   const showing = row.style.display !== 'none';
   row.style.display = showing ? 'none' : '';
   if (!showing) renderAttachmentsWidget('bank_guarantee', id, document.getElementById(`bg-attachments-${id}`));
+};
+window.toggleBGShowReleased = (checked) => {
+  window.BG_INCLUDE_RELEASED = checked;
+  navigate('bg-dashboard');
 };
 let BG_CURRENT_FILTER = '';
 window.filterBGTab = (tabEl, filter) => {
@@ -6986,6 +7001,14 @@ PAGES['company-settings'] = async (el) => {
       <div><label>Always CC (comma-separated)</label><input id="es-cc" style="width:100%;" value="${esc((email.cc_list||[]).join(', '))}"></div>
       <button class="btn" onclick="saveEmailSettings()" style="margin-top:10px;">Save Email Settings</button>
       <div id="es-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+        <div class="form-grid">
+          <div><label>Send Test Email To</label><input id="es-test-to" placeholder="you@example.com"></div>
+          <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendTestEmail()">Send Test Email</button></div>
+        </div>
+        <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
+        <div id="es-test-result" class="msg" style="display:none;"></div>
+      </div>
     </div>` : ''}
   `;
   renderCompanyAddressesPanel();
@@ -7066,6 +7089,22 @@ window.saveEmailSettings = async () => {
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.sendTestEmail = async () => {
+  const resultEl = document.getElementById('es-test-result');
+  const to = val('es-test-to');
+  if (!to) { alert('Enter an email address to send the test to.'); return; }
+  resultEl.className = 'msg';
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Sending...';
+  try {
+    const r = await api('/settings/email/test', { method: 'POST', body: JSON.stringify({ to }) });
+    resultEl.className = r.sent ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.sent ? `Sent successfully to ${to}. Check that inbox to confirm.` : (r.reason || 'Failed to send - check the SMTP settings above.');
+  } catch (e) {
+    resultEl.className = 'msg err';
+    resultEl.textContent = e.message;
+  }
 };
 
 // ===================== Round 5: Sales Invoices =====================

@@ -364,6 +364,8 @@ No SMTP service is bundled or assumed — `lib/mailer.js` reads config with **DB
 
 Every automated email (currently: PO to vendor) reads the CC list from settings and includes it automatically.
 
+To confirm delivery actually works without waiting for a real PO/invoice, use **Send Test Email** right on the Email Settings panel — enter an address and it fires a one-off message through `POST /api/settings/email/test` (Admin-only), showing the pass/fail result (with the same graceful "not configured" message if SMTP isn't set up yet) inline.
+
 ### Scope notes / deliberate simplifications
 
 - GSTIN validation is a **format check only** (regex against the standard 15-character structure) — there is no live GST portal verification, and none should be assumed.

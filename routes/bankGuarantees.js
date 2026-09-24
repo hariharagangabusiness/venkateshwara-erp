@@ -64,12 +64,21 @@ router.get('/orders/:type/:id/context', canView, (req, res) => {
 });
 
 // ---- Bank Guarantee Master ----
+// A BG's relevant lifetime runs from issuance to release, often spanning
+// years, so there's no "current month" to scope this list by the way
+// Operating Expenses/Expense Vouchers can. Instead, once a BG is Released
+// it's closed history rather than something Accounts needs to see day to
+// day, so a plain call (no explicit status filter, and not ?all=1) returns
+// only the live ones (Active/PendingRelease) - matching the dashboard's own
+// "Live Bank Guarantees" framing. ?all=1 is the explicit opt-out to include
+// Released BGs too.
 router.get('/', canView, (req, res) => {
-  const { bg_type, status } = req.query;
+  const { bg_type, status, all } = req.query;
   let q = `SELECT bg.*, p.project_code, p.title as project_title FROM bank_guarantees bg LEFT JOIN projects p ON p.id = bg.project_id WHERE 1=1`;
   const params = [];
   if (bg_type) { q += ' AND bg.bg_type = ?'; params.push(bg_type); }
   if (status) { q += ' AND bg.status = ?'; params.push(status); }
+  else if (all !== '1') { q += ` AND bg.status IN ('Active','PendingRelease')`; }
   q += ' ORDER BY bg.validity_expiry ASC';
   const rows = db.prepare(q).all(...params);
   // Attach a human label for the linked order (SO/PO no + party) without a
