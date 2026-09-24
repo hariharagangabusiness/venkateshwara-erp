@@ -945,6 +945,21 @@ try {
   `);
 } catch (e) {}
 
+// Operating Expenses category list default values - self-contained (no
+// role/permission dependency, unlike the Foreign Payments bootstrap below),
+// so this is safe to seed directly here on every boot. INSERT OR IGNORE
+// against the UNIQUE(name) means an Admin's own additions/renames/removals
+// afterwards are never stomped on a later boot.
+try {
+  const insertOeCat = raw.prepare(`INSERT OR IGNORE INTO operating_expense_categories (name, sort_order) VALUES (?, ?)`);
+  [
+    'Conv & Maint', 'Courier & Freight', 'Construction Work', 'Crane Charges', 'Daily Labour / Wages',
+    'Diesel', 'Loan & Advance', 'Mask & Sanitisation', 'Misc Exp. (Non-Regular)', 'Mobile Exp',
+    'Consumable Items', 'Office Exp.', 'Printing & Stationery', 'Repair & Maintenance', 'Stamping Charges',
+    'Sweeper', 'Tour Exp', 'Water Tank', 'Weighing Exp', "Worker's Welfare",
+  ].forEach((name, i) => insertOeCat.run(name, i));
+} catch (e) { console.error('[db] Operating Expense categories seed failed:', e.message); }
+
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
 // (node:sqlite's DatabaseSync has no built-in transaction wrapper).

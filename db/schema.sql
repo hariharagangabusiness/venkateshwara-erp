@@ -187,6 +187,17 @@ CREATE TABLE IF NOT EXISTS expense_tracker_entries (
   UNIQUE(category_id, entry_date)
 );
 
+-- Admin-editable category list for the Operating Expenses form (Finance).
+-- operating_expenses.category stores the chosen name directly rather than
+-- a FK, so existing free-text rows recorded before this list existed stay
+-- valid as-is (only new/edited entries are checked against the active list).
+CREATE TABLE IF NOT EXISTS operating_expense_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1
+);
+
 -- ===================== SITE VISIT TRACKER (Round 12) =====================
 -- Replaces the team's "SITE STATUS" Excel tab: site installation/service
 -- visits that can run for days or weeks, with multiple engineers on one

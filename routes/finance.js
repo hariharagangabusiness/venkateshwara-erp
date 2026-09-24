@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateInvoicePdf } = require('../lib/invoicePdf');
 const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
@@ -563,12 +563,52 @@ router.get('/proforma-invoices/:id/pdf', async (req, res) => {
 });
 
 // ===================== Operating Expenses (Round 5) =====================
+// Category list (Round: Operating Expense Categories) - an admin-editable
+// master list, same "add/rename/deactivate, never hard-delete" convention
+// as expense_tracker_categories. Read is open to anyone who can record an
+// expense (or just view them); only Admin can change the list itself.
+router.get('/operating-expense-categories', requirePermission('expense_voucher.create', 'report.view_all', 'expense_voucher.view_all'), (req, res) => {
+  res.json(db.prepare(`SELECT * FROM operating_expense_categories ORDER BY sort_order, name`).all());
+});
+router.post('/operating-expense-categories', requireRole('Admin'), (req, res) => {
+  const { name, sort_order } = req.body;
+  if (!String(name || '').trim()) return res.status(400).json({ error: 'Enter a category name.' });
+  try {
+    const info = db.prepare(`INSERT INTO operating_expense_categories (name, sort_order) VALUES (?,?)`)
+      .run(name.trim(), Number(sort_order) || 0);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: 'A category with that name already exists.' });
+  }
+});
+router.put('/operating-expense-categories/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM operating_expense_categories WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { name, sort_order, active } = req.body;
+  if (name !== undefined && !String(name || '').trim()) return res.status(400).json({ error: 'Enter a category name.' });
+  try {
+    db.prepare(`UPDATE operating_expense_categories SET name=?, sort_order=?, active=? WHERE id=?`).run(
+      name !== undefined ? name.trim() : existing.name,
+      sort_order !== undefined ? Number(sort_order) : existing.sort_order,
+      active !== undefined ? (active ? 1 : 0) : existing.active,
+      existing.id
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: 'A category with that name already exists.' });
+  }
+});
+
 router.get('/operating-expenses', requirePermission('report.view_all', 'expense_voucher.view_all'), (req, res) => {
   res.json(db.prepare('SELECT * FROM operating_expenses ORDER BY id DESC').all());
 });
 router.post('/operating-expenses', requirePermission('expense_voucher.create'), (req, res) => {
   const { expense_date, category, description, amount, paid_via } = req.body;
   if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'Enter an amount greater than 0.' });
+  if (category) {
+    const validCategory = db.prepare(`SELECT id FROM operating_expense_categories WHERE name = ? AND active = 1`).get(category);
+    if (!validCategory) return res.status(400).json({ error: 'That category is not on the active list. Pick one from the dropdown.' });
+  }
   const info = db.prepare(`
     INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
     VALUES (?,?,?,?,?,?)
