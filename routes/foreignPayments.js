@@ -7,9 +7,12 @@
 // (Payment Advice, Bill of Entry, Bill of Lading, Vendor Invoice, Proforma
 // Invoice) via the shared /api/attachments/foreign_payment/:id endpoint.
 const express = require('express');
+const fs = require('fs');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
+const { generateForeignPaymentPdf } = require('../lib/foreignPaymentPdf');
+const { getCompanySettings } = require('../lib/settings');
 const router = express.Router();
 router.use(authRequired);
 const canManage = requirePermission('foreign_payment.manage');
@@ -82,6 +85,20 @@ router.get('/:id', canManage, (req, res) => {
   const full = fetchFull(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
   res.json(full);
+});
+
+router.get('/:id/pdf', canManage, async (req, res) => {
+  const full = fetchFull(req.params.id);
+  if (!full) return res.status(404).json({ error: 'Not found' });
+  try {
+    const gen = await generateForeignPaymentPdf(full, getCompanySettings());
+    res.download(gen.outPath, `${full.request_no}.pdf`, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.post('/', canManage, (req, res) => {
