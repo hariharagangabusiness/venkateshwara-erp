@@ -5,6 +5,7 @@ const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
+const { sendMail } = require('../lib/mailer');
 const router = express.Router();
 router.use(authRequired);
 
@@ -96,6 +97,21 @@ router.put('/email', requireRole('Admin'), (req, res) => {
   setEmailSettings(body);
   const cfg = getEmailSettings();
   res.json(Object.assign({}, cfg, { smtp_pass: cfg.smtp_pass ? '••••••••' : '' }));
+});
+
+// Fires a one-off email against whatever SMTP config is currently in
+// effect (saved settings first, env vars as fallback - same resolution
+// lib/mailer.js always uses) so an Admin can confirm delivery actually
+// works without needing a real PO/invoice to trigger one.
+router.post('/email/test', requireRole('Admin'), async (req, res) => {
+  const to = String((req.body && req.body.to) || '').trim();
+  if (!to) return res.status(400).json({ error: 'Enter an email address to send the test to.' });
+  const result = await sendMail({
+    to,
+    subject: 'Venkateshwara ERP - Test Email',
+    text: `This is a test email from the Venkateshwara Engineers ERP, confirming SMTP is configured correctly.\n\nSent by: ${req.user.full_name || req.user.username}\nSent at: ${new Date().toLocaleString()}`,
+  });
+  res.json(result);
 });
 
 // Purchase settings - currently just the vendor-quote threshold (Round 13).

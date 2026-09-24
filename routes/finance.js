@@ -24,8 +24,14 @@ const uploadExpense = multer({
 });
 
 // ---- Expense Vouchers (Operation Expenses, cash vs accounted) ----
+// Unscoped, this grows without bound as vouchers pile up, so a call with no
+// from/to/status filter (i.e. the plain browse list, not a targeted query
+// like "all Pending vouchers" or an explicit date range) defaults to the
+// current month server-side - same convention as Operating Expenses.
+// ?month=YYYY-MM asks for a specific month; ?month=all is the explicit
+// opt-out to fetch full history.
 router.get('/expense-vouchers', (req, res) => {
-  const { department_id, accounted, status, from, to } = req.query;
+  const { department_id, accounted, status, from, to, month } = req.query;
   let q = `
     SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
     FROM expense_vouchers ev
@@ -40,8 +46,30 @@ router.get('/expense-vouchers', (req, res) => {
   if (status) { q += ' AND ev.status = ?'; params.push(status); }
   if (from) { q += ' AND ev.voucher_date >= ?'; params.push(from); }
   if (to) { q += ' AND ev.voucher_date <= ?'; params.push(to); }
+  if (!from && !to && !status && month !== 'all') {
+    const m = /^\d{4}-\d{2}$/.test(month || '') ? month : new Date().toISOString().slice(0, 7);
+    q += ' AND ev.voucher_date LIKE ?';
+    params.push(m + '%');
+  }
   q += ' ORDER BY ev.id DESC';
   res.json(db.prepare(q).all(...params));
+});
+
+// Single-record lookup for drill-downs (e.g. an approval-history detail
+// view) that need one specific voucher regardless of which month it falls
+// in - the plain list above is month-scoped by default, so it can't be
+// used to look up an older voucher by id.
+router.get('/expense-vouchers/:id', (req, res) => {
+  const row = db.prepare(`
+    SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
+    FROM expense_vouchers ev
+    LEFT JOIN departments d ON d.id = ev.department_id
+    LEFT JOIN expense_categories c ON c.id = ev.category_id
+    LEFT JOIN users u ON u.id = ev.raised_by
+    WHERE ev.id = ?
+  `).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  res.json(row);
 });
 
 router.post('/expense-vouchers', requirePermission('expense_voucher.create'), uploadExpense.single('attachment'), (req, res) => {
