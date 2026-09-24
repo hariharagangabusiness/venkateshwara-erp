@@ -740,6 +740,12 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_request_quotes ADD COLUMN delivery_commit_date TEXT`,
   `ALTER TABLE purchase_request_quotes ADD COLUMN quoted_qty REAL`,
   `ALTER TABLE purchase_request_quotes ADD COLUMN rfq_request_id INTEGER REFERENCES rfq_requests(id)`,
+  // ---- Optional additional offsite copy of each backup, uploaded to Zoho
+  // WorkDrive by lib/zohoWorkdrive.js alongside the existing email option -
+  // see the Backups & migration section of README.md for setup.
+  `ALTER TABLE backup_runs ADD COLUMN zoho_uploaded INTEGER DEFAULT 0`,
+  `ALTER TABLE backup_runs ADD COLUMN zoho_file_id TEXT`,
+  `ALTER TABLE backup_runs ADD COLUMN zoho_error TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

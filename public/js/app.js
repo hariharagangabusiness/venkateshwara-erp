@@ -7687,7 +7687,7 @@ function fmtBytes(n) {
 PAGES['backups'] = async (el) => {
   el.innerHTML = `
     <div class="panel"><h3>Daily Backups</h3>
-      <p class="muted">Runs automatically once a day (DB snapshot via SQLite's own VACUUM INTO, safe against a live database, plus a copy of every uploaded file), bundled into one .tar.gz when possible. Kept for the retention window (default 14 days, <code>BACKUP_RETENTION_DAYS</code>), optionally emailed offsite if <code>BACKUP_EMAIL_TO</code> is set.</p>
+      <p class="muted">Runs automatically once a day (DB snapshot via SQLite's own VACUUM INTO, safe against a live database, plus a copy of every uploaded file), bundled into one .tar.gz when possible. Kept for the retention window (default 14 days, <code>BACKUP_RETENTION_DAYS</code>), optionally emailed offsite if <code>BACKUP_EMAIL_TO</code> is set, and optionally uploaded to Zoho WorkDrive if <code>ZOHO_WORKDRIVE_*</code> is configured (see README).</p>
       <p class="muted"><b>To migrate to a new server:</b> download a backup below, stop the app there, replace its <code>erp.db</code> with the backup's <code>erp.db</code> and its uploads folder with the backup's <code>uploads</code> folder, then start it again. Nothing proprietary - it's a plain SQLite file and a plain folder of files.</p>
       <button class="btn" onclick="runBackupNow()">Run Backup Now</button>
       <div id="backup-run-result" style="margin-top:8px;"></div>
@@ -7701,7 +7701,7 @@ async function renderBackupHistory() {
   const bodyEl = document.getElementById('backup-history-body');
   if (!bodyEl) return;
   const runs = await api('/backups');
-  bodyEl.innerHTML = tableHTML(['Started', 'Finished', 'Status', 'Trigger', 'By', 'DB Size', 'Uploads Size', 'Total Size', 'Emailed', ''], runs, r => `
+  bodyEl.innerHTML = tableHTML(['Started', 'Finished', 'Status', 'Trigger', 'By', 'DB Size', 'Uploads Size', 'Total Size', 'Emailed', 'Zoho WorkDrive', ''], runs, r => `
     <tr>
       <td>${new Date(r.started_at).toLocaleString()}</td>
       <td>${r.finished_at ? new Date(r.finished_at).toLocaleString() : '-'}</td>
@@ -7712,12 +7712,13 @@ async function renderBackupHistory() {
       <td>${fmtBytes(r.uploads_size_bytes)}</td>
       <td>${fmtBytes(r.total_size_bytes)}</td>
       <td>${r.emailed ? '✓' : (r.email_error ? `<span class="muted" title="${esc(r.email_error)}">No</span>` : '-')}</td>
+      <td>${r.zoho_uploaded ? '✓' : (r.zoho_error ? `<span class="muted" title="${esc(r.zoho_error)}">No</span>` : '-')}</td>
       <td>
         ${r.status === 'Success' && r.is_archive ? `<button class="btn small outline" type="button" onclick="downloadBackup(${r.id})">Download</button>` : ''}
         <button class="btn small outline" type="button" onclick="deleteBackup(${r.id})">Delete</button>
       </td>
     </tr>
-    ${r.status === 'Failed' && r.error_message ? `<tr><td></td><td colspan="9" style="padding-top:0;"><span class="muted" style="font-size:12px;">${esc(r.error_message)}</span></td></tr>` : ''}
+    ${r.status === 'Failed' && r.error_message ? `<tr><td></td><td colspan="10" style="padding-top:0;"><span class="muted" style="font-size:12px;">${esc(r.error_message)}</span></td></tr>` : ''}
   `);
 }
 window.runBackupNow = async () => {
@@ -7725,7 +7726,7 @@ window.runBackupNow = async () => {
   resultEl.innerHTML = '<span class="muted">Running - this can take a moment for a large uploads folder...</span>';
   try {
     const result = await api('/backups/run', { method: 'POST' });
-    resultEl.innerHTML = `<div class="msg ok">Backup complete: ${fmtBytes(result.totalSize)}${result.emailed ? ', emailed offsite' : (result.emailError ? ' - ' + esc(result.emailError) : '')}.</div>`;
+    resultEl.innerHTML = `<div class="msg ok">Backup complete: ${fmtBytes(result.totalSize)}${result.emailed ? ', emailed offsite' : ''}${result.zohoUploaded ? ', uploaded to Zoho WorkDrive' : ''}.</div>`;
     renderBackupHistory();
   } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
 };

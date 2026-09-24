@@ -920,6 +920,9 @@ CREATE TABLE IF NOT EXISTS backup_runs (
   total_size_bytes INTEGER,
   emailed INTEGER DEFAULT 0,
   email_error TEXT,
+  zoho_uploaded INTEGER DEFAULT 0,
+  zoho_file_id TEXT,
+  zoho_error TEXT,
   error_message TEXT
 );
 
