@@ -1132,8 +1132,10 @@ PAGES['time-motion-report'] = async (el) => {
 // row came from; only the action column and its handler differ by source.
 function approvalActionCell(r) {
   if (r.source === 'FOC') {
-    return `<button class="btn small green" onclick="actOnFoc(${r.id}, 'approve')">Approve</button>
-      <button class="btn small red" onclick="actOnFoc(${r.id}, 'reject')">Reject</button>`;
+    // Approving requires picking a fulfilling department first (see
+    // routes/finance.js POST /foc/:id/approve) - no room for that dropdown
+    // in this compact queue row, so it opens the same decision in a modal.
+    return `<button class="btn small" type="button" onclick="openFocApprovalModal(${r.id})">Review &amp; Decide</button>`;
   }
   if (r.source === 'BGReminder') {
     return `<button class="btn small green" onclick="actOnBgReminder(${r.id})">Verify</button>`;
@@ -1186,9 +1188,27 @@ window.actOnApproval = async (id, action) => {
     navigate('approvals');
   } catch (e) { alert(e.message); }
 };
+window.openFocApprovalModal = async (id) => {
+  const departments = await api('/masters/departments');
+  const body = `
+    <div class="form-grid">
+      <div><label>Route to Department (required before you can decide)</label>
+        <select id="foc-modal-dept-${id}" onchange="document.getElementById('foc-modal-approve-${id}').disabled = !this.value; document.getElementById('foc-modal-reject-${id}').disabled = !this.value;">
+          <option value="">-- Select --</option>
+          ${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <button class="btn small green" id="foc-modal-approve-${id}" disabled type="button" onclick="actOnFoc(${id}, 'approve')">Approve</button>
+    <button class="btn small red" id="foc-modal-reject-${id}" disabled type="button" onclick="actOnFoc(${id}, 'reject')">Reject</button>`;
+  openMiniModal('Review FOC Request', body);
+};
 window.actOnFoc = async (id, verb) => {
   try {
-    await api(`/finance/foc/${id}/${verb}`, { method: 'POST' });
+    const deptSelect = document.getElementById(`foc-modal-dept-${id}`);
+    const body = verb === 'approve' ? { fulfilling_department_id: deptSelect ? deptSelect.value : undefined } : undefined;
+    await api(`/finance/foc/${id}/${verb}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+    closeMiniModal();
     navigate('approvals');
   } catch (e) { alert(e.message); }
 };
@@ -6800,9 +6820,10 @@ window.saveMatrixChain = async (chainId) => {
 // wherever possible); Management/Admin approve or reject them. All fields
 // stay editable while a request is Pending.
 PAGES.foc = async (el) => {
-  const [reqs, orders, clients] = await Promise.all([api('/finance/foc'), api('/sales/orders'), api('/masters/clients')]);
+  const [reqs, orders, clients, departments] = await Promise.all([api('/finance/foc'), api('/sales/orders'), api('/masters/clients'), api('/masters/departments')]);
   const canRequest = has('foc.request') && (ME.is_supervisor || ME.role === 'Admin');
   const canApprove = has('foc.approve');
+  window.FOC_DEPARTMENTS = departments;
   el.innerHTML = `
     ${canRequest ? `
     <div class="panel"><h3>New FOC Material Request</h3>
@@ -6833,13 +6854,16 @@ PAGES.foc = async (el) => {
       <div class="muted" style="margin-top:8px;">Approval: Management/Admin.</div>
     </div>` : ''}
     <div class="panel"><h3>FOC Requests (${reqs.length})</h3>
-      ${tableHTML(['FOC No', 'Order', 'Customer', 'Department', 'Item', 'Qty', 'Value', 'Requested By', 'Status', 'Action', ''], reqs, r => `
+      ${tableHTML(['FOC No', 'Order', 'Customer', 'Requesting Dept', 'Item', 'Qty', 'Value', 'Requested By', 'Fulfilling Dept', 'Status', 'Action', ''], reqs, r => `
         <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
         <td>${focEditableCell(r, 'item_description')}</td><td>${focEditableCell(r, 'quantity')} ${esc(r.unit)}</td><td>₹${fmt(r.estimated_value)}</td>
-        <td>${esc(r.requested_by_name)}</td><td>${badge(r.status)}</td>
+        <td>${esc(r.requested_by_name)}</td><td>${esc(r.fulfilling_department_name)||'-'}</td><td>${badge(r.status)}</td>
         <td>${focActions(r, canApprove)}</td>
-        <td><button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button></td></tr>
-        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="11"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
+        <td>
+          <button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button>
+          ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}
+        </td></tr>
+        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="12"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
     </div>`;
 };
 window.toggleFOCAttachments = (id) => {
@@ -6853,9 +6877,24 @@ function focEditableCell(r, field) {
 }
 function focActions(r, canApprove) {
   if (r.status === 'Pending' && canApprove) {
-    return `<button class="btn small green" onclick="focAction(${r.id}, 'approve')">Approve</button> <button class="btn small red" onclick="focAction(${r.id}, 'reject')">Reject</button>`;
+    // The approver must pick which department will issue the material
+    // before Approve or Reject is even clickable - routing is decided as
+    // part of the decision, not as a separate step afterward.
+    const deptOptions = (window.FOC_DEPARTMENTS || []).map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    return `
+      <select id="foc-dept-${r.id}" style="margin-bottom:4px;" onchange="document.getElementById('foc-approve-${r.id}').disabled = !this.value; document.getElementById('foc-reject-${r.id}').disabled = !this.value;">
+        <option value="">-- Route to department --</option>${deptOptions}
+      </select><br>
+      <button class="btn small green" id="foc-approve-${r.id}" disabled onclick="focAction(${r.id}, 'approve')">Approve</button>
+      <button class="btn small red" id="foc-reject-${r.id}" disabled onclick="focAction(${r.id}, 'reject')">Reject</button>`;
   }
-  if (r.status === 'Approved' && has('store.manage')) {
+  // Mark Issued is now gated to the department this was actually routed to
+  // (or Admin) - the real enforcement is server-side; this just avoids
+  // showing a button that would 403 for a department it wasn't routed to.
+  const canIssue = r.status === 'Approved' && (ME.role === 'Admin'
+    || (r.fulfilling_department_id && ME.department_id === r.fulfilling_department_id)
+    || (!r.fulfilling_department_id && has('store.manage')));
+  if (canIssue) {
     return `<button class="btn small" onclick="focAction(${r.id}, 'issue')">Mark Issued</button>`;
   }
   return '-';
@@ -6882,8 +6921,11 @@ window.editFOCField = async (id, field, value) => {
   catch (e) { alert(e.message); navigate('foc'); }
 };
 window.focAction = async (id, action) => {
-  try { await api(`/finance/foc/${id}/${action}`, { method: 'POST' }); navigate('foc'); }
-  catch (e) { alert(e.message); }
+  try {
+    const body = action === 'approve' ? { fulfilling_department_id: val(`foc-dept-${id}`) } : undefined;
+    await api(`/finance/foc/${id}/${action}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+    navigate('foc');
+  } catch (e) { alert(e.message); }
 };
 
 // ===================== Round 5: Company Settings =====================

@@ -370,6 +370,15 @@ const MIGRATIONS = [
   `ALTER TABLE foc_requests ADD COLUMN customer_name TEXT`,
   `ALTER TABLE foc_requests ADD COLUMN contact_person TEXT`,
   `ALTER TABLE foc_requests ADD COLUMN contact_phone TEXT`,
+  // FOC department routing: the approver must pick which department will
+  // physically issue the material as part of approving it (not a separate
+  // step afterward), so the department, the printable Annexure, and the
+  // in-app to-do it fires are all in place the moment a request goes
+  // Approved. issued_by/issued_at give the same audit trail Mark Issued
+  // already had for approved_by/approved_at, just never actually recorded.
+  `ALTER TABLE foc_requests ADD COLUMN fulfilling_department_id INTEGER REFERENCES departments(id)`,
+  `ALTER TABLE foc_requests ADD COLUMN issued_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE foc_requests ADD COLUMN issued_at TEXT`,
   `ALTER TABLE clients ADD COLUMN client_code TEXT`,
   `CREATE TABLE IF NOT EXISTS client_addresses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

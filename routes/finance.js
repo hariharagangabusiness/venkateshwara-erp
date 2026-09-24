@@ -7,6 +7,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const approvals = require('../lib/approvals');
 const { generateInvoicePdf } = require('../lib/invoicePdf');
 const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
+const { generateFocAnnexurePdf } = require('../lib/focAnnexurePdf');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const router = express.Router();
@@ -90,7 +91,8 @@ router.get('/foc', (req, res) => {
   res.json(db.prepare(`
     SELECT f.*, so.order_no, p.project_code, d.name as department_name,
       u.full_name as requested_by_name, a.full_name as approved_by_name,
-      c.name as client_master_name
+      c.name as client_master_name, fd.name as fulfilling_department_name,
+      iu.full_name as issued_by_name
     FROM foc_requests f
     LEFT JOIN sales_orders so ON so.id = f.sales_order_id
     LEFT JOIN projects p ON p.id = f.project_id
@@ -98,6 +100,8 @@ router.get('/foc', (req, res) => {
     LEFT JOIN users u ON u.id = f.requested_by
     LEFT JOIN users a ON a.id = f.approved_by
     LEFT JOIN clients c ON c.id = f.client_id
+    LEFT JOIN departments fd ON fd.id = f.fulfilling_department_id
+    LEFT JOIN users iu ON iu.id = f.issued_by
     ORDER BY f.id DESC
   `).all());
 });
@@ -170,22 +174,116 @@ router.put('/foc/:id', requirePermission('foc.request', 'foc.approve'), (req, re
   res.json({ ok: true });
 });
 
+// "HOD of department X" - same is_supervisor/is_active convention used
+// throughout the app (lib/bgReminderScan.js, routes/todos.js), scoped by
+// department_id rather than role name since the fulfilling department can
+// be any department, not one hardcoded finance-ops role.
+function departmentHOD(departmentId) {
+  return db.prepare(`
+    SELECT id FROM users WHERE department_id = ? AND is_supervisor = 1 AND is_active = 1 ORDER BY id LIMIT 1
+  `).get(departmentId);
+}
+// Same lightweight inline-permission-check idiom as routes/approvals.js's
+// userHasPermission - usable inside a handler whose authorization depends
+// on the row being acted on, not just the route itself.
+function userHasPermission(user, ...codes) {
+  if (user.role_name === 'Admin') return true;
+  const rows = db.prepare(`
+    SELECT p.code FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = ?
+  `).all(user.role_id);
+  const granted = new Set(rows.map(r => r.code));
+  return codes.some(c => granted.has(c));
+}
+// Approving an FOC request fires an in-app to-do + notification for the
+// fulfilling department's HOD, so nobody needs to be told by paper slip or
+// email that free material is waiting on them to issue - the whole
+// "eliminate the paper/email trail" point of this workflow.
+function notifyFocRouted(foc, departmentId) {
+  const hod = departmentHOD(departmentId);
+  if (!hod) return; // no active supervisor on file for that department yet - skip silently, same as bgReminderScan.js's equivalent guard
+  const today = new Date().toISOString().slice(0, 10);
+  const dueDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+  const brief = `Issue FOC material - ${foc.foc_no} (${foc.item_description})`;
+  const info = db.prepare(`
+    INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
+    VALUES (?,?,?,?,?,?,?,?,?)
+  `).run(hod.id, hod.id, today, dueDate, brief,
+    `Qty: ${foc.quantity} ${foc.unit}. Approved for free issue - print the Annexure from the FOC Material Issue page and hand it over with the material.`,
+    'High', 'FOC_ROUTED', foc.id);
+  db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
+    .run(hod.id, 'TODO_ASSIGNED', info.lastInsertRowid, `New To-Do assigned to you: ${brief}`);
+}
+
 router.post('/foc/:id/approve', requirePermission('foc.approve'), (req, res) => {
-  db.prepare(`UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ?`)
-    .run(req.user.id, req.params.id);
+  const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Pending') return res.status(400).json({ error: 'This request has already been actioned.' });
+  const departmentId = Number(req.body.fulfilling_department_id) || null;
+  if (!departmentId) return res.status(400).json({ error: 'Pick which department will issue this material before approving.' });
+  const dept = db.prepare('SELECT id FROM departments WHERE id = ?').get(departmentId);
+  if (!dept) return res.status(400).json({ error: 'That department no longer exists.' });
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, fulfilling_department_id = ? WHERE id = ?
+    `).run(req.user.id, departmentId, existing.id);
+    notifyFocRouted(existing, departmentId);
+  });
+  tx();
   res.json({ ok: true });
 });
 router.post('/foc/:id/reject', requirePermission('foc.approve'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Pending') return res.status(400).json({ error: 'This request has already been actioned.' });
   db.prepare(`UPDATE foc_requests SET status = 'Rejected', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(req.user.id, req.params.id);
   res.json({ ok: true });
 });
-router.post('/foc/:id/issue', requirePermission('store.manage'), (req, res) => {
+// Gate depends on the row, not just the route: Admin always; the current
+// user's own department once one's been picked (the department chosen at
+// Approve time, not the fixed 'Store' permission this used to be gated on
+// - Manufacturing/Service/etc. can all issue their own routed FOCs now);
+// store.manage remains a fallback only for a request Approved before this
+// column existed (fulfilling_department_id is NULL on those).
+router.post('/foc/:id/issue', (req, res) => {
   const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.status !== 'Approved') return res.status(400).json({ error: 'Must be Approved before it can be issued.' });
-  db.prepare(`UPDATE foc_requests SET status = 'Issued' WHERE id = ?`).run(existing.id);
+  const allowed = req.user.role_name === 'Admin'
+    || (existing.fulfilling_department_id && req.user.department_id === existing.fulfilling_department_id)
+    || (!existing.fulfilling_department_id && userHasPermission(req.user, 'store.manage'));
+  if (!allowed) return res.status(403).json({ error: 'Only the department this was routed to (or Admin) can mark it issued.' });
+  db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(req.user.id, existing.id);
   res.json({ ok: true });
+});
+
+router.get('/foc/:id/pdf', async (req, res) => {
+  const foc = db.prepare(`
+    SELECT f.*, so.order_no, d.name as department_name, u.full_name as requested_by_name,
+      a.full_name as approved_by_name, c.name as client_master_name, fd.name as fulfilling_department_name
+    FROM foc_requests f
+    LEFT JOIN sales_orders so ON so.id = f.sales_order_id
+    LEFT JOIN departments d ON d.id = f.department_id
+    LEFT JOIN users u ON u.id = f.requested_by
+    LEFT JOIN users a ON a.id = f.approved_by
+    LEFT JOIN clients c ON c.id = f.client_id
+    LEFT JOIN departments fd ON fd.id = f.fulfilling_department_id
+    WHERE f.id = ?
+  `).get(req.params.id);
+  if (!foc) return res.status(404).json({ error: 'Not found' });
+  if (foc.status === 'Pending' || foc.status === 'Rejected') {
+    return res.status(400).json({ error: 'The Annexure is only available once this request has been approved.' });
+  }
+  try {
+    const gen = await generateFocAnnexurePdf(foc, getCompanySettings());
+    res.download(gen.outPath, `${foc.foc_no}-Annexure.pdf`, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ===================== Finance Ledger (Round 3) =====================
