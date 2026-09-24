@@ -7234,17 +7234,23 @@ window.sendSoaEmail = async (id) => {
 
 // ===================== Round 5: Operating Expenses =====================
 PAGES['operating-expenses'] = async (el) => {
-  const rows = await api('/finance/operating-expenses');
+  const [rows, categories] = await Promise.all([api('/finance/operating-expenses'), api('/finance/operating-expense-categories')]);
+  const activeCats = categories.filter(c => c.active);
+  const isAdmin = ME && ME.role === 'Admin';
   el.innerHTML = `
     <div class="panel"><h3>New Operating Expense</h3>
       <div class="form-grid">
         <div><label>Date</label><input id="oe-date" type="date"></div>
-        <div><label>Category</label><input id="oe-category" placeholder="Rent / Utilities / Subscriptions"></div>
+        <div><label>Category</label><select id="oe-category">
+          <option value="">-- Select --</option>
+          ${activeCats.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('')}
+        </select></div>
         <div><label>Amount (₹)</label><input id="oe-amount" type="number"></div>
         <div><label>Paid Via</label><select id="oe-paid-via"><option>Bank</option><option>Cash</option></select></div>
       </div>
       <div><label>Description</label><input id="oe-desc" style="width:100%;"></div>
       <button class="btn" onclick="addOperatingExpense()" style="margin-top:8px;">Add Expense</button>
+      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()" style="margin-top:8px;margin-left:8px;">Manage Categories</button>` : ''}
       <div id="oe-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
     <div class="panel"><h3>Operating Expenses (${rows.length})</h3>
@@ -7256,10 +7262,43 @@ window.addOperatingExpense = async () => {
   const errEl = document.getElementById('oe-err'); errEl.style.display = 'none';
   try {
     await api('/finance/operating-expenses', { method: 'POST', body: JSON.stringify({
-      expense_date: val('oe-date') || undefined, category: val('oe-category'), description: val('oe-desc'), amount: val('oe-amount'), paid_via: val('oe-paid-via'),
+      expense_date: val('oe-date') || undefined, category: val('oe-category') || undefined, description: val('oe-desc'), amount: val('oe-amount'), paid_via: val('oe-paid-via'),
     })});
     navigate('operating-expenses');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+
+// ---- Admin: manage the Operating Expense category dropdown list ----
+window.openOeCategoryManager = async () => {
+  const categories = await api('/finance/operating-expense-categories');
+  const body = `
+    <div class="form-grid">
+      <div><label>New Category Name</label><input id="oec-name"></div>
+      <div><label>Sort Order</label><input id="oec-sort" type="number" value="${categories.length}"></div>
+    </div>
+    <button class="btn small" type="button" onclick="addOeCategory()">Add Category</button>
+    <div id="oec-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    <div id="oec-list-wrap" style="margin-top:12px;">${oeCategoryListHTML(categories)}</div>`;
+  openMiniModal('Manage Operating Expense Categories', body, true);
+};
+function oeCategoryListHTML(categories) {
+  return tableHTML(['Name', 'Sort', 'Active', ''], categories, c => `
+    <tr><td>${esc(c.name)}</td><td>${c.sort_order}</td><td>${c.active ? 'Yes' : 'No'}</td>
+    <td><button class="btn small outline" type="button" onclick="toggleOeCategory(${c.id}, ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button></td></tr>`);
+}
+window.addOeCategory = async () => {
+  const errEl = document.getElementById('oec-err'); errEl.style.display = 'none';
+  try {
+    await api('/finance/operating-expense-categories', { method: 'POST', body: JSON.stringify({ name: val('oec-name'), sort_order: val('oec-sort') }) });
+    const categories = await api('/finance/operating-expense-categories');
+    document.getElementById('oec-list-wrap').innerHTML = oeCategoryListHTML(categories);
+    document.getElementById('oec-name').value = '';
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.toggleOeCategory = async (id, active) => {
+  await api('/finance/operating-expense-categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
+  const categories = await api('/finance/operating-expense-categories');
+  document.getElementById('oec-list-wrap').innerHTML = oeCategoryListHTML(categories);
 };
 
 // ===================== Round 5: GST Summary =====================
