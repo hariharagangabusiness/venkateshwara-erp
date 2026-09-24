@@ -372,6 +372,7 @@ const NAV = [
     { id: 'expense-tracker-summary', label: 'Expense Tracker - Year Summary' },
     { id: 'expense-tracker-categories', label: 'Expense Tracker - Categories' },
     { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
+    { id: 'foreign-payments', label: 'Foreign Payments' },
   ]},
   { group: 'Asset Management', items: [
     { id: 'assets', label: 'Asset Register' },
@@ -1295,6 +1296,14 @@ async function renderApprovalDrilldown(key) {
         <b>Gross:</b> ₹${fmt(ss.gross)} &nbsp; <b>Net Pay:</b> ₹${fmt(ss.net_pay)} &nbsp; <b>Days Present:</b> ${ss.days_present}
       </p>` : '<p class="muted">Payroll row not found.</p>';
       history = hist;
+    } else if (r.entity_type === 'foreign_payment') {
+      const [fp, hist] = await Promise.all([api(`/foreign-payments/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      extraHtml = `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
+        <b>Beneficiary:</b> ${esc(fp.beneficiary_name)} &nbsp; <b>Amount:</b> ${esc(fp.currency)} ${fmt(fp.amount)}${fp.equivalent_inr ? ` &nbsp; <b>Equivalent INR:</b> ₹${fmt(fp.equivalent_inr)}` : ''}<br>
+        <b>Vendor:</b> ${esc(fp.vendor_name)||'-'} &nbsp; <b>Beneficiary Bank:</b> ${esc(fp.beneficiary_bank_name)||'-'}
+      </p>`;
+      history = hist;
+      attachType = 'foreign_payment';
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -1302,7 +1311,7 @@ async function renderApprovalDrilldown(key) {
       ${approvalHistoryTable(history)}
       <div id="appr-attach-${key}"></div>
     </div>`;
-    if (attachType) renderAttachmentsWidget(attachType, r.entity_id, document.getElementById(`appr-attach-${key}`));
+    if (attachType) renderAttachmentsWidget(attachType, r.entity_id, document.getElementById(`appr-attach-${key}`), attachType === 'foreign_payment' ? FP_DOCUMENT_TYPES : undefined);
   } catch (e) {
     container.innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
   }
@@ -2061,7 +2070,11 @@ async function apiUpload(path, formData, method) {
 
 // ---- Generic attachments widget (Round 3 fix): reused by any page that
 // needs "attach a file to this record" without a bespoke per-feature table.
-async function renderAttachmentsWidget(entityType, entityId, container) {
+// `documentTypes` is optional - when given (e.g. Foreign Payments'
+// Payment Advice/Bill of Entry/... categories), a category dropdown shows
+// next to the file picker and is sent as document_type on upload; every
+// other caller omits it and behaves exactly as before.
+async function renderAttachmentsWidget(entityType, entityId, container, documentTypes) {
   if (!entityId) { container.innerHTML = ''; return; }
   const list = await api(`/attachments/${entityType}/${entityId}`);
   container.innerHTML = `
@@ -2070,26 +2083,30 @@ async function renderAttachmentsWidget(entityType, entityId, container) {
       ${list.length ? list.map(a => `
         <div style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:2px;">
           <a href="${esc(a.file_path)}" target="_blank">${esc(a.original_name || a.file_path)}</a>
+          ${a.document_type ? `<span class="badge Draft">${esc(a.document_type)}</span>` : ''}
           <span class="muted">(${esc(a.uploaded_by_name)||'-'})</span>
           <button class="btn small outline" type="button" data-att-remove="${a.id}">Remove</button>
         </div>`).join('') : '<div class="muted" style="font-size:13px;">No attachments yet.</div>'}
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+        ${documentTypes ? `<select data-att-doctype><option value="">Category (optional)</option>${documentTypes.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>` : ''}
         <input type="file" data-att-file>
         <button class="btn small" type="button" data-att-upload>Attach File</button>
       </div>
     </div>`;
   container.querySelectorAll('[data-att-remove]').forEach(btn => {
-    btn.onclick = async () => { await api('/attachments/' + btn.getAttribute('data-att-remove'), { method: 'DELETE' }); renderAttachmentsWidget(entityType, entityId, container); };
+    btn.onclick = async () => { await api('/attachments/' + btn.getAttribute('data-att-remove'), { method: 'DELETE' }); renderAttachmentsWidget(entityType, entityId, container, documentTypes); };
   });
   const uploadBtn = container.querySelector('[data-att-upload]');
   const fileInput = container.querySelector('[data-att-file]');
+  const docTypeSelect = container.querySelector('[data-att-doctype]');
   uploadBtn.onclick = async () => {
     if (!fileInput.files.length) { alert('Choose a file first.'); return; }
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
+    if (docTypeSelect && docTypeSelect.value) fd.append('document_type', docTypeSelect.value);
     try {
       await apiUpload(`/attachments/${entityType}/${entityId}`, fd);
-      renderAttachmentsWidget(entityType, entityId, container);
+      renderAttachmentsWidget(entityType, entityId, container, documentTypes);
     } catch (e) { alert(e.message); }
   };
 }
@@ -6094,6 +6111,251 @@ window.dismissBGReminder = async (id) => {
     await api(`/bg/reminders/${id}/dismiss`, { method: 'POST' });
     navigate('bg-dashboard');
   } catch (e) { alert(e.message); }
+};
+
+// ---- Foreign Payments (Advance Remittance Against Imports) ----
+// Field groups mirror the ARIM form's own sections (see db/schema.sql and
+// routes/foreignPayments.js's HEADER_FIELDS, which this list's flattened
+// field names must match exactly - id/status/approval_id/created_by/
+// created_at/vendor_id and the post-payment fields are handled separately).
+const FP_DOCUMENT_TYPES = ['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'Other'];
+const FP_FIELD_GROUPS = [
+  { title: 'For Office Use (Bank)', fields: [
+    ['ad_code', 'AD Code'], ['bank_name', 'Bank Name'], ['branch', 'Branch'], ['bank_form_no', 'Bank Form No'],
+    ['customer_id', 'Customer ID'], ['transaction_type', 'Transaction Type (TT/DD)'], ['tr_fwc_amount', 'TR/FWC Amount'],
+    ['tr_fwc_rate', 'TR/FWC Rate'], ['tr_fwc_ref_no', 'TR/FWC Ref No'], ['equivalent_inr', 'Equivalent INR (for approval routing)'],
+  ]},
+  { title: 'Currency & Amount', fields: [['currency', 'Currency*'], ['amount', 'Amount*']] },
+  { title: 'Beneficiary', fields: [
+    ['beneficiary_name', 'Name*'], ['beneficiary_address_line1', 'Address Line 1'], ['beneficiary_address_line2', 'Address Line 2'],
+    ['beneficiary_pincode', 'Pincode'], ['beneficiary_city', 'City'], ['beneficiary_state', 'State'], ['beneficiary_country', 'Country'],
+  ]},
+  { title: 'Beneficiary Bank', fields: [
+    ['beneficiary_bank_name', 'Bank Name'], ['beneficiary_bank_address_line1', 'Address Line 1'], ['beneficiary_bank_address_line2', 'Address Line 2'],
+    ['beneficiary_bank_pincode', 'Pincode'], ['beneficiary_bank_city', 'City'], ['beneficiary_bank_state', 'State'], ['beneficiary_bank_country', 'Country'],
+    ['beneficiary_bank_swift_code', 'SWIFT Code'], ['beneficiary_bank_account_no', 'Account No'],
+    ['iban_sort_code_bsb_transit', 'IBAN / Sort Code / BSB / Transit'], ['correspondent_bank_name_bic', 'Correspondent Bank Name & BIC'],
+  ]},
+  { title: 'Debit Authority', fields: [
+    ['foreign_bank_charges', 'Foreign Bank Charges (SHA/OUR/BEN)'], ['goods_freely_importable', 'Goods Freely Importable (Y/N)'],
+    ['license_no', 'License No'], ['license_issue_date', 'License Issue Date', 'date'], ['license_expiry_date', 'License Expiry Date', 'date'],
+    ['license_face_value', 'License Face Value'], ['license_amount_endorsed', 'License Amount Endorsed'],
+    ['debit_account_no', 'Debit Account No'], ['debit_balance_account_no', 'Debit Balance Account No'],
+    ['forward_contract_no', 'Forward Contract No'], ['forward_contract_booked_date', 'Forward Contract Booked Date', 'date'],
+    ['part_payment_reason', 'Part Payment Reason'],
+  ]},
+  { title: 'FBG / SBLC Waiver Justification', fields: [
+    ['fbg_sblc_reason', 'Reason'], ['long_standing_since', 'Long-standing Since', 'date'], ['fbg_sblc_other_reason', 'Other Reason'],
+  ]},
+  { title: 'Transaction Details', fields: [
+    ['port_of_loading', 'Port of Loading'], ['port_of_discharge', 'Port of Discharge'], ['is_merchanting_trade', 'Merchanting Trade (Y/N)'],
+  ]},
+  { title: 'Nature of Goods', fields: [['goods_nature', 'Goods Nature']] },
+  { title: 'FBG Waiver', fields: [['fbg_waiver_requested', 'FBG Waiver Requested (Y/N)']] },
+  { title: 'Declaration', fields: [['import_on_behalf_of', 'Import on Behalf Of'], ['ofac_sanctioned_country', 'OFAC Sanctioned Country (Y/N)']] },
+  { title: 'Signatory', fields: [
+    ['signatory_name', 'Name'], ['signatory_address_line1', 'Address Line 1'], ['signatory_address_line2', 'Address Line 2'],
+    ['signatory_pincode', 'Pincode'], ['signatory_city', 'City'], ['signatory_state', 'State'], ['signatory_country', 'Country'],
+    ['ie_code', 'IE Code'], ['declaration_date', 'Declaration Date', 'date'], ['declaration_place', 'Declaration Place'],
+  ]},
+];
+const FP_LINE_FIELDS = ['invoice_no', 'invoice_date', 'terms', 'currency', 'amount', 'qty_of_goods', 'description_of_goods', 'hs_classification', 'country_of_origin', 'country_consigned_from', 'mode_of_shipment', 'date_of_shipment'];
+function emptyFpLine() { return { invoice_no: '', invoice_date: '', terms: '', currency: '', amount: 0, qty_of_goods: 0, description_of_goods: '', hs_classification: '', country_of_origin: '', country_consigned_from: '', mode_of_shipment: '', date_of_shipment: '' }; }
+
+function fpFieldsHTML(prefix, data, vendors) {
+  data = data || {};
+  const vendorOptions = `<option value="">-- None --</option>` + vendors.map(v => `<option value="${v.id}" ${Number(data.vendor_id) === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
+  const sections = FP_FIELD_GROUPS.map(g => `
+    <h4>${esc(g.title)}</h4>
+    <div class="form-grid">
+      ${g.fields.map(([f, label, type]) => `<div><label>${esc(label)}</label><input id="${prefix}-${f}" type="${type || 'text'}" value="${esc(data[f] === null || data[f] === undefined ? '' : data[f])}"></div>`).join('')}
+    </div>`).join('');
+  return `
+    <h4>Vendor</h4>
+    <div class="form-grid"><div><label>Vendor (optional)</label><select id="${prefix}-vendor_id">${vendorOptions}</select></div></div>
+    ${sections}`;
+}
+function readFpFields(prefix) {
+  const out = {};
+  const vendorVal = val(`${prefix}-vendor_id`);
+  out.vendor_id = vendorVal ? Number(vendorVal) : null;
+  FP_FIELD_GROUPS.forEach(g => g.fields.forEach(([f]) => { out[f] = val(`${prefix}-${f}`); }));
+  return out;
+}
+function fpLinesHTML(prefix, lines) {
+  return tableHTML(['Invoice No', 'Date', 'Terms', 'Currency', 'Amount', 'Qty', 'Description', 'HS Code', 'Origin', 'Consigned From', 'Mode', 'Shipment Date', ''], lines, (l, i) => `
+    <tr>
+      <td><input value="${esc(l.invoice_no || '')}" onchange="window.${prefix}_LINES[${i}].invoice_no=this.value" style="width:90px;"></td>
+      <td><input type="date" value="${esc(l.invoice_date || '')}" onchange="window.${prefix}_LINES[${i}].invoice_date=this.value" style="width:130px;"></td>
+      <td><input value="${esc(l.terms || '')}" onchange="window.${prefix}_LINES[${i}].terms=this.value" style="width:70px;"></td>
+      <td><input value="${esc(l.currency || '')}" onchange="window.${prefix}_LINES[${i}].currency=this.value" style="width:60px;"></td>
+      <td><input type="number" value="${l.amount}" onchange="window.${prefix}_LINES[${i}].amount=Number(this.value)" style="width:90px;"></td>
+      <td><input type="number" value="${l.qty_of_goods}" onchange="window.${prefix}_LINES[${i}].qty_of_goods=Number(this.value)" style="width:70px;"></td>
+      <td><input value="${esc(l.description_of_goods || '')}" onchange="window.${prefix}_LINES[${i}].description_of_goods=this.value" style="width:140px;"></td>
+      <td><input value="${esc(l.hs_classification || '')}" onchange="window.${prefix}_LINES[${i}].hs_classification=this.value" style="width:80px;"></td>
+      <td><input value="${esc(l.country_of_origin || '')}" onchange="window.${prefix}_LINES[${i}].country_of_origin=this.value" style="width:90px;"></td>
+      <td><input value="${esc(l.country_consigned_from || '')}" onchange="window.${prefix}_LINES[${i}].country_consigned_from=this.value" style="width:110px;"></td>
+      <td><input value="${esc(l.mode_of_shipment || '')}" onchange="window.${prefix}_LINES[${i}].mode_of_shipment=this.value" style="width:80px;"></td>
+      <td><input type="date" value="${esc(l.date_of_shipment || '')}" onchange="window.${prefix}_LINES[${i}].date_of_shipment=this.value" style="width:130px;"></td>
+      <td>${lines.length > 1 ? `<button class="btn small outline" type="button" onclick="window.${prefix}_LINES.splice(${i},1);renderFpLinesTable('${prefix}')">✕</button>` : ''}</td>
+    </tr>`);
+}
+window.renderFpLinesTable = (prefix) => {
+  document.getElementById(`${prefix}-lines-wrap`).innerHTML = fpLinesHTML(prefix, window[`${prefix}_LINES`]);
+};
+window.addFpLine = (prefix) => { window[`${prefix}_LINES`].push(emptyFpLine()); window.renderFpLinesTable(prefix); };
+
+window.FP_LINES = [emptyFpLine()];
+PAGES['foreign-payments'] = async (el) => {
+  const [requests, vendors] = await Promise.all([api('/foreign-payments'), api('/masters/vendors')]);
+  window.FP_LINES = [emptyFpLine()];
+  el.innerHTML = `
+    <div class="panel"><h3>New Foreign Payment Request</h3>
+      <div id="fp-fields-wrap">${fpFieldsHTML('fp-new', {}, vendors)}</div>
+      <h4>Invoice Lines</h4>
+      <div id="fp-new-lines-wrap">${fpLinesHTML('fp-new', window.FP_LINES)}</div>
+      <button class="btn small outline" type="button" onclick="addFpLine('fp-new')">+ Add Invoice Line</button>
+      <div style="margin-top:12px;">
+        <button class="btn" type="button" onclick="createForeignPayment()">Save as Draft</button>
+        <div id="fp-new-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      </div>
+    </div>
+    <div class="panel"><h3>Foreign Payment Requests</h3>
+      <div id="fp-list-wrap">${fpListHTML(requests)}</div>
+    </div>`;
+};
+
+function fpListHTML(requests) {
+  return tableHTML(['Request No', 'Vendor', 'Beneficiary', 'Currency', 'Amount', 'Status', 'Lines', 'BOE', ''], requests, (r) => `
+    <tr>
+      <td>${esc(r.request_no)}</td>
+      <td>${esc(r.vendor_name || '-')}</td>
+      <td>${esc(r.beneficiary_name)}</td>
+      <td>${esc(r.currency)}</td>
+      <td>${fmt(r.amount)}</td>
+      <td>${badge(r.status)}</td>
+      <td>${r.line_count}</td>
+      <td>${r.boe_count > 0 ? '<span class="badge Approved">Yes</span>' : '<span class="muted">-</span>'}</td>
+      <td><button class="btn small outline" type="button" onclick="openForeignPaymentDetail(${r.id})">View</button></td>
+    </tr>`);
+}
+window.createForeignPayment = async () => {
+  const errEl = document.getElementById('fp-new-err');
+  errEl.style.display = 'none';
+  try {
+    const fields = readFpFields('fp-new');
+    const lines = window.FP_LINES.filter(l => (l.invoice_no || '').trim() || (l.description_of_goods || '').trim());
+    await api('/foreign-payments', { method: 'POST', body: JSON.stringify({ ...fields, lines }) });
+    navigate('foreign-payments');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+};
+
+const FP_EDITABLE_STATUSES = ['Draft', 'Rejected', 'InfoRequested'];
+window.FP_EDIT_LINES = [];
+window.openForeignPaymentDetail = async (id) => {
+  const [r, vendors] = await Promise.all([api(`/foreign-payments/${id}`), api('/masters/vendors')]);
+  const editable = FP_EDITABLE_STATUSES.includes(r.status);
+  window.FP_EDIT_LINES = r.lines.length ? r.lines.map(l => ({ ...l })) : [emptyFpLine()];
+  const actionButtons = [];
+  if (editable) actionButtons.push(`<button class="btn" type="button" onclick="submitForeignPaymentForApproval(${r.id})">Submit for Approval</button>`);
+  if (r.status === 'Approved') actionButtons.push(`<button class="btn" type="button" onclick="openMarkForeignPaymentPaid(${r.id})">Mark Payment Made</button>`);
+  if (r.status === 'PaymentMade') actionButtons.push(`<button class="btn" type="button" onclick="closeForeignPayment(${r.id})">Close</button>`);
+  if (editable) actionButtons.push(`<button class="btn red outline" type="button" onclick="deleteForeignPayment(${r.id})">Delete</button>`);
+
+  const body = `
+    <div style="margin-bottom:10px;">${badge(r.status)} <span class="muted">${esc(r.request_no)}</span></div>
+    ${r.status === 'PaymentMade' || r.status === 'Closed' ? `
+      <h4>Payment Details</h4>
+      <div class="form-grid">
+        <div><label>Payment Reference</label><div>${esc(r.payment_reference || '-')}</div></div>
+        <div><label>Actual Debited Amount</label><div>${fmt(r.actual_debited_amount)}</div></div>
+        <div><label>Actual Exchange Rate</label><div>${fmt(r.actual_exchange_rate)}</div></div>
+        <div><label>Bill of Entry Due</label><div>${esc(r.boe_due_date || '-')}</div></div>
+      </div>` : ''}
+    <div id="fp-detail-fields-wrap">${fpFieldsHTML(`fp-edit-${r.id}`, r, vendors)}</div>
+    <h4>Invoice Lines</h4>
+    <div id="fp-edit-${r.id}-lines-wrap">${fpLinesHTML(`fp-edit-${r.id}`, window.FP_EDIT_LINES)}</div>
+    ${editable ? `<button class="btn small outline" type="button" onclick="addFpLine('fp-edit-${r.id}')">+ Add Invoice Line</button>` : ''}
+    <div id="fp-detail-attachments-${r.id}"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      ${editable ? `<button class="btn green" type="button" onclick="saveForeignPaymentEdit(${r.id})">Save Changes</button>` : ''}
+      ${actionButtons.join('')}
+    </div>
+    <div id="fp-detail-err-${r.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  const modal = openMiniModal(`Foreign Payment - ${r.request_no}`, body, true);
+  if (!editable) {
+    modal.querySelectorAll('#fp-detail-fields-wrap input, #fp-detail-fields-wrap select').forEach(inp => inp.disabled = true);
+  }
+  renderAttachmentsWidget('foreign_payment', r.id, document.getElementById(`fp-detail-attachments-${r.id}`), FP_DOCUMENT_TYPES);
+};
+
+window.saveForeignPaymentEdit = async (id) => {
+  const errEl = document.getElementById(`fp-detail-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    const fields = readFpFields(`fp-edit-${id}`);
+    const lines = window.FP_EDIT_LINES.filter(l => (l.invoice_no || '').trim() || (l.description_of_goods || '').trim());
+    await api(`/foreign-payments/${id}`, { method: 'PUT', body: JSON.stringify({ ...fields, lines }) });
+    closeMiniModal();
+    navigate('foreign-payments');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+};
+window.submitForeignPaymentForApproval = async (id) => {
+  try {
+    await api(`/foreign-payments/${id}/submit-for-approval`, { method: 'POST' });
+    closeMiniModal();
+    navigate('foreign-payments');
+  } catch (e) { alert(e.message); }
+};
+window.deleteForeignPayment = async (id) => {
+  if (!confirm('Delete this draft foreign payment request?')) return;
+  try {
+    await api(`/foreign-payments/${id}`, { method: 'DELETE' });
+    closeMiniModal();
+    navigate('foreign-payments');
+  } catch (e) { alert(e.message); }
+};
+window.closeForeignPayment = async (id) => {
+  try {
+    await api(`/foreign-payments/${id}/close`, { method: 'POST' });
+    closeMiniModal();
+    navigate('foreign-payments');
+  } catch (e) { alert(e.message); }
+};
+window.openMarkForeignPaymentPaid = (id) => {
+  const body = `
+    <div class="form-grid">
+      <div><label>Payment Reference / UTR</label><input id="fp-pay-ref-${id}"></div>
+      <div><label>Actual Debited Amount</label><input type="number" id="fp-pay-amt-${id}"></div>
+      <div><label>Actual Exchange Rate</label><input type="number" id="fp-pay-rate-${id}"></div>
+      <div><label>Bill of Entry Due Date (optional, defaults to 90 days out)</label><input type="date" id="fp-pay-boe-${id}"></div>
+    </div>
+    <button class="btn green" type="button" onclick="markForeignPaymentPaid(${id})">Confirm Payment Made</button>
+    <div id="fp-pay-err-${id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  openMiniModal('Mark Payment Made', body);
+};
+window.markForeignPaymentPaid = async (id) => {
+  const errEl = document.getElementById(`fp-pay-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/foreign-payments/${id}/mark-payment-made`, { method: 'POST', body: JSON.stringify({
+      payment_reference: val(`fp-pay-ref-${id}`) || null,
+      actual_debited_amount: val(`fp-pay-amt-${id}`) || null,
+      actual_exchange_rate: val(`fp-pay-rate-${id}`) || null,
+      boe_due_date: val(`fp-pay-boe-${id}`) || null,
+    })});
+    closeMiniModal();
+    navigate('foreign-payments');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
 };
 
 

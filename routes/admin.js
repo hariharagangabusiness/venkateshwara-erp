@@ -78,6 +78,7 @@ const PAGE_CATALOG = [
     { id: 'expense-tracker-summary', label: 'Expense Tracker - Year Summary' },
     { id: 'expense-tracker-categories', label: 'Expense Tracker - Categories' },
     { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
+    { id: 'foreign-payments', label: 'Foreign Payments' },
   ]},
   { group: 'Asset Management', items: [
     { id: 'assets', label: 'Asset Register' },
