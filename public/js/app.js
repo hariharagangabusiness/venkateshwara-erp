@@ -6365,7 +6365,7 @@ PAGES.access = async (el) => {
   body.innerHTML = data.roles.filter(r => r.name !== 'Admin').map(r => `
     <div class="panel access-role-panel collapsed" style="margin-bottom:12px;" id="access-panel-${r.id}">
       <h4 class="access-role-head" onclick="toggleAccessRolePanel(${r.id})">
-        <span>${esc(r.name)} ${r.configured ? badge('Pending') : '<span class="muted">(Unrestricted - sees everything)</span>'}</span>
+        <span>${esc(r.name)} ${r.configured ? '<span class="badge OnHold">Restricted</span>' : '<span class="muted">(Unrestricted - sees everything)</span>'}</span>
         <span class="chev">&#9660;</span>
       </h4>
       <div class="access-grid" id="access-role-${r.id}">
