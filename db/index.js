@@ -966,8 +966,47 @@ try {
     'Diesel', 'Loan & Advance', 'Mask & Sanitisation', 'Misc Exp. (Non-Regular)', 'Mobile Exp',
     'Consumable Items', 'Office Exp.', 'Printing & Stationery', 'Repair & Maintenance', 'Stamping Charges',
     'Sweeper', 'Tour Exp', 'Water Tank', 'Weighing Exp', "Worker's Welfare",
+    // Folded in from the Monthly Expense Tracker's "Fixed & Overhead
+    // Expenses" section (Round: Expense Tracker consolidation) - same 25
+    // names db/seed.js originally seeded as expense_tracker_categories'
+    // kind='Fixed' rows, now living in this one unified list instead.
+    'Salary (VE) - Axis', 'Salary (VE) - Cash', 'OT (VE)', 'Salary - Others', 'PF (VE)', 'ESIC (VE)',
+    'Electricity - Plot 222', 'Electricity - Plot 221', 'Electricity - Plot 219', 'Electricity - Plot 217',
+    'Electricity - Plot 123-124', 'Electricity - Plot 213', 'Electricity - Plot 23', 'Misc Basket Exp.',
+    'Mediclaim & Other Policies', 'Holi', 'Diwali', 'Sri Vishwakarma Pooja', 'New Year', 'LTA',
+    'Miryalguda Office', 'Karimnagar Office', 'Factory Anniversary', 'Rent - Plot 218', 'Rent - Plot 219',
+    'Sand Blasting',
   ].forEach((name, i) => insertOeCat.run(name, i));
 } catch (e) { console.error('[db] Operating Expense categories seed failed:', e.message); }
+
+// One-time historical migration: every existing Monthly Expense Tracker
+// entry becomes a real Operating Expense transaction, so Operating
+// Expenses becomes the single continuous record (old + new) once the
+// Expense Tracker pages are retired - see the settings flag guard below,
+// which makes this run exactly once ever, regardless of how many times
+// the server boots afterward. Never touches/deletes the source tables
+// (expense_tracker_entries/_categories) - they stay exactly as they were,
+// just no longer written to going forward.
+try {
+  const MIGRATION_FLAG = 'expense_tracker_migrated_to_operating_expenses';
+  const alreadyMigrated = raw.prepare(`SELECT value FROM settings WHERE key = ?`).get(MIGRATION_FLAG);
+  if (!alreadyMigrated) {
+    const entries = raw.prepare(`
+      SELECT e.entry_date, e.amount, e.notes, e.created_by, c.name as category_name
+      FROM expense_tracker_entries e JOIN expense_tracker_categories c ON c.id = e.category_id
+    `).all();
+    const insertOe = raw.prepare(`
+      INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
+      VALUES (?, ?, ?, ?, 'Bank', ?)
+    `);
+    entries.forEach(e => {
+      const description = e.notes ? `${e.notes} (Migrated from Monthly Expense Tracker)` : 'Migrated from Monthly Expense Tracker';
+      insertOe.run(e.entry_date, e.category_name, description, e.amount, e.created_by);
+    });
+    raw.prepare(`INSERT INTO settings (key, value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'`).run(MIGRATION_FLAG);
+    if (entries.length) console.log(`[db] Migrated ${entries.length} Monthly Expense Tracker entries into Operating Expenses.`);
+  }
+} catch (e) { console.error('[db] Expense Tracker -> Operating Expenses migration failed:', e.message); }
 
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
