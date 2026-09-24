@@ -6260,6 +6260,7 @@ window.openForeignPaymentDetail = async (id) => {
   const editable = FP_EDITABLE_STATUSES.includes(r.status);
   window.FP_EDIT_LINES = r.lines.length ? r.lines.map(l => ({ ...l })) : [emptyFpLine()];
   const actionButtons = [];
+  actionButtons.push(`<button class="btn small outline" type="button" onclick="downloadTemplateFile('/foreign-payments/${r.id}/pdf', '${esc(r.request_no)}.pdf')">Print PDF</button>`);
   if (editable) actionButtons.push(`<button class="btn" type="button" onclick="submitForeignPaymentForApproval(${r.id})">Submit for Approval</button>`);
   if (r.status === 'Approved') actionButtons.push(`<button class="btn" type="button" onclick="openMarkForeignPaymentPaid(${r.id})">Mark Payment Made</button>`);
   if (r.status === 'PaymentMade') actionButtons.push(`<button class="btn" type="button" onclick="closeForeignPayment(${r.id})">Close</button>`);
