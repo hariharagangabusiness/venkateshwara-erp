@@ -27,6 +27,22 @@ apt-get install -y \
   libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 libxrandr2 \
   libxss1 libxtst6 xdg-utils
 
+echo "== Adding swap space =="
+# A safety net against OOM kills, most relevant on a small-RAM shape (e.g.
+# the Always Free VM.Standard.E2.1.Micro's 1GB) - Puppeteer/headless-Chromium
+# PDF generation (offers, POs, invoices, challans, service reports) commonly
+# needs several hundred MB per render on top of Node/SQLite/nginx already
+# running. A memory spike then hits swap and slows down rather than killing
+# the process outright. Skipped if swap already exists (e.g. re-running this
+# script, or a shape/image that already provisions some).
+if [ "$(swapon --show | wc -l)" -eq 0 ] && [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 echo "== Oracle-image firewall note =="
 # Oracle's Ubuntu marketplace image ships iptables rules that allow only
 # SSH (22) in by default, separate from the VCN Security List you configure
