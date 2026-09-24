@@ -9,6 +9,7 @@ const { generateChallanPdf } = require('../lib/challanPdf');
 const { generatePoPdf } = require('../lib/poPdf');
 const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
+const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
 const path = require('path');
 const router = express.Router();
@@ -295,6 +296,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
   const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
   const updateEmailRow = db.prepare(`UPDATE rfq_request_emails SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
   const now = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+  const fromIdentity = getDepartmentEmailIdentity('Purchase');
 
   const results = [];
   for (const vendor of vendors) {
@@ -309,7 +311,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     // not a template engine, since the editable body is meant to stay
     // readable/predictable for whoever wrote it.
     const personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
-    const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody });
+    const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateVendorRow.run('Sent', null, now(), rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Sent' });
@@ -322,7 +324,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     const rowId = insertEmailRow.run(rfqId, email).lastInsertRowid;
     // No vendor name to personalize with for a manually-typed address.
     const personalizedBody = body.split('{{vendor_name}}').join('');
-    const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody });
+    const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateEmailRow.run('Sent', null, now(), rowId);
       results.push({ email, email_status: 'Sent' });
@@ -1000,6 +1002,7 @@ router.post('/orders/:id/email', requirePermission('purchase_order.manage'), asy
       subject: `Purchase Order ${po.po_no} - Venkateshwara Engineers`,
       text: `Dear ${vendor.contact_person || vendor.name},\n\nPlease find attached Purchase Order ${po.po_no}.\n\nRegards,\nVenkateshwara Engineers`,
       attachments: [{ filename: `${po.po_no}.pdf`, content: pdfBuffer }],
+      ...getDepartmentEmailIdentity('Purchase'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
     return res.json({ ok: false, sent: false, message: result.reason });

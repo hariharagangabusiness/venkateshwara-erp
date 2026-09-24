@@ -6948,7 +6948,7 @@ window.focAction = async (id, action) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email] = await Promise.all([api('/settings/company'), api('/settings/email').catch(() => null)]);
+  const [company, email, departments] = await Promise.all([api('/settings/company'), api('/settings/email').catch(() => null), api('/masters/departments')]);
   el.innerHTML = `
     <div class="panel"><h3>Company Details</h3>
       <div class="form-grid">
@@ -7009,9 +7009,28 @@ PAGES['company-settings'] = async (el) => {
         <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
         <div id="es-test-result" class="msg" style="display:none;"></div>
       </div>
+    </div>
+    <div class="panel"><h3>Department Email Identities</h3>
+      <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
+      ${tableHTML(['Department', 'From Name', 'From Address', ''], departments, d => `
+        <tr><td>${esc(d.name)}</td>
+        <td><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></td>
+        <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
+        <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
+      <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>` : ''}
   `;
   renderCompanyAddressesPanel();
+};
+window.saveDepartmentEmailIdentity = async (id) => {
+  const errEl = document.getElementById('dept-email-err');
+  errEl.style.display = 'none';
+  try {
+    await api(`/masters/departments/${id}`, { method: 'PUT', body: JSON.stringify({
+      email_from_name: val(`dept-from-name-${id}`), email_from_address: val(`dept-from-addr-${id}`),
+    })});
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 async function renderCompanyAddressesPanel() {
   const panel = document.getElementById('co-addresses-panel');

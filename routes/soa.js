@@ -7,6 +7,7 @@ const { generateSoaPdf } = require('../lib/soaPdf');
 const { runSoaScan } = require('../lib/soaScan');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
+const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 
 const router = express.Router();
 router.use(authRequired);
@@ -168,6 +169,7 @@ router.post('/:id/send-email', canManage, async (req, res) => {
       subject: `Statement of Accounts (${log.period_start} to ${log.period_end}) - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached your Statement of Accounts for the period ${log.period_start} to ${log.period_end}. Closing balance: Rs. ${Number(ledger.closingBalance).toLocaleString('en-IN')}.\n\nPlease report any discrepancy within 7 days.\n\nRegards,\nVenkateshwara Engineers - Accounts`,
       attachments: [{ filename: `SOA-${client.client_code || client.id}.pdf`, content: pdfBuffer }],
+      ...getDepartmentEmailIdentity('Accounts / HR'),
     });
     if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });
     db.prepare(`UPDATE soa_dispatch_log SET status = 'EmailSent', email_sent_to = ?, email_sent_at = ? WHERE id = ?`)
