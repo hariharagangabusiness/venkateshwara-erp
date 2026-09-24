@@ -1035,4 +1035,27 @@ function bootstrapForeignPayments() {
   } catch (e) { console.error('[db] Foreign Payments bootstrap failed:', e.message); }
 }
 
-module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments };
+// Defensive re-grant: 'Accounts' owning 'bg.manage' has been in db/seed.js
+// since this repo's very first commit, so a database seeded from this
+// codebase already has the role_permissions row - but a database migrated
+// in from an older/external system (this app's own README/prior work
+// describes bulk-migrated legacy Bank Guarantee records) may have had its
+// Accounts role and permission rows created some other way, without this
+// specific grant ever being applied. Cheap and idempotent (INSERT OR
+// IGNORE) to just re-assert it on every boot rather than rely on trusting
+// how a given production database originally came to exist. Same ordering
+// requirement as bootstrapForeignPayments() above: must run AFTER
+// db/seed.js on a brand-new database, so server.js calls it right after
+// its own isNew-gated seed step.
+function bootstrapBgManageGrant() {
+  try {
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT (SELECT id FROM roles WHERE name = 'Accounts'), (SELECT id FROM permissions WHERE code = 'bg.manage')
+      WHERE (SELECT id FROM roles WHERE name = 'Accounts') IS NOT NULL
+        AND (SELECT id FROM permissions WHERE code = 'bg.manage') IS NOT NULL
+    `);
+  } catch (e) { console.error('[db] bg.manage grant backfill failed:', e.message); }
+}
+
+module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant };
