@@ -63,7 +63,17 @@ The app takes a **daily automated backup** — a consistent SQLite snapshot of `
 Configuration (all optional, see `.env.example`):
 - `BACKUP_DIR` — where backups are written. Defaults to a `backups/` folder next to `erp.db`. Point this at a **separate** volume/disk if you want backups to survive the loss of the main data volume — a backup that lives on the same disk it's backing up doesn't protect against that disk failing.
 - `BACKUP_RETENTION_DAYS` — how many days of backup files to keep before they're deleted (default 14). The log entries in Admin > Backups are kept regardless, so the audit trail survives even after a file is purged.
-- `BACKUP_EMAIL_TO` — email each day's backup as an offsite copy (only when SMTP is configured and the archive is under ~20MB). This is the only "off this volume" copy the app can make without adding cloud-storage credentials.
+- `BACKUP_EMAIL_TO` — email each day's backup as an offsite copy (only when SMTP is configured and the archive is under ~20MB).
+- `ZOHO_WORKDRIVE_CLIENT_ID` / `ZOHO_WORKDRIVE_CLIENT_SECRET` / `ZOHO_WORKDRIVE_REFRESH_TOKEN` / `ZOHO_WORKDRIVE_FOLDER_ID` / `ZOHO_WORKDRIVE_DC` — also upload each day's backup to a Zoho WorkDrive folder as an offsite copy (`lib/zohoWorkdrive.js`). All four of the first values must be set together or this is skipped (logged per-run in Admin > Backups, same as an email failure).
+
+**Getting the Zoho WorkDrive credentials** — a connected chat session's own WorkDrive access (e.g. this repo's Claude Code session) can browse and create folders there, but it can't act on the deployed server's behalf: the running app needs its *own* Zoho API credentials, independent of any person's login session, so it can upload unattended every day indefinitely. That means a one-time setup a human has to do in Zoho's API Console:
+1. Go to [api-console.zoho.com](https://api-console.zoho.com/) (sign in with the same Zoho account/org whose WorkDrive you want backups in), click **Add Client** → **Self Client**.
+2. Under the **Generate Code** tab, enter scope `WorkDrive.files.ALL` (or `WorkDrive.files.CREATE` if offered separately), pick a time duration (e.g. 10 minutes is enough), and generate a code.
+3. Immediately exchange that code for tokens by POSTing to `https://accounts.zoho.<dc>/oauth/v2/token` with `code`, `client_id`, `client_secret`, `redirect_uri=https://workdrive.zoho.com`, and `grant_type=authorization_code` (curl or Postman both work) — the response's `refresh_token` is long-lived and is what the app actually uses day to day; the Self Client screen also shows the `client_id`/`client_secret` directly.
+4. Pick (or create) the destination folder in WorkDrive and grab its folder ID from its URL (the segment after the last `/`, or via the API).
+5. Set all five as environment variables on the server (Railway's dashboard, not this repo) — never commit them to git.
+
+A destination team folder named **"ERP Backups"** already exists in this project's connected WorkDrive (private, created via the session's connector) if you want to point `ZOHO_WORKDRIVE_FOLDER_ID` at it rather than creating a new one — open WorkDrive and check its URL for the folder ID, or ask whoever set it up.
 
 **To migrate to a new server**: download a backup from Admin > Backups (or grab one directly from `BACKUP_DIR` on the server), stop the app on the new server, replace its `erp.db` with the backup's `erp.db` and its uploads directory with the backup's `uploads/` folder, then start it there with `DATA_DIR`/`UPLOADS_DIR` pointed at those paths. Nothing proprietary — it's a plain SQLite file and a plain folder of files, the same as this app already reads and writes every day.
 
