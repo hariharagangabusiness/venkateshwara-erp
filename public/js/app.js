@@ -315,6 +315,7 @@ const NAV = [
     { id: 'followups', label: "Today's Follow-ups" },
     { id: 'offers', label: 'Offers / Quotations' },
     { id: 'offer-options', label: 'Offer Field Options' },
+    { id: 'offer-pdf-designer', label: 'Offer PDF Layout Designer' },
     { id: 'orders', label: 'Sales Orders' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
@@ -5873,6 +5874,230 @@ window.resetPdfTemplate = async () => {
   if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images, the uploaded Word and PDF cover pages, and the rich-text header/footer.')) return;
   try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
+};
+
+// ===================== Offer PDF Layout Designer (GrapesJS) =====================
+// Visual header/footer/cover-page builder backing routes/offers.js's
+// /offers/pdf-layout endpoints (see lib/settings.js for storage). GrapesJS
+// and its webpage preset are heavy and only needed on this one page, so
+// they're loaded lazily (see loadOfferPdfDesignerAssets) rather than in
+// index.html's <head>.
+//
+// Keep this token list in sync with lib/offerPdf.js's mergeTokenMap - an
+// unrecognized {{token}} is left as literal text in the rendered PDF rather
+// than silently disappearing, so this is the one true list admins should
+// pick from instead of typing tokens by hand.
+const PDF_DESIGNER_TOKENS = [
+  'client.name', 'offer.no', 'offer.subject', 'offer.date', 'offer.version',
+  'offer.application', 'offer.type_of_system', 'offer.material_of_construction',
+  'company.legal_name', 'company.registered_address', 'company.gstin', 'company.pan',
+];
+// width/height approximate real print dimensions at 96dpi (A4 width, and the
+// PDF's actual top/bottom margins for header/footer) so proportions look
+// right while designing - see setDevice('PDF') in initOfferPdfDesignerTab.
+// smallText mirrors the fact that Puppeteer's header/footer template
+// rendering context (NOT the cover, which renders as part of the normal PDF
+// body flow) doesn't inherit the page's CSS at all - lib/offerPdf.js wraps
+// designed header/footer content in a 10px Arial default so it isn't
+// invisible in the actual PDF, so the canvas should default to roughly the
+// same thing while designing.
+const PDF_DESIGNER_PIECES = [
+  { id: 'header', label: 'Header', width: 794, height: 110, smallText: true },
+  { id: 'footer', label: 'Footer', width: 794, height: 98, smallText: true },
+  { id: 'cover', label: 'Cover Page', width: 794, height: 1123, smallText: false },
+];
+let PDF_DESIGNER_TAB = 'header';
+let PDF_DESIGNER_LAYOUT = null; // { header, footer, cover }, each { active, html, css, project }
+let PDF_DESIGNER_EDITORS = {}; // piece id -> live grapesjs Editor instance for this page visit
+let PDF_DESIGNER_ASSETS_PROMISE = null; // guards against loading the vendor <script>/<link> tags twice
+
+function loadOfferPdfDesignerAssets() {
+  if (PDF_DESIGNER_ASSETS_PROMISE) return PDF_DESIGNER_ASSETS_PROMISE;
+  PDF_DESIGNER_ASSETS_PROMISE = new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = '/vendor/grapesjs/css/grapes.min.css';
+    document.head.appendChild(link);
+    const gjsScript = document.createElement('script');
+    gjsScript.src = '/vendor/grapesjs/grapes.min.js';
+    gjsScript.onload = () => {
+      const presetScript = document.createElement('script');
+      presetScript.src = '/vendor/grapesjs-preset-webpage/index.js';
+      presetScript.onload = () => resolve();
+      presetScript.onerror = () => reject(new Error('Failed to load the GrapesJS webpage preset.'));
+      document.head.appendChild(presetScript);
+    };
+    gjsScript.onerror = () => reject(new Error('Failed to load GrapesJS.'));
+    document.head.appendChild(gjsScript);
+  });
+  return PDF_DESIGNER_ASSETS_PROMISE;
+}
+
+function renderOfferPdfDesignerPanel(piece) {
+  const data = (PDF_DESIGNER_LAYOUT && PDF_DESIGNER_LAYOUT[piece.id]) || { active: false };
+  return `
+  <div class="pdfd-panel" data-piece="${piece.id}" style="${PDF_DESIGNER_TAB === piece.id ? '' : 'display:none;'}">
+    <label style="display:block;margin-bottom:10px;">
+      <input type="checkbox" id="pdfd-active-${piece.id}" ${data.active ? 'checked' : ''}>
+      Active (use this designed ${esc(piece.label.toLowerCase())} on offer PDFs instead of the built-in default)
+    </label>
+    <div class="pdfd-body">
+      <div class="pdfd-canvas-col">
+        <div class="pdfd-gjs-wrap"><div id="pdfd-canvas-${piece.id}"></div></div>
+      </div>
+      <div class="pdfd-side">
+        <h4 style="margin-top:0;">Merge Fields</h4>
+        <p class="muted" style="font-size:12px;">Select an element on the canvas, then click a field to insert it there. With nothing selected, it's copied to the clipboard instead.</p>
+        <div class="pdfd-tokens">
+          ${PDF_DESIGNER_TOKENS.map(t => `<button type="button" class="pdfd-token-btn" onclick="insertOfferPdfDesignerToken('${piece.id}','${t}')">{{${t}}}</button>`).join('')}
+        </div>
+        <div style="margin-top:16px;">
+          <button class="btn" onclick="saveOfferPdfDesignerPiece('${piece.id}')">Save ${esc(piece.label)}</button><br>
+          <button class="btn outline" onclick="resetOfferPdfDesignerPiece('${piece.id}')" style="margin-top:8px;">Reset ${esc(piece.label)}</button>
+        </div>
+        <div id="pdfd-err-${piece.id}" class="msg err" style="display:none;margin-top:10px;"></div>
+        <div id="pdfd-ok-${piece.id}" class="msg ok" style="display:none;margin-top:10px;"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+PAGES['offer-pdf-designer'] = async (el) => {
+  if (ME.role !== 'Admin') {
+    el.innerHTML = `<div class="panel"><p class="muted">This page is only available to Admins.</p></div>`;
+    return;
+  }
+  // Tear down any editors left over from a previous visit to this page in
+  // this session - the containers below are about to be recreated, so their
+  // old iframes/listeners would otherwise just leak.
+  Object.values(PDF_DESIGNER_EDITORS).forEach(ed => { try { ed.destroy(); } catch (e) {} });
+  PDF_DESIGNER_EDITORS = {};
+  PDF_DESIGNER_LAYOUT = await api('/offers/pdf-layout');
+  el.innerHTML = `
+    <div class="panel">
+      <h3>Offer PDF Layout Designer</h3>
+      <p class="muted">Design the offer PDF's header, footer and cover page visually. Each piece can be toggled active independently - leaving a piece inactive keeps the existing built-in default for it. Changes here only apply once you click that piece's Save button.</p>
+      <div class="tabs">
+        ${PDF_DESIGNER_PIECES.map(p => `<div class="tab pdfd-tab ${PDF_DESIGNER_TAB === p.id ? 'active' : ''}" data-tab="${p.id}" onclick="switchOfferPdfDesignerTab('${p.id}')">${esc(p.label)}</div>`).join('')}
+      </div>
+      ${PDF_DESIGNER_PIECES.map(p => renderOfferPdfDesignerPanel(p)).join('')}
+    </div>`;
+  await loadOfferPdfDesignerAssets();
+  initOfferPdfDesignerTab(PDF_DESIGNER_TAB);
+};
+
+// GrapesJS canvases need to be visible/sized to lay themselves out
+// correctly, so each tab's editor is only created the first time that tab
+// is actually switched to (or, for the initial tab, right after this page's
+// markup lands in the DOM) - not eagerly for all three up front.
+async function initOfferPdfDesignerTab(pieceId) {
+  if (PDF_DESIGNER_EDITORS[pieceId]) return; // already mounted this page visit - don't recreate and lose in-progress edits
+  await loadOfferPdfDesignerAssets();
+  const pieceCfg = PDF_DESIGNER_PIECES.find(p => p.id === pieceId);
+  const data = (PDF_DESIGNER_LAYOUT && PDF_DESIGNER_LAYOUT[pieceId]) || {};
+  const editor = grapesjs.init({
+    container: '#pdfd-canvas-' + pieceId,
+    height: pieceId === 'cover' ? '760px' : '340px',
+    width: 'auto',
+    fromElement: false,
+    storageManager: false,
+    plugins: ['grapesjs-preset-webpage'],
+    pluginsOpts: { 'grapesjs-preset-webpage': {} },
+    deviceManager: {
+      devices: [
+        { id: 'pdf-' + pieceId, name: 'PDF', width: pieceCfg.width + 'px', height: pieceCfg.height + 'px' },
+      ],
+    },
+  });
+  try { editor.setDevice('PDF'); } catch (e) { /* non-fatal - editor still usable at its default device */ }
+  if (pieceCfg.smallText) {
+    // Puppeteer's header/footer template context doesn't inherit the page's
+    // CSS at all (see lib/offerPdf.js) - approximate its 10px Arial default
+    // here too, so what's designed isn't wildly bigger than the real PDF.
+    editor.on('load', () => {
+      const doc = editor.Canvas.getDocument();
+      if (!doc || !doc.body) return;
+      doc.body.style.fontSize = '10px';
+      doc.body.style.fontFamily = 'Arial, sans-serif';
+      if (!doc.getElementById('pdfd-base-style')) {
+        const style = doc.createElement('style');
+        style.id = 'pdfd-base-style';
+        style.textContent = 'body{font-size:10px;font-family:Arial,sans-serif;}';
+        doc.head.appendChild(style);
+      }
+    });
+  }
+  if (data.project) {
+    try { editor.loadProjectData(data.project); }
+    catch (e) { console.error('offer-pdf-designer: failed to load saved project data for ' + pieceId, e); }
+  }
+  PDF_DESIGNER_EDITORS[pieceId] = editor;
+}
+
+window.switchOfferPdfDesignerTab = (id) => {
+  if (PDF_DESIGNER_TAB === id) return;
+  PDF_DESIGNER_TAB = id;
+  document.querySelectorAll('.pdfd-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === id));
+  document.querySelectorAll('.pdfd-panel').forEach(p => { p.style.display = p.dataset.piece === id ? '' : 'none'; });
+  initOfferPdfDesignerTab(id);
+};
+
+function offerPdfDesignerToast(pieceId, msg, isErr) {
+  const okEl = document.getElementById('pdfd-ok-' + pieceId);
+  const errEl = document.getElementById('pdfd-err-' + pieceId);
+  if (isErr) {
+    if (okEl) okEl.style.display = 'none';
+    if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+  } else {
+    if (errEl) errEl.style.display = 'none';
+    if (okEl) { okEl.textContent = msg; okEl.style.display = 'block'; }
+  }
+}
+
+window.insertOfferPdfDesignerToken = (pieceId, token) => {
+  const text = '{{' + token + '}}';
+  const editor = PDF_DESIGNER_EDITORS[pieceId];
+  const selected = editor && editor.getSelected();
+  if (selected) {
+    try {
+      selected.append(text);
+      offerPdfDesignerToast(pieceId, 'Inserted ' + text + ' into the selected element.');
+      return;
+    } catch (e) { /* fall through to clipboard */ }
+  }
+  const copied = () => offerPdfDesignerToast(pieceId, 'Copied ' + text + ' to the clipboard - select a text element on the canvas first, or paste it in now.');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(copied).catch(() => alert('Merge field: ' + text));
+  } else {
+    alert('Merge field: ' + text);
+  }
+};
+
+window.saveOfferPdfDesignerPiece = async (pieceId) => {
+  const editor = PDF_DESIGNER_EDITORS[pieceId];
+  if (!editor) { offerPdfDesignerToast(pieceId, 'Editor is not ready yet - try again in a moment.', true); return; }
+  try {
+    const html = editor.getHtml();
+    const css = editor.getCss() || '';
+    const project = editor.getProjectData();
+    const active = document.getElementById('pdfd-active-' + pieceId).checked;
+    // The endpoint returns the FULL {header,footer,cover} layout (matching
+    // GET), not just this one piece - replace the whole cached copy, don't
+    // nest it under pieceId.
+    PDF_DESIGNER_LAYOUT = await api('/offers/pdf-layout/' + pieceId, {
+      method: 'PUT',
+      body: JSON.stringify({ active, html, css, project }),
+    });
+    offerPdfDesignerToast(pieceId, 'Saved.');
+  } catch (e) { offerPdfDesignerToast(pieceId, e.message, true); }
+};
+
+window.resetOfferPdfDesignerPiece = async (pieceId) => {
+  if (!confirm('Reset this ' + pieceId + ' back to blank/inactive? This discards its saved design and cannot be undone.')) return;
+  try {
+    await api('/offers/pdf-layout/' + pieceId, { method: 'DELETE' });
+    navigate('offer-pdf-designer');
+  } catch (e) { alert(e.message); }
 };
 
 // ---- Bank Guarantee Dashboard (Round 16) ----

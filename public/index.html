@@ -215,6 +215,16 @@
     opacity:0.03; font-size:min(8vw,95px); font-weight:800; color:#1a3a6b;
     transform:rotate(-30deg); white-space:nowrap;
   }
+  /* Offer PDF Layout Designer (GrapesJS) - scoped to this page only; the
+     editor's own chrome/skin comes from grapes.min.css, loaded lazily when
+     the page is first visited (see loadOfferPdfDesignerAssets in app.js). */
+  .pdfd-body{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;}
+  .pdfd-canvas-col{flex:1 1 560px;min-width:0;}
+  .pdfd-side{flex:0 0 220px;}
+  .pdfd-tokens{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+  .pdfd-token-btn{font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card);cursor:pointer;color:var(--text);}
+  .pdfd-token-btn:hover{background:var(--bg);}
+  .pdfd-gjs-wrap{border:1px solid var(--border);border-radius:6px;overflow:hidden;}
 </style>
 </head>
 <body>
