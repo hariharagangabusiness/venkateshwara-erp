@@ -34,6 +34,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 // UPLOADS_DIR points outside public/ (e.g. a Render persistent disk).
 const uploadsDir = getUploadsDir();
 app.use('/uploads', express.static(uploadsDir));
+// GrapesJS (Offer PDF Layout Designer, routes/offers.js's pdf-layout) is a
+// dev dependency of the page, not the app - served straight from
+// node_modules rather than copied into public/, so `npm install` alone
+// keeps it current.
+app.use('/vendor/grapesjs', express.static(path.join(__dirname, 'node_modules', 'grapesjs', 'dist')));
+app.use('/vendor/grapesjs-preset-webpage', express.static(path.join(__dirname, 'node_modules', 'grapesjs-preset-webpage', 'dist')));
 // Printed once at boot specifically so a deploy log makes it obvious
 // whether UPLOADS_DIR is actually in effect on THIS running container -
 // a variable saved but not yet deployed on Railway looks identical from
