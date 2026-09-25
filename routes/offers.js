@@ -9,7 +9,7 @@ const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
-const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferDesignTokens, setOfferDesignTokens, DEFAULT_OFFER_DESIGN_TOKENS } = require('../lib/settings');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferDesignTokens, setOfferDesignTokens, DEFAULT_OFFER_DESIGN_TOKENS, getOfferPdfLayout, setOfferPdfLayoutPiece } = require('../lib/settings');
 
 const router = express.Router();
 router.use(authRequired);
@@ -286,6 +286,41 @@ router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
   res.json(getOfferPdfTemplate());
+});
+
+// ===================== Offer PDF Layout Designer (visual drag-and-drop) =====================
+// A newer, higher-precedence alternative to the override pieces above - see
+// lib/settings.js's DEFAULT_OFFER_PDF_LAYOUT for the data shape and
+// lib/offerPdf.js's headerTemplate()/footerTemplate()/coverPage() for where
+// it slots into the render precedence. Admin-only, same as the rest of this
+// template-manager area.
+const PDF_LAYOUT_PIECES = ['header', 'footer', 'cover'];
+
+router.get('/pdf-layout', requireRole('Admin'), (req, res) => {
+  res.json(getOfferPdfLayout());
+});
+
+// Saves one piece at a time (the designer UI edits header/footer/cover as
+// separate tabs) - html/css are GrapesJS's own exported strings, project is
+// its full project data (so the designer can re-open this piece later).
+router.put('/pdf-layout/:piece', requireRole('Admin'), (req, res) => {
+  const { piece } = req.params;
+  if (!PDF_LAYOUT_PIECES.includes(piece)) return res.status(400).json({ error: 'piece must be one of: ' + PDF_LAYOUT_PIECES.join(', ') });
+  const { active, html, css, project } = req.body;
+  const update = {};
+  if (active !== undefined) update.active = !!active;
+  if (html !== undefined) update.html = stripScriptTags(String(html));
+  if (css !== undefined) update.css = String(css);
+  if (project !== undefined) update.project = project;
+  res.json(setOfferPdfLayoutPiece(piece, update));
+});
+
+// Clears one piece back to inactive/empty - the other two pieces (and their
+// own active state) are untouched.
+router.delete('/pdf-layout/:piece', requireRole('Admin'), (req, res) => {
+  const { piece } = req.params;
+  if (!PDF_LAYOUT_PIECES.includes(piece)) return res.status(400).json({ error: 'piece must be one of: ' + PDF_LAYOUT_PIECES.join(', ') });
+  res.json(setOfferPdfLayoutPiece(piece, { active: false, html: '', css: '', project: null }));
 });
 
 // ===================== Offer governance (immutability / clause-library toggles) =====================
