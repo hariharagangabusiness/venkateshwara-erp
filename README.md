@@ -72,6 +72,8 @@ Moving off a PaaS onto a plain VM you fully control (e.g. Oracle Cloud's Always 
   ```
   With this in place, merging a PR to `main` deploys itself within a few minutes with no manual step on the VM at all. It uses `git pull --ff-only`, so if the checkout ever diverges from `origin/main` for any reason, it fails loudly (visible in `/var/log/erp-deploy.log`) rather than silently creating a merge commit — check that log if a deploy doesn't show up when expected.
 
+  Confirmed working end to end on 2026-09-25: this exact line was added, merged, and picked up by `auto-pull.sh` on the live Oracle Cloud VM within one cron tick, with no manual step on the server.
+
 Two Oracle-specific gotchas worth knowing before you start:
 1. **Two separate firewalls.** The VCN's Security List (in the OCI console) and the VM's own `iptables` rules both have to allow ports 80/443 — Oracle's Ubuntu marketplace image ships `iptables` rules that permit only SSH (22) in by default, independent of whatever you open in the console. If the app is unreachable after opening the Security List, check `sudo iptables -L` next (the commented-out fix is in `provision.sh`).
 2. **Moving cloud host does not, by itself, fix an SMTP block.** If email was timing out on Railway because the mail provider is blocking connections from cloud/datacenter IP ranges generally, Oracle Cloud's IPs are just as likely to be flagged as "cloud" as Railway's — that's a mail-provider/relay problem, not a hosting-platform one (see the Email/SMTP section below).
