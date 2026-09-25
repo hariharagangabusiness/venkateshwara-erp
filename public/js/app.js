@@ -7015,7 +7015,7 @@ PAGES['company-settings'] = async (el) => {
         <div id="es-test-result" class="msg" style="display:none;"></div>
       </div>
     </div>
-    <div class="panel"><h3>Department Email Identities</h3>
+    ${collapsiblePanel('department-email-identities', 'Department Email Identities', `
       <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
       ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
         <tr><td>${esc(d.name)}</td>
@@ -7023,7 +7023,7 @@ PAGES['company-settings'] = async (el) => {
         <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
         <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
       <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    </div>` : ''}
+    `)}` : ''}
   `;
   renderCompanyAddressesPanel();
 };
