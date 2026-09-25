@@ -5,6 +5,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
+const { resolveUploadPath } = require('../lib/paths');
 const router = express.Router();
 router.use(authRequired);
 
@@ -307,12 +308,12 @@ router.get('/orders/:id/annexure', async (req, res) => {
   // Rather than surface that as a dead end, regenerate on demand: the same
   // ensureAnnexureForOrder() used at order-creation time rebuilds it from
   // the order/offer data (which does live in the DB) and re-serves it.
-  let abs = order.annexure_path ? path.join(__dirname, '..', 'public', order.annexure_path) : null;
+  let abs = order.annexure_path ? resolveUploadPath(order.annexure_path) : null;
   if (!abs || !fs.existsSync(abs)) {
     try {
       const annex = await ensureAnnexureForOrder(order);
       order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
-      abs = path.join(__dirname, '..', 'public', order.annexure_path);
+      abs = resolveUploadPath(order.annexure_path);
       if (!fs.existsSync(abs)) throw new Error('Annexure regeneration did not produce a file.');
     } catch (e) {
       console.error('Annexure auto-regeneration failed:', e);
