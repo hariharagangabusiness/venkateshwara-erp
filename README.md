@@ -65,7 +65,12 @@ Moving off a PaaS onto a plain VM you fully control (e.g. Oracle Cloud's Always 
 - **`provision.sh`** — one-time setup for a fresh Ubuntu 22.04/24.04 VM: installs Node.js 22, nginx, and the shared libraries `@sparticuz/chromium` needs (the same list Railway's `railpack.json` installs); creates a dedicated `erp` system user; clones the repo to `/opt/venkateshwara-erp`; points `DATA_DIR`/`UPLOADS_DIR` at `/opt/venkateshwara-erp-data` (outside the git checkout, so a `git pull` never touches live data); installs the systemd service; and optionally runs `certbot --nginx` for HTTPS if you set a `DOMAIN`. Review it, fill in `REPO_URL`/`DOMAIN`, then `sudo bash provision.sh`.
 - **`erp.service`** — the systemd unit `provision.sh` installs (`sudo systemctl status|restart erp`, logs via `journalctl -u erp`).
 - **`nginx-erp.conf`** — the reverse-proxy vhost template (port 80 → the app's port 4000; certbot rewrites it in place to add the 443/TLS block).
-- **`redeploy.sh`** — the day-to-day update: `git pull`, `npm install`, restart the service.
+- **`redeploy.sh`** — the day-to-day update, run by hand: `git pull`, `npm install`, restart the service.
+- **`auto-pull.sh`** — the same update, automated: polls `origin/main` and only deploys (npm install + restart) when there's actually a new commit, so most runs are a no-op. Meant to run every few minutes from **root's** crontab (`sudo crontab -e`):
+  ```
+  */5 * * * * /opt/venkateshwara-erp/deploy/oracle-cloud/auto-pull.sh >> /var/log/erp-deploy.log 2>&1
+  ```
+  With this in place, merging a PR to `main` deploys itself within a few minutes with no manual step on the VM at all. It uses `git pull --ff-only`, so if the checkout ever diverges from `origin/main` for any reason, it fails loudly (visible in `/var/log/erp-deploy.log`) rather than silently creating a merge commit — check that log if a deploy doesn't show up when expected.
 
 Two Oracle-specific gotchas worth knowing before you start:
 1. **Two separate firewalls.** The VCN's Security List (in the OCI console) and the VM's own `iptables` rules both have to allow ports 80/443 — Oracle's Ubuntu marketplace image ships `iptables` rules that permit only SSH (22) in by default, independent of whatever you open in the console. If the app is unreachable after opening the Security List, check `sudo iptables -L` next (the commented-out fix is in `provision.sh`).
