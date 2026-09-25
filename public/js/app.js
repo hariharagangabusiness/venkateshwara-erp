@@ -3334,8 +3334,9 @@ function renderPRRows(rows) {
         ${['Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
+        ${['Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id})">Withdraw</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
-        <button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>
+        ${['Approved', 'OrderPlaced'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>` : ''}
       </td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
@@ -3356,12 +3357,26 @@ window.resubmitPR = async (id) => {
     navigate('purchase-requests');
   } catch (e) { alert(e.message); }
 };
-// "Repeat" a past PR (any status - the whole point is reordering something
-// already bought before, rejected/completed/cancelled included) by
-// pre-filling the New Purchase Request form above with its same lines and
-// project. Nothing is submitted here - it's a starting point the user
-// reviews/adjusts like any other new request, reusing the existing create
-// flow rather than a separate clone endpoint.
+// Lets the requester close out a PR themselves - most useful after one or
+// more rejections, when trying again isn't worth it. Only available before
+// a purchase order exists against it; once Approved/OrderPlaced, unwinding
+// goes through Cancel PO instead (routes/purchase.js already reverses the PR
+// back to Approved there if its only PO is cancelled).
+window.cancelPR = async (id) => {
+  const reason = prompt('Reason for withdrawing this request (optional):');
+  if (reason === null) return;
+  if (!confirm('Withdraw this Purchase Request? This cannot be undone.')) return;
+  try {
+    await api(`/purchase/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
+// "Repeat" an already-approved/ordered PR (only shown once it's actually
+// Approved or OrderPlaced - reordering something never yet approved doesn't
+// make sense) by pre-filling the New Purchase Request form above with its
+// same lines and project. Nothing is submitted here - it's a starting point
+// the user reviews/adjusts like any other new request, reusing the existing
+// create flow rather than a separate clone endpoint.
 window.repeatPR = async (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
   if (!r) return;
