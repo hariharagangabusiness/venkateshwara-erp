@@ -6947,6 +6947,11 @@ window.focAction = async (id, action) => {
 };
 
 // ===================== Round 5: Company Settings =====================
+// Departments with no real external-communication role (shop-floor/internal
+// production stages, or ones already covered elsewhere) - kept out of the
+// Department Email Identities list below so it only shows departments that
+// plausibly send PO/invoice/SOA-type mail to a vendor or client.
+const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
   const [company, email, departments] = await Promise.all([api('/settings/company'), api('/settings/email').catch(() => null), api('/masters/departments')]);
   el.innerHTML = `
@@ -7012,7 +7017,7 @@ PAGES['company-settings'] = async (el) => {
     </div>
     <div class="panel"><h3>Department Email Identities</h3>
       <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
-      ${tableHTML(['Department', 'From Name', 'From Address', ''], departments, d => `
+      ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
         <tr><td>${esc(d.name)}</td>
         <td><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></td>
         <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
