@@ -427,6 +427,39 @@ router.post('/requests/:id/resubmit', requirePermission('purchase_request.create
   res.json({ ok: true, quotes_required: false });
 });
 
+// Lets the requester (or Admin/Management) withdraw a PR that's no longer
+// needed - the main scenario is after one or more rejections, where trying
+// again isn't worth it and the request just needs closing out. Only
+// available before a PO exists against it (Pending/PendingQuotes/
+// InfoRequested/Rejected); once Approved/OrderPlaced, unwinding goes through
+// Cancel PO instead, which already reverses a PR at OrderPlaced back to
+// Approved if its only PO is cancelled. `Cancelled` is a genuinely new PR
+// status (not a reuse of `Rejected`) so it can't be mistaken for a reviewer's
+// own verdict in reporting. Also closes out the PR's live approval row (if
+// any) so it stops showing in reviewers' pending-approval queues -
+// lib/approvals.js's pendingForUser() only ever surfaces status='Pending'.
+router.post('/requests/:id/cancel', requirePermission('purchase_request.create', 'job_card.manage', 'purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const isOwner = existing.raised_by === req.user.id;
+  const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
+  if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can withdraw this.' });
+  if (!['Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(existing.status)) {
+    return res.status(400).json({ error: 'This request has already moved past review and can no longer be withdrawn - if a purchase order was raised against it, cancel the PO instead.' });
+  }
+  const reason = (req.body && req.body.reason) || null;
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE purchase_requests SET status = 'Cancelled' WHERE id = ?`).run(existing.id);
+    if (existing.approval_id) {
+      db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
+    }
+  });
+  tx();
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(req.user.id, 'pr_cancel', 'purchase_request', existing.id, reason);
+  res.json({ ok: true });
+});
+
 // Full approval trail for a PR across every submission/resubmission -
 // each resubmit starts a brand-new `approvals` row, so a single PR's history
 // spans more than one approval id once it's been rejected and tried again.

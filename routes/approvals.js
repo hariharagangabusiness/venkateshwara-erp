@@ -3,6 +3,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
+const { sendMail } = require('../lib/mailer');
 const router = express.Router();
 router.use(authRequired);
 
@@ -218,6 +219,38 @@ function syncEntityStatus(entityType, entityId, result) {
   }
 }
 
+const ENTITY_LABELS = {
+  expense_voucher: 'Expense Voucher',
+  leave_request: 'Leave Request',
+  purchase_request: 'Purchase Request',
+  salary_advance: 'Salary Advance',
+  salary_schedule: 'Salary Schedule',
+  foreign_payment: 'Foreign Payment Request',
+};
+
+// Best-effort email to whoever originally raised the request, telling them
+// the outcome - never blocks or fails the approval action itself (SMTP not
+// configured and the requester having no email on file are both silent
+// no-ops, same as lib/mailer.js's own guarantee elsewhere). Deliberately
+// generic across every entity_type this approval engine handles, not just
+// Purchase Requests, since approvals.requested_by already exists precisely
+// for this on every row regardless of entity type.
+async function notifyRequesterOfOutcome(approval, result, comment, actorName) {
+  if (result !== 'Approved' && result !== 'Rejected') return;
+  try {
+    const requester = approval.requested_by ? db.prepare('SELECT full_name, email FROM users WHERE id = ?').get(approval.requested_by) : null;
+    if (!requester || !requester.email) return;
+    const label = ENTITY_LABELS[approval.entity_type] || approval.entity_type;
+    const info = describeEntity(approval.entity_type, approval.entity_id);
+    const ref = info.ref || ('#' + approval.entity_id);
+    await sendMail({
+      to: requester.email,
+      subject: `${label} ${ref} - ${result}`,
+      text: `Hello ${requester.full_name},\n\nYour ${label} ${ref}${info.summary ? ' (' + info.summary + ')' : ''} has been ${result.toLowerCase()} by ${actorName}.\n\n${result === 'Rejected' && comment ? 'Reason: ' + comment + '\n\n' : ''}Regards,\nVenkateshwara Engineers ERP`,
+    });
+  } catch (e) { /* best-effort - never let a notification failure affect the approval action itself */ }
+}
+
 router.post('/:id/act', (req, res) => {
   const { action, comment } = req.body; // action: 'Approved' | 'Rejected' | 'InfoRequested'
   try {
@@ -227,6 +260,7 @@ router.post('/:id/act', (req, res) => {
     syncEntityStatus(approval.entity_type, approval.entity_id, result);
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:' + action, approval.entity_type, approval.entity_id, comment || null);
+    notifyRequesterOfOutcome(approval, result, comment, req.user.full_name).catch(() => {});
     res.json({ status: result });
   } catch (e) {
     res.status(400).json({ error: e.message });
