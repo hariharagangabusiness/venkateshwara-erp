@@ -14,7 +14,7 @@ const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, ge
 const router = express.Router();
 router.use(authRequired);
 
-const { getUploadsSubdir } = require('../lib/paths');
+const { getUploadsSubdir, resolveUploadPath } = require('../lib/paths');
 const uploadDir = getUploadsSubdir('offers');
 const upload = multer({
   storage: multer.diskStorage({
@@ -33,7 +33,7 @@ function offerPerm() { return requirePermission('sales_order.manage', 'lead.mana
 // picture out from under every other line and the library entry itself.
 function copyLibraryImage(libraryImagePath) {
   if (!libraryImagePath) return null;
-  const srcAbs = path.join(__dirname, '..', 'public', libraryImagePath);
+  const srcAbs = resolveUploadPath(libraryImagePath);
   if (!fs.existsSync(srcAbs)) return null;
   const destName = Date.now() + '-libcopy' + path.extname(libraryImagePath);
   fs.copyFileSync(srcAbs, path.join(uploadDir, destName));
@@ -116,7 +116,7 @@ router.put('/section-titles/:id', requireRole('Admin'), upload.single('image'), 
   let imagePath = existing.image_path;
   if (req.file) {
     imagePath = '/uploads/offers/' + req.file.filename;
-    if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+    if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
   }
   try {
     db.prepare(`UPDATE section_title_library SET title=?, description=?, summary=?, image_path=? WHERE id=?`).run(
@@ -133,7 +133,7 @@ router.put('/section-titles/:id', requireRole('Admin'), upload.single('image'), 
 router.delete('/section-titles/:id', requireRole('Admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  if (existing.image_path) fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+  if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
   db.prepare('DELETE FROM section_title_library WHERE id = ?').run(existing.id);
   res.json({ ok: true });
 });
@@ -220,7 +220,7 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
     const uploaded = files[piece + '_image'] && files[piece + '_image'][0];
     if (uploaded) {
       const newPath = '/uploads/offers/' + uploaded.filename;
-      if (current[piece + '_image_path']) fs.unlink(path.join(__dirname, '..', 'public', current[piece + '_image_path']), () => {});
+      if (current[piece + '_image_path']) fs.unlink(resolveUploadPath(current[piece + '_image_path']), () => {});
       update[piece + '_image_path'] = newPath;
     }
     const activeField = piece + '_active';
@@ -237,7 +237,7 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
       fs.unlink(docxFile.path, () => {});
       return res.status(400).json({ error: 'Cover page upload must be a .docx file.' });
     }
-    if (current.cover_docx_path) fs.unlink(path.join(__dirname, '..', 'public', current.cover_docx_path), () => {});
+    if (current.cover_docx_path) fs.unlink(resolveUploadPath(current.cover_docx_path), () => {});
     update.cover_docx_path = '/uploads/offers/' + docxFile.filename;
   }
   if (req.body.cover_docx_active !== undefined) {
@@ -254,7 +254,7 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
       fs.unlink(pdfFile.path, () => {});
       return res.status(400).json({ error: 'Cover page upload must be a .pdf file.' });
     }
-    if (current.cover_pdf_path) fs.unlink(path.join(__dirname, '..', 'public', current.cover_pdf_path), () => {});
+    if (current.cover_pdf_path) fs.unlink(resolveUploadPath(current.cover_pdf_path), () => {});
     update.cover_pdf_path = '/uploads/offers/' + pdfFile.filename;
   }
   if (req.body.cover_pdf_active !== undefined) {
@@ -282,7 +282,7 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
 router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   const current = getOfferPdfTemplate();
   ['header_image_path', 'footer_image_path', 'cover_image_path', 'cover_docx_path', 'cover_pdf_path'].forEach(f => {
-    if (current[f]) fs.unlink(path.join(__dirname, '..', 'public', current[f]), () => {});
+    if (current[f]) fs.unlink(resolveUploadPath(current[f]), () => {});
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
   res.json(getOfferPdfTemplate());
@@ -485,7 +485,7 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res)
     // a forked copy's row still points at the same file, so the frozen
     // earlier version needs it to keep existing.
     if (existing.image_path && !version.forked) {
-      fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+      fs.unlink(resolveUploadPath(existing.image_path), () => {});
     }
   } else if (section_title_id) {
     // Same "no manual file, but a library entry was picked" fallback as
@@ -494,7 +494,7 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res)
     const copied = lib ? copyLibraryImage(lib.image_path) : null;
     if (copied) {
       if (existing.image_path && !version.forked) {
-        fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+        fs.unlink(resolveUploadPath(existing.image_path), () => {});
       }
       imagePath = copied;
     }
@@ -514,7 +514,7 @@ router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   // Same reasoning as the image replacement above - a forked copy's row
   // shares the physical file with the frozen earlier version's row.
   if (existing.image_path && !version.forked) {
-    fs.unlink(path.join(__dirname, '..', 'public', existing.image_path), () => {});
+    fs.unlink(resolveUploadPath(existing.image_path), () => {});
   }
   db.prepare('DELETE FROM offer_items WHERE id = ?').run(targetItemId);
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
@@ -559,7 +559,7 @@ router.get('/:id/pdf', async (req, res) => {
     let image_data_uri = null;
     if (it.image_path) {
       try {
-        const abs = path.join(__dirname, '..', 'public', it.image_path);
+        const abs = resolveUploadPath(it.image_path);
         const ext = path.extname(abs).slice(1).toLowerCase() || 'jpeg';
         const b64 = fs.readFileSync(abs).toString('base64');
         image_data_uri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}`;
