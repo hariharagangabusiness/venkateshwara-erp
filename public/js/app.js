@@ -2281,7 +2281,13 @@ async function renderOfferBuilder(panel) {
   OFFER_REQUIRE_LIBRARY_CLAUSES = !!governance.require_library_clauses;
   const o = data.offer;
   CURRENT_OFFER = o;
-  const tabs = [['scope', 'Scope of Supply & Pictures'], ['tech', 'Technical Specification'], ['boughtout', 'Make of Bought Out Items'], ['terms', 'Terms & Conditions'], ['text', 'Inclusions / Exclusions / Utilities']];
+  const tabs = [
+    ['scope', 'Scope of Supply & Pictures'],
+    ['tech', 'Technical Specification' + (o.show_tech_specs === 0 ? ' (excluded)' : '')],
+    ['boughtout', 'Make of Bought Out Items' + (o.show_bought_out === 0 ? ' (excluded)' : '')],
+    ['terms', 'Terms & Conditions'],
+    ['text', 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : '')],
+  ];
   panel.innerHTML = `
     <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}</h3>
     ${o.locked ? `<div class="msg err" style="margin-bottom:10px;">
@@ -2394,10 +2400,10 @@ window.switchOfferTab = async (tab) => {
 function renderOfferTab(data) {
   const el = document.getElementById('offer-tab-content');
   if (CURRENT_OFFER_TAB === 'scope') return renderScopeTab(el, data);
-  if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value');
-  if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make');
+  if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value', undefined, data.offer.show_tech_specs === 0);
+  if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0);
   if (CURRENT_OFFER_TAB === 'terms') return renderKvTab(el, data.terms, 'term_key', 'term_value', 'terms', 'Term', 'Value', OFFER_TERM_LIBRARY);
-  if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer);
+  if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer, data.offer.show_inclusions_exclusions === 0);
 }
 
 async function renderScopeTab(el, data) {
@@ -2506,7 +2512,7 @@ window.deleteOfferItem = async (itemId) => {
   } catch (e) { alert(e.message); }
 };
 
-function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel, library) {
+function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel, library, disabled) {
   // `library` (offer_clause_library rows, category 'term') is only passed
   // for the Terms & Conditions tab - tech-specs/bought-out have no library
   // and keep the plain "+ Add Row" behavior. When Offer Governance's
@@ -2515,23 +2521,28 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
   // rows already on the offer stay fully editable/removable either way.
   const hasLibrary = library !== undefined;
   const strict = hasLibrary && OFFER_REQUIRE_LIBRARY_CLAUSES && ME.role !== 'Admin';
+  // `disabled` is set when the matching "Include in generated PDF" checkbox
+  // above is off - the section is excluded from the offer, so its rows are
+  // shown read-only instead of silently staying editable but invisible in
+  // the PDF.
   el.innerHTML = `
+    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer (see "Include in generated PDF" above) - re-enable it there to edit.</div>` : ''}
     <table><thead><tr><th>${keyLabel}</th><th>${valLabel}</th><th></th></tr></thead>
     <tbody id="kv-rows">${rows.map((r, i) => `
       <tr data-i="${i}">
-        <td><input class="kv-key" value="${esc(r[keyField])}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-        <td><input class="kv-val" value="${esc(r[valField])}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-        <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>
+        <td><input class="kv-key" value="${esc(r[keyField])}" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+        <td><input class="kv-val" value="${esc(r[valField])}" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+        <td>${disabled ? '' : `<button class="btn small red" onclick="this.closest('tr').remove()">Remove</button>`}</td>
       </tr>`).join('')}</tbody></table>
-    ${hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    ${disabled ? '' : hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
       <select id="kv-lib-pick" style="border:1px solid var(--border);border-radius:4px;padding:5px;">
         <option value="">${library.length ? 'Pick a clause from the library...' : 'No library clauses defined yet'}</option>
         ${library.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('')}
       </select>
       <button class="btn small outline" onclick="addKvRowFromLibrary()">+ Add From Library</button>
-    </div>` : ''}
-    ${!strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
-    <button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}')">Save</button>
+    </div>` : '' }
+    ${disabled ? '' : !strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
+    ${disabled ? '' : `<button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}')">Save</button>`}
   `;
   if (hasLibrary) el.dataset.library = JSON.stringify(library);
 }
@@ -2601,14 +2612,17 @@ window.insertTextLibraryClause = (textareaId, category) => {
   ta.value = ta.value ? (ta.value.replace(/\n+$/, '') + '\n' + picked.body) : picked.body;
   select.value = '';
 };
-function renderTextTab(el, offer) {
+function renderTextTab(el, offer, disabled) {
   const fieldMap = { 'txt-inclusions': 'inclusions', 'txt-exclusions': 'exclusions', 'txt-utilities': 'utilities_requirement', 'txt-air': 'instrument_air_supply' };
   const rowsAttr = { 'txt-inclusions': 3, 'txt-exclusions': 6, 'txt-utilities': 2, 'txt-air': 3 };
-  el.innerHTML = OFFER_TEXT_FIELDS.map(([textareaId, category, label]) => `
+  // `disabled` mirrors renderKvTab's - the "Inclusions / Exclusions / Utilities"
+  // checkbox above is off, so this whole tab is excluded from the offer.
+  el.innerHTML = (disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer (see "Include in generated PDF" above) - re-enable it there to edit.</div>` : '') +
+    OFFER_TEXT_FIELDS.map(([textareaId, category, label]) => `
     <label style="margin-top:10px;display:block;">${label}</label>
-    <textarea id="${textareaId}" rows="${rowsAttr[textareaId]}" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer[fieldMap[textareaId]])}</textarea>
-    ${textLibraryPicker(textareaId, category)}
-  `).join('') + `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`;
+    <textarea id="${textareaId}" rows="${rowsAttr[textareaId]}" ${disabled ? 'disabled' : ''} style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer[fieldMap[textareaId]])}</textarea>
+    ${disabled ? '' : textLibraryPicker(textareaId, category)}
+  `).join('') + (disabled ? '' : `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`);
 }
 window.saveTextTab = async () => {
   try {
@@ -5683,7 +5697,7 @@ PAGES['offer-options'] = async (el) => {
         <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
       `)}
     </div>
-    ${isAdmin ? `<div class="panel"><h3>Offer Clause Library</h3>
+    ${isAdmin ? collapsiblePanel('offer-clause-library', 'Offer Clause Library', `
       <p class="muted">Pre-approved Terms &amp; Conditions / Inclusions / Exclusions / Utilities Requirement / Instrument Air Supply clauses - Sales picks from these on the offer builder's Terms and Inclusions/Exclusions tabs instead of always typing from scratch.</p>
       <div class="tabs">${CLAUSE_CATEGORIES.map(([id, label]) => `<div class="tab ${CLAUSE_LIBRARY_TAB === id ? 'active' : ''}" onclick="switchClauseLibraryTab('${id}')">${label}</div>`).join('')}</div>
       <table style="margin-top:14px;"><thead><tr><th>Label</th><th>Clause Text</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
@@ -5705,8 +5719,8 @@ PAGES['offer-options'] = async (el) => {
       <textarea id="cl-body" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
       <div style="margin-top:8px;"><button class="btn" onclick="addClause()">Add to Library</button></div>
       <div id="cl-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>` : ''}
-    ${pdfTemplate ? `<div class="panel"><h3>Offer PDF Template (Optional Override)</h3>
+    `) : ''}
+    ${pdfTemplate ? collapsiblePanel('offer-pdf-template', 'Offer PDF Template (Optional Override)', `
       <p class="muted">Offers use the built-in letterhead by default. Upload a header, footer and/or cover page image below and check "Active" to override just that piece - anything left unchecked keeps using the default, pixel-matched letterhead. Checking "Active" with no image uploaded (yet) has no effect. For a full custom design, use the Offer PDF Layout Designer instead.</p>
       <table><thead><tr><th>Piece</th><th>Current</th><th>Active</th><th>Upload New</th></tr></thead><tbody>
         ${['header', 'footer', 'cover'].map(piece => `<tr>
@@ -5722,8 +5736,8 @@ PAGES['offer-options'] = async (el) => {
         <button class="btn outline" onclick="resetPdfTemplate()">Reset All to Default</button>
       </div>
       <div id="pt-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>` : ''}
-    ${governance ? `<div class="panel"><h3>Offer Governance</h3>
+    `) : ''}
+    ${governance ? collapsiblePanel('offer-governance', 'Offer Governance', `
       <p class="muted">Compliance kill switches - each is instantly reversible, no code change or redeploy needed.</p>
       <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-lock-on-so" ${governance.lock_on_so_conversion ? 'checked' : ''}>
         Lock an offer against further edits once it's converted to a Sales Order (Admin can still unlock a specific offer from its builder page if needed)</label>
@@ -5731,7 +5745,7 @@ PAGES['offer-options'] = async (el) => {
         Require Sales to pick Terms/Inclusions/Exclusions from the clause library below rather than typing their own</label>
       <div style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
       <div id="gov-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>` : ''}
+    `) : ''}
     `;
 };
 window.saveOfferGovernance = async () => {
