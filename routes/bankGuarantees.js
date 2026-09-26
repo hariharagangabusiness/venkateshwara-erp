@@ -1,8 +1,13 @@
 const express = require('express');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
 const { db } = require('../db');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
+const { resolveUploadPath } = require('../lib/paths');
 const router = express.Router();
 router.use(authRequired);
 
@@ -365,6 +370,54 @@ router.post('/scan', canManage, (req, res) => {
   const { runScan } = require('../lib/bgReminderScan');
   const result = runScan();
   res.json(result);
+});
+
+// ---- One-time migration helper: export just the BG attachments ----
+// A full server backup (whole DB via VACUUM INTO + the entire uploads
+// folder) can need more free disk than a host actually has just to recover
+// a handful of Bank Guarantee scans from an old environment - this exports
+// only the attachment rows for entity_type='bank_guarantee' plus their
+// physical files, as a small tar.gz. Pair with
+// scripts/import-bg-attachments-bundle.js on the destination server.
+router.get('/export-attachments', requireRole('Admin'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT a.file_path, a.original_name, a.uploaded_at, bg.bg_no
+    FROM attachments a JOIN bank_guarantees bg ON bg.id = a.entity_id
+    WHERE a.entity_type = 'bank_guarantee'
+  `).all();
+
+  const slug = 'bg-attachments-' + Date.now();
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), slug + '-'));
+  const filesDir = path.join(workDir, 'files');
+  fs.mkdirSync(filesDir, { recursive: true });
+
+  const manifest = [];
+  const skipped = [];
+  for (const row of rows) {
+    const abs = resolveUploadPath(row.file_path);
+    if (!fs.existsSync(abs)) { skipped.push({ bg_no: row.bg_no, original_name: row.original_name, error: 'file missing on disk' }); continue; }
+    const storedFilename = path.basename(abs);
+    try {
+      fs.copyFileSync(abs, path.join(filesDir, storedFilename));
+      manifest.push({ bg_no: row.bg_no, original_name: row.original_name, uploaded_at: row.uploaded_at, stored_filename: storedFilename });
+    } catch (e) {
+      skipped.push({ bg_no: row.bg_no, original_name: row.original_name, error: e.message });
+    }
+  }
+  fs.writeFileSync(path.join(workDir, 'manifest.json'), JSON.stringify({ manifest, skipped }, null, 2));
+
+  const archivePath = workDir + '.tar.gz';
+  try {
+    execFileSync('tar', ['-czf', archivePath, '-C', path.dirname(workDir), path.basename(workDir)]);
+  } catch (e) {
+    fs.rmSync(workDir, { recursive: true, force: true });
+    return res.status(500).json({ error: 'Could not create export archive: ' + e.message });
+  }
+  fs.rmSync(workDir, { recursive: true, force: true });
+
+  res.download(archivePath, 'bg-attachments-export.tar.gz', () => {
+    fs.rm(archivePath, { force: true }, () => {});
+  });
 });
 
 module.exports = router;
