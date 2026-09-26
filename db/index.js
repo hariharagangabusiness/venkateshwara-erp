@@ -784,6 +784,29 @@ const MIGRATIONS = [
   // section_title_library's own comment) so editing the library later never
   // changes an offer already built from it.
   `ALTER TABLE offer_items ADD COLUMN summary TEXT`,
+  // ---- Section Title suggestions ----
+  // A user typing a brand-new section title directly on an offer item (the
+  // "type a new one" path, bypassing the library dropdown) never reached
+  // section_title_library - the next person quoting similar equipment had
+  // no way to find it and just retyped it again. This is a lightweight
+  // review queue: the typed title/description/summary/picture is recorded
+  // here (never touching the offer item itself, which saves normally
+  // either way) and every Admin gets a To-Do to approve it into the real
+  // library or reject it - see routes/offers.js's item create/update.
+  `CREATE TABLE IF NOT EXISTS section_title_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT,
+    summary TEXT,
+    image_path TEXT,
+    offer_id INTEGER REFERENCES offers(id),
+    offer_item_id INTEGER REFERENCES offer_items(id),
+    suggested_by INTEGER REFERENCES users(id),
+    status TEXT DEFAULT 'Pending',
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

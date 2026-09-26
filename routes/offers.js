@@ -41,6 +41,44 @@ function copyLibraryImage(libraryImagePath) {
   return '/uploads/offers/' + destName;
 }
 
+// A user typing a brand-new section title on an offer item (the "type a
+// new one" path, bypassing the library dropdown) never reaches
+// section_title_library on its own - this is what gets it in front of an
+// Admin instead of just vanishing onto that one offer item. Never touches
+// the offer item itself (that already saved with its typed text either
+// way); skipped entirely if the title already matches something in the
+// library, or a suggestion for it is already pending, so re-saving the
+// same item repeatedly doesn't spam the review queue.
+function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summary, imagePath, userId }) {
+  const trimmed = String(title || '').trim();
+  if (!trimmed) return;
+  const inLibrary = db.prepare(`SELECT id FROM section_title_library WHERE LOWER(title) = LOWER(?)`).get(trimmed);
+  if (inLibrary) return;
+  const alreadyPending = db.prepare(`SELECT id FROM section_title_suggestions WHERE LOWER(title) = LOWER(?) AND status = 'Pending'`).get(trimmed);
+  if (alreadyPending) return;
+
+  const suggestionImagePath = imagePath ? copyLibraryImage(imagePath) : null;
+  const info = db.prepare(`
+    INSERT INTO section_title_suggestions (title, description, summary, image_path, offer_id, offer_item_id, suggested_by)
+    VALUES (?,?,?,?,?,?,?)
+  `).run(trimmed, description || null, summary || null, suggestionImagePath, offerId, itemId || null, userId);
+
+  const brief = `Review new Section Title suggestion: "${trimmed}"`;
+  const admins = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'Admin' AND u.is_active = 1`).all();
+  const today = new Date().toISOString().slice(0, 10);
+  const targetDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  for (const admin of admins) {
+    db.prepare(`
+      INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(admin.id, admin.id, today, targetDate, brief,
+      `Typed on an offer instead of picked from the library - review on the Offer Field Options page and Approve to add it to the Section Title Library, or Reject to discard.`,
+      'Normal', 'SECTION_TITLE_SUGGESTION', info.lastInsertRowid);
+    db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
+      .run(admin.id, 'SECTION_TITLE_SUGGESTION', info.lastInsertRowid, brief);
+  }
+}
+
 // ===================== Admin-editable dropdown options =====================
 // Application / Type of System / Material of Construction - one generic
 // table for all three fields (see db/index.js Round 21). Values are never
@@ -136,6 +174,41 @@ router.delete('/section-titles/:id', requireRole('Admin'), (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
   db.prepare('DELETE FROM section_title_library WHERE id = ?').run(existing.id);
+  res.json({ ok: true });
+});
+
+// ---- Section Title suggestions review queue (see maybeSuggestNewSectionTitle) ----
+router.get('/section-title-suggestions', requireRole('Admin'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT s.*, o.offer_no, u.full_name as suggested_by_name
+    FROM section_title_suggestions s
+    LEFT JOIN offers o ON o.id = s.offer_id
+    LEFT JOIN users u ON u.id = s.suggested_by
+    WHERE s.status = 'Pending'
+    ORDER BY s.id DESC
+  `).all());
+});
+router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req, res) => {
+  const suggestion = db.prepare(`SELECT * FROM section_title_suggestions WHERE id = ?`).get(req.params.id);
+  if (!suggestion) return res.status(404).json({ error: 'Not found' });
+  if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
+  try {
+    db.prepare(`INSERT INTO section_title_library (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
+      .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, req.user.id);
+  } catch (e) {
+    return res.status(400).json({ error: 'That title already exists in the library - reject this suggestion instead.' });
+  }
+  db.prepare(`UPDATE section_title_suggestions SET status = 'Approved', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(req.user.id, suggestion.id);
+  res.json({ ok: true });
+});
+router.post('/section-title-suggestions/:id/reject', requireRole('Admin'), (req, res) => {
+  const suggestion = db.prepare(`SELECT * FROM section_title_suggestions WHERE id = ?`).get(req.params.id);
+  if (!suggestion) return res.status(404).json({ error: 'Not found' });
+  if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
+  if (suggestion.image_path) fs.unlink(resolveUploadPath(suggestion.image_path), () => {});
+  db.prepare(`UPDATE section_title_suggestions SET status = 'Rejected', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(req.user.id, suggestion.id);
   res.json({ ok: true });
 });
 
@@ -432,6 +505,12 @@ router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
     INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, total_price, sort_order)
     VALUES (?,?,?,?,?,?,?,?,?,?)
   `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || 0);
+  if (!section_title_id) {
+    maybeSuggestNewSectionTitle({
+      offerId: version.id, itemId: info.lastInsertRowid, title: section_title,
+      description, summary, imagePath, userId: req.user.id,
+    });
+  }
   res.json({ id: info.lastInsertRowid, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
@@ -467,6 +546,12 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res)
     UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, total_price=?, sort_order=?
     WHERE id=?
   `).run(item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || existing.sort_order, targetItemId);
+  if (!section_title_id) {
+    maybeSuggestNewSectionTitle({
+      offerId: version.id, itemId: targetItemId, title: section_title,
+      description, summary, imagePath, userId: req.user.id,
+    });
+  }
   res.json({ ok: true, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
@@ -480,6 +565,9 @@ router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   if (existing.image_path && !version.forked) {
     fs.unlink(resolveUploadPath(existing.image_path), () => {});
   }
+  // Same FK reasoning as the offer-delete route above - a suggestion
+  // (see maybeSuggestNewSectionTitle) can reference this exact item row.
+  db.prepare('DELETE FROM section_title_suggestions WHERE offer_item_id = ?').run(targetItemId);
   db.prepare('DELETE FROM offer_items WHERE id = ?').run(targetItemId);
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
@@ -648,6 +736,11 @@ router.delete('/:id', requireRole('Admin'), (req, res) => {
     return res.status(400).json({ error: 'This offer has a later revision built on it and cannot be deleted directly - delete the newest version first, then work backwards.' });
   }
   const tx = db.transaction(() => {
+    // A pending/reviewed Section Title suggestion (see maybeSuggestNewSectionTitle
+    // above) references the offer/item it came from - the suggestion itself is
+    // just a review-queue record, not something worth blocking an offer delete
+    // over, so it goes with the offer rather than orphaning the FK.
+    db.prepare('DELETE FROM section_title_suggestions WHERE offer_id = ?').run(existing.id);
     db.prepare('DELETE FROM offer_items WHERE offer_id = ?').run(existing.id);
     db.prepare('DELETE FROM offer_tech_specs WHERE offer_id = ?').run(existing.id);
     db.prepare('DELETE FROM offer_bought_out_items WHERE offer_id = ?').run(existing.id);
