@@ -5587,6 +5587,35 @@ let OFFER_OPTIONS_TAB = 'application';
 // ---- Offer Clause Library categories - ids must match routes/offers.js's CLAUSE_CATEGORIES ----
 const CLAUSE_CATEGORIES = [['term', 'Terms & Conditions'], ['inclusion', 'Inclusions'], ['exclusion', 'Exclusions'], ['utilities', 'Utilities Requirement'], ['instrument_air', 'Instrument Air Supply']];
 let CLAUSE_LIBRARY_TAB = 'term';
+// Plain <input>/<textarea> fields, not contenteditable spans - contenteditable
+// text selection/replacement is unreliable with real mouse clicks (e.g. a
+// triple-click meant to select-all and retype instead inserts the new text
+// mid-string), which is what made these look broken/uneditable in practice
+// even though the save wiring underneath was fine.
+function renderOfferOptionRows(rows, isAdmin) {
+  return `<table><thead><tr><th>Value</th><th>Sort</th><th>Active</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
+    ${rows.map(o => `<tr>
+      <td>${isAdmin ? `<input type="text" value="${esc(o.value)}" onblur="editOfferOption(${o.id}, 'value', this.value)" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(o.value)}</td>
+      <td>${isAdmin ? `<input type="number" value="${o.sort_order}" onblur="editOfferOption(${o.id}, 'sort_order', this.value)" style="width:80px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : o.sort_order}</td>
+      <td>${o.active ? 'Yes' : 'No'}</td>
+      ${isAdmin ? `<td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>` : ''}
+    </tr>`).join('') || `<tr><td colspan="${isAdmin ? 4 : 3}" class="empty">No options yet.</td></tr>`}
+  </tbody></table>`;
+}
+function renderSectionTitleRows(rows, isAdmin) {
+  return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
+    ${rows.map(s => `<tr>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onblur="editSectionTitle(${s.id}, 'title', this.value)" style="width:100%;min-width:160px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
+      <td style="max-width:220px;">${isAdmin ? `<textarea onblur="editSectionTitle(${s.id}, 'description', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
+      <td style="max-width:180px;">${isAdmin ? `<input type="text" value="${esc(s.summary)}" onblur="editSectionTitle(${s.id}, 'summary', this.value)" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;">` : (esc(s.summary)||'-')}</td>
+      <td>
+        ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
+        ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSectionTitleImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
+      </td>
+      ${isAdmin ? `<td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>` : ''}
+    </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
+  </tbody></table>`;
+}
 PAGES['offer-options'] = async (el) => {
   // Field options / Section Title library are master template controls
   // (values every Sales user's offers draw from) - only Admin can add,
@@ -5596,12 +5625,13 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, pdfTemplate, governance, clauses] = await Promise.all([
+  const [rows, sectionTitles, pdfTemplate, governance, clauses, suggestions] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
     api('/offers/governance').catch(() => null), // Admin-only - same
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
+    isAdmin ? api('/offers/section-title-suggestions') : Promise.resolve([]), // Admin-only review queue
   ]);
   el.innerHTML = `
     <div class="panel">
@@ -5611,45 +5641,56 @@ PAGES['offer-options'] = async (el) => {
         <div><label>Sort Order</label><input id="oo-sort" type="number" value="0"></div>
       </div>
       <button class="btn" onclick="addOfferOption()">Add Option</button>` : ''}
-      <table style="margin-top:14px;"><thead><tr><th>Value</th><th>Sort</th><th>Active</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
-        ${rows.map(o => `<tr>
-          <td>${isAdmin ? `<span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'value', this.textContent)">${esc(o.value)}</span>` : esc(o.value)}</td>
-          <td>${isAdmin ? `<span contenteditable="true" class="inline-edit" onblur="editOfferOption(${o.id}, 'sort_order', this.textContent)">${o.sort_order}</span>` : o.sort_order}</td>
-          <td>${o.active ? 'Yes' : 'No'}</td>
-          ${isAdmin ? `<td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>` : ''}
-        </tr>`).join('') || `<tr><td colspan="${isAdmin ? 4 : 3}" class="empty">No options yet.</td></tr>`}
-      </tbody></table>
-    </div>
-    <div class="panel"><h3>Section Title Library</h3>
-      <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on an offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time.</p>
-      <table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
-        ${sectionTitles.map(s => `<tr>
-          <td>${esc(s.title)}</td>
-          <td style="white-space:pre-wrap;max-width:220px;">${esc(s.description)||'-'}</td>
-          <td style="max-width:180px;">${esc(s.summary)||'-'}</td>
-          <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
-          ${isAdmin ? `<td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>` : ''}
-        </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
-      </tbody></table>
-      ${isAdmin ? `<h4>Add Section Title</h4>
-      <div class="form-grid">
-        <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
-        <div><label>Summary</label><input id="stl-summary" placeholder="Short reference note"></div>
-        <div><label>Picture (optional)</label><input id="stl-image" type="file" accept="image/*"></div>
+      <div style="margin-top:14px;">
+      ${collapsiblePanel('offer-field-values', `Values (${rows.length})`, `
+        ${renderListSearch('offer-field-values', rows, ['value'], (filtered) => {
+          document.getElementById('oo-table-wrap').innerHTML = renderOfferOptionRows(filtered, isAdmin);
+        }, 'Search values...')}
+        <div id="oo-table-wrap">${renderOfferOptionRows(rows, isAdmin)}</div>
+      `)}
       </div>
-      <label>Description</label>
-      <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
-      <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
-      <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
+    </div>
+    ${isAdmin && suggestions.length ? `<div class="panel"><h3>Pending Section Titles for Review (${suggestions.length})</h3>
+      <p class="muted">Typed directly on an offer instead of picked from the library - Approve to add it to the Section Title Library below for everyone to reuse, or Reject to discard it. The offer item itself already saved either way.</p>
+      ${tableHTML(['Title', 'Description', 'Summary', 'Picture', 'Offer', 'Suggested By', ''], suggestions, s => `
+        <tr>
+          <td>${esc(s.title)}</td>
+          <td style="white-space:pre-wrap;max-width:200px;">${esc(s.description)||'-'}</td>
+          <td style="max-width:160px;">${esc(s.summary)||'-'}</td>
+          <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
+          <td>${esc(s.offer_no)||'-'}</td>
+          <td>${esc(s.suggested_by_name)||'-'}</td>
+          <td><button class="btn small green" onclick="approveSectionTitleSuggestion(${s.id})">Approve</button>
+          <button class="btn small red" onclick="rejectSectionTitleSuggestion(${s.id})">Reject</button></td>
+        </tr>`)}
+    </div>` : ''}
+    <div class="panel">
+      ${collapsiblePanel('section-title-library', `Section Title Library (${sectionTitles.length})`, `
+        <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on an offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time.</p>
+        ${renderListSearch('section-title-library', sectionTitles, ['title', 'description', 'summary'], (filtered) => {
+          document.getElementById('stl-table-wrap').innerHTML = renderSectionTitleRows(filtered, isAdmin);
+        }, 'Search title, description, summary...')}
+        <div id="stl-table-wrap">${renderSectionTitleRows(sectionTitles, isAdmin)}</div>
+        ${isAdmin ? `<h4>Add Section Title</h4>
+        <div class="form-grid">
+          <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
+          <div><label>Summary</label><input id="stl-summary" placeholder="Short reference note"></div>
+          <div><label>Picture (optional)</label><input id="stl-image" type="file" accept="image/*"></div>
+        </div>
+        <label>Description</label>
+        <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+        <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
+        <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
+      `)}
     </div>
     ${isAdmin ? `<div class="panel"><h3>Offer Clause Library</h3>
       <p class="muted">Pre-approved Terms &amp; Conditions / Inclusions / Exclusions / Utilities Requirement / Instrument Air Supply clauses - Sales picks from these on the offer builder's Terms and Inclusions/Exclusions tabs instead of always typing from scratch.</p>
       <div class="tabs">${CLAUSE_CATEGORIES.map(([id, label]) => `<div class="tab ${CLAUSE_LIBRARY_TAB === id ? 'active' : ''}" onclick="switchClauseLibraryTab('${id}')">${label}</div>`).join('')}</div>
       <table style="margin-top:14px;"><thead><tr><th>Label</th><th>Clause Text</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
         ${clauses.filter(c => c.category === CLAUSE_LIBRARY_TAB).map(c => `<tr>
-          <td><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'label', this.textContent)">${esc(c.label)}</span></td>
-          <td style="white-space:pre-wrap;max-width:320px;"><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'body', this.textContent)">${esc(c.body)}</span></td>
-          <td><span contenteditable="true" class="inline-edit" onblur="editClause(${c.id}, 'sort_order', this.textContent)">${c.sort_order}</span></td>
+          <td><input type="text" value="${esc(c.label)}" onblur="editClause(${c.id}, 'label', this.value)" style="width:100%;min-width:120px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+          <td style="max-width:320px;"><textarea onblur="editClause(${c.id}, 'body', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(c.body)}</textarea></td>
+          <td><input type="number" value="${c.sort_order}" onblur="editClause(${c.id}, 'sort_order', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
           <td>${c.active ? 'Yes' : 'No'}</td>
           <td><button class="btn small outline" onclick="editClause(${c.id}, 'active', ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button>
               <button class="btn small red" onclick="deleteClause(${c.id})">Delete</button></td>
@@ -5732,6 +5773,32 @@ window.addSectionTitle = async () => {
 window.deleteSectionTitle = async (id) => {
   if (!confirm('Delete this section title from the library?')) return;
   try { await api('/offers/section-titles/' + id, { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.editSectionTitle = async (id, field, value) => {
+  try {
+    const fd = new FormData();
+    fd.append(field, value);
+    await apiUpload('/offers/section-titles/' + id, fd, 'PUT');
+    navigate('offer-options');
+  } catch (e) { alert(e.message); navigate('offer-options'); }
+};
+window.replaceSectionTitleImage = async (id, fileInput) => {
+  if (!fileInput.files[0]) return;
+  try {
+    const fd = new FormData();
+    fd.append('image', fileInput.files[0]);
+    await apiUpload('/offers/section-titles/' + id, fd, 'PUT');
+    navigate('offer-options');
+  } catch (e) { alert(e.message); }
+};
+window.approveSectionTitleSuggestion = async (id) => {
+  try { await api('/offers/section-title-suggestions/' + id + '/approve', { method: 'POST' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.rejectSectionTitleSuggestion = async (id) => {
+  if (!confirm('Reject this suggestion? It will be discarded - the offer item that suggested it is unaffected.')) return;
+  try { await api('/offers/section-title-suggestions/' + id + '/reject', { method: 'POST' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
 window.switchClauseLibraryTab = (id) => { CLAUSE_LIBRARY_TAB = id; navigate('offer-options'); };
