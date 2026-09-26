@@ -769,6 +769,13 @@ const MIGRATIONS = [
   // back to that global From Name/Address, so this is opt-in per department.
   `ALTER TABLE departments ADD COLUMN email_from_name TEXT`,
   `ALTER TABLE departments ADD COLUMN email_from_address TEXT`,
+  // ---- Backup resilience: a single unreadable file under uploads (a
+  // corrupted volume block, a broken symlink) used to abort the whole
+  // backup via fs.cpSync. The copy is now per-file and skips a bad file
+  // instead of failing the run - this records which files it had to skip
+  // (JSON array of {path, error}) so an Admin can see what's actually
+  // missing from a given backup's artifact.
+  `ALTER TABLE backup_runs ADD COLUMN skipped_files TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

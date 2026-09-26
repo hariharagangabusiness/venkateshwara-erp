@@ -8276,6 +8276,9 @@ async function renderBackupHistory() {
       </td>
     </tr>
     ${r.status === 'Failed' && r.error_message ? `<tr><td></td><td colspan="10" style="padding-top:0;"><span class="muted" style="font-size:12px;">${esc(r.error_message)}</span></td></tr>` : ''}
+    ${r.skipped_files ? (() => { const skipped = JSON.parse(r.skipped_files); return `<tr><td></td><td colspan="10" style="padding-top:0;">
+      <span style="color:#b45309;font-size:12px;" title="${esc(skipped.map(s => s.path + ': ' + s.error).join('\n'))}">⚠ ${skipped.length} file(s) under uploads could not be read and are missing from this backup - hover for the list.</span>
+    </td></tr>`; })() : ''}
   `);
 }
 window.runBackupNow = async () => {
@@ -8283,7 +8286,9 @@ window.runBackupNow = async () => {
   resultEl.innerHTML = '<span class="muted">Running - this can take a moment for a large uploads folder...</span>';
   try {
     const result = await api('/backups/run', { method: 'POST' });
-    resultEl.innerHTML = `<div class="msg ok">Backup complete: ${fmtBytes(result.totalSize)}${result.emailed ? ', emailed offsite' : ''}${result.zohoUploaded ? ', uploaded to Zoho WorkDrive' : ''}.</div>`;
+    const skippedNote = result.skippedFiles && result.skippedFiles.length
+      ? ` <span style="color:#b45309;">- ${result.skippedFiles.length} file(s) under uploads could not be read and were skipped (see Backup History below).</span>` : '';
+    resultEl.innerHTML = `<div class="msg ok">Backup complete: ${fmtBytes(result.totalSize)}${result.emailed ? ', emailed offsite' : ''}${result.zohoUploaded ? ', uploaded to Zoho WorkDrive' : ''}.${skippedNote}</div>`;
     renderBackupHistory();
   } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
 };
