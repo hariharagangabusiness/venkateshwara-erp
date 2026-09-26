@@ -6,6 +6,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
 const { getCompanySettings, getServiceSettings } = require('../lib/settings');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const router = express.Router();
 router.use(authRequired);
 
@@ -477,7 +478,14 @@ router.get('/:id/report/pdf', async (req, res) => {
   `).all(report.id);
   try {
     const gen = await generateServiceReportPdf(report, sr, getCompanySettings(), spares);
-    res.download(gen.outPath, `${sr.sr_no}-service-report.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Service_Report',
+      reference: sr.sr_no,
+      partyName: report.customer_name,
+      date: report.activity_date,
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {

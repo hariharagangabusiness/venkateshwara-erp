@@ -15,6 +15,7 @@ const router = express.Router();
 router.use(authRequired);
 
 const { getUploadsSubdir, resolveUploadPath } = require('../lib/paths');
+const { buildDownloadFilename } = require('../lib/downloadFilename');
 const uploadDir = getUploadsSubdir('offers');
 const upload = multer({
   storage: multer.diskStorage({
@@ -532,7 +533,14 @@ router.get('/:id/pdf', async (req, res) => {
   });
   try {
     const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms);
-    res.download(gen.outPath, `${full.offer.offer_no}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Offer',
+      reference: full.offer.offer_no,
+      partyName: full.client && full.client.name,
+      date: new Date(full.offer.offer_date).toISOString().slice(0, 10),
+      version: full.offer.version ? 'v' + full.offer.version : undefined,
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
