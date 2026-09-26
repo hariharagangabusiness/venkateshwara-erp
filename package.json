@@ -23,10 +23,8 @@
     "grapesjs": "^0.23.6",
     "grapesjs-preset-webpage": "^1.0.3",
     "jsonwebtoken": "^9.0.3",
-    "mammoth": "^1.12.3",
     "multer": "^2.3.0",
     "nodemailer": "^10.0.1",
-    "pdf-lib": "^1.17.1",
     "puppeteer-core": "^25.10.0",
     "xlsx": "^0.18.5"
   }
