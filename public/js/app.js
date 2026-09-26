@@ -6050,6 +6050,7 @@ PAGES['bg-dashboard'] = async (el) => {
         <div style="display:flex;align-items:center;gap:12px;">
           <label style="margin:0;font-weight:normal;"><input type="checkbox" id="bg-show-released" ${showReleased ? 'checked' : ''} onchange="toggleBGShowReleased(this.checked)"> Show Released</label>
           <button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button>
+          ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="exportBGAttachments()" title="Downloads a small .tar.gz of every BG scanned-document row and file - for migrating BG attachments to another server without a full DB backup.">Export BG Attachments</button>` : ''}
         </div>
       </div>
       ${!showReleased ? `<p class="muted" style="margin-top:8px;">Showing live Bank Guarantees only (Active / Pending Release). Check "Show Released" above to include closed ones.</p>` : ''}
@@ -6147,6 +6148,9 @@ window.toggleBGAttachments = (id) => {
 window.toggleBGShowReleased = (checked) => {
   window.BG_INCLUDE_RELEASED = checked;
   navigate('bg-dashboard');
+};
+window.exportBGAttachments = () => {
+  downloadTemplateFile('/bg/export-attachments', 'bg-attachments-export.tar.gz');
 };
 let BG_CURRENT_FILTER = '';
 window.filterBGTab = (tabEl, filter) => {
