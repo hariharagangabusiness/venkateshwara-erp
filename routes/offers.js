@@ -9,7 +9,7 @@ const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
-const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferDesignTokens, setOfferDesignTokens, DEFAULT_OFFER_DESIGN_TOKENS, getOfferPdfLayout, setOfferPdfLayoutPiece } = require('../lib/settings');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece } = require('../lib/settings');
 
 const router = express.Router();
 router.use(authRequired);
@@ -201,14 +201,11 @@ const uploadPdfTemplate = upload.fields([
   { name: 'header_image', maxCount: 1 },
   { name: 'footer_image', maxCount: 1 },
   { name: 'cover_image', maxCount: 1 },
-  { name: 'cover_docx', maxCount: 1 },
-  { name: 'cover_pdf', maxCount: 1 },
 ]);
-// Rich-text header/footer HTML comes from a contenteditable toolbar
-// (public/js/app.js) that only ever runs execCommand/DOM APIs against its
-// own editor - it can't itself produce a <script> tag, but this strips one
-// anyway as a defense-in-depth floor before the HTML is stored and later
-// injected as-is into the PDF's header/footer template.
+// Trusted, Admin-only input (same trust level as the uploaded image paths)
+// so a piece designed in the Offer PDF Layout Designer is stored as-is, but
+// this strips a <script> tag anyway as a defense-in-depth floor before it's
+// ever injected into the PDF's header/footer/cover template.
 function stripScriptTags(html) {
   return String(html || '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
 }
@@ -229,59 +226,14 @@ router.post('/pdf-template', requireRole('Admin'), uploadPdfTemplate, (req, res)
     }
   });
 
-  // Word cover page (.docx) - a separate upload slot from cover_image above;
-  // lib/offerPdf.js's coverPage() parses it via mammoth at render time.
-  const docxFile = files.cover_docx && files.cover_docx[0];
-  if (docxFile) {
-    if (!/\.docx$/i.test(docxFile.originalname)) {
-      fs.unlink(docxFile.path, () => {});
-      return res.status(400).json({ error: 'Cover page upload must be a .docx file.' });
-    }
-    if (current.cover_docx_path) fs.unlink(resolveUploadPath(current.cover_docx_path), () => {});
-    update.cover_docx_path = '/uploads/offers/' + docxFile.filename;
-  }
-  if (req.body.cover_docx_active !== undefined) {
-    update.cover_docx_active = req.body.cover_docx_active === 'true' || req.body.cover_docx_active === true;
-  }
-
-  // Uploaded PDF cover - highest-precedence cover source (see
-  // lib/offerPdf.js's coverPage()/mergeCoverPdf()): its own pages are
-  // prepended onto the generated offer PDF as-is, rather than approximated
-  // in HTML.
-  const pdfFile = files.cover_pdf && files.cover_pdf[0];
-  if (pdfFile) {
-    if (!/\.pdf$/i.test(pdfFile.originalname)) {
-      fs.unlink(pdfFile.path, () => {});
-      return res.status(400).json({ error: 'Cover page upload must be a .pdf file.' });
-    }
-    if (current.cover_pdf_path) fs.unlink(resolveUploadPath(current.cover_pdf_path), () => {});
-    update.cover_pdf_path = '/uploads/offers/' + pdfFile.filename;
-  }
-  if (req.body.cover_pdf_active !== undefined) {
-    update.cover_pdf_active = req.body.cover_pdf_active === 'true' || req.body.cover_pdf_active === true;
-  }
-
-  // Rich-text header/footer overrides - formatted HTML from the toolbar,
-  // stored as-is (Admin-only input) and injected directly into the PDF's
-  // header/footer template by lib/offerPdf.js.
-  ['header', 'footer'].forEach(piece => {
-    const field = piece + '_richtext';
-    if (req.body[field] !== undefined) update[field] = stripScriptTags(req.body[field]);
-    const activeField = field + '_active';
-    if (req.body[activeField] !== undefined) {
-      update[activeField] = req.body[activeField] === 'true' || req.body[activeField] === true;
-    }
-  });
-
   setOfferPdfTemplate(update);
   res.json(getOfferPdfTemplate());
 });
 // Reset to the default letterhead - clears every uploaded override image,
-// the uploaded Word and PDF cover pages, and the rich-text header/footer,
 // switching every piece back off.
 router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   const current = getOfferPdfTemplate();
-  ['header_image_path', 'footer_image_path', 'cover_image_path', 'cover_docx_path', 'cover_pdf_path'].forEach(f => {
+  ['header_image_path', 'footer_image_path', 'cover_image_path'].forEach(f => {
     if (current[f]) fs.unlink(resolveUploadPath(current[f]), () => {});
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
@@ -336,30 +288,6 @@ router.put('/governance', requireRole('Admin'), (req, res) => {
   if (require_library_clauses !== undefined) update.require_library_clauses = !!require_library_clauses;
   setOfferGovernanceSettings(update);
   res.json(getOfferGovernanceSettings());
-});
-
-// ===================== Offer PDF design tokens (typography governance) =====================
-// Admin-only - see lib/settings.js's DEFAULT_OFFER_DESIGN_TOKENS for what
-// each field controls; every default matches what used to be hardcoded in
-// lib/offerPdf.js exactly, so an untouched installation is unaffected.
-const DESIGN_TOKEN_FIELDS = Object.keys(DEFAULT_OFFER_DESIGN_TOKENS);
-router.get('/design-tokens', requireRole('Admin'), (req, res) => {
-  res.json(getOfferDesignTokens());
-});
-router.put('/design-tokens', requireRole('Admin'), (req, res) => {
-  const update = {};
-  DESIGN_TOKEN_FIELDS.forEach(f => {
-    if (req.body[f] === undefined) return;
-    if (f === 'show_page_numbers') update[f] = !!req.body[f];
-    else if (f === 'body_font_family' || f.endsWith('_color') || f === 'legal_notice_text') update[f] = String(req.body[f]);
-    else update[f] = Number(req.body[f]);
-  });
-  setOfferDesignTokens(update);
-  res.json(getOfferDesignTokens());
-});
-router.delete('/design-tokens', requireRole('Admin'), (req, res) => {
-  setOfferDesignTokens(DEFAULT_OFFER_DESIGN_TOKENS);
-  res.json(getOfferDesignTokens());
 });
 
 // ===================== List / Detail =====================

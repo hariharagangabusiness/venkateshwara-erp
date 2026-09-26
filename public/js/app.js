@@ -5556,13 +5556,12 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, pdfTemplate, governance, clauses, designTokens] = await Promise.all([
+  const [rows, sectionTitles, pdfTemplate, governance, clauses] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
     api('/offers/governance').catch(() => null), // Admin-only - same
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
-    api('/offers/design-tokens').catch(() => null), // Admin-only - same
   ]);
   el.innerHTML = `
     <div class="panel">
@@ -5627,66 +5626,15 @@ PAGES['offer-options'] = async (el) => {
       <div id="cl-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>` : ''}
     ${pdfTemplate ? `<div class="panel"><h3>Offer PDF Template (Optional Override)</h3>
-      <p class="muted">Offers use the built-in letterhead by default. Upload a header, footer and/or cover page image below and check "Active" to override just that piece - anything left unchecked keeps using the default, pixel-matched letterhead. Checking "Active" with no image uploaded (yet) has no effect.</p>
+      <p class="muted">Offers use the built-in letterhead by default. Upload a header, footer and/or cover page image below and check "Active" to override just that piece - anything left unchecked keeps using the default, pixel-matched letterhead. Checking "Active" with no image uploaded (yet) has no effect. For a full custom design, use the Offer PDF Layout Designer instead.</p>
       <table><thead><tr><th>Piece</th><th>Current</th><th>Active</th><th>Upload New</th></tr></thead><tbody>
         ${['header', 'footer', 'cover'].map(piece => `<tr>
           <td style="text-transform:capitalize;">${piece}</td>
           <td>${pdfTemplate[piece + '_image_path'] ? `<img src="${esc(pdfTemplate[piece + '_image_path'])}" style="max-height:40px;max-width:120px;">` : '<span class="muted">Default (built-in)</span>'}</td>
-          <td><input type="checkbox" id="pt-${piece}-active" onchange="pdfTemplateExclusive('${piece}','image')" ${pdfTemplate[piece + '_active'] ? 'checked' : ''}></td>
+          <td><input type="checkbox" id="pt-${piece}-active" ${pdfTemplate[piece + '_active'] ? 'checked' : ''}></td>
           <td><input type="file" id="pt-${piece}-file" accept="image/*"></td>
         </tr>`).join('')}
       </tbody></table>
-
-      <h4 style="margin-top:18px;">PDF Cover Page (.pdf)</h4>
-      <p class="muted">Upload the exact cover page as a PDF - its pages are prepended onto the generated offer PDF as-is, no re-creation needed. Takes priority over the Word cover page and Cover image below when more than one is active. Note: the footer's "Page X of Y" (if enabled under Design Tokens) counts only the generated offer content, not the pages in this uploaded cover.</p>
-      <div class="form-grid">
-        <div><label>Current</label><div>${pdfTemplate.cover_pdf_path ? `<a href="${esc(pdfTemplate.cover_pdf_path)}" target="_blank">Uploaded document</a>` : '<span class="muted">None uploaded</span>'}</div></div>
-        <div><label>Upload New (.pdf)</label><input type="file" id="pt-cover-pdf-file" accept=".pdf"></div>
-        <div><label>Active</label><input type="checkbox" id="pt-cover-pdf-active" onchange="pdfTemplateExclusive('cover','pdf')" ${pdfTemplate.cover_pdf_active ? 'checked' : ''}></div>
-      </div>
-
-      <h4 style="margin-top:18px;">Word Cover Page (.docx)</h4>
-      <p class="muted">Upload a Word document to use as the offer's cover page instead of a picture - it's parsed and merged in as page 1 of the generated PDF, images and all. Takes priority over the Cover image above when both are active.</p>
-      <div class="form-grid">
-        <div><label>Current</label><div>${pdfTemplate.cover_docx_path ? `<a href="${esc(pdfTemplate.cover_docx_path)}" target="_blank">Uploaded document</a>` : '<span class="muted">None uploaded</span>'}</div></div>
-        <div><label>Upload New (.docx)</label><input type="file" id="pt-cover-docx-file" accept=".docx"></div>
-        <div><label>Active</label><input type="checkbox" id="pt-cover-docx-active" onchange="pdfTemplateExclusive('cover','docx')" ${pdfTemplate.cover_docx_active ? 'checked' : ''}></div>
-      </div>
-
-      <h4 style="margin-top:18px;">Rich-Text Header &amp; Footer</h4>
-      <p class="muted">Format custom header/footer text (notes, disclaimers, metadata) with full styling controls - it's rendered on every page of the PDF. Takes priority over the Header/Footer image above when both are active.</p>
-      ${['header', 'footer'].map(piece => `
-      <div style="margin-top:10px;">
-        <label style="text-transform:capitalize;">${piece} Text</label>
-        <div class="rt-toolbar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0;">
-          <select onchange="richTextExec('rt-${piece}','fontName', this.value)">
-            <option value="Calibri">Calibri</option>
-            <option value="Arial">Arial</option>
-            <option value="'Times New Roman'">Times New Roman</option>
-            <option value="Georgia">Georgia</option>
-            <option value="Verdana">Verdana</option>
-          </select>
-          <select onchange="richTextSetFontSize('rt-${piece}', this.value)">
-            <option value="8">8px</option>
-            <option value="9">9px</option>
-            <option value="10" selected>10px</option>
-            <option value="12">12px</option>
-            <option value="14">14px</option>
-            <option value="18">18px</option>
-            <option value="24">24px</option>
-          </select>
-          <input type="color" title="Text color" value="#000000" onchange="richTextExec('rt-${piece}','foreColor', this.value)">
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','bold')"><b>B</b></button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','italic')"><i>I</i></button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','underline')"><u>U</u></button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyLeft')">Left</button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyCenter')">Center</button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyRight')">Right</button>
-          <button type="button" class="btn small outline" onmousedown="event.preventDefault()" onclick="richTextExec('rt-${piece}','justifyFull')">Justify</button>
-        </div>
-        <div id="rt-${piece}" class="rt-editor" contenteditable="true" style="border:1px solid var(--border);min-height:60px;padding:8px;border-radius:5px;font-family:Calibri,Arial,sans-serif;">${pdfTemplate[piece + '_richtext'] || ''}</div>
-        <label style="display:block;margin-top:4px;"><input type="checkbox" id="pt-${piece}-richtext-active" onchange="pdfTemplateExclusive('${piece}','richtext')" ${pdfTemplate[piece + '_richtext_active'] ? 'checked' : ''}> Active</label>
-      </div>`).join('')}
 
       <div style="margin-top:14px;">
         <button class="btn" onclick="savePdfTemplate()">Save Template Settings</button>
@@ -5703,29 +5651,7 @@ PAGES['offer-options'] = async (el) => {
       <div style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
       <div id="gov-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>` : ''}
-    ${designTokens ? `<div class="panel"><h3>Offer PDF Design Tokens</h3>
-      <p class="muted">Centralized typography for the offer PDF - defaults match the built-in letterhead exactly, so nothing changes unless you edit a value here. "Page X of Y" and the legal notice line appear on every footer variant (default, image or rich-text).</p>
-      <div class="form-grid">
-        <div><label>Body Font Family</label><input id="dt-body-font" value="${esc(designTokens.body_font_family)}"></div>
-        <div><label>Body Font Size (px)</label><input id="dt-body-size" type="number" step="0.1" value="${designTokens.body_font_size_px}"></div>
-        <div><label>Body Line Height</label><input id="dt-body-lh" type="number" step="0.1" value="${designTokens.body_line_height}"></div>
-        <div><label>Body / Heading Color</label><input id="dt-body-color" type="color" value="${esc(designTokens.body_color)}"></div>
-        <div><label>Header Title Color</label><input id="dt-header-title-color" type="color" value="${esc(designTokens.header_title_color)}"></div>
-        <div><label>Header Title Size (px)</label><input id="dt-header-title-size" type="number" step="0.1" value="${designTokens.header_title_size_px}"></div>
-        <div><label>Header Subtitle Color</label><input id="dt-header-sub-color" type="color" value="${esc(designTokens.header_subtitle_color)}"></div>
-        <div><label>Header Subtitle Size (px)</label><input id="dt-header-sub-size" type="number" step="0.1" value="${designTokens.header_subtitle_size_px}"></div>
-        <div><label>Footer Font Size (px)</label><input id="dt-footer-size" type="number" step="0.1" value="${designTokens.footer_font_size_px}"></div>
-        <div><label>Footer Color</label><input id="dt-footer-color" type="color" value="${esc(designTokens.footer_color)}"></div>
-      </div>
-      <label style="display:block;margin-top:10px;"><input type="checkbox" id="dt-page-numbers" ${designTokens.show_page_numbers ? 'checked' : ''}> Show "Page X of Y" on every page</label>
-      <label style="margin-top:10px;display:block;">Legal Notice Line (optional, shown next to the page number)</label>
-      <input id="dt-legal-notice" style="width:100%;" value="${esc(designTokens.legal_notice_text)}" placeholder="e.g. This is a computer-generated document and does not require a signature.">
-      <div style="margin-top:8px;">
-        <button class="btn" onclick="saveOfferDesignTokens()">Save Design Tokens</button>
-        <button class="btn outline" onclick="resetOfferDesignTokens()">Reset to Default</button>
-      </div>
-      <div id="dt-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>` : ''}`;
+    `;
 };
 window.saveOfferGovernance = async () => {
   const errEl = document.getElementById('gov-err');
@@ -5737,64 +5663,6 @@ window.saveOfferGovernance = async () => {
     })});
     navigate('offer-options');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
-};
-window.saveOfferDesignTokens = async () => {
-  const errEl = document.getElementById('dt-err');
-  errEl.style.display = 'none';
-  try {
-    await api('/offers/design-tokens', { method: 'PUT', body: JSON.stringify({
-      body_font_family: val('dt-body-font'),
-      body_font_size_px: Number(val('dt-body-size')),
-      body_line_height: Number(val('dt-body-lh')),
-      body_color: val('dt-body-color'),
-      heading_color: val('dt-body-color'),
-      header_title_color: val('dt-header-title-color'),
-      header_title_size_px: Number(val('dt-header-title-size')),
-      header_subtitle_color: val('dt-header-sub-color'),
-      header_subtitle_size_px: Number(val('dt-header-sub-size')),
-      footer_font_size_px: Number(val('dt-footer-size')),
-      footer_color: val('dt-footer-color'),
-      show_page_numbers: document.getElementById('dt-page-numbers').checked,
-      legal_notice_text: val('dt-legal-notice'),
-    })});
-    navigate('offer-options');
-  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
-};
-window.resetOfferDesignTokens = async () => {
-  if (!confirm('Reset the Offer PDF design tokens to the built-in defaults?')) return;
-  try { await api('/offers/design-tokens', { method: 'DELETE' }); navigate('offer-options'); }
-  catch (e) { alert(e.message); }
-};
-// Only one source (image / docx / pdf / rich-text) makes sense active at a
-// time per piece - checking one here unchecks the others for that same
-// piece, so the saved precedence in lib/offerPdf.js never surprises the admin.
-window.pdfTemplateExclusive = (piece, source) => {
-  const boxes = {
-    image: document.getElementById(`pt-${piece}-active`),
-    docx: piece === 'cover' ? document.getElementById('pt-cover-docx-active') : null,
-    pdf: piece === 'cover' ? document.getElementById('pt-cover-pdf-active') : null,
-    richtext: piece !== 'cover' ? document.getElementById(`pt-${piece}-richtext-active`) : null,
-  };
-  const justChecked = boxes[source];
-  if (!justChecked || !justChecked.checked) return;
-  Object.entries(boxes).forEach(([key, box]) => { if (box && key !== source) box.checked = false; });
-};
-window.richTextExec = (editorId, cmd, value) => {
-  document.getElementById(editorId).focus();
-  document.execCommand(cmd, false, value);
-};
-// execCommand('fontSize') only accepts the legacy 1-7 HTML size scale, not
-// pixel values - the standard workaround is to apply the largest scale (7,
-// so it's unambiguous to find again) then replace the resulting <font
-// size="7"> elements' size attribute with a real inline pixel size.
-window.richTextSetFontSize = (editorId, px) => {
-  const ed = document.getElementById(editorId);
-  ed.focus();
-  document.execCommand('fontSize', false, '7');
-  ed.querySelectorAll('font[size="7"]').forEach(f => {
-    f.removeAttribute('size');
-    f.style.fontSize = px + 'px';
-  });
 };
 window.switchOfferOptionsTab = (id) => { OFFER_OPTIONS_TAB = id; navigate('offer-options'); };
 window.addOfferOption = async () => {
@@ -5856,22 +5724,12 @@ window.savePdfTemplate = async () => {
       const fileEl = document.getElementById(`pt-${piece}-file`);
       if (fileEl.files[0]) fd.append(piece + '_image', fileEl.files[0]);
     });
-    const docxFileEl = document.getElementById('pt-cover-docx-file');
-    if (docxFileEl.files[0]) fd.append('cover_docx', docxFileEl.files[0]);
-    fd.append('cover_docx_active', document.getElementById('pt-cover-docx-active').checked);
-    const pdfFileEl = document.getElementById('pt-cover-pdf-file');
-    if (pdfFileEl.files[0]) fd.append('cover_pdf', pdfFileEl.files[0]);
-    fd.append('cover_pdf_active', document.getElementById('pt-cover-pdf-active').checked);
-    ['header', 'footer'].forEach(piece => {
-      fd.append(piece + '_richtext', document.getElementById(`rt-${piece}`).innerHTML);
-      fd.append(piece + '_richtext_active', document.getElementById(`pt-${piece}-richtext-active`).checked);
-    });
     await apiUpload('/offers/pdf-template', fd, 'POST');
     navigate('offer-options');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.resetPdfTemplate = async () => {
-  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images, the uploaded Word and PDF cover pages, and the rich-text header/footer.')) return;
+  if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images.')) return;
   try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
