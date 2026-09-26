@@ -40,6 +40,11 @@ app.use('/uploads', express.static(uploadsDir));
 // keeps it current.
 app.use('/vendor/grapesjs', express.static(path.join(__dirname, 'node_modules', 'grapesjs', 'dist')));
 app.use('/vendor/grapesjs-preset-webpage', express.static(path.join(__dirname, 'node_modules', 'grapesjs-preset-webpage', 'dist')));
+// grapesjs-preset-webpage's own block set is just link/quote/text (see its
+// default `blocks` option) - grapesjs-blocks-basic adds Image and 1/2/3
+// column layout blocks, which is what the header/footer designer actually
+// needs (e.g. a logo image beside company text in two columns).
+app.use('/vendor/grapesjs-blocks-basic', express.static(path.join(__dirname, 'node_modules', 'grapesjs-blocks-basic', 'dist')));
 // Printed once at boot specifically so a deploy log makes it obvious
 // whether UPLOADS_DIR is actually in effect on THIS running container -
 // a variable saved but not yet deployed on Railway looks identical from

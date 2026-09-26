@@ -1552,12 +1552,15 @@ function downloadCSV(filename, rows, columns) {
 }
 
 // ---- Generic small modal (lost-reason capture, lead detail / activities, customer 360) ----
+// `wide` is normally a boolean (760px vs 440px), but a number can be passed
+// instead for a one-off wider case (e.g. an A4-proportioned preview).
 function openMiniModal(title, bodyHTML, wide) {
   closeMiniModal();
   const overlay = document.createElement('div');
   overlay.id = 'mini-modal-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px;';
-  overlay.innerHTML = `<div class="panel" style="max-width:${wide ? 760 : 440}px;width:100%;margin:0;">
+  const maxWidth = typeof wide === 'number' ? wide : (wide ? 760 : 440);
+  overlay.innerHTML = `<div class="panel" style="max-width:${maxWidth}px;width:100%;margin:0;">
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <h3 style="margin:0;">${esc(title)}</h3>
       <button class="btn small outline" type="button" onclick="closeMiniModal()">Close</button>
@@ -5797,7 +5800,17 @@ function loadOfferPdfDesignerAssets() {
     gjsScript.onload = () => {
       const presetScript = document.createElement('script');
       presetScript.src = '/vendor/grapesjs-preset-webpage/index.js';
-      presetScript.onload = () => resolve();
+      presetScript.onload = () => {
+        // grapesjs-preset-webpage's own default block set is just Link/Quote/
+        // Text (3 blocks total) - this adds Image and 1/2/3-column layout
+        // blocks, the actual capability a header/footer/cover designer needs
+        // (e.g. a logo image beside company text in two columns).
+        const blocksScript = document.createElement('script');
+        blocksScript.src = '/vendor/grapesjs-blocks-basic/index.js';
+        blocksScript.onload = () => resolve();
+        blocksScript.onerror = () => reject(new Error('Failed to load the GrapesJS basic blocks plugin.'));
+        document.head.appendChild(blocksScript);
+      };
       presetScript.onerror = () => reject(new Error('Failed to load the GrapesJS webpage preset.'));
       document.head.appendChild(presetScript);
     };
@@ -5827,6 +5840,7 @@ function renderOfferPdfDesignerPanel(piece) {
         </div>
         <div style="margin-top:16px;">
           <button class="btn" onclick="saveOfferPdfDesignerPiece('${piece.id}')">Save ${esc(piece.label)}</button><br>
+          ${piece.id !== 'cover' ? `<button class="btn outline" onclick="previewOfferPdfDesignerFullPage('${piece.id}')" style="margin-top:8px;">Preview in Full Page</button><br>` : ''}
           <button class="btn outline" onclick="resetOfferPdfDesignerPiece('${piece.id}')" style="margin-top:8px;">Reset ${esc(piece.label)}</button>
         </div>
         <div id="pdfd-err-${piece.id}" class="msg err" style="display:none;margin-top:10px;"></div>
@@ -5875,8 +5889,13 @@ async function initOfferPdfDesignerTab(pieceId) {
     width: 'auto',
     fromElement: false,
     storageManager: false,
-    plugins: ['grapesjs-preset-webpage'],
-    pluginsOpts: { 'grapesjs-preset-webpage': {} },
+    plugins: ['grapesjs-preset-webpage', 'gjs-blocks-basic'],
+    pluginsOpts: {
+      'grapesjs-preset-webpage': {},
+      // video/map are excluded - neither renders meaningfully in a static
+      // printed PDF, so they'd just be dead weight in the block list.
+      'gjs-blocks-basic': { blocks: ['column1', 'column2', 'column3', 'text', 'image', 'link'] },
+    },
     deviceManager: {
       devices: [
         { id: 'pdf-' + pieceId, name: 'PDF', width: pieceCfg.width + 'px', height: pieceCfg.height + 'px' },
@@ -5884,6 +5903,16 @@ async function initOfferPdfDesignerTab(pieceId) {
     },
   });
   try { editor.setDevice('PDF'); } catch (e) { /* non-fatal - editor still usable at its default device */ }
+  // Style Manager's "Dimension" sector (margin/padding/width/height) starts
+  // collapsed by default and is easy to miss behind a generic accordion
+  // label - spacing is the single most-needed control when laying out a
+  // header/footer, so auto-open it whenever something gets selected.
+  editor.on('component:selected', () => {
+    try {
+      const dim = editor.StyleManager.getSector('dimension');
+      if (dim) dim.set('open', true);
+    } catch (e) { /* non-fatal - Style Manager still usable, just collapsed */ }
+  });
   if (pieceCfg.smallText) {
     // Puppeteer's header/footer template context doesn't inherit the page's
     // CSS at all (see lib/offerPdf.js) - approximate its 10px Arial default
@@ -5964,6 +5993,46 @@ window.saveOfferPdfDesignerPiece = async (pieceId) => {
     });
     offerPdfDesignerToast(pieceId, 'Saved.');
   } catch (e) { offerPdfDesignerToast(pieceId, e.message, true); }
+};
+
+// Shows the designed header/footer inside a full A4 page mockup, at the
+// exact proportions generateOfferPdf() actually renders at (page.pdf()'s
+// margin: top 30mm, bottom 26mm, left/right 15mm - lib/offerPdf.js). The
+// isolated per-piece canvas above only ever shows the header/footer's own
+// small strip, which was the whole complaint: no way to see how it sits
+// against real body content or the page's other margins. Unlike the body,
+// a designed header/footer spans the FULL page width with no left/right
+// inset (see headerTemplate()/footerTemplate()'s Layout-Designer branch,
+// which wraps designed html with no margin, vs the built-in default's own
+// `margin:0 15mm`) - so this mockup deliberately does NOT inset the piece
+// being previewed, only the placeholder body text, to show that difference
+// rather than hide it.
+window.previewOfferPdfDesignerFullPage = (pieceId) => {
+  const editor = PDF_DESIGNER_EDITORS[pieceId];
+  if (!editor) { offerPdfDesignerToast(pieceId, 'Editor is not ready yet - try again in a moment.', true); return; }
+  const html = editor.getHtml();
+  const css = editor.getCss() || '';
+  const otherId = pieceId === 'header' ? 'footer' : 'header';
+  const otherLabel = pieceId === 'header' ? 'Footer' : 'Header';
+  const pieceLabel = pieceId === 'header' ? 'Header' : 'Footer';
+  const placeholderBody = `
+    <h2 style="font-size:14px;text-decoration:underline;margin:0 0 10px;">Sample Section Title</h2>
+    <p style="margin:0 0 10px;">This placeholder text stands in for the offer's actual body content (Company Profile, Project Data Sheet, Scope Of Supply, etc.) so you can see how much room is left between the ${pieceLabel.toLowerCase()} and the rest of the page.</p>
+    <p style="margin:0 0 10px;">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>
+    <p style="margin:0;">Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>`;
+  const otherPlaceholder = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;font-family:Arial,sans-serif;border:1px dashed #ccc;box-sizing:border-box;">${esc(otherLabel)} area (design it on the ${esc(otherLabel)} tab to see it here too)</div>`;
+  const headerContent = pieceId === 'header' ? `<style>${css}</style><div style="font-size:10px;font-family:Arial,sans-serif;">${html}</div>` : otherPlaceholder;
+  const footerContent = pieceId === 'footer' ? `<style>${css}</style><div style="font-size:10px;font-family:Arial,sans-serif;">${html}</div>` : otherPlaceholder;
+  const pageMockup = `
+    <div style="width:210mm;min-height:297mm;background:#fff;margin:20px auto;box-shadow:0 0 12px rgba(0,0,0,.25);position:relative;overflow:hidden;font-family:Arial,sans-serif;">
+      <div style="position:absolute;top:0;left:0;right:0;height:30mm;box-sizing:border-box;overflow:hidden;border-bottom:1px dotted #c00;">${headerContent}</div>
+      <div style="position:absolute;top:30mm;bottom:26mm;left:15mm;right:15mm;box-sizing:border-box;overflow:hidden;">${placeholderBody}</div>
+      <div style="position:absolute;bottom:0;left:0;right:0;height:26mm;box-sizing:border-box;overflow:hidden;border-top:1px dotted #c00;">${footerContent}</div>
+    </div>`;
+  const bodyHTML = `
+    <p class="muted" style="font-size:12px;">Actual A4 proportions (210mm x 297mm) at the real page margins this offer PDF prints with. The dotted red lines mark where the header/footer strip ends and the body's own margin begins - notice the header/footer span the full page width, while body text is inset 15mm on each side.</p>
+    <div style="max-height:75vh;overflow:auto;background:#eee;padding:12px;border-radius:6px;">${pageMockup}</div>`;
+  openMiniModal(pieceLabel + ' - Full Page Preview', bodyHTML, 860);
 };
 
 window.resetOfferPdfDesignerPiece = async (pieceId) => {
