@@ -6949,23 +6949,20 @@ PAGES.access = async (el) => {
       <select id="au-user-select" onchange="loadUserAccess(this.value)"><option value="">Loading users...</option></select>
       <div id="au-body" style="margin-top:12px;"></div>
     </div>
-    <div class="panel">
-      <h3>Grant Extra Page Access (Round 3)</h3>
+    ${collapsiblePanel('extra-page-access', 'Grant Extra Page Access (Round 3)', `
       <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config. This only makes a page <b>visible</b> - if it's a page where the user needs to actually submit/approve/manage something (e.g. Service & Spares), also grant Cross-Department Oversight below for that role, or they'll see the page but get "Access denied: missing permission" when they try to act on it.</p>
       <div id="extra-access-form"></div>
       <div id="extra-access-list"></div>
-    </div>
-    <div class="panel">
-      <h3>Cross-Department Oversight (Round 22)</h3>
+    `)}
+    ${collapsiblePanel('role-oversight', 'Cross-Department Oversight (Round 22)', `
       <p class="muted">Grant a specific user full supervisor-level reach into another role's domain - Job Cards allocation, To-Do oversight, and any permission-gated page that role has - without changing that user's own role or department. For a real-world HOD who covers two departments (e.g. Electrical & Service) rather than actually merging those departments/roles. This grants back-end authority only; pair it with Extra Page Access above if their own role's page list doesn't already show the other department's pages.</p>
       <div id="role-oversight-form"></div>
       <div id="role-oversight-list"></div>
-    </div>
-    <div class="panel">
-      <h3>User Access by Role</h3>
+    `)}
+    ${collapsiblePanel('access-by-role', 'User Access by Role', `
       <p class="muted">Tick the pages a role is allowed to see in the sidebar. A role with nothing configured (marked "Unrestricted") sees every page, same as today - saving any selection for a role switches it to that fixed list. Admin can always see everything and can't be restricted.</p>
       <div id="access-body"></div>
-    </div>`;
+    `)}`;
   await renderUserAccessPanel(data.pageCatalog);
   await renderExtraAccessPanel(data.pageCatalog);
   await renderRoleOversightPanel();
