@@ -625,13 +625,21 @@ function bulkUploadPanelHTML(fileInputId) {
       <input id="${fileInputId}" type="file" accept=".xlsx,.xls">
     </div>`;
 }
+// `filename` is only a fallback for when the server's response carries no
+// Content-Disposition (e.g. a plain xlsx template, not a generated PDF) -
+// most callers pass one that's since gone stale (a generic "InvoiceNo.pdf"
+// hardcoded at the call site) now that the server names generated documents
+// itself (lib/downloadFilename.js); the real, current name always wins when
+// the server sends one.
 async function downloadTemplateFile(apiPath, filename) {
   try {
     const res = await fetch('/api' + apiPath, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Could not download template'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : filename; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 }
@@ -2316,9 +2324,11 @@ window.downloadOfferVersionPdf = async (offerId) => {
   try {
     const res = await fetch('/api/offers/' + offerId + '/pdf', { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'offer-v' + offerId + '.pdf'; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer-v' + offerId + '.pdf'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 };
@@ -2326,9 +2336,11 @@ window.downloadOfferPdf = async () => {
   try {
     const res = await fetch('/api/offers/' + CURRENT_OFFER_ID + '/pdf', { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'offer.pdf'; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer.pdf'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 };
@@ -4288,9 +4300,11 @@ window.downloadChallanPdf = async (id, challanNo) => {
   try {
     const res = await fetch('/api/purchase/store/challans/' + id + '/pdf', { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = (challanNo || 'challan') + '.pdf'; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : (challanNo || 'challan') + '.pdf'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 };
@@ -4715,9 +4729,11 @@ window.downloadSvcReportPdf = async (srId) => {
   try {
     const res = await fetch('/api/service/' + srId + '/report/pdf', { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'service-report-' + srId + '.pdf'; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'service-report-' + srId + '.pdf'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 };
