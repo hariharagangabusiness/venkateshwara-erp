@@ -5995,14 +5995,14 @@ PAGES['bg-dashboard'] = async (el) => {
     </div>
 
     ${summary.finance_todos && summary.finance_todos.length ? `
-    <div class="panel"><h3>Finance Team - Claim Filing Tasks</h3>
+    ${collapsiblePanel('bg-claim-tasks', 'Finance Team - Claim Filing Tasks', `
       <p class="muted">High-priority To-Dos auto-raised for the Finance HOD when a BG's claim-filing deadline is 7 days out - full detail and status updates on the To-Do List page.</p>
       ${tableHTML(['Task', 'Assigned To', 'Target Date', 'Status'], summary.finance_todos, t => `
         <tr><td>${esc(t.brief_description)}</td><td>${esc(t.assigned_to_name)}</td><td>${deliveryBadge(t.target_date)}</td><td>${badge(t.status)}</td></tr>`)}
-    </div>` : ''}
+    `)}` : ''}
 
     ${(reminders.length || verified.length) ? `
-    <div class="panel"><h3>Pending Reminders</h3>
+    ${collapsiblePanel('bg-pending-reminders', 'Pending Reminders', `
       ${tableHTML(['BG No', 'Type', 'Value', 'Expiry', 'Reason', 'Step', 'Action'], [...reminders, ...verified], r => `
         <tr><td>${esc(r.bg_no || '#'+r.bg_id)}</td><td>${esc(r.bg_type)}</td><td>₹${fmt(r.value)}</td><td>${esc(r.validity_expiry)}</td><td>${esc(r.trigger_reason)}</td>
         <td>${badge(r.status)}</td>
@@ -6011,7 +6011,7 @@ PAGES['bg-dashboard'] = async (el) => {
           ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
           <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
         </td></tr>`)}
-    </div>` : ''}
+    `)}` : ''}
 
     ${pendingChanges.length ? `<div class="panel"><h3>Pending BG Changes (${pendingChanges.length})</h3>
       <p class="muted">An edit or delete requested by a non-Admin doesn't take effect until an Admin approves it here, so nothing changes underneath a reminder or claim-filing workflow already in flight.</p>
@@ -6039,7 +6039,7 @@ PAGES['bg-dashboard'] = async (el) => {
       <button class="btn" onclick="addBG()">Add Bank Guarantee</button>
     </div>
 
-    <div class="panel">
+    ${collapsiblePanel('bg-list', `List of Bank Guarantees (${bgs.length})`, `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <div class="tabs" id="bg-tabs">
           <div class="tab active" onclick="filterBGTab(this,'')">All</div>
@@ -6054,7 +6054,7 @@ PAGES['bg-dashboard'] = async (el) => {
       </div>
       ${!showReleased ? `<p class="muted" style="margin-top:8px;">Showing live Bank Guarantees only (Active / Pending Release). Check "Show Released" above to include closed ones.</p>` : ''}
       <div id="bg-table-wrap">${bgTableHTML(bgs)}</div>
-    </div>`;
+    `)}`;
   window.__BG_ALL = bgs;
 };
 // ---- BG Dashboard: user-customizable columns ----
