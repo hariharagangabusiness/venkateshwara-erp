@@ -8,6 +8,7 @@ const { runSoaScan } = require('../lib/soaScan');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 
 const router = express.Router();
 router.use(authRequired);
@@ -74,7 +75,14 @@ router.get('/ledger/:clientId/pdf', requirePermission('payment_receipt.manage', 
   const ledger = computeClientLedger(client.id, { from, to });
   try {
     const gen = await generateSoaPdf(client, ledger, { start: from || null, end: to || null }, getCompanySettings());
-    res.download(gen.outPath, `SOA-${client.client_code || client.id}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Statement_of_Account',
+      reference: client.client_code,
+      partyName: client.name,
+      date: to || new Date().toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -164,11 +172,18 @@ router.post('/:id/send-email', canManage, async (req, res) => {
   try {
     gen = await generateSoaPdf(client, ledger, { start: log.period_start, end: log.period_end }, getCompanySettings());
     const pdfBuffer = fs.readFileSync(gen.outPath);
+    const attachmentName = buildDownloadFilename({
+      docType: 'Statement_of_Account',
+      reference: client.client_code,
+      partyName: client.name,
+      date: log.period_end,
+      version: buildVersionStamp(),
+    });
     const result = await sendMail({
       to: client.email,
       subject: `Statement of Accounts (${log.period_start} to ${log.period_end}) - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached your Statement of Accounts for the period ${log.period_start} to ${log.period_end}. Closing balance: Rs. ${Number(ledger.closingBalance).toLocaleString('en-IN')}.\n\nPlease report any discrepancy within 7 days.\n\nRegards,\nVenkateshwara Engineers - Accounts`,
-      attachments: [{ filename: `SOA-${client.client_code || client.id}.pdf`, content: pdfBuffer }],
+      attachments: [{ filename: attachmentName, content: pdfBuffer }],
       ...getDepartmentEmailIdentity('Accounts / HR'),
     });
     if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });

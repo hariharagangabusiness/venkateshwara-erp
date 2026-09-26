@@ -11,6 +11,7 @@ const { generateFocAnnexurePdf } = require('../lib/focAnnexurePdf');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const router = express.Router();
 router.use(authRequired);
 
@@ -306,7 +307,14 @@ router.get('/foc/:id/pdf', async (req, res) => {
   }
   try {
     const gen = await generateFocAnnexurePdf(foc, getCompanySettings());
-    res.download(gen.outPath, `${foc.foc_no}-Annexure.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'FOC_Annexure',
+      reference: foc.foc_no,
+      partyName: foc.client_master_name || foc.customer_name,
+      date: new Date(foc.created_at).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -474,11 +482,18 @@ router.post('/invoices/:id/email', requirePermission('sales_order.manage'), asyn
   try {
     gen = await generateInvoicePdf(inv, items, client || {}, getCompanySettings());
     const pdfBuffer = fs.readFileSync(gen.outPath);
+    const attachmentName = buildDownloadFilename({
+      docType: 'Tax_Invoice',
+      reference: inv.invoice_no,
+      partyName: client && client.name,
+      date: new Date(inv.invoice_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
     const result = await sendMail({
       to: toAddress,
       subject: `Tax Invoice ${inv.invoice_no} - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached Tax Invoice ${inv.invoice_no} for ₹${Number(inv.total_value).toLocaleString('en-IN')}.\n\nRegards,\nVenkateshwara Engineers`,
-      attachments: [{ filename: `${inv.invoice_no.replace(/\//g, '-')}.pdf`, content: pdfBuffer }],
+      attachments: [{ filename: attachmentName, content: pdfBuffer }],
       ...getDepartmentEmailIdentity('Sales'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
@@ -498,7 +513,14 @@ router.get('/invoices/:id/pdf', async (req, res) => {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(inv.client_id);
   try {
     const gen = await generateInvoicePdf(inv, items, client || {}, getCompanySettings());
-    res.download(gen.outPath, `${inv.invoice_no.replace(/\//g, '-')}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Tax_Invoice',
+      reference: inv.invoice_no,
+      partyName: client && client.name,
+      date: new Date(inv.invoice_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -659,11 +681,18 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
   try {
     gen = await generateProformaInvoicePdf(pf, items, client || {}, getCompanySettings());
     const pdfBuffer = fs.readFileSync(gen.outPath);
+    const attachmentName = buildDownloadFilename({
+      docType: 'Proforma_Invoice',
+      reference: pf.proforma_no,
+      partyName: client && client.name,
+      date: new Date(pf.proforma_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
     const result = await sendMail({
       to: toAddress,
       subject: `Proforma Invoice ${pf.proforma_no} - Venkateshwara Engineers`,
       text: `Dear ${client.contact_person || client.name},\n\nPlease find attached Proforma Invoice ${pf.proforma_no} for ₹${Number(pf.total_value).toLocaleString('en-IN')}.\n\nRegards,\nVenkateshwara Engineers`,
-      attachments: [{ filename: `${pf.proforma_no.replace(/\//g, '-')}.pdf`, content: pdfBuffer }],
+      attachments: [{ filename: attachmentName, content: pdfBuffer }],
       ...getDepartmentEmailIdentity('Sales'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
@@ -682,7 +711,14 @@ router.get('/proforma-invoices/:id/pdf', async (req, res) => {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
   try {
     const gen = await generateProformaInvoicePdf(pf, items, client || {}, getCompanySettings());
-    res.download(gen.outPath, `${pf.proforma_no.replace(/\//g, '-')}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Proforma_Invoice',
+      reference: pf.proforma_no,
+      partyName: client && client.name,
+      date: new Date(pf.proforma_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {

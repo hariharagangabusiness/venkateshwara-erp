@@ -13,6 +13,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateForeignPaymentPdf } = require('../lib/foreignPaymentPdf');
 const { getCompanySettings } = require('../lib/settings');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const router = express.Router();
 router.use(authRequired);
 const canManage = requirePermission('foreign_payment.manage');
@@ -92,7 +93,14 @@ router.get('/:id/pdf', canManage, async (req, res) => {
   if (!full) return res.status(404).json({ error: 'Not found' });
   try {
     const gen = await generateForeignPaymentPdf(full, getCompanySettings());
-    res.download(gen.outPath, `${full.request_no}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Foreign_Payment_Request',
+      reference: full.request_no,
+      partyName: full.beneficiary_name,
+      date: new Date(full.created_at).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {

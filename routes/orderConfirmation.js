@@ -8,6 +8,7 @@ const { submit, approve, reject } = require('../lib/reviewWorkflow');
 const { generateOrderConfirmationPdf } = require('../lib/orderConfirmationPdf');
 const { getCompanySettings } = require('../lib/settings');
 const { getUploadsSubdir } = require('../lib/paths');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 
 const router = express.Router();
 router.use(authRequired);
@@ -92,7 +93,14 @@ router.get('/order-confirmations/:soId/pdf', canView, async (req, res) => {
     const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(salesOrder.client_id);
     const oc = ensureOrderConfirmation(req.params.soId);
     const gen = await generateOrderConfirmationPdf(oc, salesOrder, client || {}, getCompanySettings());
-    res.download(gen.outPath, `Order-Confirmation-${salesOrder.order_no}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Order_Confirmation',
+      reference: salesOrder.order_no,
+      partyName: client && client.name,
+      date: new Date(salesOrder.order_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {

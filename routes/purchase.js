@@ -11,6 +11,7 @@ const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
+const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const path = require('path');
 const router = express.Router();
 router.use(authRequired);
@@ -970,7 +971,14 @@ router.get('/store/challans/:id/pdf', async (req, res) => {
   const items = db.prepare('SELECT * FROM challan_items WHERE challan_id = ? ORDER BY sort_order, id').all(challan.id);
   try {
     const gen = await generateChallanPdf(challan, items);
-    res.download(gen.outPath, `${challan.challan_no}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Delivery_Challan',
+      reference: challan.challan_no,
+      partyName: challan.consignee_name,
+      date: new Date(challan.challan_date).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -997,7 +1005,14 @@ router.get('/orders/:id/pdf', async (req, res) => {
   if (!bundle) return res.status(404).json({ error: 'Not found' });
   try {
     const gen = await generatePoPdf(bundle.po, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
-    res.download(gen.outPath, `${bundle.po.po_no}.pdf`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Purchase_Order',
+      reference: bundle.po.po_no,
+      partyName: bundle.vendor && (bundle.vendor.legal_name || bundle.vendor.name),
+      date: new Date(bundle.po.created_at).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -1011,7 +1026,15 @@ router.get('/orders/:id/docx', async (req, res) => {
   if (!bundle) return res.status(404).json({ error: 'Not found' });
   try {
     const gen = await generatePoDocx(bundle.po, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
-    res.download(gen.outPath, `${bundle.po.po_no}.docx`, () => {
+    const filename = buildDownloadFilename({
+      docType: 'Purchase_Order',
+      reference: bundle.po.po_no,
+      partyName: bundle.vendor && (bundle.vendor.legal_name || bundle.vendor.name),
+      date: new Date(bundle.po.created_at).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+      ext: 'docx',
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
@@ -1030,11 +1053,18 @@ router.post('/orders/:id/email', requirePermission('purchase_order.manage'), asy
   try {
     gen = await generatePoPdf(po, vendor, getCompanySettings(), companyAddress);
     const pdfBuffer = fs.readFileSync(gen.outPath);
+    const attachmentName = buildDownloadFilename({
+      docType: 'Purchase_Order',
+      reference: po.po_no,
+      partyName: vendor && (vendor.legal_name || vendor.name),
+      date: new Date(po.created_at).toISOString().slice(0, 10),
+      version: buildVersionStamp(),
+    });
     const result = await sendMail({
       to: toAddress,
       subject: `Purchase Order ${po.po_no} - Venkateshwara Engineers`,
       text: `Dear ${vendor.contact_person || vendor.name},\n\nPlease find attached Purchase Order ${po.po_no}.\n\nRegards,\nVenkateshwara Engineers`,
-      attachments: [{ filename: `${po.po_no}.pdf`, content: pdfBuffer }],
+      attachments: [{ filename: attachmentName, content: pdfBuffer }],
       ...getDepartmentEmailIdentity('Purchase'),
     });
     if (result.sent) return res.json({ ok: true, sent: true, to: toAddress });
