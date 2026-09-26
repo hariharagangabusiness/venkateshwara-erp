@@ -1,102 +1,9 @@
 const express = require('express');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { PAGE_CATALOG, ALL_PAGE_IDS } = require('../lib/pageCatalog');
 const router = express.Router();
 router.use(authRequired);
-
-// Catalog of every sidebar page in the app, grouped the same way the
-// sidebar itself is grouped. This is the single source of truth the User
-// Access module's matrix is built from, and what role_page_access rows
-// reference by page_id. Keep this in sync with NAV in public/js/app.js.
-const PAGE_CATALOG = [
-  { group: 'Overview', items: [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'approvals', label: 'My Approvals' },
-    { id: 'todos', label: 'To-Do List' },
-    { id: 'dept-report', label: 'Department Report' },
-  ]},
-  { group: 'Sales & Marketing', items: [
-    { id: 'leads', label: 'Leads / Enquiries' },
-    { id: 'pipeline', label: 'Pipeline (Kanban)' },
-    { id: 'followups', label: "Today's Follow-ups" },
-    { id: 'offers', label: 'Offers / Quotations' },
-    { id: 'offer-options', label: 'Offer Field Options' },
-    { id: 'orders', label: 'Sales Orders' },
-    { id: 'clients', label: 'Clients' },
-    { id: 'sales-analytics', label: 'Sales Analytics' },
-    { id: 'sales-targets', label: 'Sales Targets' },
-  ]},
-  { group: 'Projects Management', items: [
-    { id: 'projects', label: 'Projects' },
-    { id: 'targets', label: 'Targets' },
-    { id: 'jobcards', label: 'My Job Cards (own department)' },
-    { id: 'time-motion-report', label: 'Time & Motion Report' },
-  ]},
-  { group: 'Purchase', items: [
-    { id: 'purchase-requests', label: 'Purchase Requests' },
-    { id: 'purchase-orders', label: 'Purchase Orders' },
-    { id: 'vendors', label: 'Vendors' },
-  ]},
-  { group: 'Store & Inventory', items: [
-    { id: 'store', label: 'Item Master' },
-    { id: 'stock-in-out', label: 'Stock In/Out' },
-    { id: 'challans', label: 'Challans' },
-    { id: 'service-centers', label: 'Service Centers Master' },
-    { id: 'sc-transfers', label: 'Store -> Service Center Transfers' },
-    { id: 'sc-stock', label: 'Service Center Stock Levels' },
-  ]},
-  { group: 'Electrical & Service', items: [
-    { id: 'service', label: 'Service & Spares' },
-    { id: 'service-mine', label: 'My Service Requests' },
-    { id: 'service-recon', label: 'Reconciliation' },
-    { id: 'service-reports-dashboard', label: 'Service Reports Dashboard' },
-    { id: 'service-reopenings', label: 'SR Reopenings Report' },
-    { id: 'sc-receive', label: 'Receive Center Transfers' },
-    { id: 'sc-reconciliation', label: 'Service Center Reconciliation' },
-    { id: 'site-visits', label: 'Site Visit Tracker' },
-    { id: 'daily-work-log', label: 'Engineer Daily Work Log' },
-  ]},
-  { group: 'Payroll & HR', items: [
-    { id: 'employees', label: 'Employees' },
-    { id: 'attendance', label: 'Attendance' },
-    { id: 'leave', label: 'Leave Requests' },
-    { id: 'advances', label: 'Salary Advances' },
-    { id: 'payroll', label: 'Payroll' },
-    { id: 'leave-balances', label: 'Leave Balances Master' },
-  ]},
-  { group: 'Finance', items: [
-    { id: 'expenses', label: 'Expense Vouchers' },
-    { id: 'expense-report', label: 'Cash vs Accounted Report' },
-    { id: 'foc', label: 'FOC Material Issue' },
-    { id: 'finance-ledger', label: 'Finance Ledger' },
-    { id: 'monthly-reconciliation', label: 'Monthly Reconciliation' },
-    { id: 'sales-invoices', label: 'Sales Invoices' },
-    { id: 'soa', label: 'Statement of Accounts' },
-    { id: 'operating-expenses', label: 'Operating Expenses' },
-    { id: 'gst-summary', label: 'GST Summary' },
-    { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
-    { id: 'foreign-payments', label: 'Foreign Payments' },
-  ]},
-  { group: 'Asset Management', items: [
-    { id: 'assets', label: 'Asset Register' },
-    { id: 'assets-maintenance', label: 'Maintenance / EOL Report' },
-  ]},
-  { group: 'Tickets', items: [
-    { id: 'tickets-raise', label: 'Raise a Ticket' },
-    { id: 'tickets-mine', label: 'My Tickets' },
-    { id: 'tickets-department', label: 'Department Tickets' },
-  ]},
-  { group: 'Admin', items: [
-    { id: 'users', label: 'Users & Roles' },
-    { id: 'access', label: 'User Access' },
-    { id: 'approval-matrix', label: 'Approval Matrix' },
-    { id: 'company-settings', label: 'Company Settings' },
-    { id: 'data-import', label: 'Data Import' },
-    { id: 'full-data-export', label: 'Full Data Export' },
-    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
-    { id: 'backups', label: 'Backups' },
-  ]},
-];
 
 router.get('/page-catalog', (req, res) => res.json(PAGE_CATALOG));
 
@@ -127,7 +34,7 @@ router.put('/access/:roleId', requireRole('Admin'), (req, res) => {
   if (!role) return res.status(404).json({ error: 'Role not found' });
   if (role.name === 'Admin') return res.status(400).json({ error: "Admin's access can't be restricted." });
   const pageIds = Array.isArray(req.body.page_ids) ? req.body.page_ids : [];
-  const validIds = new Set(PAGE_CATALOG.flatMap(g => g.items.map(it => it.id)));
+  const validIds = new Set(ALL_PAGE_IDS);
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM role_page_access WHERE role_id = ?').run(roleId);
     const insert = db.prepare('INSERT INTO role_page_access (role_id, page_id) VALUES (?, ?)');
@@ -144,6 +51,68 @@ router.delete('/access/:roleId', requireRole('Admin'), (req, res) => {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM role_page_access WHERE role_id = ?').run(roleId);
     db.prepare('DELETE FROM role_access_configured WHERE role_id = ?').run(roleId);
+  });
+  tx();
+  res.json({ ok: true });
+});
+
+// ---- Per-user page access ----
+// The role matrix above (plus Extra Page Access below) is additive only -
+// there's no way to take one page away from one specific person short of
+// reconfiguring their whole role. This gives an Admin a single per-person
+// screen instead: pick a user, see exactly what they can see today (their
+// role's baseline plus any Extra Page Access), and grant or revoke
+// individual pages on top of that - see user_page_overrides and
+// lib/pageAccess.js's computeAllowedPages() for how it's merged.
+router.get('/access/user/:userId', requireRole('Admin'), (req, res) => {
+  const user = db.prepare(`
+    SELECT u.id, u.full_name, u.department_id, u.role_id, r.name as role_name, d.name as department_name
+    FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN departments d ON d.id = u.department_id
+    WHERE u.id = ?
+  `).get(req.params.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role_name === 'Admin') return res.status(400).json({ error: "Admin's access can't be restricted." });
+  const configured = db.prepare('SELECT 1 FROM role_access_configured WHERE role_id = ?').get(user.role_id);
+  let baselinePages = null;
+  if (configured) {
+    const rows = db.prepare('SELECT page_id FROM role_page_access WHERE role_id = ?').all(user.role_id);
+    const pages = new Set(rows.map(r => r.page_id));
+    const extra = db.prepare(`
+      SELECT page_id FROM extra_page_access WHERE user_id = ? OR (department_id IS NOT NULL AND department_id = ?)
+    `).all(user.id, user.department_id || -1);
+    extra.forEach(r => pages.add(r.page_id));
+    baselinePages = Array.from(pages);
+  }
+  const overrides = {};
+  db.prepare('SELECT page_id, access FROM user_page_overrides WHERE user_id = ?').all(user.id)
+    .forEach(r => { overrides[r.page_id] = r.access; });
+  res.json({
+    pageCatalog: PAGE_CATALOG,
+    user: { id: user.id, full_name: user.full_name, role_name: user.role_name, department_name: user.department_name },
+    roleConfigured: !!configured,
+    baselinePages, // null = role is unrestricted (baseline is every page)
+    overrides,     // { [page_id]: 'granted' | 'revoked' }, on top of baselinePages
+  });
+});
+
+// Full replace of one user's overrides (mirrors PUT /access/:roleId's
+// full-replace style). An empty object clears every override, resetting the
+// user back to exactly their role's default.
+router.put('/access/user/:userId', requireRole('Admin'), (req, res) => {
+  const user = db.prepare(`
+    SELECT u.id, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?
+  `).get(req.params.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role_name === 'Admin') return res.status(400).json({ error: "Admin's access can't be restricted." });
+  const overrides = req.body.overrides && typeof req.body.overrides === 'object' ? req.body.overrides : {};
+  const validIds = new Set(ALL_PAGE_IDS);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM user_page_overrides WHERE user_id = ?').run(user.id);
+    const insert = db.prepare('INSERT INTO user_page_overrides (user_id, page_id, access, granted_by) VALUES (?,?,?,?)');
+    for (const [pageId, access] of Object.entries(overrides)) {
+      if (!validIds.has(pageId) || !['granted', 'revoked'].includes(access)) continue;
+      insert.run(user.id, pageId, access, req.user.id);
+    }
   });
   tx();
   res.json({ ok: true });

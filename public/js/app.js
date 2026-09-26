@@ -6944,6 +6944,12 @@ PAGES.access = async (el) => {
   const data = await api('/admin/access');
   el.innerHTML = `
     <div class="panel">
+      <h3>Access by User</h3>
+      <p class="muted">Pick a person to see and change exactly what they can see, grouped the same way as the sidebar. Tick a whole group to grant every page in it at once, then expand the group to remove specific pages within it. Anything you don't touch here just follows their role's default access, configured further down.</p>
+      <select id="au-user-select" onchange="loadUserAccess(this.value)"><option value="">Loading users...</option></select>
+      <div id="au-body" style="margin-top:12px;"></div>
+    </div>
+    <div class="panel">
       <h3>Grant Extra Page Access (Round 3)</h3>
       <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config. This only makes a page <b>visible</b> - if it's a page where the user needs to actually submit/approve/manage something (e.g. Service & Spares), also grant Cross-Department Oversight below for that role, or they'll see the page but get "Access denied: missing permission" when they try to act on it.</p>
       <div id="extra-access-form"></div>
@@ -6960,12 +6966,15 @@ PAGES.access = async (el) => {
       <p class="muted">Tick the pages a role is allowed to see in the sidebar. A role with nothing configured (marked "Unrestricted") sees every page, same as today - saving any selection for a role switches it to that fixed list. Admin can always see everything and can't be restricted.</p>
       <div id="access-body"></div>
     </div>`;
+  await renderUserAccessPanel(data.pageCatalog);
   await renderExtraAccessPanel(data.pageCatalog);
   await renderRoleOversightPanel();
   const body = document.getElementById('access-body');
-  // "User Access" itself is always Admin-only regardless of any role's
-  // configured pages, so it's meaningless to offer as a checkbox here.
-  const catalogForRoles = data.pageCatalog.map(g => ({ group: g.group, items: g.items.filter(it => it.id !== 'access') })).filter(g => g.items.length);
+  // "User Access" and "Approval Matrix" are always Admin-only regardless of
+  // any role's configured pages (see NAV's hardcoded filter), so offering
+  // them as checkboxes here would be meaningless - ticking them would have
+  // no visible effect for anyone but Admin.
+  const catalogForRoles = filterAccessCatalog(data.pageCatalog);
   body.innerHTML = data.roles.filter(r => r.name !== 'Admin').map(r => `
     <div class="panel access-role-panel collapsed" style="margin-bottom:12px;" id="access-panel-${r.id}">
       <h4 class="access-role-head" onclick="toggleAccessRolePanel(${r.id})">
@@ -6991,6 +7000,84 @@ window.toggleAccessRolePanel = (roleId) => {
   const panel = document.getElementById(`access-panel-${roleId}`);
   if (panel) panel.classList.toggle('collapsed');
 };
+// "User Access" and "Approval Matrix" are always Admin-only client-side
+// (see NAV's hardcoded filter above) no matter what any role/user access
+// config says - shared by the role matrix and the per-user screen below so
+// neither offers a checkbox that can never actually do anything.
+function filterAccessCatalog(pageCatalog) {
+  return pageCatalog
+    .map(g => ({ group: g.group, items: g.items.filter(it => it.id !== 'access' && it.id !== 'approval-matrix') }))
+    .filter(g => g.items.length);
+}
+async function renderUserAccessPanel(pageCatalog) {
+  const users = await api('/masters/users');
+  const selectEl = document.getElementById('au-user-select');
+  const selectable = users.filter(u => u.role !== 'Admin' && u.is_active);
+  selectEl.innerHTML = `<option value="">- Select a user -</option>` +
+    selectable.map(u => `<option value="${u.id}">${esc(u.full_name)} (${esc(u.role)}${u.department ? ' - ' + esc(u.department) : ''})</option>`).join('');
+}
+window.loadUserAccess = async (userId) => {
+  const bodyEl = document.getElementById('au-body');
+  if (!userId) { bodyEl.innerHTML = ''; return; }
+  const data = await api('/admin/access/user/' + userId);
+  window.__AU_DATA = data;
+  const catalog = filterAccessCatalog(data.pageCatalog);
+  const allIds = catalog.flatMap(g => g.items.map(it => it.id));
+  const effective = new Set(data.baselinePages === null ? allIds : data.baselinePages.filter(id => allIds.includes(id)));
+  Object.entries(data.overrides).forEach(([pid, access]) => {
+    if (access === 'granted') effective.add(pid); else effective.delete(pid);
+  });
+  bodyEl.innerHTML = `
+    <p class="muted">${esc(data.user.full_name)} &mdash; Role: ${esc(data.user.role_name)}${data.user.department_name ? ' &middot; ' + esc(data.user.department_name) : ''}
+      ${data.roleConfigured ? '' : ' <span class="muted">(role is Unrestricted by default - everything below starts checked unless you uncheck it)</span>'}</p>
+    ${catalog.map(g => {
+      const groupIds = g.items.map(it => it.id);
+      const checkedCount = groupIds.filter(id => effective.has(id)).length;
+      const groupKey = 'au-group-' + g.group.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      return collapsiblePanel(groupKey, `
+        <label style="margin:0;" onclick="event.stopPropagation();">
+          <input type="checkbox" class="au-group-toggle" data-group="${esc(g.group)}" ${checkedCount === groupIds.length ? 'checked' : ''} onchange="toggleAuGroup(this)">
+          <b>${esc(g.group)}</b>
+        </label> <span class="muted">(${checkedCount}/${groupIds.length})</span>
+      `, `
+        ${g.items.map(it => `<label class="access-item" style="display:block;"><input type="checkbox" class="au-page" data-group="${esc(g.group)}" value="${it.id}" ${effective.has(it.id) ? 'checked' : ''}> ${esc(it.label)}</label>`).join('')}
+      `);
+    }).join('')}
+    <div style="margin-top:10px;">
+      <button class="btn" onclick="saveUserAccess()">Save Access for ${esc(data.user.full_name)}</button>
+      <button class="btn outline" onclick="resetUserAccess()">Reset to Role Default</button>
+    </div>
+    <div id="au-err" class="msg err" style="display:none;margin-top:10px;"></div>`;
+};
+window.toggleAuGroup = (checkbox) => {
+  const group = checkbox.dataset.group;
+  document.querySelectorAll('.au-page').forEach(cb => { if (cb.dataset.group === group) cb.checked = checkbox.checked; });
+};
+window.saveUserAccess = async () => {
+  const data = window.__AU_DATA;
+  if (!data) return;
+  const baselineSet = new Set(data.baselinePages === null ? ALL_PAGE_CATALOG_IDS(data.pageCatalog) : data.baselinePages);
+  const overrides = {};
+  document.querySelectorAll('.au-page').forEach(cb => {
+    const inBaseline = baselineSet.has(cb.value);
+    if (cb.checked && !inBaseline) overrides[cb.value] = 'granted';
+    else if (!cb.checked && inBaseline) overrides[cb.value] = 'revoked';
+    // else matches the role/extra-access baseline already - no override needed
+  });
+  const errEl = document.getElementById('au-err');
+  try {
+    await api('/admin/access/user/' + data.user.id, { method: 'PUT', body: JSON.stringify({ overrides }) });
+    loadUserAccess(data.user.id);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.resetUserAccess = async () => {
+  const data = window.__AU_DATA;
+  if (!data) return;
+  if (!confirm(`Reset ${data.user.full_name}'s access back to their role's default? This removes every individual override for them.`)) return;
+  await api('/admin/access/user/' + data.user.id, { method: 'PUT', body: JSON.stringify({ overrides: {} }) });
+  loadUserAccess(data.user.id);
+};
+function ALL_PAGE_CATALOG_IDS(pageCatalog) { return pageCatalog.flatMap(g => g.items.map(it => it.id)); }
 async function renderExtraAccessPanel(pageCatalog) {
   const [depts, users, extras] = await Promise.all([api('/masters/departments'), api('/masters/users'), api('/admin/extra-access')]);
   const allPages = pageCatalog.flatMap(g => g.items);
