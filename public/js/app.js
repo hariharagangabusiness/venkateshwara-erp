@@ -1049,9 +1049,13 @@ PAGES['dept-report'] = async (el) => {
       ${statCard('dr_cycle', data.avg_cycle_days ?? '-', 'Avg Cycle Time (days)')}
     </div>
     <div id="stat-detail"></div>
-    <div class="panel"><h3>Active Job Cards (${data.active.length})</h3>
-      ${tableHTML(jcCols, data.active, jcRow)}
-    </div>`;
+    ${collapsiblePanel('dept-report-active', `<span id="dr-active-count">Active Job Cards (${data.active.length})</span>`, `
+      ${renderListSearch('dr-active', data.active, ['project_code', 'project_title', 'title', 'status'], (rows) => {
+        document.getElementById('dr-active-table').innerHTML = tableHTML(jcCols, rows, jcRow);
+        document.getElementById('dr-active-count').textContent = 'Active Job Cards (' + rows.length + ')';
+      }, 'Search by project, item, status...')}
+      <div id="dr-active-table">${tableHTML(jcCols, data.active, jcRow)}</div>
+    `)}`;
 };
 
 // ---- Time & Motion Report ----
@@ -1103,12 +1107,17 @@ async function loadTimeMotionReport() {
       ${tableHTML(['Assignee','Cards','Avg Alloc→Start','Avg Start→Complete','Avg Total'], data.byAssignee, g => `
         <tr><td>${esc(g.key)}</td><td>${g.count}</td><td>${tmHrs(g.alloc_to_start.avg)}</td><td>${tmHrs(g.start_to_complete.avg)}</td><td>${tmHrs(g.alloc_to_complete.avg)}</td></tr>`)}
     </div>
-    <div class="panel">
-      <h3>Job Cards (${data.cards.length})</h3>
-      ${tableHTML(['Stage','Card','Project','Status','Assignee','Allocated','Started','Completed'], data.cards, c => `
+    ${collapsiblePanel('time-motion-cards', `<span id="tm-cards-count">Job Cards (${data.cards.length})</span>`, `
+      ${renderListSearch('tm-cards', data.cards, ['stage', 'title', 'project_name', 'status', 'assignee_name'], (rows) => {
+        document.getElementById('tm-cards-table').innerHTML = tableHTML(['Stage','Card','Project','Status','Assignee','Allocated','Started','Completed'], rows, c => `
+          <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${badge(c.status)}</td><td>${esc(c.assignee_name)||'-'}</td>
+          <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td></tr>`);
+        document.getElementById('tm-cards-count').textContent = 'Job Cards (' + rows.length + ')';
+      }, 'Search by stage, card, project, status, assignee...')}
+      <div id="tm-cards-table">${tableHTML(['Stage','Card','Project','Status','Assignee','Allocated','Started','Completed'], data.cards, c => `
         <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${badge(c.status)}</td><td>${esc(c.assignee_name)||'-'}</td>
-        <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td></tr>`)}
-    </div>`;
+        <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td></tr>`)}</div>
+    `)}`;
 }
 window.loadTimeMotionReport = loadTimeMotionReport;
 PAGES['time-motion-report'] = async (el) => {
@@ -1377,16 +1386,14 @@ PAGES.clients = async (el) => {
       </div>
     </div>
     <div id="cl-addresses-panel"></div>
-    <div class="panel">
-      <div class="toolbar"><h3 id="cl-count" style="margin:0;">All Clients (${clients.length})</h3>
-        <button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button>
-      </div>
+    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button></div>
+    ${collapsiblePanel('clients-list', `<span id="cl-count">All Clients (${clients.length})</span>`, `
       ${renderListSearch('clients', clients, ['client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'source', 'gstin'], (rows) => {
         document.getElementById('cl-table-wrap').innerHTML = renderClientRows(rows);
         document.getElementById('cl-count').textContent = 'All Clients (' + rows.length + ')';
       }, 'Search by name, contact, phone, email, GSTIN, address...')}
       <div id="cl-table-wrap">${renderClientRows(clients)}</div>
-    </div>`;
+    `)}`;
 };
 window.editClient = (c) => {
   EDITING_CLIENT_ID = c.id;
@@ -1598,18 +1605,20 @@ async function renderLeadsPage(el) {
       </div>
       <button class="btn" onclick="addLead()">Add Lead</button>
     </div>
-    <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">All Leads (${leads.length})</h3>
-        <div style="display:flex;gap:8px;">
-          <div class="tabs" style="margin:0;">
-            <div class="tab ${LEADS_VIEW === 'list' ? 'active' : ''}" onclick="switchLeadsView('list')">List</div>
-            <div class="tab ${LEADS_VIEW === 'kanban' ? 'active' : ''}" onclick="switchLeadsView('kanban')">Kanban</div>
-          </div>
-          <button class="btn small outline" onclick="reportLeads()">Generate Report (CSV)</button>
-        </div>
+    <div class="toolbar" style="margin-bottom:10px;">
+      <div class="tabs" style="margin:0;">
+        <div class="tab ${LEADS_VIEW === 'list' ? 'active' : ''}" onclick="switchLeadsView('list')">List</div>
+        <div class="tab ${LEADS_VIEW === 'kanban' ? 'active' : ''}" onclick="switchLeadsView('kanban')">Kanban</div>
       </div>
+      <button class="btn small outline" onclick="reportLeads()">Generate Report (CSV)</button>
+    </div>
+    ${collapsiblePanel('leads-list', `<span id="ld-count">All Leads (${leads.length})</span>`, `
+      ${renderListSearch('leads', leads, ['client_name', 'product_interest', 'lead_source', 'stage', 'owner_name'], (rows) => {
+        document.getElementById('ld-count').textContent = 'All Leads (' + rows.length + ')';
+        renderLeadsView(rows);
+      }, 'Search by client, product, source, stage, owner...')}
       <div id="leads-view"></div>
-    </div>`;
+    `)}`;
   await loadSelectOptions(document.getElementById('ld-client'), '/masters/clients', 'id', 'name', 'Select client');
   renderLeadsView(leads);
 }
@@ -1867,17 +1876,15 @@ PAGES.orders = async (el) => {
       ${bgTermsFormFields('so')}
       <button class="btn" onclick="addOrder()">Create Order</button>
     </div>
-    <div class="panel">
-      <div class="toolbar"><h3 id="so-count" style="margin:0;">Sales Orders (${orders.length})</h3>
-        <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
-      </div>
+    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button></div>
+    ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
       ${renderListSearch('orders', orders, ['order_no', 'client_name', 'status', 'description'], (rows) => {
         document.getElementById('so-table-wrap').innerHTML = renderOrderRows(rows);
         document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
       }, 'Search by order no, client, status...')}
       <div id="so-table-wrap">${renderOrderRows(orders)}</div>
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
-    </div>`;
+    `)}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
 };
 window.reportOrders = async () => {
@@ -2205,16 +2212,14 @@ PAGES.offers = async (el) => {
       ${clients.length === 0 ? '<div class="msg err">Add a client first (Sales &amp; Marketing &rarr; Clients).</div>' : ''}
       <button class="btn" onclick="createOffer()">Create Offer (opens builder with prefilled sheets)</button>
     </div>
-    <div class="panel">
-      <div class="toolbar"><h3 id="of-count" style="margin:0;">All Offers (${offers.length})</h3>
-        <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
-      </div>
+    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button></div>
+    ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
       ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
         document.getElementById('of-table-wrap').innerHTML = renderOfferRows(rows);
         document.getElementById('of-count').textContent = 'All Offers (' + rows.length + ')';
       }, 'Search by offer no, client, subject, status...')}
       <div id="of-table-wrap">${renderOfferRows(offers)}</div>
-    </div>
+    `)}
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
   `;
 };
@@ -2689,12 +2694,11 @@ PAGES['sales-targets'] = async (el) => {
       </div>
       <button class="btn" onclick="addSalesTarget()">Save Target</button>
     </div>
-    <div class="panel">
-      <h3>All Targets (${targets.length})</h3>
+    ${collapsiblePanel('sales-targets-list', `All Targets (${targets.length})`, `
       ${tableHTML(['Period', 'Owner', 'Target Value', ''], targets, t => `
         <tr><td>${esc(t.period)}</td><td>${esc(t.owner_name) || 'Company-wide'}</td><td>₹${fmt(t.target_value)}</td>
         <td><button class="btn small red" onclick="deleteSalesTarget(${t.id})">Delete</button></td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.addSalesTarget = async () => {
   try {
@@ -2879,12 +2883,10 @@ window.saveProjectPlan = async (projectId) => {
 // the department, plus allocation, sub-assemblies, attachments and routing.
 PAGES.jobcards = async (el) => {
   const cards = await api('/projects/job-cards/mine');
-  el.innerHTML = `<div class="panel"><h3>Job Cards for ${esc(ME.role)} (${cards.length})</h3>
-    ${tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], cards, c => `
-      <tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
-      <td>${jobCardActions(c)}</td></tr>`)}
-  </div>
-  <div class="panel" id="sp-panel" style="display:none;"><h3 id="sp-title"></h3><div id="sp-body"></div></div>
+  const cardRow = c => `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
+      <td>${jobCardActions(c)}</td></tr>`;
+  el.innerHTML = renderJobCardSection('mine', `Job Cards for ${ME.role}`, cards, cardRow) +
+  `<div class="panel" id="sp-panel" style="display:none;"><h3 id="sp-title"></h3><div id="sp-body"></div></div>
   <div class="panel" id="jc-panel" style="display:none;"><h3 id="jc-title"></h3><div id="jc-body"></div></div>`;
 };
 // A department's own top-level stage plus its sub-process stages (if any),
@@ -2899,6 +2901,21 @@ const DEPT_SUB_STAGES = { Manufacturing: ['Fitting', 'Tacking', 'Welding', 'Buff
 // sub-processes (Manufacturing), the queue is split into its own section per
 // sub-process instead of one flat list, so its tab reads the way the
 // Manufacturing HOD's own sub-process planning already works.
+// Collapsed-by-default (like every other growing list panel in the app),
+// with client-side search since project/item are named entities - one
+// dept's job-card queue only grows over the life of the company.
+function renderJobCardSection(key, title, rows, cardRow) {
+  const tableWrapId = 'jc-tw-' + key;
+  const countId = 'jc-count-' + key;
+  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], rs, cardRow) : '<p class="muted">No job cards in this section.</p>';
+  return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${rows.length})</span>`, `
+    ${renderListSearch('jc-' + key, rows, ['project_code', 'project_title', 'title', 'assigned_to_name', 'status'], (filtered) => {
+      document.getElementById(tableWrapId).innerHTML = renderRows(filtered);
+      document.getElementById(countId).textContent = title + ' (' + filtered.length + ')';
+    }, 'Search by project, item, status, assignee...')}
+    <div id="${tableWrapId}">${renderRows(rows)}</div>
+  `);
+}
 async function renderDeptJobCards(el, stage, label, onlyStage) {
   const cards = await api('/projects/job-cards/by-stage/' + encodeURIComponent(stage));
   const subStages = DEPT_SUB_STAGES[stage];
@@ -2909,29 +2926,14 @@ async function renderDeptJobCards(el, stage, label, onlyStage) {
     // A single sub-process's own sidebar tab (e.g. Manufacturing > Fitting) -
     // same combined-queue data, filtered down to just this one section.
     const rows = cards.filter(c => c.stage === onlyStage);
-    body = `<div class="panel"><h3>${esc(label)} (${rows.length})</h3>
-      ${rows.length ? tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], rows, cardRow)
-        : '<p class="muted">No job cards in this section.</p>'}
-    </div>`;
+    body = renderJobCardSection('only-' + onlyStage, label, rows, cardRow);
   } else if (subStages) {
     const own = cards.filter(c => c.stage === stage);
     const sections = [{ key: stage, title: label + ' (overall)', rows: own }]
       .concat(subStages.map(s => ({ key: s, title: STAGE_LABELS[s] || s, rows: cards.filter(c => c.stage === s) })));
-    body = sections.map(sec => `
-      <div class="panel"><h3>${esc(sec.title)} (${sec.rows.length})</h3>
-        ${sec.rows.length ? tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], sec.rows, cardRow)
-          : '<p class="muted">No job cards in this section.</p>'}
-      </div>`).join('');
-  } else if (stage === 'Store') {
-    // Collapsed by default like the rest of Store & Inventory's list panels
-    // (Item Master, Recent Movements) - this one's keyed on the stage
-    // rather than every dept's job card board, since only Store's was asked for.
-    body = collapsiblePanel('store-job-cards', `${esc(label)} (${cards.length})`,
-      tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], cards, cardRow));
+    body = sections.map(sec => renderJobCardSection(sec.key, sec.title, sec.rows, cardRow)).join('');
   } else {
-    body = `<div class="panel"><h3>${esc(label)} (${cards.length})</h3>
-      ${tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], cards, cardRow)}
-    </div>`;
+    body = renderJobCardSection(stage, label, cards, cardRow);
   }
   el.innerHTML = body +
     `<div class="panel" id="sp-panel" style="display:none;"><h3 id="sp-title"></h3><div id="sp-body"></div></div>
@@ -3344,14 +3346,14 @@ PAGES['purchase-requests'] = async (el) => {
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests with a combined value of ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
     </div>
-    <div class="panel"><h3 id="pr-count">Purchase Requests (${reqs.length})</h3>
+    ${collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the items, project, quantities or values.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
       <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
-    </div>
+    `)}
     <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   renderPRLines();
@@ -4264,8 +4266,8 @@ async function renderChallanSheet(el) {
     <div class="panel"><h3>Challans (Material Movement Between Locations)</h3>
       <p class="muted">Delivery challan for moving material between the company's own locations (factory to factory, or factory to site) - not a sale. Add line items, save, then Print or Download PDF for the vehicle.</p>
       <div id="challan-form"></div>
-      <div id="challan-list"></div>
-    </div>`;
+    </div>
+    <div id="challan-list"></div>`;
   renderChallanForm();
   renderChallanList();
 }
@@ -4329,10 +4331,16 @@ async function renderChallanList() {
   const listEl = document.getElementById('challan-list');
   if (!listEl) return;
   const challans = await api('/purchase/store/challans');
-  listEl.innerHTML = `<h4 style="margin:14px 0 8px;">Saved Challans (${challans.length})</h4>
-    ${tableHTML(['Challan No', 'Date', 'From', 'To', 'Vehicle', 'Items', 'Value', ''], challans, c => `
+  const renderRows = (rows) => tableHTML(['Challan No', 'Date', 'From', 'To', 'Vehicle', 'Items', 'Value', ''], rows, c => `
       <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.vehicle_no)||'-'}</td><td>${c.item_count}</td><td>₹${fmt(c.total_value)}</td>
-      <td><button class="btn small outline" onclick="printChallan(${c.id})">Print</button> <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button></td></tr>`)}`;
+      <td><button class="btn small outline" onclick="printChallan(${c.id})">Print</button> <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button></td></tr>`);
+  listEl.innerHTML = collapsiblePanel('challans-list', `<span id="ch-list-count">Saved Challans (${challans.length})</span>`, `
+    ${renderListSearch('challans', challans, ['challan_no', 'vehicle_no', 'from_location', 'to_location'], (rows) => {
+      document.getElementById('ch-list-table').innerHTML = renderRows(rows);
+      document.getElementById('ch-list-count').textContent = 'Saved Challans (' + rows.length + ')';
+    }, 'Search by challan no, vehicle, from/to location...')}
+    <div id="ch-list-table">${renderRows(challans)}</div>
+  `);
 }
 window.downloadChallanPdf = async (id, challanNo) => {
   try {
@@ -4956,9 +4964,9 @@ PAGES['service-reports-dashboard'] = async (el) => {
     <div class="panel"><h3>Trend by Month</h3>
       ${tableHTML(['Month', 'Count'], Object.entries(d.byMonth).sort(), ([m,c]) => `<tr><td>${esc(m)}</td><td>${c}</td></tr>`)}
     </div>
-    <div class="panel"><h3>Trend by Week</h3>
+    ${collapsiblePanel('service-reports-by-week', `Trend by Week (${Object.keys(d.byWeek).length})`, `
       ${tableHTML(['Week', 'Count'], Object.entries(d.byWeek).sort(), ([w,c]) => `<tr><td>${esc(w)}</td><td>${c}</td></tr>`)}
-    </div>
+    `)}
     <div class="panel"><h3>Trend by Year</h3>
       ${tableHTML(['Year', 'Count'], Object.entries(d.byYear).sort(), ([y,c]) => `<tr><td>${esc(y)}</td><td>${c}</td></tr>`)}
     </div>`;
@@ -6547,9 +6555,13 @@ PAGES['foreign-payments'] = async (el) => {
         <div id="fp-new-err" class="msg err" style="display:none;margin-top:8px;"></div>
       </div>
     </div>
-    <div class="panel"><h3>Foreign Payment Requests</h3>
+    ${collapsiblePanel('foreign-payments-list', `<span id="fp-count">Foreign Payment Requests (${requests.length})</span>`, `
+      ${renderListSearch('foreign-payments', requests, ['request_no', 'vendor_name', 'beneficiary_name', 'currency', 'status'], (rows) => {
+        document.getElementById('fp-list-wrap').innerHTML = fpListHTML(rows);
+        document.getElementById('fp-count').textContent = 'Foreign Payment Requests (' + rows.length + ')';
+      }, 'Search by request no, vendor, beneficiary, currency, status...')}
       <div id="fp-list-wrap">${fpListHTML(requests)}</div>
-    </div>`;
+    `)}`;
 };
 
 function fpListHTML(requests) {
@@ -6770,9 +6782,11 @@ PAGES['finance-ledger'] = async (el) => {
         <div><label>Department</label><select id="fl-dept"><option value="">All</option>${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
       </div>
       <button class="btn small" onclick="filterLedger()">Filter</button>
+    </div>
+    ${collapsiblePanel('finance-ledger-list', `Ledger Entries (${ledger.length})`, `
       ${tableHTML(['Date', 'Type', 'Department', 'Amount', 'Direction', 'Description'], ledger, l => `
         <tr><td>${new Date(l.entry_date).toLocaleString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td><td>${badge(l.direction)}</td><td>${esc(l.description)||'-'}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.filterLedger = () => {
   const params = [];
@@ -7900,13 +7914,19 @@ PAGES['tickets-mine'] = async (el) => renderTicketQueue(el, '/tickets/mine', 'My
 PAGES['tickets-department'] = async (el) => renderTicketQueue(el, '/tickets/department', "Department Tickets");
 async function renderTicketQueue(el, apiPath, title) {
   const rows = await api(apiPath);
-  el.innerHTML = `
-    <div class="panel"><h3>${esc(title)} (${rows.length})</h3>
-      ${tableHTML(['Ticket No', 'Subject', 'Priority', 'Status', 'Department', 'Assigned To', ''], rows, t => `
+  const key = 'tickets-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const renderRows = (rs) => tableHTML(['Ticket No', 'Subject', 'Priority', 'Status', 'Department', 'Assigned To', ''], rs, t => `
         <tr><td>${esc(t.ticket_no)}</td><td>${esc(t.subject)}</td><td>${badge(t.priority)}</td><td>${badge(t.status)}</td>
         <td>${esc(t.department_name)||'-'}</td><td>${esc(t.assigned_to_name)||'-'}</td>
-        <td><button class="btn small outline" type="button" onclick="viewTicket(${t.id})">Open</button></td></tr>`)}
-    </div>
+        <td><button class="btn small outline" type="button" onclick="viewTicket(${t.id})">Open</button></td></tr>`);
+  el.innerHTML = `
+    ${collapsiblePanel(key, `<span id="${key}-count">${esc(title)} (${rows.length})</span>`, `
+      ${renderListSearch(key, rows, ['ticket_no', 'subject', 'department_name', 'assigned_to_name', 'status'], (filtered) => {
+        document.getElementById(key + '-table').innerHTML = renderRows(filtered);
+        document.getElementById(key + '-count').textContent = title + ' (' + filtered.length + ')';
+      }, 'Search by ticket no, subject, department, assignee, status...')}
+      <div id="${key}-table">${renderRows(rows)}</div>
+    `)}
     <div class="panel" id="tk-detail-panel" style="display:none;"><h3>Ticket Detail</h3><div id="tk-detail-body"></div></div>`;
   window.__TICKET_REFRESH = () => renderTicketQueue(el, apiPath, title);
 }
@@ -8105,12 +8125,12 @@ PAGES['sc-stock'] = async (el) => {
       </select>
       <div id="scs-body" style="margin-top:12px;"></div>
     </div>
-    <div class="panel"><h3>Company-Wide: Central Store vs Distributed to Centers</h3>
+    ${collapsiblePanel('sc-stock-summary', `Company-Wide: Central Store vs Distributed to Centers (${summary.length})`, `
       ${tableHTML(['Item', 'Central Store Stock', 'Total at Service Centers', 'Breakdown'], summary, i => `
         <tr><td>${esc(i.name)}${i.item_code?' ('+esc(i.item_code)+')':''}</td><td>${fmt(i.current_stock)} ${esc(i.unit)||''}</td>
         <td>${fmt(i.total_at_centers)} ${esc(i.unit)||''}</td>
         <td>${i.centers.map(c => `${esc(c.service_center_name)}: ${fmt(c.quantity)}`).join(', ') || '-'}</td></tr>`)}
-    </div>`;
+    `)}`;
 };
 window.loadSCStock = async () => {
   const id = val('scs-center');
@@ -8174,12 +8194,16 @@ PAGES['site-visits'] = async (el) => {
   const ed = EDITING_VISIT_ID ? visits.find(v => v.id === EDITING_VISIT_ID) : null;
   const bucketTable = (status, title, hint) => {
     const rows = visits.filter(v => v.status === status);
-    return `<div class="panel"><h3>${esc(title)} (${rows.length})</h3><p class="muted">${esc(hint)}</p>
+    const table = `<p class="muted">${esc(hint)}</p>
       ${tableHTML(['Site', 'Engineer(s)', 'Arrival', 'Close', 'Purpose / Pending Works', 'Expenses Note', ''], rows, v => `
         <tr><td>${esc(v.site_name)}</td><td>${v.engineers.map(e => esc(e.full_name)).join(', ') || '-'}</td>
         <td>${v.arrival_date||'-'}</td><td>${v.close_date||'-'}</td><td>${esc(v.purpose)||'-'}</td><td>${esc(v.expenses_note)||'-'}</td>
-        <td><button class="btn small outline" onclick="editSiteVisit(${v.id})">Edit</button></td></tr>`)}
-    </div>`;
+        <td><button class="btn small outline" onclick="editSiteVisit(${v.id})">Edit</button></td></tr>`)}`;
+    // Closed visits are the one bucket that only ever grows (completed
+    // history) - the other three are naturally small/active-only, so they
+    // stay open by default.
+    if (status === 'Closed') return collapsiblePanel('site-visits-closed', `${esc(title)} (${rows.length})`, table);
+    return `<div class="panel"><h3>${esc(title)} (${rows.length})</h3>${table}</div>`;
   };
   el.innerHTML = `
     <div class="panel"><h3>${ed ? 'Edit' : 'Add'} Site Visit</h3>
@@ -8318,18 +8342,24 @@ PAGES['todos'] = async (el) => {
         <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
     </div>
 
-    ${canView ? `
-    <div class="panel"><h3>All To-Dos Logged</h3>
-      <p class="muted">${['Admin', 'Management'].includes(ME.role) ? 'Every To-Do across the whole company.' : "Every To-Do logged against your own department's HOD, plus anything assigned directly to you."}</p>
-      ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], all, t => `
+    ${canView ? (() => {
+      const renderAllRows = (rows) => tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], rows, t => `
         <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
         <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td>
         <td>${canLog ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>` : badge(t.status)}</td>
         <td>${updatesToggle(t)} ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}</td></tr>
-        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
-    </div>` : ''}`;
+        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`);
+      return collapsiblePanel('all-todos', `<span id="todo-all-count">All To-Dos Logged (${all.length})</span>`, `
+        <p class="muted">${['Admin', 'Management'].includes(ME.role) ? 'Every To-Do across the whole company.' : "Every To-Do logged against your own department's HOD, plus anything assigned directly to you."}</p>
+        ${renderListSearch('all-todos', all, ['brief_description', 'details', 'hod_name', 'assigned_to_name', 'status'], (rows) => {
+          document.getElementById('todo-all-table').innerHTML = renderAllRows(rows);
+          document.getElementById('todo-all-count').textContent = 'All To-Dos Logged (' + rows.length + ')';
+        }, 'Search by description, HOD, assignee, status...')}
+        <div id="todo-all-table">${renderAllRows(all)}</div>
+      `);
+    })() : ''}`;
 };
 window.toggleTodoUpdates = (id) => {
   const row = document.getElementById(`todo-updates-row-${id}`);
@@ -8424,9 +8454,7 @@ PAGES['backups'] = async (el) => {
       <button class="btn" onclick="runBackupNow()">Run Backup Now</button>
       <div id="backup-run-result" style="margin-top:8px;"></div>
     </div>
-    <div class="panel"><h3>Backup History</h3>
-      <div id="backup-history-body"></div>
-    </div>`;
+    ${collapsiblePanel('backup-history', 'Backup History', '<div id="backup-history-body"></div>')}`;
   renderBackupHistory();
 };
 async function renderBackupHistory() {
