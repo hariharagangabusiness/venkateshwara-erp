@@ -1832,9 +1832,17 @@ function renderOrderRows(rows) {
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
-    <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button></td></tr>
+    <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
+    ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`);
 }
+window.deleteOrderRow = async (id) => {
+  if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
+  try {
+    await api('/sales/orders/' + id, { method: 'DELETE' });
+    navigate('orders');
+  } catch (e) { alert(e.message); }
+};
 PAGES.orders = async (el) => {
   const orders = await api('/sales/orders');
   const wonLeads = (await api('/sales/leads')).filter(l => l.stage === 'Won');
@@ -2213,8 +2221,16 @@ PAGES.offers = async (el) => {
 function renderOfferRows(rows) {
   return tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], rows, o => `
     <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
-    <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button></td></tr>`);
+    <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
+    ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`);
 }
+window.deleteOfferRow = async (id) => {
+  if (!confirm('Permanently delete this offer? This cannot be undone.')) return;
+  try {
+    await api('/offers/' + id, { method: 'DELETE' });
+    navigate('offers');
+  } catch (e) { alert(e.message); }
+};
 window.reportOffers = async () => {
   const offers = await api('/offers');
   downloadCSV('offers_report.csv', offers, ['id', 'offer_no', 'client_name', 'subject', 'offer_date', 'status', 'sales_order_id']);
@@ -2416,6 +2432,8 @@ async function renderScopeTab(el, data) {
     <div id="it-image-preview" style="margin:6px 0;"></div>
     <label>Description</label>
     <textarea id="it-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+    <label>Equipment Description Summary <span class="muted">(shown next to the picture on the PDF's Equipment Description page - optional)</span></label>
+    <textarea id="it-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
     <div style="margin-top:8px;">
       <button class="btn" id="it-submit-btn" onclick="addOfferItem()">Add Line</button>
       <button class="btn outline" id="it-cancel-btn" onclick="cancelEditOfferItem()" style="display:none;">Cancel</button>
@@ -2430,6 +2448,7 @@ window.applySectionTitleTemplate = () => {
   if (!lib) return;
   document.getElementById('it-section').value = lib.title;
   document.getElementById('it-desc').value = lib.description || '';
+  document.getElementById('it-summary').value = lib.summary || '';
   preview.innerHTML = lib.image_path ? `<img src="${esc(lib.image_path)}" style="max-height:80px;max-width:140px;"> <span class="muted">Library picture - will be used unless you upload your own above.</span>` : '';
 };
 let EDITING_OFFER_ITEM_ID = null;
@@ -2441,6 +2460,7 @@ window.editOfferItem = async (itemId) => {
   document.getElementById('it-code').value = it.item_code || '';
   document.getElementById('it-section').value = it.section_title || '';
   document.getElementById('it-desc').value = it.description || '';
+  document.getElementById('it-summary').value = it.summary || '';
   document.getElementById('it-qty').value = it.qty;
   document.getElementById('it-price').value = it.unit_price;
   document.getElementById('it-form-title').textContent = 'Edit Machinery / Scope Line';
@@ -2460,6 +2480,7 @@ window.addOfferItem = async () => {
     fd.append('item_code', val('it-code'));
     fd.append('section_title', val('it-section'));
     fd.append('description', val('it-desc'));
+    fd.append('summary', val('it-summary'));
     fd.append('qty', val('it-qty'));
     fd.append('unit_price', val('it-price'));
     fd.append('revision_reason', reason || '');

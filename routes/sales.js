@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { resolveUploadPath } = require('../lib/paths');
@@ -270,6 +270,68 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   }
 
   res.json(result);
+});
+
+// Admin-only permanent delete, for cleaning up an order that was created by
+// mistake before any real work happened on it. Every order gets a project +
+// job cards (and usually an order-confirmation/annexure review pair)
+// automatically the moment it's created - see ensureProjectForOrder above -
+// so their mere existence isn't a sign of real progress; what actually
+// blocks deletion is any of that scaffolding having moved past its
+// untouched starting state, or any genuinely separate document (invoice,
+// BG, milestone, FOC request) having been raised against this order.
+router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (order.status !== 'Confirmed') {
+    return res.status(400).json({ error: `This order has moved to ${order.status} - only a Confirmed order with nothing built on it yet can be deleted.` });
+  }
+  const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
+  if (project) {
+    const startedJobCard = db.prepare(`
+      SELECT id FROM job_cards WHERE project_id = ? AND (status != 'Pending' OR started_at IS NOT NULL) LIMIT 1
+    `).get(project.id);
+    if (startedJobCard) {
+      return res.status(400).json({ error: 'Production has already started on this order (at least one job card is in progress or further along) and it cannot be deleted.' });
+    }
+  }
+  const blockers = [
+    ['Tax Invoice', db.prepare('SELECT COUNT(*) as n FROM sales_invoices WHERE sales_order_id = ?').get(order.id).n],
+    ['Proforma Invoice', db.prepare('SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ?').get(order.id).n],
+    ['Bank Guarantee', db.prepare(`SELECT COUNT(*) as n FROM bank_guarantees WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
+    ['Payment Milestone', db.prepare(`SELECT COUNT(*) as n FROM payment_milestones WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
+    ['FOC Request', db.prepare('SELECT COUNT(*) as n FROM foc_requests WHERE sales_order_id = ?').get(order.id).n],
+  ].filter(([, n]) => n > 0);
+  const oc = db.prepare('SELECT status FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
+  if (oc && oc.status !== 'Draft') blockers.push(['Order Confirmation letter', 1]);
+  const ar = db.prepare('SELECT status FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
+  if (ar && ar.status !== 'Draft') blockers.push(['Annexure review', 1]);
+  if (blockers.length) {
+    return res.status(400).json({ error: `This order already has real activity against it (${blockers.map(([label]) => label).join(', ')}) and cannot be deleted.` });
+  }
+
+  const tx = db.transaction(() => {
+    if (project) {
+      db.prepare(`DELETE FROM job_card_attachments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
+      db.prepare('DELETE FROM job_cards WHERE project_id = ?').run(project.id);
+      db.prepare('DELETE FROM projects WHERE id = ?').run(project.id);
+    }
+    db.prepare('DELETE FROM order_confirmations WHERE sales_order_id = ?').run(order.id);
+    db.prepare('DELETE FROM annexure_reviews WHERE sales_order_id = ?').run(order.id);
+    // If this order came from a confirmed offer, undo that conversion so the
+    // offer becomes a normal, editable Sent offer again rather than being
+    // left locked and pointing at a sales order that no longer exists.
+    const offer = db.prepare('SELECT id FROM offers WHERE sales_order_id = ?').get(order.id);
+    if (offer) {
+      db.prepare(`
+        UPDATE offers SET status = 'Sent', sales_order_id = NULL, locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(offer.id);
+    }
+    db.prepare('DELETE FROM sales_orders WHERE id = ?').run(order.id);
+  });
+  tx();
+  res.json({ ok: true });
 });
 
 // Commercial terms (Round 16): promised delivery date + LD clause, plus

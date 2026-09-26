@@ -23,6 +23,7 @@
     "grapesjs": "^0.23.6",
     "grapesjs-blocks-basic": "^1.0.2",
     "grapesjs-preset-webpage": "^1.0.3",
+    "image-size": "^2.0.4",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "nodemailer": "^10.0.1",

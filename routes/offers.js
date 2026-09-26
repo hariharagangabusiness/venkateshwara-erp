@@ -417,7 +417,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   let imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
@@ -429,14 +429,14 @@ router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
-    INSERT INTO offer_items (offer_id, item_code, section_title, description, image_path, qty, unit_price, total_price, sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(version.id, item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || 0);
+    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, total_price, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || 0);
   res.json({ id: info.lastInsertRowid, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res) => {
-  const { item_code, section_title, description, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
@@ -464,9 +464,9 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res)
     }
   }
   db.prepare(`
-    UPDATE offer_items SET item_code=?, section_title=?, description=?, image_path=?, qty=?, unit_price=?, total_price=?, sort_order=?
+    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, total_price=?, sort_order=?
     WHERE id=?
-  `).run(item_code, section_title, description, imagePath, q, rate, q * rate, sort_order || existing.sort_order, targetItemId);
+  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || existing.sort_order, targetItemId);
   res.json({ ok: true, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
@@ -625,6 +625,36 @@ router.post('/:id/unlock', requireRole('Admin'), (req, res) => {
   db.prepare(`UPDATE offers SET locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(existing.id);
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(req.user.id, 'offer_unlock', 'offer', existing.id, reason);
+  res.json({ ok: true });
+});
+
+// Admin-only permanent delete, for cleaning up an offer that never went
+// anywhere (a mistaken Draft/Sent/Lost quote) rather than leaving it in the
+// list forever. Two safety gates, both hard blocks (no override):
+//   - locked (converted to a Sales Order) - that's real downstream data,
+//     not this route's job; unlock via the escape hatch above first if it
+//     genuinely needs undoing.
+//   - has a later revision built on it (another offer's parent_offer_id
+//     points here) - deleting it would orphan that revision's FK. Only a
+//     leaf version (or a standalone single-version offer) can go.
+router.delete('/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.locked) {
+    return res.status(400).json({ error: 'This offer is locked (converted to a Sales Order) and cannot be deleted. Unlock it first if this conversion genuinely needs undoing.' });
+  }
+  const childCount = db.prepare('SELECT COUNT(*) as n FROM offers WHERE parent_offer_id = ?').get(existing.id).n;
+  if (childCount > 0) {
+    return res.status(400).json({ error: 'This offer has a later revision built on it and cannot be deleted directly - delete the newest version first, then work backwards.' });
+  }
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM offer_items WHERE offer_id = ?').run(existing.id);
+    db.prepare('DELETE FROM offer_tech_specs WHERE offer_id = ?').run(existing.id);
+    db.prepare('DELETE FROM offer_bought_out_items WHERE offer_id = ?').run(existing.id);
+    db.prepare('DELETE FROM offer_terms WHERE offer_id = ?').run(existing.id);
+    db.prepare('DELETE FROM offers WHERE id = ?').run(existing.id);
+  });
+  tx();
   res.json({ ok: true });
 });
 
