@@ -776,6 +776,14 @@ const MIGRATIONS = [
   // (JSON array of {path, error}) so an Admin can see what's actually
   // missing from a given backup's artifact.
   `ALTER TABLE backup_runs ADD COLUMN skipped_files TEXT`,
+  // ---- Equipment Description summary text ----
+  // section_title_library already had a `summary` field, but nothing ever
+  // copied it onto an offer item or rendered it - picking a library section
+  // title only ever carried over title/description/image. This is that
+  // missing piece, copied at use time same as description/image_path (see
+  // section_title_library's own comment) so editing the library later never
+  // changes an offer already built from it.
+  `ALTER TABLE offer_items ADD COLUMN summary TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
