@@ -807,6 +807,24 @@ const MIGRATIONS = [
     reviewed_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // ---- Per-user page access overrides ----
+  // The role matrix (role_page_access) and Extra Page Access are additive
+  // only - neither can take a page away from one specific person without
+  // reconfiguring their whole role. This is the missing subtractive half:
+  // one row per (user, page) that either adds a page the role/extra grants
+  // don't cover, or removes one they do - see lib/pageAccess.js's
+  // computeAllowedPages(), the single place all of role_page_access,
+  // extra_page_access and this table are merged into the page list a user
+  // actually sees (routes/auth.js's /my-pages, and the Admin-only
+  // per-user preview in routes/admin.js).
+  `CREATE TABLE IF NOT EXISTS user_page_overrides (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    page_id TEXT NOT NULL,
+    access TEXT NOT NULL CHECK (access IN ('granted', 'revoked')),
+    granted_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, page_id)
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

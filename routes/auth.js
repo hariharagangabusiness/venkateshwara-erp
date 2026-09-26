@@ -5,6 +5,7 @@ const { db } = require('../db');
 const { SECRET, authRequired } = require('../middleware/auth');
 const { createToken, verifyToken, consumeToken } = require('../lib/passwordReset');
 const { sendMail } = require('../lib/mailer');
+const { computeAllowedPages } = require('../lib/pageAccess');
 
 const router = express.Router();
 
@@ -106,22 +107,11 @@ router.get('/me', authRequired, (req, res) => {
   });
 });
 
-// Which sidebar pages this user's role can see. null = unrestricted (every
-// page, i.e. today's behavior) - a role only gets a fixed list once an
-// Admin has explicitly saved one for it in the User Access module.
+// Which sidebar pages this user can see - role matrix + Extra Page Access +
+// their own individual overrides, all merged by computeAllowedPages(). null
+// = unrestricted (every page).
 router.get('/my-pages', authRequired, (req, res) => {
-  if (req.user.role_name === 'Admin') return res.json({ pages: null });
-  const configured = db.prepare('SELECT 1 FROM role_access_configured WHERE role_id = ?').get(req.user.role_id);
-  if (!configured) return res.json({ pages: null });
-  const rows = db.prepare('SELECT page_id FROM role_page_access WHERE role_id = ?').all(req.user.role_id);
-  const pages = new Set(rows.map(r => r.page_id));
-  // Round 3: additive department/individual grants (User Access -> Entire
-  // Department / Specific Users) on top of the role's configured list.
-  const extra = db.prepare(`
-    SELECT page_id FROM extra_page_access WHERE user_id = ? OR (department_id IS NOT NULL AND department_id = ?)
-  `).all(req.user.id, req.user.department_id || -1);
-  extra.forEach(r => pages.add(r.page_id));
-  res.json({ pages: Array.from(pages) });
+  res.json({ pages: computeAllowedPages(db, req.user) });
 });
 
 // Permissions for current user's role (for frontend nav gating)
