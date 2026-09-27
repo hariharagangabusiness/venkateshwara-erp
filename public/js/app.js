@@ -2764,7 +2764,11 @@ window.viewProjectCards = async (id, code) => {
   const cards = await api(`/projects/${id}/job-cards`);
   document.getElementById('pj-cards-panel').style.display = 'block';
   document.getElementById('pj-cards-title').textContent = 'Pipeline: ' + code;
-  const rows = cards.map(c => jobCardRowHTML(c, false) + (c.children || []).map(ch => jobCardRowHTML(ch, true)).join('')).join('');
+  // Stages excluded from this project's flow (see the Targets sheet) are
+  // hidden here entirely, same as everywhere else outside the Targets
+  // sheet itself - this is a pipeline view, not a place to re-include one.
+  const rows = cards.filter(c => c.status !== 'NotApplicable')
+    .map(c => jobCardRowHTML(c, false) + (c.children || []).filter(ch => ch.status !== 'NotApplicable').map(ch => jobCardRowHTML(ch, true)).join('')).join('');
   document.getElementById('pj-cards').innerHTML = `<table><thead><tr>
     <th>Stage / Sub-Assembly</th><th>Status</th><th>Assigned To</th><th>Allocated</th><th>Started</th><th>Completed</th><th>Notes</th>
   </tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No job cards yet.</td></tr>'}</tbody></table>`;
@@ -2804,11 +2808,18 @@ window.loadProjectPlan = async () => {
   } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; return; }
   if (!cards.length) { body.innerHTML = '<div class="msg err">This project has no job cards.</div>'; return; }
   const targetProject = (await api('/projects')).find(p => String(p.id) === String(projectId));
+  // Not every project needs every stage (a bought-out/trading order only
+  // needs Purchase + Store) - excluded stages drop out of the reorderable
+  // plan entirely and move to a small "Excluded" strip below with a one-
+  // click way back in, rather than cluttering the sequence/duration table
+  // with rows nobody is going to schedule.
+  const activeCards = cards.filter(c => c.status !== 'NotApplicable');
+  const excludedCards = cards.filter(c => c.status === 'NotApplicable');
   body.innerHTML = `
-    <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence. By default each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. Tick "Run in parallel" on a row to have it start on the same day as the row above it instead — the next non-parallel row waits for whichever of that group finishes last. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench.</p>
-    <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Run in parallel<br>with row above</th><th>Planned Start</th><th>Planned End</th><th>Status</th></tr></thead>
+    <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence. By default each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. Tick "Run in parallel" on a row to have it start on the same day as the row above it instead — the next non-parallel row waits for whichever of that group finishes last. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench. Doesn't need a department for this project at all? Exclude it below — it can be brought back any time.</p>
+    <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Run in parallel<br>with row above</th><th>Planned Start</th><th>Planned End</th><th>Status</th><th></th></tr></thead>
     <tbody id="pl-rows">
-      ${cards.map((c, i) => `
+      ${activeCards.map((c, i) => `
         <tr data-jc="${c.id}">
           <td class="pl-reorder">
             <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
@@ -2820,12 +2831,37 @@ window.loadProjectPlan = async () => {
           <td class="pl-start">${c.planned_start || '-'}</td>
           <td class="pl-end">${c.planned_end || '-'}</td>
           <td>${badge(c.status)}</td>
+          <td>${c.status === 'Pending' ? `<button type="button" class="btn small outline" onclick="excludeJobCardFromPlan(${c.id})">Exclude</button>` : ''}</td>
         </tr>`).join('')}
     </tbody></table>
     <button class="btn" onclick="saveProjectPlan(${projectId})">Recalculate &amp; Save Plan</button>
     <span id="pl-target" class="muted" style="margin-left:10px;">${targetProject && targetProject.target_date ? `Overall target completion: <b>${targetProject.target_date}</b>` : ''}</span>
+    ${excludedCards.length ? `
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <b>Excluded from this project's flow</b>
+        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px;">
+          ${excludedCards.map(c => `
+            <span style="display:inline-flex;align-items:center;gap:8px;padding:5px 10px;background:#f5f5f5;border-radius:5px;">
+              ${esc(STAGE_LABELS[c.stage] || c.stage)}
+              <button type="button" class="btn small outline" onclick="includeJobCardInPlan(${c.id})">Include</button>
+            </span>`).join('')}
+        </div>
+      </div>` : ''}
     <div id="pl-err" class="msg err" style="display:none;margin-top:10px;"></div>
   `;
+};
+window.excludeJobCardFromPlan = async (jcId) => {
+  if (!confirm("Exclude this department from this project's flow? It won't need a job card at all, and can be brought back any time from the Excluded list below.")) return;
+  try {
+    await api(`/projects/job-cards/${jcId}/exclude`, { method: 'PUT' });
+    loadProjectPlan();
+  } catch (e) { alert(e.message); }
+};
+window.includeJobCardInPlan = async (jcId) => {
+  try {
+    await api(`/projects/job-cards/${jcId}/include`, { method: 'PUT' });
+    loadProjectPlan();
+  } catch (e) { alert(e.message); }
 };
 window.moveRow = (btn, dir) => {
   const tr = btn.closest('tr');
@@ -3123,6 +3159,7 @@ window.routeJobCard = async (id) => {
 
 // ---- HOD sub-process planning (e.g. Manufacturing HOD planning Fitting -> Tacking -> Welding -> Buffing/Sandblast -> Painting) ----
 window.openSubPlan = async (parentId, parentLabel) => {
+  window.__SP_PARENT_LABEL = parentLabel; // reused by exclude/include to redraw this same screen
   const panel = document.getElementById('sp-panel');
   const title = document.getElementById('sp-title');
   const body = document.getElementById('sp-body');
@@ -3135,12 +3172,17 @@ window.openSubPlan = async (parentId, parentLabel) => {
     data = await api(`/projects/job-cards/${parentId}/children`);
   } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; return; }
   const { parent, children } = data;
+  // Not every project needs all 5 of Manufacturing's sub-processes (a
+  // project might never need Painting or Buffing/Sandblast) - same
+  // exclude/include pattern as the Targets sheet, one level down.
+  const activeChildren = children.filter(c => c.status !== 'NotApplicable');
+  const excludedChildren = children.filter(c => c.status === 'NotApplicable');
   body.innerHTML = `
-    <p class="muted">${esc(parentLabel)}'s overall window from the PM's plan: <b>${parent.planned_start || '-'} to ${parent.planned_end || '-'}</b>. Break it down into sub-process targets below — rows can be reordered (▲▼) to match real handover between sub-processes, and this can be re-edited any time.</p>
+    <p class="muted">${esc(parentLabel)}'s overall window from the PM's plan: <b>${parent.planned_start || '-'} to ${parent.planned_end || '-'}</b>. Break it down into sub-process targets below — rows can be reordered (▲▼) to match real handover between sub-processes, and this can be re-edited any time. Don't need one of these sub-processes for this project? Exclude it below.</p>
     <div class="form-grid"><div><label>Sub-Plan Start Date</label><input id="sp-start" type="date" value="${parent.planned_start || today()}"></div></div>
-    <table><thead><tr><th style="width:36px;"></th><th>Sub-Process</th><th>Duration (days)</th><th>Planned Start</th><th>Planned End</th><th>Status</th></tr></thead>
+    <table><thead><tr><th style="width:36px;"></th><th>Sub-Process</th><th>Duration (days)</th><th>Planned Start</th><th>Planned End</th><th>Status</th><th></th></tr></thead>
     <tbody id="sp-rows">
-      ${children.map(c => `
+      ${activeChildren.map(c => `
         <tr data-jc="${c.id}">
           <td class="pl-reorder">
             <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
@@ -3151,11 +3193,36 @@ window.openSubPlan = async (parentId, parentLabel) => {
           <td class="sp-start">${c.planned_start || '-'}</td>
           <td class="sp-end">${c.planned_end || '-'}</td>
           <td>${badge(c.status)}</td>
+          <td>${c.status === 'Pending' ? `<button type="button" class="btn small outline" onclick="excludeSubStage(${c.id}, ${parentId})">Exclude</button>` : ''}</td>
         </tr>`).join('')}
     </tbody></table>
     <button class="btn" onclick="saveSubPlan(${parentId})">Recalculate &amp; Save Sub-Plan</button>
+    ${excludedChildren.length ? `
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <b>Excluded from this project's flow</b>
+        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px;">
+          ${excludedChildren.map(c => `
+            <span style="display:inline-flex;align-items:center;gap:8px;padding:5px 10px;background:#f5f5f5;border-radius:5px;">
+              ${esc(STAGE_LABELS[c.stage] || c.stage)}
+              <button type="button" class="btn small outline" onclick="includeSubStage(${c.id}, ${parentId})">Include</button>
+            </span>`).join('')}
+        </div>
+      </div>` : ''}
     <div id="sp-err" class="msg err" style="display:none;margin-top:10px;"></div>
   `;
+};
+window.excludeSubStage = async (jcId, parentId) => {
+  if (!confirm("Exclude this sub-process from this project's flow? It can be brought back any time.")) return;
+  try {
+    await api(`/projects/job-cards/${jcId}/exclude`, { method: 'PUT' });
+    openSubPlan(parentId, window.__SP_PARENT_LABEL);
+  } catch (e) { alert(e.message); }
+};
+window.includeSubStage = async (jcId, parentId) => {
+  try {
+    await api(`/projects/job-cards/${jcId}/include`, { method: 'PUT' });
+    openSubPlan(parentId, window.__SP_PARENT_LABEL);
+  } catch (e) { alert(e.message); }
 };
 window.saveSubPlan = async (parentId) => {
   const errEl = document.getElementById('sp-err');

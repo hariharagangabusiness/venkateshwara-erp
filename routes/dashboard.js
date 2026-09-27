@@ -25,10 +25,13 @@ router.get('/summary', (req, res) => {
 router.get('/project/:id/drilldown', (req, res) => {
   const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!project) return res.status(404).json({ error: 'Not found' });
-  const topLevel = db.prepare(`SELECT * FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL ORDER BY COALESCE(sequence, id)`).all(project.id);
+  // Excluded (NotApplicable) stages are hidden entirely from this drilldown
+  // - a bought-out/trading order's progress bar shouldn't be dragged down by
+  // stages it was never going to use in the first place.
+  const topLevel = db.prepare(`SELECT * FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL AND status != 'NotApplicable' ORDER BY COALESCE(sequence, id)`).all(project.id);
   const overallProgress = topLevel.length ? Math.round(100 * topLevel.filter(c => c.status === 'Completed').length / topLevel.length) : 0;
   const departments = topLevel.map(c => {
-    const children = db.prepare(`SELECT * FROM job_cards WHERE parent_job_card_id = ? ORDER BY COALESCE(sequence, id)`).all(c.id);
+    const children = db.prepare(`SELECT * FROM job_cards WHERE parent_job_card_id = ? AND status != 'NotApplicable' ORDER BY COALESCE(sequence, id)`).all(c.id);
     const subProcesses = children.map(ch => ({ id: ch.id, stage: ch.stage, title: ch.title, status: ch.status }));
     const deptProgress = children.length
       ? Math.round(100 * children.filter(ch => ch.status === 'Completed').length / children.length)
@@ -55,7 +58,7 @@ router.get('/window-summary', (req, res) => {
   const upcomingJobCards = db.prepare(`
     SELECT jc.id, jc.stage, jc.title, jc.planned_start, jc.planned_end, p.project_code
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE (jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?)
+    WHERE jc.status != 'NotApplicable' AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))
     ORDER BY jc.planned_start LIMIT 50
   `).all(today(), until, today(), until);
   const upcomingService = db.prepare(`

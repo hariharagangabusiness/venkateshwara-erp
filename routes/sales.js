@@ -288,8 +288,12 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
   }
   const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
   if (project) {
+    // Excluding a stage (status = 'NotApplicable') is a planning decision,
+    // not production activity - it must not itself count as "started" here,
+    // or excluding even one stage would wrongly block deleting an order
+    // nothing has actually been built against yet.
     const startedJobCard = db.prepare(`
-      SELECT id FROM job_cards WHERE project_id = ? AND (status != 'Pending' OR started_at IS NOT NULL) LIMIT 1
+      SELECT id FROM job_cards WHERE project_id = ? AND ((status != 'Pending' AND status != 'NotApplicable') OR started_at IS NOT NULL) LIMIT 1
     `).get(project.id);
     if (startedJobCard) {
       return res.status(400).json({ error: 'Production has already started on this order (at least one job card is in progress or further along) and it cannot be deleted.' });
