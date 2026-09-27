@@ -4466,8 +4466,22 @@ window.printChallan = async (id) => {
 // only the Service HOD/Supervisor (or Admin) opens a queued request and
 // schedules it - assigns a service employee (from Employees) and a date.
 PAGES.service = async (el) => {
-  const [reqs, clients] = await Promise.all([api('/service'), api('/masters/clients')]);
+  const [reqs, clients, inbox] = await Promise.all([api('/service'), api('/masters/clients'), api('/service/inbox').catch(() => [])]);
+  window.__SERVICE_INBOX = inbox;
+  window.__SERVICE_CLIENTS = clients;
   el.innerHTML = `
+    ${collapsiblePanel('service-incoming-requests', `Incoming Requests (Email) (${inbox.length})`, `
+      <p class="muted">Parsed from the Service inbox - nothing here is a real service request yet. Review the details below and either confirm it into a real SR (editable first) or dismiss it.</p>
+      ${inbox.length ? inbox.map(i => `
+        <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
+          <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span></p>
+          <p style="margin:0 0 4px;"><b>Subject:</b> ${esc(i.subject)||'-'}</p>
+          <p style="margin:0 0 4px;"><b>${i.matched_client_name ? 'Matched Client' : 'Guessed Customer'}:</b> ${esc(i.matched_client_name || i.guessed_customer_name)||'-'}${i.guessed_contact_phone ? ' &middot; ' + esc(i.guessed_contact_phone) : ''}</p>
+          <details style="margin:6px 0;"><summary class="muted" style="cursor:pointer;">Full email text</summary><pre style="white-space:pre-wrap;font-family:inherit;margin:6px 0 0;">${esc(i.body_text)||'-'}</pre></details>
+          ${i.can_confirm ? `<div style="margin-top:8px;"><button class="btn small" onclick="openConfirmIncoming(${i.id})">Confirm as Service Request</button> <button class="btn small outline" onclick="dismissIncoming(${i.id})">Dismiss</button></div>` : '<p class="muted">Only the Service HOD/Supervisor (or Admin) can confirm or dismiss.</p>'}
+          <div id="incoming-confirm-${i.id}"></div>
+        </div>`).join('') : '<div class="empty">No pending incoming emails.</div>'}
+    `)}
     <div class="panel"><h3>Log Service Request</h3>
       <div class="form-grid">
         <div><label>Customer (from Clients)</label><select id="sr-client" onchange="document.getElementById('sr-manual-wrap').style.display = this.value ? 'none' : 'grid'">
@@ -4583,6 +4597,51 @@ window.addSR = async () => {
       client_id: val('sr-client') || null, customer_name: val('sr-cust-name'), contact_person: val('sr-contact-person'),
       contact_phone: val('sr-contact-phone'), issue_description: val('sr-desc'), spare_parts_needed: val('sr-parts'),
     })});
+    navigate('service');
+  } catch (e) { alert(e.message); }
+};
+window.openConfirmIncoming = (id) => {
+  const item = (window.__SERVICE_INBOX || []).find(i => i.id === id);
+  if (!item) return;
+  const clients = window.__SERVICE_CLIENTS || [];
+  const wrap = document.getElementById(`incoming-confirm-${id}`);
+  wrap.innerHTML = `
+    <div class="form-grid" style="margin-top:10px;border-top:1px solid var(--border,#ccc);padding-top:10px;">
+      <div><label>Customer (from Clients)</label><select id="ic-client-${id}" onchange="document.getElementById('ic-manual-wrap-${id}').style.display = this.value ? 'none' : 'grid'">
+        <option value="">-- Enter customer name manually instead --</option>
+        ${clients.map(c => `<option value="${c.id}" ${item.matched_client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select></div>
+      <div><label>Contact Person</label><input id="ic-contact-person-${id}"></div>
+      <div><label>Contact Number</label><input id="ic-contact-phone-${id}" value="${esc(item.guessed_contact_phone)}"></div>
+    </div>
+    <div class="form-grid" id="ic-manual-wrap-${id}" style="display:${item.matched_client_id ? 'none' : 'grid'};">
+      <div><label>Customer Name (manual)</label><input id="ic-cust-name-${id}" value="${esc(item.guessed_customer_name)}"></div>
+    </div>
+    <div class="form-grid">
+      <div style="grid-column:1/-1;"><label>Issue Description</label><textarea id="ic-desc-${id}" rows="2">${esc(item.subject || item.body_text)}</textarea></div>
+      <div><label>Spare Parts Needed</label><input id="ic-parts-${id}"></div>
+    </div>
+    <button class="btn small" onclick="saveConfirmIncoming(${id})">Save as Service Request</button>
+    <button class="btn small outline" type="button" onclick="document.getElementById('incoming-confirm-${id}').innerHTML=''">Cancel</button>
+    <div id="ic-err-${id}" class="msg err" style="display:none;margin-top:6px;"></div>`;
+};
+window.saveConfirmIncoming = async (id) => {
+  const errEl = document.getElementById(`ic-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/service/inbox/${id}/confirm`, { method: 'POST', body: JSON.stringify({
+      client_id: val(`ic-client-${id}`) || null, customer_name: val(`ic-cust-name-${id}`),
+      contact_person: val(`ic-contact-person-${id}`), contact_phone: val(`ic-contact-phone-${id}`),
+      issue_description: val(`ic-desc-${id}`), spare_parts_needed: val(`ic-parts-${id}`),
+    })});
+    navigate('service');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.dismissIncoming = async (id) => {
+  const reason = prompt('Reason for dismissing this incoming email (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/service/inbox/${id}/dismiss`, { method: 'POST', body: JSON.stringify({ reason }) });
     navigate('service');
   } catch (e) { alert(e.message); }
 };
@@ -7407,7 +7466,10 @@ window.focAction = async (id, action) => {
 // plausibly send PO/invoice/SOA-type mail to a vendor or client.
 const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
-  const [company, email, departments] = await Promise.all([api('/settings/company'), api('/settings/email').catch(() => null), api('/masters/departments')]);
+  const [company, email, inboundMail, departments] = await Promise.all([
+    api('/settings/company'), api('/settings/email').catch(() => null),
+    api('/settings/inbound-mail').catch(() => null), api('/masters/departments'),
+  ]);
   el.innerHTML = `
     <div class="panel"><h3>Company Details</h3>
       <div class="form-grid">
@@ -7468,8 +7530,25 @@ PAGES['company-settings'] = async (el) => {
         <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
         <div id="es-test-result" class="msg" style="display:none;"></div>
       </div>
-    </div>
-    ${collapsiblePanel('department-email-identities', 'Department Email Identities', `
+    </div>` : ''}
+    ${inboundMail ? collapsiblePanel('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
+      <p class="muted">Reads a dedicated mailbox over IMAP and drops each email into the Service team's Incoming Requests queue (see the Service Requests page) for a HOD/Supervisor to confirm into a real service request. Nothing is auto-created from an email without a human confirming it.</p>
+      <div class="form-grid">
+        <div><label>Enabled</label><select id="im-enabled"><option value="false" ${!inboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${inboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>IMAP Host</label><input id="im-host" value="${esc(inboundMail.imap_host)}"></div>
+        <div><label>IMAP Port</label><input id="im-port" type="number" value="${esc(inboundMail.imap_port)}"></div>
+        <div><label>Use TLS/SSL (secure)</label><select id="im-secure"><option value="false" ${!inboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${inboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>Mailbox Username</label><input id="im-user" value="${esc(inboundMail.imap_user)}"></div>
+        <div><label>Mailbox Password</label><input id="im-pass" type="password" value="${esc(inboundMail.imap_pass)}"></div>
+        <div><label>Folder</label><input id="im-mailbox" value="${esc(inboundMail.mailbox)}"></div>
+        <div><label>Poll Every (minutes)</label><input id="im-poll" type="number" value="${esc(inboundMail.poll_minutes)}"></div>
+      </div>
+      <button class="btn" onclick="saveInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
+      <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+      <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+    `) : ''}
+    ${email ? collapsiblePanel('department-email-identities', 'Department Email Identities', `
       <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
       ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
         <tr><td>${esc(d.name)}</td>
@@ -7477,7 +7556,7 @@ PAGES['company-settings'] = async (el) => {
         <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
         <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
       <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    `)}` : ''}
+    `) : ''}
   `;
   renderCompanyAddressesPanel();
 };
@@ -7579,6 +7658,31 @@ window.sendTestEmail = async () => {
     const r = await api('/settings/email/test', { method: 'POST', body: JSON.stringify({ to }) });
     resultEl.className = r.sent ? 'msg ok' : 'msg err';
     resultEl.textContent = r.sent ? `Sent successfully to ${to}. Check that inbox to confirm.` : (r.reason || 'Failed to send - check the SMTP settings above.');
+  } catch (e) {
+    resultEl.className = 'msg err';
+    resultEl.textContent = e.message;
+  }
+};
+window.saveInboundMailSettings = async () => {
+  const errEl = document.getElementById('im-err'); errEl.style.display = 'none';
+  try {
+    await api('/settings/inbound-mail', { method: 'PUT', body: JSON.stringify({
+      enabled: val('im-enabled') === 'true', imap_host: val('im-host'), imap_port: val('im-port'),
+      imap_secure: val('im-secure') === 'true', imap_user: val('im-user'), imap_pass: val('im-pass'),
+      mailbox: val('im-mailbox'), poll_minutes: val('im-poll'),
+    })});
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.testInboundMailConnection = async () => {
+  const resultEl = document.getElementById('im-test-result');
+  resultEl.className = 'msg';
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Connecting...';
+  try {
+    const r = await api('/settings/inbound-mail/test', { method: 'POST' });
+    resultEl.className = r.ok ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.ok ? 'Connected successfully.' : (r.reason || 'Connection failed.');
   } catch (e) {
     resultEl.className = 'msg err';
     resultEl.textContent = e.message;

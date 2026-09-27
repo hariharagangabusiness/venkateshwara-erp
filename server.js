@@ -142,6 +142,32 @@ async function runDailyBackupSafely() {
 setTimeout(runDailyBackupSafely, 15000); // after the reminder scan's own boot delay
 setInterval(runDailyBackupSafely, 24 * 60 * 60 * 1000);
 
+// Inbound Service mailbox poll (email -> service_requests review queue).
+// poll_minutes is admin-configurable at runtime (Settings > Inbound Mail),
+// so this ticks on a fixed 1-minute base and only actually polls once that
+// many minutes have elapsed since the last run - avoids needing a process
+// restart every time the interval is changed.
+const { runInboundMailScan } = require('./lib/inboundMail');
+const { getInboundMailSettings } = require('./lib/settings');
+let lastInboundMailScanAt = 0;
+async function runInboundMailScanSafely() {
+  try {
+    const cfg = getInboundMailSettings();
+    if (!cfg.enabled) return;
+    const dueAt = lastInboundMailScanAt + Math.max(1, Number(cfg.poll_minutes) || 5) * 60 * 1000;
+    if (Date.now() < dueAt) return;
+    lastInboundMailScanAt = Date.now();
+    const result = await runInboundMailScan();
+    if (result.ran && (result.stored || result.failed)) {
+      console.log(`[inbound-mail] ${result.stored} new item(s) queued for review, ${result.failed} failed`);
+    }
+  } catch (e) {
+    console.error('[inbound-mail] scan failed:', e.message);
+  }
+}
+setTimeout(runInboundMailScanSafely, 20000); // after the backup scan's own boot delay
+setInterval(runInboundMailScanSafely, 60 * 1000);
+
 
 // Friendly names for UNIQUE-indexed columns, so a raw SQLite constraint
 // error ("UNIQUE constraint failed: clients.gstin") becomes a clean message
