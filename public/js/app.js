@@ -4471,7 +4471,8 @@ PAGES.service = async (el) => {
   window.__SERVICE_CLIENTS = clients;
   el.innerHTML = `
     ${collapsiblePanel('service-incoming-requests', `Incoming Requests (Email) (${inbox.length})`, `
-      <p class="muted">Parsed from the Service inbox - nothing here is a real service request yet. Review the details below and either confirm it into a real SR (editable first) or dismiss it.</p>
+      <p class="muted">Parsed from the Service inbox - nothing here is a real service request yet. Review the details below and either confirm it into a real SR (editable first) or dismiss it. Only mail still unread in the mailbox at the time of a poll is picked up - opening it in a mail client first means it will be missed.</p>
+      ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="scanIncomingMailNow()">Scan Mailbox Now</button> <span id="incoming-scan-result" class="muted" style="margin-left:8px;"></span>` : ''}
       ${inbox.length ? inbox.map(i => `
         <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
           <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span></p>
@@ -4644,6 +4645,16 @@ window.dismissIncoming = async (id) => {
     await api(`/service/inbox/${id}/dismiss`, { method: 'POST', body: JSON.stringify({ reason }) });
     navigate('service');
   } catch (e) { alert(e.message); }
+};
+window.scanIncomingMailNow = async () => {
+  const resultEl = document.getElementById('incoming-scan-result');
+  resultEl.textContent = 'Scanning...';
+  try {
+    const r = await api('/service/inbox/scan', { method: 'POST' });
+    if (!r.ran) { resultEl.textContent = r.reason || 'Scan did not run.'; return; }
+    resultEl.textContent = `Done: ${r.stored} new, ${r.skipped} already seen, ${r.failed} failed.`;
+    if (r.stored) navigate('service');
+  } catch (e) { resultEl.textContent = e.message; }
 };
 window.updateSR = async (id, status) => {
   if (!status) return;
