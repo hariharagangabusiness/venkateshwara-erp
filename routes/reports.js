@@ -37,7 +37,7 @@ router.get('/department/:stage', (req, res) => {
   const cards = db.prepare(`
     SELECT jc.*, p.project_code, p.title as project_title
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE jc.stage IN (${placeholders})
+    WHERE jc.stage IN (${placeholders}) AND jc.status != 'NotApplicable'
   `).all(...stages);
 
   const today = new Date().toISOString().slice(0, 10);

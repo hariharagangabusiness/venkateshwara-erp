@@ -4,7 +4,10 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
-const { PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole } = require('../lib/pipeline');
+const {
+  PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole,
+  NOT_APPLICABLE, excludeJobCard, includeJobCard, advanceProjectStatus, releaseDependents,
+} = require('../lib/pipeline');
 const { oversightRoleNames } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
@@ -144,7 +147,7 @@ router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
 router.get('/:id/job-cards', (req, res) => {
   const cards = db.prepare(`
     SELECT jc.*, u.full_name as assigned_to_name,
-      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id) as child_count
+      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
     WHERE jc.project_id = ? AND jc.parent_job_card_id IS NULL ORDER BY COALESCE(jc.sequence, jc.id)
   `).all(req.params.id);
@@ -175,9 +178,9 @@ router.get('/job-cards/mine', (req, res) => {
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
     SELECT jc.*, p.project_code, p.title as project_title,
-      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id) as child_count
+      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE (jc.stage IN (${placeholders}) OR jc.assigned_to = ?) AND jc.planned_start IS NOT NULL
+    WHERE (jc.stage IN (${placeholders}) OR jc.assigned_to = ?) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages, req.user.id);
   const withPerms = cards.map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
@@ -193,9 +196,9 @@ router.get('/job-cards/by-stage/:stage', requirePermission('project.manage'), (r
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
     SELECT jc.*, p.project_code, p.title as project_title,
-      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id) as child_count
+      (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE jc.stage IN (${placeholders}) AND jc.planned_start IS NOT NULL
+    WHERE jc.stage IN (${placeholders}) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages);
   const withPerms = cards.map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
@@ -291,6 +294,42 @@ router.put('/job-cards/:id/subplan', requirePermission('job_card.manage'), (req,
     WHERE jc.parent_job_card_id = ? ORDER BY COALESCE(jc.sequence, jc.id)
   `).all(parent.id);
   res.json({ ok: true, subTargetDate, children });
+});
+
+// Parent + its sub-process children, for the sub-plan screen to render
+// before anything's been scheduled yet (openSubPlan in public/js/app.js -
+// it needs this before the PUT above has ever run for this parent, e.g. to
+// show/exclude sub-stages before the Manufacturing HOD has planned dates).
+router.get('/job-cards/:id/children', (req, res) => {
+  const parent = db.prepare('SELECT * FROM job_cards WHERE id = ?').get(req.params.id);
+  if (!parent) return res.status(404).json({ error: 'Not found' });
+  const children = db.prepare(`
+    SELECT jc.*, u.full_name as assigned_to_name FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
+    WHERE jc.parent_job_card_id = ? ORDER BY COALESCE(jc.sequence, jc.id)
+  `).all(parent.id);
+  res.json({ parent, children });
+});
+
+// ---- Exclude / re-include a stage from a project's flow ----
+// A project doesn't necessarily need every one of the fixed pipeline's
+// stages (a bought-out/trading order only needs Purchase + Store), and
+// Manufacturing doesn't necessarily need all 5 of its sub-processes either.
+// See lib/pipeline.js's excludeJobCard/includeJobCard for the actual rules
+// (only while still Pending, cascades to a still-Pending stage's own
+// children, reversible any time). Works on either a top-level stage id or
+// an individual sub-stage id - the same two routes cover both, since the
+// Targets sheet and the sub-plan screen both just pass a job_cards.id.
+router.put('/job-cards/:id/exclude', requirePermission('project.manage'), (req, res) => {
+  try {
+    excludeJobCard(db, req.params.id, req.user.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.put('/job-cards/:id/include', requirePermission('project.manage'), (req, res) => {
+  try {
+    includeJobCard(db, req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // HOD/Supervisor adds an ad-hoc sub-assembly under their own department's
@@ -422,7 +461,7 @@ router.post('/job-cards/:id/comments', requirePermission('job_card.manage'), (re
 // optional and combine with AND.
 router.get('/time-motion-report', (req, res) => {
   const { stage, project_id, assignee, date_from, date_to } = req.query;
-  const where = [];
+  const where = [`jc.status != 'NotApplicable'`];
   const params = [];
   if (stage) { where.push('jc.stage = ?'); params.push(stage); }
   if (project_id) { where.push('jc.project_id = ?'); params.push(project_id); }
@@ -506,8 +545,8 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
   if (status && status !== 'Pending') {
     const openDeps = db.prepare(`
       SELECT jc2.stage FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.depends_on_id
-      WHERE d.job_card_id = ? AND jc2.status != 'Completed' LIMIT 1
-    `).get(jc.id);
+      WHERE d.job_card_id = ? AND jc2.status NOT IN ('Completed', ?) LIMIT 1
+    `).get(jc.id, NOT_APPLICABLE);
     if (openDeps) {
       return res.status(400).json({ error: `Cannot start this yet - still waiting on hand-off from ${openDeps.stage}.` });
     }
@@ -527,10 +566,10 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
   if (status && status !== 'Pending' && jc.sequence != null && !jc.is_adhoc) {
     const blocking = db.prepare(`
       SELECT stage FROM job_cards
-      WHERE project_id = ? AND sequence < ? AND status != 'Completed' AND is_adhoc = 0
+      WHERE project_id = ? AND sequence < ? AND status NOT IN ('Completed', ?) AND is_adhoc = 0
         AND parent_job_card_id IS ${jc.parent_job_card_id == null ? 'NULL' : '?'}
       ORDER BY sequence LIMIT 1
-    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence] : [jc.project_id, jc.sequence, jc.parent_job_card_id]));
+    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence, NOT_APPLICABLE] : [jc.project_id, jc.sequence, NOT_APPLICABLE, jc.parent_job_card_id]));
     if (blocking) {
       return res.status(400).json({ error: `Cannot start this stage yet - waiting on handover from ${blocking.stage}.` });
     }
@@ -539,7 +578,7 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
   // A department with sub-processes (e.g. Manufacturing) can't be marked
   // Completed until every one of its own sub-process/sub-assembly cards is.
   if (status === 'Completed') {
-    const openChildren = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE parent_job_card_id = ? AND status != 'Completed'`).get(jc.id).n;
+    const openChildren = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE parent_job_card_id = ? AND status NOT IN ('Completed', ?)`).get(jc.id, NOT_APPLICABLE).n;
     if (openChildren > 0) {
       return res.status(400).json({ error: `Cannot complete this stage yet - ${openChildren} sub-process(es)/sub-assembly(ies) still pending.` });
     }
@@ -569,29 +608,13 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
 
   if (status === 'Completed') {
     // advance project.status to next incomplete top-level stage automatically
-    const remaining = db.prepare(`
-      SELECT stage FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL AND status != 'Completed'
-      ORDER BY COALESCE(sequence, id) LIMIT 1
-    `).get(jc.project_id);
-    if (remaining) {
-      db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(remaining.stage, jc.project_id);
-    } else {
-      db.prepare(`UPDATE projects SET status = 'Completed' WHERE id = ?`).run(jc.project_id);
-    }
-
+    // (or to 'Completed' once no stage remains) - shared with excludeJobCard,
+    // since excluding a project's current stage needs to advance it the
+    // exact same way finishing that stage would.
+    advanceProjectStatus(db, jc.project_id);
     // release any cards that were routed to other departments depending on
     // this one, once ALL of their dependencies are now satisfied
-    const dependents = db.prepare(`SELECT job_card_id FROM job_card_dependencies WHERE depends_on_id = ?`).all(jc.id);
-    const today = new Date().toISOString().slice(0, 10);
-    dependents.forEach(({ job_card_id }) => {
-      const stillOpen = db.prepare(`
-        SELECT COUNT(*) as n FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.depends_on_id
-        WHERE d.job_card_id = ? AND jc2.status != 'Completed'
-      `).get(job_card_id).n;
-      if (stillOpen === 0) {
-        db.prepare(`UPDATE job_cards SET planned_start = COALESCE(planned_start, ?) WHERE id = ?`).run(today, job_card_id);
-      }
-    });
+    releaseDependents(db, jc.id);
   }
   res.json({ ok: true });
 });

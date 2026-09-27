@@ -825,6 +825,21 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, page_id)
   )`,
+  // ---- Per-project pipeline stage exclusion ----
+  // Every project got the exact same fixed 10-stage (+5 Manufacturing
+  // sub-stage) job-card tree, unconditionally - a purely bought-out/trading
+  // order still got Design, Electrical, Manufacturing and every one of its
+  // sub-processes stamped out alongside Purchase and Store, all sitting
+  // there Pending forever. Worse, "just leave it unplanned" doesn't work as
+  // a workaround: the handover gate and the project-completion check in
+  // routes/projects.js only ever tested status != 'Completed', so an
+  // unplanned stage would silently block every later stage from ever
+  // starting and the project from ever completing. job_cards.status can now
+  // also be 'NotApplicable' (see lib/pipeline.js's excludeJobCard/
+  // includeJobCard) - these two columns are just the audit trail of who
+  // excluded a stage and when, cleared again on re-include.
+  `ALTER TABLE job_cards ADD COLUMN excluded_at TEXT`,
+  `ALTER TABLE job_cards ADD COLUMN excluded_by INTEGER REFERENCES users(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
