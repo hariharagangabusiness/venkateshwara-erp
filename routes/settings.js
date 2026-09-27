@@ -4,8 +4,9 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
+const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const router = express.Router();
 router.use(authRequired);
 
@@ -111,6 +112,27 @@ router.post('/email/test', requireRole('Admin'), async (req, res) => {
     subject: 'Venkateshwara ERP - Test Email',
     text: `This is a test email from the Venkateshwara Engineers ERP, confirming SMTP is configured correctly.\n\nSent by: ${req.user.full_name || req.user.username}\nSent at: ${new Date().toLocaleString()}`,
   });
+  res.json(result);
+});
+
+// Inbound Service mailbox (IMAP) settings - read-side counterpart to Email
+// Settings above. imap_pass is never sent back to the client, same masking
+// convention as smtp_pass.
+router.get('/inbound-mail', requireRole('Admin'), (req, res) => {
+  const cfg = getInboundMailSettings();
+  res.json(Object.assign({}, cfg, { imap_pass: cfg.imap_pass ? '••••••••' : '' }));
+});
+router.put('/inbound-mail', requireRole('Admin'), (req, res) => {
+  const body = Object.assign({}, req.body);
+  if (body.imap_pass === '••••••••') delete body.imap_pass;
+  setInboundMailSettings(body);
+  const cfg = getInboundMailSettings();
+  res.json(Object.assign({}, cfg, { imap_pass: cfg.imap_pass ? '••••••••' : '' }));
+});
+// Confirms the saved IMAP credentials actually connect - mirrors /email/test's
+// role for the read side, but doesn't send anything, just logs in and out.
+router.post('/inbound-mail/test', requireRole('Admin'), async (req, res) => {
+  const result = await testInboundMailConnection();
   res.json(result);
 });
 

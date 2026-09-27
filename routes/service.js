@@ -7,6 +7,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
 const { getCompanySettings, getServiceSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
+const { runInboundMailScan } = require('../lib/inboundMail');
 const router = express.Router();
 router.use(authRequired);
 
@@ -74,6 +75,79 @@ router.post('/', requirePermission('service_request.manage'), (req, res) => {
   `).run(srNo, client_id || null, customer_name || null, contact_person || null, contact_phone || null,
     project_id || null, issue_description, spare_parts_needed || null);
   res.json({ id: info.lastInsertRowid, sr_no: srNo });
+});
+
+// ===================== Inbound mail review queue =====================
+// Mail read from the Service inbox (lib/inboundMail.js, polled from
+// server.js) lands here first, never straight into service_requests - see
+// that file's header comment for why. The HOD/Supervisor confirms each item
+// into a real SR (pre-filled from the parsed email, editable before saving)
+// or dismisses it.
+router.get('/inbox', requirePermission('service_request.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT ise.*, c.name as matched_client_name
+    FROM incoming_service_emails ise
+    LEFT JOIN clients c ON c.id = ise.matched_client_id
+    WHERE ise.status = 'Pending'
+    ORDER BY ise.received_at DESC
+  `).all();
+  res.json(rows.map(r => ({ ...r, can_confirm: isServiceHOD(req.user) })));
+});
+
+router.post('/inbox/:id/confirm', requirePermission('service_request.manage'), (req, res) => {
+  if (!isServiceHOD(req.user)) {
+    return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can confirm an incoming request.' });
+  }
+  const item = db.prepare(`SELECT * FROM incoming_service_emails WHERE id = ?`).get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+
+  const { client_id, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed } = req.body;
+  const finalCustomerName = customer_name !== undefined ? customer_name : item.guessed_customer_name;
+  const finalClientId = client_id !== undefined ? (client_id || null) : item.matched_client_id;
+  const finalIssue = (issue_description !== undefined ? issue_description : item.subject) || item.body_text;
+  if (!finalClientId && !finalCustomerName) {
+    return res.status(400).json({ error: 'Pick a client, or enter a customer name manually.' });
+  }
+  if (!finalIssue) return res.status(400).json({ error: 'Describe the issue.' });
+
+  const srNo = 'SR-' + Date.now();
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO service_requests (sr_no, client_id, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(srNo, finalClientId, finalClientId ? null : finalCustomerName,
+      contact_person !== undefined ? (contact_person || null) : null,
+      contact_phone !== undefined ? contact_phone : item.guessed_contact_phone,
+      finalIssue, spare_parts_needed || null);
+    db.prepare(`
+      UPDATE incoming_service_emails SET status = 'Confirmed', confirmed_sr_id = ?, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).run(info.lastInsertRowid, req.user.id, item.id);
+    return info;
+  });
+  const info = tx();
+  res.json({ id: info.lastInsertRowid, sr_no: srNo });
+});
+
+router.post('/inbox/:id/dismiss', requirePermission('service_request.manage'), (req, res) => {
+  if (!isServiceHOD(req.user)) {
+    return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can dismiss an incoming request.' });
+  }
+  const item = db.prepare(`SELECT * FROM incoming_service_emails WHERE id = ?`).get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+  db.prepare(`
+    UPDATE incoming_service_emails SET status = 'Dismissed', dismissed_by = ?, dismissed_at = CURRENT_TIMESTAMP, dismiss_reason = ? WHERE id = ?
+  `).run(req.user.id, req.body && req.body.reason || null, item.id);
+  res.json({ ok: true });
+});
+
+// Manual on-demand poll (Admin only) - lets an Admin confirm the mailbox is
+// wired up correctly without waiting for the next scheduled scan.
+router.post('/inbox/scan', requirePermission('service_request.manage'), async (req, res) => {
+  if (req.user.role_name !== 'Admin') return res.status(403).json({ error: 'Admin only.' });
+  const result = await runInboundMailScan();
+  res.json(result);
 });
 
 // Step 2: the Service HOD/Supervisor opens a logged request and schedules

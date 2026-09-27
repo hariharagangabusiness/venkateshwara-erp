@@ -498,6 +498,33 @@ CREATE TABLE IF NOT EXISTS service_request_reopenings (
   reason TEXT
 );
 
+-- Review queue for mail read from the Service inbox (lib/inboundMail.js) -
+-- never auto-converted into a real service_requests row. The Service
+-- HOD/Supervisor confirms each item into a real SR (or dismisses it), so a
+-- misdirected email or spam reaching that inbox never becomes a live SR
+-- unattended. message_id is the mail's Message-ID header, used to dedupe
+-- across polls (IMAP UNSEEN can re-surface a message the scan already saw).
+CREATE TABLE IF NOT EXISTS incoming_service_emails (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT UNIQUE,
+  from_address TEXT NOT NULL,
+  from_name TEXT,
+  subject TEXT,
+  body_text TEXT,
+  received_at TEXT,
+  matched_client_id INTEGER REFERENCES clients(id),   -- set only on an exact sender-email match to clients.email
+  guessed_customer_name TEXT,                         -- display name / signature / domain-match guess, always shown for review
+  guessed_contact_phone TEXT,                         -- best-effort phone number pulled from the body
+  status TEXT DEFAULT 'Pending',      -- Pending, Confirmed, Dismissed
+  confirmed_sr_id INTEGER REFERENCES service_requests(id),
+  confirmed_by INTEGER REFERENCES users(id),
+  confirmed_at TEXT,
+  dismissed_by INTEGER REFERENCES users(id),
+  dismissed_at TEXT,
+  dismiss_reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ===================== OFFERS / QUOTATIONS =====================
 -- Techno-commercial offer, built on the fixed Venkateshwara Engineers letterhead,
 -- stored under the customer (client) profile. On confirmation it spawns a
