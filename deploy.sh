@@ -1,40 +1,24 @@
 #!/usr/bin/env bash
-# Run on the production server by .github/workflows/deploy.yml over SSH on
-# every push to main. Can also be run by hand for a manual deploy - just
-# `bash deploy.sh` from anywhere (it cd's to its own location first).
+# Run on the production server (instance-20260924-2316) by
+# .github/workflows/deploy.yml over SSH on every push to main. Can also be
+# run by hand for a manual deploy: `bash /opt/venkateshwara-erp/deploy.sh`.
 #
-# Whoever sets this up needs to do exactly one thing before it works:
-# uncomment ONE of the three restart blocks below, matching however this
-# app is actually kept running today (pm2 / systemd / a plain background
-# node process) - everything above that point works the same regardless.
+# The checkout at /opt/venkateshwara-erp is owned by the `erp` user (the
+# same account systemd runs the app as - see erp.service), not by whichever
+# user SSHes in to run this script - so git/npm need to act as `erp` via
+# sudo rather than the caller's own account, or they'd fail to write into
+# it (or worse, silently change its ownership).
 set -euo pipefail
-cd "$(dirname "$0")"
+APP_DIR=/opt/venkateshwara-erp
 
 echo "==> Pulling latest main..."
-git fetch origin main
-git reset --hard origin/main
+sudo -u erp git -C "$APP_DIR" fetch origin main
+sudo -u erp git -C "$APP_DIR" reset --hard origin/main
 
 echo "==> Installing dependencies..."
-npm install --omit=dev
+sudo -u erp npm --prefix "$APP_DIR" install --omit=dev
 
-# ---- Restart the app: uncomment exactly ONE of the three blocks below ----
+echo "==> Restarting erp.service..."
+sudo systemctl restart erp
 
-# Option A: pm2 (recommended if you don't already have something else -
-# survives reboots with `pm2 startup` + `pm2 save`, auto-restarts on crash)
-#   First-time setup, once: pm2 start server.js --name venkateshwara-erp && pm2 save
-# pm2 restart venkateshwara-erp
-
-# Option B: systemd (if a unit file already exists, e.g.
-# /etc/systemd/system/venkateshwara-erp.service)
-# sudo systemctl restart venkateshwara-erp
-
-# Option C: plain background process, no process manager (fragile - the
-# app won't restart itself if it crashes, and this kills ANY node process
-# matching "server.js" on the box, so don't use this if other node apps
-# run on the same server)
-# pkill -f "node server.js" || true
-# sleep 1
-# nohup node server.js > /var/log/venkateshwara-erp.log 2>&1 &
-# disown
-
-echo "==> Deploy finished. If nothing above restarted the app, edit deploy.sh and uncomment one restart option."
+echo "==> Deploy finished."
