@@ -459,7 +459,11 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
 
 CREATE TABLE IF NOT EXISTS purchase_orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  po_no TEXT UNIQUE,
+  -- Not UNIQUE: a multi-item PO is several rows sharing one po_no (one row
+  -- per line item - see routes/purchase.js's POST /orders and
+  -- db/index.js's migratePurchaseOrdersDropPoNoUnique() for how an existing
+  -- database with the old UNIQUE constraint gets upgraded in place).
+  po_no TEXT,
   purchase_request_id INTEGER REFERENCES purchase_requests(id),
   vendor_id INTEGER NOT NULL REFERENCES vendors(id),
   item_id INTEGER REFERENCES items(id),

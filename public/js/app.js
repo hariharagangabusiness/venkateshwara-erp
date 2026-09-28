@@ -3747,7 +3747,7 @@ PAGES['purchase-requests'] = async (el) => {
           <div id="rfq-inbox-confirm-${i.id}"></div>
         </div>`).join('') : '<div class="empty">No pending vendor responses.</div>'}
     `)}
-    <div class="panel"><h3>New Purchase Request</h3>
+    ${collapsiblePanel('new-purchase-request', 'New Purchase Request', `
       <div class="form-grid">
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
       </div>
@@ -3760,7 +3760,7 @@ PAGES['purchase-requests'] = async (el) => {
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests with a combined value of ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
-    </div>
+    `)}
     ${collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the items, project, quantities or values.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
@@ -4233,6 +4233,7 @@ window.saveEditPR = async (id) => {
 };
 
 // ---- Purchase Orders ----
+let PO_LINES = [];
 PAGES['purchase-orders'] = async (el) => {
   const orders = await api('/purchase/orders');
   // Only Active vendors are offered when creating a new PO - Inactive/
@@ -4242,6 +4243,7 @@ PAGES['purchase-orders'] = async (el) => {
   const items = await api('/masters/items');
   const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
   const companyAddresses = await api('/settings/company-addresses').catch(() => []);
+  const paymentTermsOptions = (await api('/settings/purchase').catch(() => null) || {}).payment_terms_options || [];
   // Set before building the HTML below, not after - renderPORows()/poEditForm()
   // (called as part of that build, for each row's hidden Edit panel) read
   // these globals directly, so assigning them afterward left the Edit PO
@@ -4250,41 +4252,38 @@ PAGES['purchase-orders'] = async (el) => {
   window.__PO_VENDORS = vendors;
   window.__PO_ITEMS = items;
   window.__PO_COMPANY_ADDRESSES = companyAddresses;
+  window.__PO_PAYMENT_TERMS = paymentTermsOptions;
+  PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
   el.innerHTML = `
-    <div class="panel"><h3>New Purchase Order</h3>
+    ${collapsiblePanel('new-purchase-order', 'New Purchase Order', `
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
       <div class="form-grid">
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
-        <div id="po-pr-line-wrap" style="display:none;"><label>PR Line Item</label><select id="po-pr-item" onchange="fillPOFromPRLine()"></select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
-        <div><label>Item</label>${itemPickerHTML('po-item', items, '', (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''), `onchange="showVendorsForPOItem()"`)}</div>
-        <div><label>Quantity</label><input id="po-qty" type="number"></div>
-        <div><label>Rate (₹)</label><input id="po-rate" type="number"></div>
-        <div><label>HSN Code</label><input id="po-hsn"></div>
-        <div><label>GST Rate (%)</label><input id="po-gst" type="number" value="18"></div>
+      </div>
+      <div id="po-pr-detail" style="display:none;margin-top:8px;margin-bottom:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
+      <div id="po-lines"></div>
+      <button class="btn small outline" type="button" onclick="addPOLine()">+ Add Line Item</button>
+      <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
+      <div class="form-grid" style="margin-top:12px;">
         <div><label>Delivery Date</label><input id="po-delivery" type="date"></div>
+        <div><label>Payment Terms</label><select id="po-payment-terms"><option value="">-</option>${paymentTermsOptions.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+        <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
+        <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
+      </div>
+      <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
+      <div class="form-grid" style="margin-top:8px;">
         <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-company-address"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}">${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
       </div>
-      <div><label>Terms</label><textarea id="po-terms" rows="2" style="width:100%;" placeholder="Standard terms apply..."></textarea></div>
-      <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
-        <h4 style="margin-top:0;">LD Clause (optional)</h4>
-        <div class="form-grid">
-          <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
-          <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
-        </div>
-        <div><label>Trigger Conditions</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
-      </div>
-      <div id="po-pr-detail" style="display:none;margin-top:10px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Create PO</button>
-    </div>
-    <div class="panel"><h3>Bulk Import Open POs</h3>
+      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Create PO</button>
+    `)}
+    ${collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
       <p class="muted">Bring in orders already open with a vendor before this system was used - each row becomes a real PO you can then receive, edit, cancel, or print, same as one created here. Vendor names not on file are added automatically; items are matched by Item Code or barcode.</p>
       <button class="btn outline" type="button" onclick="downloadPOImportTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('po-upload-file')}
       <button class="btn" onclick="uploadPOImportTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="po-upload-result" style="margin-top:10px;"></div>
-    </div>
+    `)}
     ${collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${orders.length})</span>`, `
       ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
         document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
@@ -4292,9 +4291,40 @@ PAGES['purchase-orders'] = async (el) => {
       }, 'Search by PO no, vendor, item, status...')}
       <div id="po-table-wrap">${renderPORows(orders)}</div>
     `)}`;
+  renderPOLines();
 };
-function renderPORows(rows) {
-  return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
+function renderPOLines() {
+  const el = document.getElementById('po-lines');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Item', 'Quantity', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
+    <tr>
+      <td>${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
+        (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
+        `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}</td>
+      <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
+      <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
+      <td><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
+      <td><input type="number" value="${l.gst_rate}" onchange="PO_LINES[${i}].gst_rate=Number(this.value)" style="width:80px;"></td>
+      <td>${PO_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PO_LINES.splice(${i},1);renderPOLines()">✕</button>` : ''}</td>
+    </tr>`);
+}
+window.addPOLine = () => { PO_LINES.push({ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }); renderPOLines(); };
+// A multi-item PO is several purchase_orders rows sharing one po_no (see
+// routes/purchase.js's POST /orders); GET /orders returns them flat but
+// consecutive (inserted in one transaction, so their ids sort together
+// under the page's id-DESC order), so grouping is just "consecutive rows
+// with the same po_no" - no separate aggregate endpoint needed.
+function groupPORows(rows) {
+  const groups = [];
+  let current = null;
+  for (const o of rows) {
+    if (current && current.po_no === o.po_no) current.lines.push(o);
+    else { current = { po_no: o.po_no, lines: [o] }; groups.push(current); }
+  }
+  return groups;
+}
+function renderSinglePORow(o) {
+  return `
     <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td>
     <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
     <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
@@ -4312,8 +4342,63 @@ function renderPORows(rows) {
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11">${poTermsForm(o)}</td></tr>
     <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11">${poEditForm(o)}</td></tr>
-    <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`);
+    <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`;
 }
+function renderMultiLinePOGroup(lines) {
+  const first = lines[0];
+  const totalValue = lines.reduce((s, l) => s + Number(l.total_value || 0), 0);
+  const totalQty = lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
+  const totalReceived = lines.reduce((s, l) => s + Number(l.received_qty || 0), 0);
+  const allCancelled = lines.every(l => l.status === 'Cancelled');
+  const anyCancellable = lines.some(l => !['Received', 'Cancelled'].includes(l.status));
+  const lineRows = lines.map(o => `
+    <tr>
+      <td colspan="2" class="muted" style="padding-left:20px;">↳</td>
+      <td>${esc(o.item_name)}</td><td>${o.quantity}</td>
+      <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
+      <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
+      <td></td><td></td>
+      <td>${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
+      <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}</td>
+    </tr>
+    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11">${poEditForm(o)}</td></tr>`).join('');
+  return `
+    <tr style="background:#f7f9fb;">
+      <td><b>${esc(first.po_no)}</b></td><td>${esc(first.vendor_name)}</td>
+      <td>${lines.length} items</td><td>${fmt(totalQty)}</td>
+      <td>${totalReceived > 0 ? `${fmt(totalReceived)} / ${fmt(totalQty)}` : '-'}</td>
+      <td>-</td><td>₹${fmt(totalValue)}</td><td>${allCancelled ? badge('Cancelled') : lines.map(l => badge(l.status)).join(' ')}</td>
+      <td>${deliveryBadge(first.delivery_date)}</td>
+      <td>
+        <button class="btn small outline" type="button" onclick="downloadPoPdf(${first.id}, '${esc(first.po_no)}')">PDF</button>
+        <button class="btn small outline" type="button" onclick="downloadPoDocx(${first.id}, '${esc(first.po_no)}')">Word</button>
+        <button class="btn small outline" type="button" onclick="emailPo(${first.id})">Email Vendor</button>
+      </td>
+      <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
+      <button class="btn small outline" type="button" onclick="togglePOTerms(${first.id})">Terms</button>
+      ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
+      <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button></td></tr>
+    <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
+    <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11">${poTermsForm(first)}</td></tr>
+    <tr id="po-history-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-history-${first.id}"></div></td></tr>
+    ${lineRows}`;
+}
+function renderPORows(rows) {
+  const groups = groupPORows(rows);
+  if (!groups.length) return '<div class="empty">No records yet.</div>';
+  const body = groups.map(g => g.lines.length > 1 ? renderMultiLinePOGroup(g.lines) : renderSinglePORow(g.lines[0])).join('');
+  return `<div style="overflow-x:auto;"><table><thead><tr>${['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''].map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+window.cancelWholePO = async (poNo) => {
+  const reason = prompt('Reason for cancelling this whole PO (optional):');
+  if (reason === null) return;
+  try {
+    const orders = await api('/purchase/orders');
+    const ids = orders.filter(o => o.po_no === poNo && !['Received', 'Cancelled'].includes(o.status)).map(o => o.id);
+    await Promise.all(ids.map(id => api(`/purchase/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) })));
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
 function poEditForm(o) {
   const vendors = window.__PO_VENDORS || [];
   const items = window.__PO_ITEMS || [];
@@ -4386,78 +4471,64 @@ window.togglePOAttachments = (id) => {
   row.style.display = showing ? 'none' : '';
   if (!showing) renderAttachmentsWidget('purchase_order', id, document.getElementById(`po-attachments-${id}`));
 };
-window.showVendorsForPOItem = async () => {
-  const itemId = val('po-item');
+// Shows vendors matching ANY of the currently-picked line items (union),
+// since a multi-line PO's lines can span more than one item - see
+// PO_LINES/renderPOLines() above.
+window.showVendorsForPOLines = async () => {
   const box = document.getElementById('po-vendor-suggestions');
-  if (!itemId) { box.style.display = 'none'; return; }
+  const itemIds = [...new Set(PO_LINES.map(l => l.item_id).filter(Boolean))];
+  if (!itemIds.length) { box.style.display = 'none'; return; }
   try {
-    const { vendors, fallback } = await api('/purchase/vendors-for-item/' + itemId);
+    const results = await Promise.all(itemIds.map(id => api('/purchase/vendors-for-item/' + id).catch(() => ({ vendors: [], fallback: true }))));
+    const anyFallback = results.some(r => r.fallback);
+    const vendorMap = new Map();
+    results.forEach(r => (r.vendors || []).forEach(v => vendorMap.set(v.id, v)));
+    const vendors = [...vendorMap.values()];
     box.style.display = 'block';
-    box.innerHTML = `<b>${fallback ? 'All vendors' : 'Vendors matching this item\'s category'}</b> (${vendors.length}): ${vendors.map(v => esc(v.name)).join(', ') || 'None on file yet.'}`;
+    box.innerHTML = `<b>${anyFallback ? 'All vendors' : 'Vendors matching these items\' categories'}</b> (${vendors.length}): ${vendors.map(v => esc(v.name)).join(', ') || 'None on file yet.'}`;
   } catch (e) { box.style.display = 'none'; }
 };
+// Loads every line of the selected PR into PO_LINES (not just one at a
+// time) - remove any already covered by an earlier PO with the line's own
+// ✕ button before submitting.
 window.fillPOFromPR = async () => {
   const id = Number(val('po-pr'));
   const detail = document.getElementById('po-pr-detail');
-  const lineWrap = document.getElementById('po-pr-line-wrap');
-  if (!id) { detail.style.display = 'none'; lineWrap.style.display = 'none'; return; }
+  if (!id) { detail.style.display = 'none'; return; }
   const r = (window.__PO_PRS || []).find(x => x.id === id);
-  if (!r) { detail.style.display = 'none'; lineWrap.style.display = 'none'; return; }
+  if (!r) { detail.style.display = 'none'; return; }
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
-  window.__PO_PR_LINES = lines;
   detail.style.display = 'block';
-  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} &nbsp;
-    Project: <b>${esc(r.project_code)||'-'}</b> &nbsp; Total Est. Value: <b>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</b>`;
-  if (lines.length > 1) {
-    lineWrap.style.display = 'block';
-    const sel = document.getElementById('po-pr-item');
-    sel.innerHTML = lines.map(l => `<option value="${l.id}">${esc(l.item_name || l.item_text || '(item)')} — Qty ${l.quantity} — ₹${fmt(l.estimated_value)}</option>`).join('');
-    window.fillPOFromPRLine();
-  } else {
-    lineWrap.style.display = 'none';
-    if (lines.length === 1) fillPOFromLine(lines[0]);
-  }
-};
-function fillPOFromLine(line) {
-  const itemSel = document.getElementById('po-item');
-  // A leftover search filter could be hiding the option we're about to
-  // select - clear it first so the option actually exists to select.
-  if (itemSel && line.item_id) { resetItemPicker('po-item'); itemSel.value = line.item_id; }
-  const qtyEl = document.getElementById('po-qty');
-  if (qtyEl) qtyEl.value = line.quantity;
-}
-window.fillPOFromPRLine = () => {
-  const lineId = Number(val('po-pr-item'));
-  const line = (window.__PO_PR_LINES || []).find(l => l.id === lineId);
-  if (line) fillPOFromLine(line);
+  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
+    Project: <b>${esc(r.project_code)||'-'}</b>`;
+  PO_LINES = lines.length ? lines.map(l => ({
+    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: l.id,
+  })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
+  renderPOLines();
+  window.showVendorsForPOLines();
 };
 window.addPO = async () => {
   try {
-    const lineWrap = document.getElementById('po-pr-line-wrap');
-    const prItemId = lineWrap && lineWrap.style.display !== 'none' ? val('po-pr-item') : ((window.__PO_PR_LINES || [])[0] && window.__PO_PR_LINES[0].id) || null;
     const r = await api('/purchase/orders', { method: 'POST', body: JSON.stringify({
-      purchase_request_id: val('po-pr') || null, purchase_request_item_id: val('po-pr') ? prItemId : null,
-      vendor_id: val('po-vendor'), item_id: val('po-item'), quantity: val('po-qty'), rate: val('po-rate'),
-      hsn_code: val('po-hsn'), gst_rate: val('po-gst'), delivery_date: val('po-delivery'), terms: val('po-terms'),
+      purchase_request_id: val('po-pr') || null,
+      vendor_id: val('po-vendor'), lines: PO_LINES,
+      delivery_date: val('po-delivery'), payment_terms: val('po-payment-terms') || null,
       company_address_id: val('po-company-address') || null,
+      ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
     })});
-    const ldPct = val('po-ld-pct'), ldCap = val('po-ld-cap'), ldNotes = val('po-ld-notes');
-    if (ldPct || ldCap || ldNotes) {
-      await api(`/purchase/orders/${r.id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
-        ld_percentage: ldPct || null, ld_cap_percentage: ldCap || null, ld_trigger_notes: ldNotes || null
-      })});
-    }
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };
 function poTermsForm(o) {
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Promised Delivery Date</label><input id="po-terms-delivery-${o.id}" type="date" value="${o.delivery_date || ''}"></div>
+    <div><label>Payment Terms</label><select id="po-terms-payment-${o.id}"><option value="">-</option>${(window.__PO_PAYMENT_TERMS||[]).map(t => `<option value="${esc(t)}" ${t===o.payment_terms?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
     <div><label>LD Rate (%)</label><input id="po-terms-ldpct-${o.id}" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
     <div><label>LD Cap (%)</label><input id="po-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
   </div>
-  <div><label>Trigger Conditions</label><textarea id="po-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
-  <button class="btn small" type="button" onclick="savePOTerms(${o.id})">Save Terms</button>`;
+  <div><label>Trigger Conditions/Notes</label><textarea id="po-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+  <button class="btn small" type="button" onclick="savePOTerms(${o.id})">Save Terms</button>
+  <p class="muted" style="margin-top:6px;">These apply to the whole PO - every line item shares one delivery date, payment terms and LD clause.</p>`;
 }
 window.togglePOTerms = (id) => {
   const row = document.getElementById(`po-terms-row-${id}`);
@@ -4467,6 +4538,7 @@ window.savePOTerms = async (id) => {
   try {
     await api(`/purchase/orders/${id}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
       delivery_date: val(`po-terms-delivery-${id}`) || null,
+      payment_terms: val(`po-terms-payment-${id}`) || null,
       ld_percentage: val(`po-terms-ldpct-${id}`) || null,
       ld_cap_percentage: val(`po-terms-ldcap-${id}`) || null,
       ld_trigger_notes: val(`po-terms-ldnotes-${id}`) || null,
@@ -7927,9 +7999,10 @@ window.focAction = async (id, action) => {
 // plausibly send PO/invoice/SOA-type mail to a vendor or client.
 const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, departments] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
+    api('/settings/purchase').catch(() => null),
     api('/masters/departments'),
   ]);
   el.innerHTML = `
@@ -8009,6 +8082,15 @@ PAGES['company-settings'] = async (el) => {
       <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
       <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
       <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+    `) : ''}
+    ${purchaseSettings ? collapsiblePanel('purchase-settings', 'Purchase Settings', `
+      <div class="form-grid">
+        <div><label>Vendor Quote Threshold (₹)</label><input id="ps-quote-threshold" type="number" value="${esc(purchaseSettings.quote_threshold)}"></div>
+      </div>
+      <label>Payment Terms Options <span class="muted">(one per line - feeds the Payment Terms dropdown on the Purchase Order form)</span></label>
+      <textarea id="ps-payment-terms" rows="6" style="width:100%;">${esc((purchaseSettings.payment_terms_options||[]).join('\n'))}</textarea>
+      <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
+      <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
     ${purchaseInboundMail ? collapsiblePanel('purchase-inbound-mail-settings', 'Inbound Mail (Vendor Quote Responses via Email)', `
       <p class="muted">Reads a dedicated mailbox over IMAP - separate from the Service inbox above - and drops each vendor reply into the Purchase team's Vendor Quote Responses queue (see the Purchase Requests page) for confirmation into a real quote. Nothing is auto-created from an email without a human confirming it.</p>
@@ -8141,6 +8223,16 @@ window.sendTestEmail = async () => {
     resultEl.className = 'msg err';
     resultEl.textContent = e.message;
   }
+};
+window.savePurchaseSettings = async () => {
+  const errEl = document.getElementById('ps-err'); errEl.style.display = 'none';
+  try {
+    const paymentTerms = document.getElementById('ps-payment-terms').value.split('\n').map(s => s.trim()).filter(Boolean);
+    await api('/settings/purchase', { method: 'PUT', body: JSON.stringify({
+      quote_threshold: val('ps-quote-threshold'), payment_terms_options: paymentTerms,
+    })});
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.saveInboundMailSettings = async () => {
   const errEl = document.getElementById('im-err'); errEl.style.display = 'none';
