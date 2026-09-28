@@ -396,6 +396,33 @@ router.get('/:id', (req, res) => {
   res.json(full);
 });
 
+// Commercial terms (delivery/LD/BG) - same shape and same "lightweight PATCH,
+// no version fork" reasoning as sales_orders' equivalent endpoint. These
+// aren't customer-facing offer content being revised, just the internal
+// record of what we're proposing to commit to, filled in whenever it's known
+// (often before all of the offer's other content is finalized). Copied into
+// the Sales Order as its starting terms when the offer is confirmed (see
+// POST /:id/confirm below).
+router.patch('/:id/commercial-terms', offerPerm(), (req, res) => {
+  const existing = db.prepare('SELECT id FROM offers WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const {
+    promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
+    abg_required, abg_percentage, abg_amount, abg_validity_days,
+    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
+  } = req.body;
+  db.prepare(`
+    UPDATE offers SET promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
+      abg_required = ?, abg_percentage = ?, abg_amount = ?, abg_validity_days = ?,
+      pbg_required = ?, pbg_percentage = ?, pbg_amount = ?, pbg_validity_days = ?, bg_terms_notes = ?
+    WHERE id = ?
+  `).run(promised_delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null,
+    abg_required ? 1 : 0, abg_percentage || null, abg_amount || null, abg_validity_days || null,
+    pbg_required ? 1 : 0, pbg_percentage || null, pbg_amount || null, pbg_validity_days || null, bg_terms_notes || null,
+    req.params.id);
+  res.json({ ok: true });
+});
+
 // ===================== Versioning =====================
 // A "family" of an offer's versions all share the same root: the version-1
 // offer's own id, referenced by every later version's parent_offer_id.
@@ -650,9 +677,15 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
   const tx = db.transaction(() => {
     const orderNo = 'SO-' + Date.now();
     const soInfo = db.prepare(`
-      INSERT INTO sales_orders (order_no, client_id, description, order_value, created_by)
-      VALUES (?,?,?,?,?)
-    `).run(orderNo, full.offer.client_id, full.offer.subject, orderValue, req.user.id);
+      INSERT INTO sales_orders (order_no, client_id, description, order_value, created_by,
+        promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
+        abg_required, abg_percentage, abg_amount, abg_validity_days,
+        pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes)
+      VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?)
+    `).run(orderNo, full.offer.client_id, full.offer.subject, orderValue, req.user.id,
+      full.offer.promised_delivery_date, full.offer.ld_percentage, full.offer.ld_cap_percentage, full.offer.ld_trigger_notes,
+      full.offer.abg_required, full.offer.abg_percentage, full.offer.abg_amount, full.offer.abg_validity_days,
+      full.offer.pbg_required, full.offer.pbg_percentage, full.offer.pbg_amount, full.offer.pbg_validity_days, full.offer.bg_terms_notes);
     const salesOrderId = soInfo.lastInsertRowid;
 
     const projCode = 'PRJ-' + Date.now();

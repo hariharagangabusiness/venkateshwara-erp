@@ -406,6 +406,32 @@ CREATE TABLE IF NOT EXISTS job_card_dependencies (
   PRIMARY KEY (job_card_id, depends_on_id)
 );
 
+-- A customer communication (a note, a scope/spec change, a revised drawing)
+-- that needs to reach specific departments while a project is mid-execution.
+-- The PM/Sales person logging it picks which departments to notify by hand
+-- (no fixed rule for "which departments matter" - it varies by what the
+-- communication is about); each pick becomes a row in
+-- customer_communication_recipients, resolved to that department's
+-- HOD/Supervisor, with a todos row that must be marked done as the
+-- acknowledgment record (see routes/projects.js POST /:id/communications).
+-- Any file the customer sent along attaches via the generic attachments
+-- table under entity_type='customer_communication'.
+CREATE TABLE IF NOT EXISTS customer_communications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS customer_communication_recipients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  communication_id INTEGER NOT NULL REFERENCES customer_communications(id),
+  department_id INTEGER NOT NULL REFERENCES departments(id),
+  user_id INTEGER REFERENCES users(id),    -- the resolved HOD/Supervisor at the time this was sent; NULL if none was configured (see warnings returned by the create route)
+  todo_id INTEGER REFERENCES todos(id)     -- acknowledgment record - join todos.status/completed_at for ack state, not duplicated here
+);
+
 -- ===================== PURCHASE / STORE / INVENTORY =====================
 
 CREATE TABLE IF NOT EXISTS items (

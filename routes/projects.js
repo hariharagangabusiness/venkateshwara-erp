@@ -552,6 +552,26 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
     }
   }
 
+  // Commercial-terms gate (customer PO vs. the SO's own confirmed terms -
+  // see lib/poTerms.js): a not-yet-started stage can't begin while there's
+  // an unresolved mismatch between what the customer's PO says and what the
+  // order itself records. Deliberately narrow - only the Pending ->
+  // InProgress transition is blocked; a stage already InProgress runs to
+  // completion unaffected, since this is a commercial risk to catch before
+  // more work commits against the wrong terms, not something that should
+  // interrupt physical work already underway.
+  if (status === 'InProgress' && jc.status === 'Pending') {
+    const project = db.prepare('SELECT sales_order_id FROM projects WHERE id = ?').get(jc.project_id);
+    const so = project && project.sales_order_id
+      ? db.prepare('SELECT order_no, po_terms_status FROM sales_orders WHERE id = ?').get(project.sales_order_id)
+      : null;
+    if (so && so.po_terms_status === 'MismatchPending') {
+      return res.status(400).json({
+        error: `Cannot start this stage - Sales Order ${so.order_no}'s customer PO terms don't match the order's own commercial terms. Resolve this on the Sales Orders page (accept the PO's terms or acknowledge the mismatch) before starting new work.`,
+      });
+    }
+  }
+
   // Handover gate: within the same level, a stage can only start once every
   // earlier one has finished - this is meant for genuinely sequential chains
   // (top-level departments among themselves, or a department's own defined
@@ -617,6 +637,82 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
     releaseDependents(db, jc.id);
   }
   res.json({ ok: true });
+});
+
+// ===================== Customer communications =====================
+// A note/change/revised-drawing from the customer, logged once against a
+// project and pushed to whichever departments the PM/Sales person picks -
+// there's no fixed rule for which departments matter for a given
+// communication, so it's a manual pick each time. Each pick resolves to
+// that department's HOD/Supervisor (same role_name-equals-department-name +
+// is_supervisor convention used everywhere else in this app - see
+// isDeptSupervisor in routes/reports.js), and gets a todos row that must be
+// marked done as the acknowledgment record, plus a notification for
+// immediate visibility. A department with no HOD/Supervisor configured is
+// skipped (not errored) and named back in the response's `skipped` list, so
+// the sender knows to follow up with that department some other way.
+router.post('/:id/communications', requirePermission('project.manage'), (req, res) => {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  const subject = String((req.body && req.body.subject) || '').trim();
+  const message = String((req.body && req.body.message) || '').trim();
+  const departmentIds = Array.isArray(req.body && req.body.department_ids) ? req.body.department_ids : [];
+  if (!subject) return res.status(400).json({ error: 'Enter a subject.' });
+  if (!message) return res.status(400).json({ error: 'Enter the communication.' });
+  if (!departmentIds.length) return res.status(400).json({ error: 'Pick at least one department to notify.' });
+
+  const departments = db.prepare(`SELECT * FROM departments WHERE id IN (${departmentIds.map(() => '?').join(',')})`).all(...departmentIds);
+  const skipped = [];
+  const tx = db.transaction(() => {
+    const commInfo = db.prepare(`INSERT INTO customer_communications (project_id, subject, message, created_by) VALUES (?,?,?,?)`)
+      .run(project.id, subject, message, req.user.id);
+    const communicationId = commInfo.lastInsertRowid;
+    departments.forEach(dept => {
+      const hod = db.prepare(`
+        SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id
+        WHERE r.name = ? AND u.is_supervisor = 1 AND u.is_active = 1 ORDER BY u.id LIMIT 1
+      `).get(dept.name);
+      if (!hod) {
+        db.prepare(`INSERT INTO customer_communication_recipients (communication_id, department_id, user_id, todo_id) VALUES (?,?,?,?)`)
+          .run(communicationId, dept.id, null, null);
+        skipped.push(dept.name);
+        return;
+      }
+      const brief = `Customer communication on ${project.project_code}: ${subject}`;
+      const todoInfo = db.prepare(`
+        INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
+        VALUES (?,?, date('now'), date('now'), ?, ?, 'High', 'CUSTOMER_COMMUNICATION', ?)
+      `).run(req.user.id, hod.id, brief, message, communicationId);
+      db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
+        .run(hod.id, 'CUSTOMER_COMMUNICATION', communicationId, brief);
+      db.prepare(`INSERT INTO customer_communication_recipients (communication_id, department_id, user_id, todo_id) VALUES (?,?,?,?)`)
+        .run(communicationId, dept.id, hod.id, todoInfo.lastInsertRowid);
+    });
+    return communicationId;
+  });
+  const communicationId = tx();
+  res.json({ id: communicationId, skipped });
+});
+
+router.get('/:id/communications', (req, res) => {
+  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  const comms = db.prepare(`
+    SELECT cc.*, u.full_name as created_by_name FROM customer_communications cc
+    LEFT JOIN users u ON u.id = cc.created_by WHERE cc.project_id = ? ORDER BY cc.id DESC
+  `).all(project.id);
+  const withRecipients = comms.map(c => ({
+    ...c,
+    recipients: db.prepare(`
+      SELECT ccr.*, d.name as department_name, u.full_name as user_name, t.status as ack_status, t.completed_at as ack_at
+      FROM customer_communication_recipients ccr
+      JOIN departments d ON d.id = ccr.department_id
+      LEFT JOIN users u ON u.id = ccr.user_id
+      LEFT JOIN todos t ON t.id = ccr.todo_id
+      WHERE ccr.communication_id = ?
+    `).all(c.id),
+  }));
+  res.json(withRecipients);
 });
 
 module.exports = router;

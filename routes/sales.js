@@ -6,6 +6,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { resolveUploadPath } = require('../lib/paths');
+const { recomputePoTermsStatus } = require('../lib/poTerms');
 const router = express.Router();
 router.use(authRequired);
 
@@ -360,6 +361,93 @@ router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.mana
     abg_required ? 1 : 0, abg_percentage || null, abg_amount || null, abg_validity_days || null,
     pbg_required ? 1 : 0, pbg_percentage || null, pbg_amount || null, pbg_validity_days || null, bg_terms_notes || null,
     req.params.id);
+  // Our own side of the terms just changed - re-check against whatever PO
+  // is already on file rather than leaving a stale comparison in place.
+  recomputePoTermsStatus(db, req.params.id);
+  res.json({ ok: true });
+});
+
+// ===================== Customer PO capture + cross-check =====================
+// Not every order comes with a formal customer PO - po_status lets that be
+// stated explicitly (NotProvided) so the order runs on its own terms (which
+// trace back to the confirmed offer) with no gate in effect, rather than
+// leaving po_terms_status permanently unresolved. Received logs the PO's own
+// stated terms and diffs them against the fields above - see lib/poTerms.js.
+router.put('/orders/:id/po', requirePermission('sales_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT id FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const { po_status } = req.body;
+  if (!['NotProvided', 'Received'].includes(po_status)) {
+    return res.status(400).json({ error: 'po_status must be NotProvided or Received.' });
+  }
+  if (po_status === 'NotProvided') {
+    db.prepare(`
+      UPDATE sales_orders SET po_status = 'NotProvided', po_number = NULL, po_date = NULL, po_delivery_date = NULL,
+        po_ld_percentage = NULL, po_ld_cap_percentage = NULL,
+        po_abg_required = 0, po_abg_percentage = NULL, po_abg_amount = NULL, po_abg_validity_days = NULL,
+        po_pbg_required = 0, po_pbg_percentage = NULL, po_pbg_amount = NULL, po_pbg_validity_days = NULL
+      WHERE id = ?
+    `).run(order.id);
+    const result = recomputePoTermsStatus(db, order.id);
+    return res.json({ ok: true, ...result });
+  }
+  const {
+    po_number, po_date, po_delivery_date, po_ld_percentage, po_ld_cap_percentage,
+    po_abg_required, po_abg_percentage, po_abg_amount, po_abg_validity_days,
+    po_pbg_required, po_pbg_percentage, po_pbg_amount, po_pbg_validity_days,
+  } = req.body;
+  if (!po_number) return res.status(400).json({ error: "Enter the customer's PO number." });
+  db.prepare(`
+    UPDATE sales_orders SET po_status = 'Received', po_number = ?, po_date = ?, po_delivery_date = ?,
+      po_ld_percentage = ?, po_ld_cap_percentage = ?,
+      po_abg_required = ?, po_abg_percentage = ?, po_abg_amount = ?, po_abg_validity_days = ?,
+      po_pbg_required = ?, po_pbg_percentage = ?, po_pbg_amount = ?, po_pbg_validity_days = ?
+    WHERE id = ?
+  `).run(po_number, po_date || null, po_delivery_date || null, po_ld_percentage || null, po_ld_cap_percentage || null,
+    po_abg_required ? 1 : 0, po_abg_percentage || null, po_abg_amount || null, po_abg_validity_days || null,
+    po_pbg_required ? 1 : 0, po_pbg_percentage || null, po_pbg_amount || null, po_pbg_validity_days || null,
+    order.id);
+  const result = recomputePoTermsStatus(db, order.id);
+  res.json({ ok: true, ...result });
+});
+
+// Accepts the customer's PO terms as our own - overwrites the SO's own
+// commercial terms with whatever was logged from the PO, which by
+// definition clears the mismatch (nothing left to differ). Distinct from
+// acknowledge-mismatch below: this changes our records to match the
+// customer's; that one keeps our records as-is and just accepts the gap.
+router.post('/orders/:id/po/accept-po-terms', requirePermission('sales_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (order.po_status !== 'Received') return res.status(400).json({ error: 'No customer PO is on file for this order.' });
+  db.prepare(`
+    UPDATE sales_orders SET promised_delivery_date = po_delivery_date, ld_percentage = po_ld_percentage, ld_cap_percentage = po_ld_cap_percentage,
+      abg_required = po_abg_required, abg_percentage = po_abg_percentage, abg_amount = po_abg_amount, abg_validity_days = po_abg_validity_days,
+      pbg_required = po_pbg_required, pbg_percentage = po_pbg_percentage, pbg_amount = po_pbg_amount, pbg_validity_days = po_pbg_validity_days
+    WHERE id = ?
+  `).run(order.id);
+  const result = recomputePoTermsStatus(db, order.id);
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(req.user.id, 'po_terms_accepted', 'sales_order', order.id, `Accepted customer PO ${order.po_number}'s terms as the order's own terms.`);
+  res.json({ ok: true, ...result });
+});
+
+// Accepts a mismatch as-is (e.g. the discrepancy was negotiated over a call
+// and isn't going to be reflected in either record) - clears the block
+// without changing either side's terms. A mandatory reason, audit-logged,
+// same escape-hatch pattern as offer unlock.
+router.post('/orders/:id/po/acknowledge-mismatch', requirePermission('sales_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (order.po_terms_status !== 'MismatchPending') return res.status(400).json({ error: 'No pending mismatch to acknowledge.' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Enter a reason for acknowledging this mismatch.' });
+  db.prepare(`
+    UPDATE sales_orders SET po_terms_status = 'MismatchAcknowledged', po_terms_resolution_notes = ?, po_terms_resolved_by = ?, po_terms_resolved_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(reason, req.user.id, order.id);
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(req.user.id, 'po_terms_mismatch_acknowledged', 'sales_order', order.id, reason);
   res.json({ ok: true });
 });
 

@@ -840,6 +840,58 @@ const MIGRATIONS = [
   // excluded a stage and when, cleared again on re-include.
   `ALTER TABLE job_cards ADD COLUMN excluded_at TEXT`,
   `ALTER TABLE job_cards ADD COLUMN excluded_by INTEGER REFERENCES users(id)`,
+
+  // Offer commercial terms (delivery/LD/BG) - the same fields sales_orders
+  // already has (Round 16/28's commercial-terms form), now also on the
+  // offer itself. Today these are only ever typed in manually on the SO
+  // after conversion, with nothing on the Offer to originate them from; an
+  // offer that never gets a customer PO back has no fallback "what did we
+  // commit to" record at all. Copied into the new sales_orders row at
+  // confirm time (routes/offers.js POST /:id/confirm) as its starting
+  // terms - still independently editable afterward, same as before.
+  `ALTER TABLE offers ADD COLUMN promised_delivery_date TEXT`,
+  `ALTER TABLE offers ADD COLUMN ld_percentage REAL`,
+  `ALTER TABLE offers ADD COLUMN ld_cap_percentage REAL`,
+  `ALTER TABLE offers ADD COLUMN ld_trigger_notes TEXT`,
+  `ALTER TABLE offers ADD COLUMN abg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE offers ADD COLUMN abg_percentage REAL`,
+  `ALTER TABLE offers ADD COLUMN abg_amount REAL`,
+  `ALTER TABLE offers ADD COLUMN abg_validity_days INTEGER`,
+  `ALTER TABLE offers ADD COLUMN pbg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE offers ADD COLUMN pbg_percentage REAL`,
+  `ALTER TABLE offers ADD COLUMN pbg_amount REAL`,
+  `ALTER TABLE offers ADD COLUMN pbg_validity_days INTEGER`,
+  `ALTER TABLE offers ADD COLUMN bg_terms_notes TEXT`,
+
+  // Customer PO capture + cross-check against the SO's own commercial terms.
+  // po_status: Pending (not yet decided), NotProvided (customer never sent
+  // a formal PO - the SO's own terms, which trace back to the Offer, govern
+  // instead), Received (a PO was logged below). po_terms_status is the
+  // auto-computed comparison result once Received: Matched, MismatchPending
+  // (blocks any not-yet-started job card on this project - see
+  // routes/projects.js PATCH /job-cards/:id), or MismatchAcknowledged (a
+  // human explicitly accepted the discrepancy - see /po/acknowledge-mismatch).
+  // Recomputed by lib/poTerms.js's recomputePoTermsStatus() any time either
+  // side's terms change, not just when the PO is first logged.
+  `ALTER TABLE sales_orders ADD COLUMN po_status TEXT DEFAULT 'Pending'`,
+  `ALTER TABLE sales_orders ADD COLUMN po_number TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN po_date TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN po_delivery_date TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN po_ld_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_ld_cap_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_abg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE sales_orders ADD COLUMN po_abg_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_abg_amount REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_abg_validity_days INTEGER`,
+  `ALTER TABLE sales_orders ADD COLUMN po_pbg_required INTEGER DEFAULT 0`,
+  `ALTER TABLE sales_orders ADD COLUMN po_pbg_percentage REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_pbg_amount REAL`,
+  `ALTER TABLE sales_orders ADD COLUMN po_pbg_validity_days INTEGER`,
+  `ALTER TABLE sales_orders ADD COLUMN po_terms_status TEXT DEFAULT 'NotApplicable'`,
+  `ALTER TABLE sales_orders ADD COLUMN po_mismatch_fields TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN po_terms_resolution_notes TEXT`,
+  `ALTER TABLE sales_orders ADD COLUMN po_terms_resolved_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE sales_orders ADD COLUMN po_terms_resolved_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
