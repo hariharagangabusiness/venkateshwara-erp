@@ -4,9 +4,10 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
+const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
 const router = express.Router();
 router.use(authRequired);
 
@@ -133,6 +134,24 @@ router.put('/inbound-mail', requireRole('Admin'), (req, res) => {
 // role for the read side, but doesn't send anything, just logs in and out.
 router.post('/inbound-mail/test', requireRole('Admin'), async (req, res) => {
   const result = await testInboundMailConnection();
+  res.json(result);
+});
+
+// Inbound Purchase/RFQ mailbox (IMAP) settings - a separate mailbox from
+// Service's above (see lib/inboundRfqMail.js). Same masking convention.
+router.get('/purchase-inbound-mail', requireRole('Admin'), (req, res) => {
+  const cfg = getPurchaseInboundMailSettings();
+  res.json(Object.assign({}, cfg, { imap_pass: cfg.imap_pass ? '••••••••' : '' }));
+});
+router.put('/purchase-inbound-mail', requireRole('Admin'), (req, res) => {
+  const body = Object.assign({}, req.body);
+  if (body.imap_pass === '••••••••') delete body.imap_pass;
+  setPurchaseInboundMailSettings(body);
+  const cfg = getPurchaseInboundMailSettings();
+  res.json(Object.assign({}, cfg, { imap_pass: cfg.imap_pass ? '••••••••' : '' }));
+});
+router.post('/purchase-inbound-mail/test', requireRole('Admin'), async (req, res) => {
+  const result = await testPurchaseInboundMailConnection();
   res.json(result);
 });
 

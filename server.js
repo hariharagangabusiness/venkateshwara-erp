@@ -168,6 +168,30 @@ async function runInboundMailScanSafely() {
 setTimeout(runInboundMailScanSafely, 20000); // after the backup scan's own boot delay
 setInterval(runInboundMailScanSafely, 60 * 1000);
 
+// Inbound Purchase/RFQ mailbox poll (vendor reply -> purchase_request_quotes
+// review queue) - separate mailbox/timer from Service's above, same
+// due-time-tracking approach.
+const { runInboundRfqScan } = require('./lib/inboundRfqMail');
+const { getPurchaseInboundMailSettings } = require('./lib/settings');
+let lastInboundRfqScanAt = 0;
+async function runInboundRfqScanSafely() {
+  try {
+    const cfg = getPurchaseInboundMailSettings();
+    if (!cfg.enabled) return;
+    const dueAt = lastInboundRfqScanAt + Math.max(1, Number(cfg.poll_minutes) || 5) * 60 * 1000;
+    if (Date.now() < dueAt) return;
+    lastInboundRfqScanAt = Date.now();
+    const result = await runInboundRfqScan();
+    if (result.ran && (result.stored || result.failed)) {
+      console.log(`[inbound-rfq-mail] ${result.stored} new item(s) queued for review, ${result.failed} failed`);
+    }
+  } catch (e) {
+    console.error('[inbound-rfq-mail] scan failed:', e.message);
+  }
+}
+setTimeout(runInboundRfqScanSafely, 25000); // after the Service inbound-mail scan's own boot delay
+setInterval(runInboundRfqScanSafely, 60 * 1000);
+
 
 // Friendly names for UNIQUE-indexed columns, so a raw SQLite constraint
 // error ("UNIQUE constraint failed: clients.gstin") becomes a clean message

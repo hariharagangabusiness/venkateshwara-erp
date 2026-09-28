@@ -3628,10 +3628,27 @@ PAGES['purchase-requests'] = async (el) => {
   const items = await api('/masters/items');
   const projects = await api('/projects');
   const threshold = (await api('/settings/purchase-quote-threshold')).quote_threshold;
+  const rfqInbox = await api('/purchase/rfq-inbox').catch(() => []);
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
+  window.__RFQ_INBOX = rfqInbox;
   PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
   el.innerHTML = `
+    ${collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
+      <p class="muted">Parsed from the Purchase inbox - nothing here is a real quote yet. Review the details below and either confirm it into a real quote (editable first) or dismiss it.</p>
+      ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="scanRfqMailNow()">Scan Mailbox Now</button> <span id="rfq-scan-result" class="muted" style="margin-left:8px;"></span>` : ''}
+      ${rfqInbox.length ? rfqInbox.map(i => `
+        <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
+          <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span></p>
+          <p style="margin:0 0 4px;"><b>Subject:</b> ${esc(i.subject)||'-'}</p>
+          <p style="margin:0 0 4px;"><b>Matched RFQ:</b> ${i.matched_rfq_request_id ? `${esc(i.purchase_request_no)||'-'} - ${esc(i.rfq_subject)||'-'}` : '<span class="muted">No match found - pick manually below</span>'}
+            ${i.match_confidence ? ` <span class="badge ${i.match_confidence === 'ThreadMatch' ? 'active' : 'Draft'}">${esc(i.match_confidence)}</span>` : ''}</p>
+          <p style="margin:0 0 4px;"><b>Matched Vendor:</b> ${esc(i.matched_vendor_name)||'<span class="muted">None - pick manually below</span>'}${i.guessed_quoted_amount ? ` &middot; Guessed amount: ₹${fmt(i.guessed_quoted_amount)}` : ''}</p>
+          <details style="margin:6px 0;"><summary class="muted" style="cursor:pointer;">Full email text</summary><pre style="white-space:pre-wrap;font-family:inherit;margin:6px 0 0;">${esc(i.body_text)||'-'}</pre></details>
+          <div style="margin-top:8px;"><button class="btn small" onclick="openConfirmRfqResponse(${i.id})">Confirm as Quote</button> <button class="btn small outline" onclick="dismissRfqResponse(${i.id})">Dismiss</button></div>
+          <div id="rfq-inbox-confirm-${i.id}"></div>
+        </div>`).join('') : '<div class="empty">No pending vendor responses.</div>'}
+    `)}
     <div class="panel"><h3>New Purchase Request</h3>
       <div class="form-grid">
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
@@ -3658,6 +3675,61 @@ PAGES['purchase-requests'] = async (el) => {
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   renderPRLines();
   window.__PR_CACHE = reqs;
+};
+window.scanRfqMailNow = async () => {
+  const resultEl = document.getElementById('rfq-scan-result');
+  resultEl.textContent = 'Scanning...';
+  try {
+    const r = await api('/purchase/rfq-inbox/scan', { method: 'POST' });
+    if (!r.ran) { resultEl.textContent = r.reason || 'Scan did not run.'; return; }
+    resultEl.textContent = `Done: ${r.stored} new, ${r.skipped} already seen, ${r.failed} failed.`;
+    if (r.stored) navigate('purchase-requests');
+  } catch (e) { resultEl.textContent = e.message; }
+};
+window.openConfirmRfqResponse = async (id) => {
+  const item = (window.__RFQ_INBOX || []).find(i => i.id === id);
+  if (!item) return;
+  const [vendors, openRfqs] = await Promise.all([api('/masters/vendors'), api('/purchase/rfq-inbox/open-rfqs')]);
+  const wrap = document.getElementById(`rfq-inbox-confirm-${id}`);
+  wrap.innerHTML = `
+    <div class="form-grid" style="margin-top:10px;border-top:1px solid var(--border,#ccc);padding-top:10px;">
+      <div><label>RFQ</label><select id="ri-rfq-${id}">
+        <option value="">- Select the RFQ this reply belongs to -</option>
+        ${openRfqs.map(r => `<option value="${r.id}" ${item.matched_rfq_request_id===r.id?'selected':''}>${esc(r.purchase_request_no)||'-'} - ${esc(r.subject)}</option>`).join('')}
+      </select></div>
+      <div><label>Vendor</label><select id="ri-vendor-${id}">
+        <option value="">- Select vendor -</option>
+        ${vendors.map(v => `<option value="${v.id}" ${item.matched_vendor_id===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}
+      </select></div>
+      <div><label>Quoted Amount (₹)</label><input id="ri-amount-${id}" type="number" value="${item.guessed_quoted_amount ?? ''}"></div>
+      <div><label>Quoted Qty</label><input id="ri-qty-${id}" type="number"></div>
+      <div><label>Payment Terms</label><input id="ri-terms-${id}"></div>
+      <div><label>Delivery Commit Date</label><input id="ri-delivery-${id}" type="date"></div>
+    </div>
+    <div><label>Notes</label><textarea id="ri-notes-${id}" rows="2" style="width:100%;">${esc(item.body_text)}</textarea></div>
+    <button class="btn small" onclick="saveConfirmRfqResponse(${id})">Save as Quote</button>
+    <button class="btn small outline" type="button" onclick="document.getElementById('rfq-inbox-confirm-${id}').innerHTML=''">Cancel</button>
+    <div id="ri-err-${id}" class="msg err" style="display:none;margin-top:6px;"></div>`;
+};
+window.saveConfirmRfqResponse = async (id) => {
+  const errEl = document.getElementById(`ri-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/purchase/rfq-inbox/${id}/confirm`, { method: 'POST', body: JSON.stringify({
+      rfq_request_id: val(`ri-rfq-${id}`) || undefined, vendor_id: val(`ri-vendor-${id}`) || undefined,
+      quoted_amount: val(`ri-amount-${id}`), quoted_qty: val(`ri-qty-${id}`),
+      payment_terms: val(`ri-terms-${id}`), delivery_commit_date: val(`ri-delivery-${id}`), notes: val(`ri-notes-${id}`),
+    })});
+    navigate('purchase-requests');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.dismissRfqResponse = async (id) => {
+  const reason = prompt('Reason for dismissing this vendor response (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/purchase/rfq-inbox/${id}/dismiss`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
 };
 function prItemOptions(selectedId, itemsOverride) {
   const items = itemsOverride || window.__PR_ITEMS || [];
@@ -7718,9 +7790,10 @@ window.focAction = async (id, action) => {
 // plausibly send PO/invoice/SOA-type mail to a vendor or client.
 const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, departments] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, departments] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
-    api('/settings/inbound-mail').catch(() => null), api('/masters/departments'),
+    api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
+    api('/masters/departments'),
   ]);
   el.innerHTML = `
     <div class="panel"><h3>Company Details</h3>
@@ -7799,6 +7872,23 @@ PAGES['company-settings'] = async (el) => {
       <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
       <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
       <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+    `) : ''}
+    ${purchaseInboundMail ? collapsiblePanel('purchase-inbound-mail-settings', 'Inbound Mail (Vendor Quote Responses via Email)', `
+      <p class="muted">Reads a dedicated mailbox over IMAP - separate from the Service inbox above - and drops each vendor reply into the Purchase team's Vendor Quote Responses queue (see the Purchase Requests page) for confirmation into a real quote. Nothing is auto-created from an email without a human confirming it.</p>
+      <div class="form-grid">
+        <div><label>Enabled</label><select id="pim-enabled"><option value="false" ${!purchaseInboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>IMAP Host</label><input id="pim-host" value="${esc(purchaseInboundMail.imap_host)}"></div>
+        <div><label>IMAP Port</label><input id="pim-port" type="number" value="${esc(purchaseInboundMail.imap_port)}"></div>
+        <div><label>Use TLS/SSL (secure)</label><select id="pim-secure"><option value="false" ${!purchaseInboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>Mailbox Username</label><input id="pim-user" value="${esc(purchaseInboundMail.imap_user)}"></div>
+        <div><label>Mailbox Password</label><input id="pim-pass" type="password" value="${esc(purchaseInboundMail.imap_pass)}"></div>
+        <div><label>Folder</label><input id="pim-mailbox" value="${esc(purchaseInboundMail.mailbox)}"></div>
+        <div><label>Poll Every (minutes)</label><input id="pim-poll" type="number" value="${esc(purchaseInboundMail.poll_minutes)}"></div>
+      </div>
+      <button class="btn" onclick="savePurchaseInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
+      <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+      <div id="pim-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
     `) : ''}
     ${email ? collapsiblePanel('department-email-identities', 'Department Email Identities', `
       <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
@@ -7933,6 +8023,31 @@ window.testInboundMailConnection = async () => {
   resultEl.textContent = 'Connecting...';
   try {
     const r = await api('/settings/inbound-mail/test', { method: 'POST' });
+    resultEl.className = r.ok ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.ok ? 'Connected successfully.' : (r.reason || 'Connection failed.');
+  } catch (e) {
+    resultEl.className = 'msg err';
+    resultEl.textContent = e.message;
+  }
+};
+window.savePurchaseInboundMailSettings = async () => {
+  const errEl = document.getElementById('pim-err'); errEl.style.display = 'none';
+  try {
+    await api('/settings/purchase-inbound-mail', { method: 'PUT', body: JSON.stringify({
+      enabled: val('pim-enabled') === 'true', imap_host: val('pim-host'), imap_port: val('pim-port'),
+      imap_secure: val('pim-secure') === 'true', imap_user: val('pim-user'), imap_pass: val('pim-pass'),
+      mailbox: val('pim-mailbox'), poll_minutes: val('pim-poll'),
+    })});
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.testPurchaseInboundMailConnection = async () => {
+  const resultEl = document.getElementById('pim-test-result');
+  resultEl.className = 'msg';
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Connecting...';
+  try {
+    const r = await api('/settings/purchase-inbound-mail/test', { method: 'POST' });
     resultEl.className = r.ok ? 'msg ok' : 'msg err';
     resultEl.textContent = r.ok ? 'Connected successfully.' : (r.reason || 'Connection failed.');
   } catch (e) {
