@@ -1017,15 +1017,8 @@ PAGES.dashboard = async (el) => {
       </div>
     `,
   };
-  const layout = await api('/dashboard/layout').catch(() => ({ panel_order: null }));
-  const order = resolveDashboardOrder(layout.panel_order, Object.keys(panels));
-  el.innerHTML = `
-    <div class="muted" style="margin-bottom:8px;">Drag a widget by its ⠿ handle to rearrange, then Save Layout.
-      <button class="btn small outline" type="button" onclick="saveDashboardLayout()" style="margin-left:8px;">Save Layout</button>
-      <button class="btn small outline" type="button" onclick="resetDashboardLayout()">Reset to Default</button>
-    </div>
-    <div id="dash-widgets">${order.map(key => dashboardWidgetHTML(key, panels[key])).join('')}</div>
-  `;
+  const order = await fetchPanelOrder('dashboard', Object.keys(panels));
+  el.innerHTML = reorderablePanelsHTML('dashboard', panels, order, DASHBOARD_WIDGET_LABELS);
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
   await renderDashboardCustomMetrics();
 };
@@ -1034,52 +1027,72 @@ const DASHBOARD_WIDGET_LABELS = {
   keyMetrics: 'Key Metrics', customMetrics: 'Custom Metrics', expensesByMode: 'Expenses by Payment Mode',
   inventoryOpex: 'Inventory / Opex / Upcoming Schedules', projectDrilldown: 'Project Drill-Down',
 };
-function dashboardWidgetHTML(key, html) {
-  return `<div class="dash-widget" draggable="true" data-key="${key}"
-    ondragstart="dashWidgetDragStart(event)" ondragover="dashWidgetDragOver(event)" ondragend="dashWidgetDragEnd(event)">
-    <div style="cursor:move;user-select:none;color:var(--muted,#888);font-size:12px;padding:2px 0 6px;">&#10021; ${esc(DASHBOARD_WIDGET_LABELS[key] || key)}</div>
-    ${html}
-  </div>`;
+// ---- Generic per-page panel drag-to-reorder ----
+// Originally Dashboard-only (widget order); generalized so any page can let
+// its user rearrange its top-level panels the same way, each page under its
+// own page_key (see db/schema.sql's user_page_layout and routes/dashboard.js's
+// /layout/:pageKey). `panelsObj` maps a stable panel key to that panel's
+// already-rendered HTML - a falsy value (a conditional section with nothing
+// to show this render, e.g. an empty review queue) is filtered out so it
+// never claims a slot in the saved order or gets an empty drag handle.
+async function fetchPanelOrder(pageKey, allKeys) {
+  const layout = await api('/dashboard/layout/' + pageKey).catch(() => ({ panel_order: null }));
+  return resolvePanelOrder(layout.panel_order, allKeys);
 }
-// A saved order might be missing a widget added since it was last saved
+// A saved order might be missing a panel added since it was last saved
 // (appended at the end, in its default position, so nothing new is ever
 // hidden) or naming one that no longer exists (silently dropped).
-function resolveDashboardOrder(saved, allKeys) {
+function resolvePanelOrder(saved, allKeys) {
   if (!Array.isArray(saved) || !saved.length) return allKeys;
   const known = saved.filter(k => allKeys.includes(k));
   const missing = allKeys.filter(k => !known.includes(k));
   return [...known, ...missing];
 }
-let DASH_DRAG_KEY = null;
-window.dashWidgetDragStart = (e) => {
-  DASH_DRAG_KEY = e.currentTarget.dataset.key;
+function reorderablePanelsHTML(pageKey, panelsObj, order, labels) {
+  const keys = order.filter(k => panelsObj[k]);
+  const containerId = `reorder-${pageKey}`;
+  return `
+    <div class="muted" style="margin-bottom:8px;">Drag a panel by its ⠿ handle to rearrange, then Save Layout.
+      <button class="btn small outline" type="button" onclick="savePanelOrder('${pageKey}','${containerId}')" style="margin-left:8px;">Save Layout</button>
+      <button class="btn small outline" type="button" onclick="resetPanelOrder('${pageKey}')">Reset to Default</button>
+    </div>
+    <div id="${containerId}">${keys.map(k => `
+      <div class="reorder-panel" draggable="true" data-key="${k}"
+        ondragstart="panelDragStart(event)" ondragover="panelDragOver(event,'${containerId}')" ondragend="panelDragEnd(event)">
+        <div style="cursor:move;user-select:none;color:var(--muted,#888);font-size:12px;padding:2px 0 6px;">&#10021; ${esc((labels||{})[k] || k)}</div>
+        ${panelsObj[k]}
+      </div>`).join('')}</div>`;
+}
+let PANEL_DRAG_KEY = null;
+window.panelDragStart = (e) => {
+  PANEL_DRAG_KEY = e.currentTarget.dataset.key;
   e.currentTarget.style.opacity = '0.5';
   e.dataTransfer.effectAllowed = 'move';
 };
-window.dashWidgetDragEnd = (e) => { e.currentTarget.style.opacity = ''; DASH_DRAG_KEY = null; };
-window.dashWidgetDragOver = (e) => {
+window.panelDragEnd = (e) => { e.currentTarget.style.opacity = ''; PANEL_DRAG_KEY = null; };
+window.panelDragOver = (e, containerId) => {
   e.preventDefault();
   const target = e.currentTarget;
-  if (!DASH_DRAG_KEY || target.dataset.key === DASH_DRAG_KEY) return;
-  const container = document.getElementById('dash-widgets');
-  const dragging = container.querySelector(`[data-key="${DASH_DRAG_KEY}"]`);
+  if (!PANEL_DRAG_KEY || target.dataset.key === PANEL_DRAG_KEY) return;
+  const container = document.getElementById(containerId);
+  const dragging = container.querySelector(`[data-key="${PANEL_DRAG_KEY}"]`);
   if (!dragging) return;
   const rect = target.getBoundingClientRect();
   const before = (e.clientY - rect.top) < rect.height / 2;
   container.insertBefore(dragging, before ? target : target.nextSibling);
 };
-window.saveDashboardLayout = async () => {
-  const order = Array.from(document.querySelectorAll('#dash-widgets .dash-widget')).map(w => w.dataset.key);
+window.savePanelOrder = async (pageKey, containerId) => {
+  const order = Array.from(document.querySelectorAll(`#${containerId} .reorder-panel`)).map(w => w.dataset.key);
   try {
-    await api('/dashboard/layout', { method: 'PUT', body: JSON.stringify({ panel_order: order }) });
+    await api('/dashboard/layout/' + pageKey, { method: 'PUT', body: JSON.stringify({ panel_order: order }) });
     alert('Layout saved.');
   } catch (e) { alert(e.message); }
 };
-window.resetDashboardLayout = async () => {
-  if (!confirm('Reset the Dashboard back to its default layout?')) return;
+window.resetPanelOrder = async (pageKey) => {
+  if (!confirm('Reset this page back to its default panel order?')) return;
   try {
-    await api('/dashboard/layout', { method: 'DELETE' });
-    navigate('dashboard');
+    await api('/dashboard/layout/' + pageKey, { method: 'DELETE' });
+    navigate(pageKey);
   } catch (e) { alert(e.message); }
 };
 
@@ -3577,7 +3590,8 @@ window.saveSubPlan = async (parentId) => {
 // ---- Vendors (Round 5: full GST-compliant Vendor Master) ----
 PAGES.vendors = async (el) => {
   const vendors = await api('/masters/vendors');
-  el.innerHTML = `
+  const vendorPanels = {};
+  vendorPanels['add-vendor'] = `
     <div class="panel"><h3>Add Vendor</h3>
       <h4>Company Details</h4>
       <div class="form-grid">
@@ -3621,21 +3635,26 @@ PAGES.vendors = async (el) => {
       </div>
       <button class="btn" onclick="addVendor()" style="margin-top:10px;">Add Vendor</button>
       <div id="v-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    </div>
+    </div>`;
+  vendorPanels['bulk-upload'] = `
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per vendor, then upload it here.</p>
       <button class="btn outline" type="button" onclick="downloadVendorTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('ve-upload-file')}
       <button class="btn" onclick="uploadVendorTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="ve-upload-result" style="margin-top:10px;"></div>
-    </div>
-    ${collapsiblePanel('vendors-list', `<span id="ve-count">Vendors (${vendors.length})</span>`, `
+    </div>`;
+  vendorPanels['list'] = collapsiblePanel('vendors-list', `<span id="ve-count">Vendors (${vendors.length})</span>`, `
       ${renderListSearch('vendors', vendors, ['legal_name', 'name', 'gstin', 'state', 'category', 'contact_person', 'phone', 'po_email', 'email'], (rows) => {
         document.getElementById('ve-table-wrap').innerHTML = renderVendorRows(rows);
         document.getElementById('ve-count').textContent = 'Vendors (' + rows.length + ')';
       }, 'Search by name, GSTIN, state, category, contact...')}
       <div id="ve-table-wrap">${renderVendorRows(vendors)}</div>
-    `)}
+    `);
+  const vendorLabels = { 'add-vendor': 'Add Vendor', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Vendors List' };
+  const vendorOrder = await fetchPanelOrder('vendors', Object.keys(vendorPanels));
+  el.innerHTML = `
+    ${reorderablePanelsHTML('vendors', vendorPanels, vendorOrder, vendorLabels)}
     <div class="panel" id="ve-edit-panel" style="display:none;"><h3>Edit Vendor</h3><div id="ve-edit-body"></div></div>`;
   window.__VENDOR_CACHE = vendors;
 };
@@ -3731,8 +3750,8 @@ PAGES['purchase-requests'] = async (el) => {
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
   window.__RFQ_INBOX = rfqInbox;
   PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
-  el.innerHTML = `
-    ${collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
+  const prPanels = {
+    'rfq-inbox': collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
       <p class="muted">Parsed from the Purchase inbox - nothing here is a real quote yet. Review the details below and either confirm it into a real quote (editable first) or dismiss it.</p>
       ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="scanRfqMailNow()">Scan Mailbox Now</button> <span id="rfq-scan-result" class="muted" style="margin-left:8px;"></span>` : ''}
       ${rfqInbox.length ? rfqInbox.map(i => `
@@ -3746,8 +3765,8 @@ PAGES['purchase-requests'] = async (el) => {
           <div style="margin-top:8px;"><button class="btn small" onclick="openConfirmRfqResponse(${i.id})">Confirm as Quote</button> <button class="btn small outline" onclick="dismissRfqResponse(${i.id})">Dismiss</button></div>
           <div id="rfq-inbox-confirm-${i.id}"></div>
         </div>`).join('') : '<div class="empty">No pending vendor responses.</div>'}
-    `)}
-    ${collapsiblePanel('new-purchase-request', 'New Purchase Request', `
+    `),
+    'new-request': collapsiblePanel('new-purchase-request', 'New Purchase Request', `
       <div class="form-grid">
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
       </div>
@@ -3760,15 +3779,20 @@ PAGES['purchase-requests'] = async (el) => {
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
       Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests with a combined value of ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
-    `)}
-    ${collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
+    `),
+    'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the items, project, quantities or values.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
       <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
-    `)}
+    `),
+  };
+  const prLabels = { 'rfq-inbox': 'Vendor Quote Responses (Email)', 'new-request': 'New Purchase Request', 'list': 'Purchase Requests List' };
+  const prOrder = await fetchPanelOrder('purchase-requests', Object.keys(prPanels));
+  el.innerHTML = `
+    ${reorderablePanelsHTML('purchase-requests', prPanels, prOrder, prLabels)}
     <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   renderPRLines();
@@ -4254,8 +4278,8 @@ PAGES['purchase-orders'] = async (el) => {
   window.__PO_COMPANY_ADDRESSES = companyAddresses;
   window.__PO_PAYMENT_TERMS = paymentTermsOptions;
   PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
-  el.innerHTML = `
-    ${collapsiblePanel('new-purchase-order', 'New Purchase Order', `
+  const poPanels = {
+    'new-po': collapsiblePanel('new-purchase-order', 'New Purchase Order', `
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
       <div class="form-grid">
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
@@ -4276,21 +4300,25 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-company-address"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}">${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
       </div>
       <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Create PO</button>
-    `)}
-    ${collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
+    `),
+    'bulk-import': collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
       <p class="muted">Bring in orders already open with a vendor before this system was used - each row becomes a real PO you can then receive, edit, cancel, or print, same as one created here. Vendor names not on file are added automatically; items are matched by Item Code or barcode.</p>
       <button class="btn outline" type="button" onclick="downloadPOImportTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('po-upload-file')}
       <button class="btn" onclick="uploadPOImportTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="po-upload-result" style="margin-top:10px;"></div>
-    `)}
-    ${collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${orders.length})</span>`, `
+    `),
+    'list': collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${orders.length})</span>`, `
       ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
         document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
         document.getElementById('po-count').textContent = 'Purchase Orders (' + rows.length + ')';
       }, 'Search by PO no, vendor, item, status...')}
       <div id="po-table-wrap">${renderPORows(orders)}</div>
-    `)}`;
+    `),
+  };
+  const poLabels = { 'new-po': 'New Purchase Order', 'bulk-import': 'Bulk Import Open POs', 'list': 'Purchase Orders List' };
+  const poOrder = await fetchPanelOrder('purchase-orders', Object.keys(poPanels));
+  el.innerHTML = reorderablePanelsHTML('purchase-orders', poPanels, poOrder, poLabels);
   renderPOLines();
 };
 function renderPOLines() {
@@ -4561,7 +4589,8 @@ async function renderItemMasterSheet(el) {
   ]);
   const approvedItems = items.filter(i => i.status !== 'Pending');
   window.__ITEM_CACHE = items;
-  el.innerHTML = `
+  const itemPanels = {
+    'add-item': `
     <div class="panel"><h3>Add Item Master</h3>
       <div class="form-grid">
         <div><label>Item Code</label><input id="it-code"></div>
@@ -4574,12 +4603,12 @@ async function renderItemMasterSheet(el) {
       </div>
       <button class="btn" onclick="addItem()">Add Item</button>
       <div class="muted" style="margin-top:8px;">A unique barcode (EAN-13, internal-use 20-prefix range) is generated automatically for every item.</div>
-    </div>
-    ${pendingItems.length ? collapsiblePanel('pending-item-review', `Pending Item Master Review (${pendingItems.length})`, `
+    </div>`,
+    'pending-review': pendingItems.length ? collapsiblePanel('pending-item-review', `Pending Item Master Review (${pendingItems.length})`, `
       <p class="muted">These were typed freehand on a Purchase Request instead of picked from the master. Complete the details and Approve - typically while receiving the goods - to add them to the permanent Item Master (a barcode is generated at that point).</p>
       <div id="pending-items-body"></div>
-    `) : ''}
-    ${pendingChanges.length ? `<div class="panel"><h3>Pending Item Changes (${pendingChanges.length})</h3>
+    `) : '',
+    'pending-changes': pendingChanges.length ? `<div class="panel"><h3>Pending Item Changes (${pendingChanges.length})</h3>
       <p class="muted">An edit or delete on an existing item doesn't take effect until an Admin approves it here, so nothing changes underneath a transaction already using the item's current details.</p>
       ${tableHTML(['Item', 'Change', 'Details', 'Requested By', ''], pendingChanges, c => `
         <tr><td>${esc(c.item_code)||''} ${esc(c.item_name)}</td><td>${badge(c.change_type)}</td>
@@ -4587,15 +4616,16 @@ async function renderItemMasterSheet(el) {
         <td>${esc(c.requested_by_name)||'-'}</td>
         <td>${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveItemChange(${c.id})">Approve</button>
           <button class="btn small outline" type="button" onclick="rejectItemChange(${c.id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
-    </div>` : ''}
+    </div>` : '',
+    'bulk-upload': `
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per item, then upload it. Barcodes are generated automatically - don't include them in the file.</p>
       <button class="btn outline" type="button" onclick="downloadItemTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('it-upload-file')}
       <button class="btn" onclick="uploadItemTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="it-upload-result" style="margin-top:10px;"></div>
-    </div>
-    ${collapsiblePanel('item-master-list', `Item Master (${approvedItems.length})`, `
+    </div>`,
+    'list': collapsiblePanel('item-master-list', `Item Master (${approvedItems.length})`, `
       ${tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode', 'Status', ''], approvedItems, i => `
         <tr><td>${esc(i.item_code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${esc(i.category)||'-'}</td><td>${esc(i.location)||'-'}</td>
           <td>${i.current_stock}${i.current_stock <= i.reorder_level ? ' ⚠️' : ''}</td><td>${i.reorder_level}</td>
@@ -4605,7 +4635,12 @@ async function renderItemMasterSheet(el) {
             ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
             : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
                <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}</td></tr>`)}
-    `)}
+    `),
+  };
+  const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
+  const itemOrder = await fetchPanelOrder('store', Object.keys(itemPanels));
+  el.innerHTML = `
+    ${reorderablePanelsHTML('store', itemPanels, itemOrder, itemLabels)}
     <div class="panel" id="it-edit-panel" style="display:none;"><h3>Edit Item</h3><div id="it-edit-body"></div></div>`;
   if (pendingItems.length) renderPendingItemsPanel(pendingItems);
 }
@@ -4706,12 +4741,14 @@ async function renderStockInOutSheet(el) {
   const projects = await api('/projects');
   window.__OPEN_POS = openPOs;
   window.__STOCK_ITEMS = items;
-  el.innerHTML = `
+  const stockPanels = {
+    'scan-barcode': `
     <div class="panel"><h3>Scan Barcode</h3>
       <p class="muted">Click into the box and scan with a USB/Bluetooth barcode scanner (or type the code and press Enter) - it will select the matching item below.</p>
       <input id="st-scan" placeholder="Scan or type barcode, then press Enter" style="font-size:16px;padding:10px;width:320px;" autocomplete="off">
       <div id="st-scan-result" style="margin-top:8px;"></div>
-    </div>
+    </div>`,
+    'stock-in-out': `
     <div class="panel"><h3>Stock In / Out</h3>
       ${!items.length ? `<div class="msg err">No items in the Item Master yet - add one under <a href="#" onclick="navigate('store');return false;">Item Master</a> before recording a stock movement.</div>` : ''}
       <div class="form-grid">
@@ -4737,18 +4774,23 @@ async function renderStockInOutSheet(el) {
       </div>
       <button class="btn green" onclick="storeMove('receive')" ${!items.length ? 'disabled' : ''}>Receive (IN)</button>
       <button class="btn red" onclick="storeMove('issue')" ${!items.length ? 'disabled' : ''}>Issue to Production (OUT)</button>
-    </div>
+    </div>`,
+    'bulk-upload': `
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per movement (item code or barcode, IN/OUT, quantity), then upload it.</p>
       <button class="btn outline" type="button" onclick="downloadStockTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('st-upload-file')}
       <button class="btn" onclick="uploadStockTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="st-upload-result" style="margin-top:10px;"></div>
-    </div>
-    ${collapsiblePanel('recent-movements', 'Recent Movements', `
+    </div>`,
+    'recent-movements': collapsiblePanel('recent-movements', 'Recent Movements', `
       ${tableHTML(['Item', 'Type', 'Qty', 'Reference', 'Date'], movements.slice(0, 30), m => `
         <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
-    `)}`;
+    `),
+  };
+  const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements' };
+  const stockOrder = await fetchPanelOrder('stock-in-out', Object.keys(stockPanels));
+  el.innerHTML = reorderablePanelsHTML('stock-in-out', stockPanels, stockOrder, stockLabels);
   const scanEl = document.getElementById('st-scan');
   scanEl.addEventListener('keydown', async (ev) => {
     if (ev.key !== 'Enter') return;
@@ -4812,12 +4854,17 @@ window.uploadStockTemplate = () => uploadTemplateFile('/purchase/store/movements
 
 // ---- Sheet 3: Challans ----
 async function renderChallanSheet(el) {
-  el.innerHTML = `
+  const challanPanels = {
+    'form': `
     <div class="panel"><h3>Challans (Material Movement Between Locations)</h3>
       <p class="muted">Delivery challan for moving material between the company's own locations (factory to factory, or factory to site) - not a sale. Add line items, save, then Print or Download PDF for the vehicle.</p>
       <div id="challan-form"></div>
-    </div>
-    <div id="challan-list"></div>`;
+    </div>`,
+    'list': `<div id="challan-list"></div>`,
+  };
+  const challanLabels = { 'form': 'Challans (Material Movement Between Locations)', 'list': 'Saved Challans' };
+  const challanOrder = await fetchPanelOrder('challans', Object.keys(challanPanels));
+  el.innerHTML = reorderablePanelsHTML('challans', challanPanels, challanOrder, challanLabels);
   renderChallanForm();
   renderChallanList();
 }
@@ -8819,7 +8866,8 @@ window.addTicketComment = async (id) => {
 let EDITING_SC_ID = null;
 PAGES['service-centers'] = async (el) => {
   const centers = await api('/service-centers');
-  el.innerHTML = `
+  const scPanels = {
+    'add-edit': `
     <div class="panel"><h3>${EDITING_SC_ID ? 'Edit' : 'Add'} Service Center</h3>
       <div class="form-grid">
         <div><label>Name</label><input id="sc-name"></div>
@@ -8832,13 +8880,17 @@ PAGES['service-centers'] = async (el) => {
       </div>
       <button class="btn" onclick="saveServiceCenter()">${EDITING_SC_ID ? 'Save Changes' : 'Add Service Center'}</button>
       ${EDITING_SC_ID ? `<button class="btn outline" onclick="EDITING_SC_ID=null;navigate('service-centers')">Cancel</button>` : ''}
-    </div>
-    ${collapsiblePanel('service-centers-list', `Service Centers (${centers.length})`, `
+    </div>`,
+    'list': collapsiblePanel('service-centers-list', `Service Centers (${centers.length})`, `
       ${tableHTML(['Name', 'City', 'Contact', 'Phone', 'Status', ''], centers, c => `
         <tr><td>${esc(c.name)}</td><td>${esc(c.city)||'-'}</td><td>${esc(c.contact_person)||'-'}</td><td>${esc(c.phone)||'-'}</td>
         <td>${badge(c.status)}</td>
         <td><button class="btn small outline" onclick="editServiceCenter(${c.id})">Edit</button></td></tr>`)}
-    `)}`;
+    `),
+  };
+  const scLabels = { 'add-edit': 'Add / Edit Service Center', 'list': 'Service Centers List' };
+  const scOrder = await fetchPanelOrder('service-centers', Object.keys(scPanels));
+  el.innerHTML = reorderablePanelsHTML('service-centers', scPanels, scOrder, scLabels);
   window.__SC_LIST = centers;
 };
 window.editServiceCenter = (id) => {
@@ -8874,7 +8926,8 @@ PAGES['sc-transfers'] = async (el) => {
   window.__SCT_CENTERS = centers.filter(c => c.status === 'Active');
   window.__SCT_ITEMS = items.filter(i => !['Pending', 'Discontinued'].includes(i.status));
   SCT_ITEMS = [{ item_id: '', quantity: 1, unit_rate: 0 }];
-  el.innerHTML = `
+  const sctPanels = {
+    'dispatch': `
     <div class="panel"><h3>Dispatch Spares to a Service Center</h3>
       <p class="muted">Issues from the central store (Item Master stock) to a service center. Deducts central stock immediately; the center confirms actual received quantity separately.</p>
       <div class="form-grid">
@@ -8885,12 +8938,16 @@ PAGES['sc-transfers'] = async (el) => {
       <button class="btn small outline" type="button" onclick="addSCTLine()">+ Add Line Item</button>
       <div style="margin-top:12px;"><button class="btn green" onclick="saveSCTransfer()">Dispatch Transfer</button></div>
       <div id="sct-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>
-    ${collapsiblePanel('transfers-list', `Transfers (${transfers.length})`, `
+    </div>`,
+    'list': collapsiblePanel('transfers-list', `Transfers (${transfers.length})`, `
       ${tableHTML(['Transfer No', 'Service Center', 'Items', 'Status', 'Dispatched By', 'Dispatched At'], transfers, t => `
         <tr><td>${esc(t.transfer_no)}</td><td>${esc(t.service_center_name)} (${esc(t.service_center_city)||'-'})</td><td>${t.item_count}</td>
         <td>${badge(t.status)}</td><td>${esc(t.dispatched_by_name)||'-'}</td><td>${new Date(t.dispatched_at).toLocaleString()}</td></tr>`)}
-    `)}`;
+    `),
+  };
+  const sctLabels = { 'dispatch': 'Dispatch Spares to a Service Center', 'list': 'Transfers List' };
+  const sctOrder = await fetchPanelOrder('sc-transfers', Object.keys(sctPanels));
+  el.innerHTML = reorderablePanelsHTML('sc-transfers', sctPanels, sctOrder, sctLabels);
   renderSCTLines();
 };
 function renderSCTLines() {
@@ -8968,20 +9025,25 @@ window.confirmSCReceive = async (transferId, lineIds) => {
 // ---- Sheet: Service Center Stock Levels ----
 PAGES['sc-stock'] = async (el) => {
   const [centers, summary] = await Promise.all([api('/service-centers'), api('/service-centers/stock/summary')]);
-  el.innerHTML = `
+  const scsPanels = {
+    'per-center': `
     <div class="panel"><h3>Per-Center Stock</h3>
       <select id="scs-center" onchange="loadSCStock()">
         <option value="">- Select a service center -</option>
         ${centers.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.city)||'-'})</option>`).join('')}
       </select>
       <div id="scs-body" style="margin-top:12px;"></div>
-    </div>
-    ${collapsiblePanel('sc-stock-summary', `Company-Wide: Central Store vs Distributed to Centers (${summary.length})`, `
+    </div>`,
+    'summary': collapsiblePanel('sc-stock-summary', `Company-Wide: Central Store vs Distributed to Centers (${summary.length})`, `
       ${tableHTML(['Item', 'Central Store Stock', 'Total at Service Centers', 'Breakdown'], summary, i => `
         <tr><td>${esc(i.name)}${i.item_code?' ('+esc(i.item_code)+')':''}</td><td>${fmt(i.current_stock)} ${esc(i.unit)||''}</td>
         <td>${fmt(i.total_at_centers)} ${esc(i.unit)||''}</td>
         <td>${i.centers.map(c => `${esc(c.service_center_name)}: ${fmt(c.quantity)}`).join(', ') || '-'}</td></tr>`)}
-    `)}`;
+    `),
+  };
+  const scsLabels = { 'per-center': 'Per-Center Stock', 'summary': 'Company-Wide: Central Store vs Distributed to Centers' };
+  const scsOrder = await fetchPanelOrder('sc-stock', Object.keys(scsPanels));
+  el.innerHTML = reorderablePanelsHTML('sc-stock', scsPanels, scsOrder, scsLabels);
 };
 window.loadSCStock = async () => {
   const id = val('scs-center');

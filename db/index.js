@@ -970,6 +970,27 @@ function migratePurchaseOrdersDropPoNoUnique() {
 }
 migratePurchaseOrdersDropPoNoUnique();
 
+// user_dashboard_layout (Dashboard-only, one row per user) was generalized
+// into user_page_layout (one row per user+page - see the table's own
+// comment in schema.sql) so the same drag-to-reorder mechanism could extend
+// to the Purchase and Store & Inventory pages. schema.sql's own CREATE
+// TABLE IF NOT EXISTS above already brings a database up to the new table;
+// this only needs to carry over an existing database's saved Dashboard
+// layouts (as page_key='dashboard') before dropping the old table - a
+// fresh database never had the old table and this is a no-op for it.
+function migrateUserDashboardLayoutToPageLayout() {
+  const oldTable = raw.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='user_dashboard_layout'`).get();
+  if (!oldTable) return;
+  raw.exec(`
+    INSERT INTO user_page_layout (user_id, page_key, panel_order, updated_at)
+    SELECT user_id, 'dashboard', panel_order, updated_at FROM user_dashboard_layout
+    WHERE true
+    ON CONFLICT(user_id, page_key) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at;
+    DROP TABLE user_dashboard_layout;
+  `);
+}
+migrateUserDashboardLayoutToPageLayout();
+
 // ---- Round 40: Offer immutability - child-table triggers ----
 // offers' own two triggers live in schema.sql; these four child tables all
 // follow the exact same shape (block UPDATE/DELETE on an existing row, and
