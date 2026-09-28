@@ -580,9 +580,14 @@ function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
 function tableHTML(columns, rows, rowRenderer) {
   if (!rows.length) return '<div class="empty">No records yet.</div>';
-  return `<table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
+  // Wrapped in its own horizontal scroller so a cell with unusually wide
+  // content (e.g. a long item name in a <select>) scrolls the table, not
+  // the whole page - matches the same reasoning the mobile layout already
+  // uses (see index.html's @media (max-width:768px) table rules), just
+  // applied at every width instead of only on phones.
+  return `<div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
     ${rows.map(rowRenderer).join('')}
-  </tbody></table>`;
+  </tbody></table></div>`;
 }
 
 // ---- Generic multi-field list search ----
@@ -626,8 +631,8 @@ function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs)
   return `
     <input type="text" id="${selectId}-search" placeholder="Search item..." oninput="filterItemPicker('${selectId}', this.value)"
       onblur="setTimeout(()=>{const s=document.getElementById('${selectId}'); if(s && document.activeElement!==s) s.removeAttribute('size');}, 150)"
-      style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;">
-    <select id="${selectId}" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
+      style="width:100%;max-width:260px;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;">
+    <select id="${selectId}" style="width:100%;max-width:260px;box-sizing:border-box;" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
 }
 // A collapsed native <select> only ever displays its currently-SELECTED
 // option, never the first entry of a filtered list - so typing a search
