@@ -611,6 +611,44 @@ window.filterList = (key, query) => {
   st.onFilter(filtered);
 };
 
+// Reusable searchable Item Master picker - a small text input that filters
+// a paired <select>'s options as you type, since scrolling a plain dropdown
+// gets painful once the Item Master has more than a couple dozen entries.
+// Same filter-as-you-type idiom as LIST_SEARCH_STATE/filterList above, but
+// drives a <select>'s options instead of a rendered table. `renderOptions`
+// is whatever function the caller already used to build that <select>'s
+// <option> markup (e.g. prItemOptions) - this only adds the search/filter
+// layer in front of it, it doesn't change how items are labeled once you're
+// browsing the (possibly narrowed) list.
+const ITEM_PICKER_STATE = {};
+function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs) {
+  ITEM_PICKER_STATE[selectId] = { items, renderOptions };
+  return `
+    <input type="text" id="${selectId}-search" placeholder="Search item..." oninput="filterItemPicker('${selectId}', this.value)"
+      style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;">
+    <select id="${selectId}" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
+}
+window.filterItemPicker = (selectId, query) => {
+  const st = ITEM_PICKER_STATE[selectId];
+  const sel = document.getElementById(selectId);
+  if (!st || !sel) return;
+  const q = query.trim().toLowerCase();
+  const filtered = !q ? st.items : st.items.filter(i =>
+    (i.name || '').toLowerCase().includes(q) || (i.item_code || '').toLowerCase().includes(q));
+  const currentValue = sel.value;
+  sel.innerHTML = st.renderOptions(currentValue ? Number(currentValue) : '', filtered);
+  if (currentValue && filtered.some(i => String(i.id) === String(currentValue))) sel.value = currentValue;
+};
+// Clears a picker's search box and restores its full option list - used
+// before programmatically setting a select's value (e.g. auto-filling the
+// item from a picked PR line) so a leftover search filter can't hide the
+// option being selected.
+function resetItemPicker(selectId) {
+  const searchEl = document.getElementById(`${selectId}-search`);
+  if (searchEl) searchEl.value = '';
+  window.filterItemPicker(selectId, '');
+}
+
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
   const items = await api(apiPath);
   selectEl.innerHTML = `<option value="">${placeholder || 'Select...'}</option>` +
@@ -3621,8 +3659,8 @@ PAGES['purchase-requests'] = async (el) => {
   renderPRLines();
   window.__PR_CACHE = reqs;
 };
-function prItemOptions(selectedId) {
-  const items = window.__PR_ITEMS || [];
+function prItemOptions(selectedId, itemsOverride) {
+  const items = itemsOverride || window.__PR_ITEMS || [];
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
     .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join('')}`;
 }
@@ -3631,7 +3669,8 @@ function renderPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
-      <td><select onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})">${prItemOptions(l.item_id)}</select></td>
+      <td>${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+        `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
@@ -4000,7 +4039,8 @@ function renderEditPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
     <tr>
-      <td><select onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()">${prItemOptions(l.item_id)}</select></td>
+      <td>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()"`)}</td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;"></td>
@@ -4032,6 +4072,14 @@ PAGES['purchase-orders'] = async (el) => {
   const items = await api('/masters/items');
   const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
   const companyAddresses = await api('/settings/company-addresses').catch(() => []);
+  // Set before building the HTML below, not after - renderPORows()/poEditForm()
+  // (called as part of that build, for each row's hidden Edit panel) read
+  // these globals directly, so assigning them afterward left the Edit PO
+  // item/vendor pickers one render behind (empty on the very first visit).
+  window.__PO_PRS = prs;
+  window.__PO_VENDORS = vendors;
+  window.__PO_ITEMS = items;
+  window.__PO_COMPANY_ADDRESSES = companyAddresses;
   el.innerHTML = `
     <div class="panel"><h3>New Purchase Order</h3>
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
@@ -4039,7 +4087,7 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
         <div id="po-pr-line-wrap" style="display:none;"><label>PR Line Item</label><select id="po-pr-item" onchange="fillPOFromPRLine()"></select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
-        <div><label>Item</label><select id="po-item" onchange="showVendorsForPOItem()">${items.map(i => `<option value="${i.id}">${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join('')}</select></div>
+        <div><label>Item</label>${itemPickerHTML('po-item', items, '', (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''), `onchange="showVendorsForPOItem()"`)}</div>
         <div><label>Quantity</label><input id="po-qty" type="number"></div>
         <div><label>Rate (₹)</label><input id="po-rate" type="number"></div>
         <div><label>HSN Code</label><input id="po-hsn"></div>
@@ -4074,10 +4122,6 @@ PAGES['purchase-orders'] = async (el) => {
       }, 'Search by PO no, vendor, item, status...')}
       <div id="po-table-wrap">${renderPORows(orders)}</div>
     `)}`;
-  window.__PO_PRS = prs;
-  window.__PO_VENDORS = vendors;
-  window.__PO_ITEMS = items;
-  window.__PO_COMPANY_ADDRESSES = companyAddresses;
 };
 function renderPORows(rows) {
   return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
@@ -4106,7 +4150,7 @@ function poEditForm(o) {
   const companyAddresses = window.__PO_COMPANY_ADDRESSES || [];
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
-    <div><label>Item</label><select id="po-edit-item-${o.id}">${items.map(i => `<option value="${i.id}" ${i.id===o.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
+    <div><label>Item</label>${itemPickerHTML(`po-edit-item-${o.id}`, items, o.item_id, (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join(''))}</div>
     <div><label>Quantity</label><input id="po-edit-qty-${o.id}" type="number" value="${o.quantity}"></div>
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
     <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
@@ -4206,7 +4250,9 @@ window.fillPOFromPR = async () => {
 };
 function fillPOFromLine(line) {
   const itemSel = document.getElementById('po-item');
-  if (itemSel && line.item_id) itemSel.value = line.item_id;
+  // A leftover search filter could be hiding the option we're about to
+  // select - clear it first so the option actually exists to select.
+  if (itemSel && line.item_id) { resetItemPicker('po-item'); itemSel.value = line.item_id; }
   const qtyEl = document.getElementById('po-qty');
   if (qtyEl) qtyEl.value = line.quantity;
 }
