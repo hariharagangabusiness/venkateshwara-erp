@@ -6496,7 +6496,8 @@ PAGES['offer-pdf-designer'] = async (el) => {
   // old iframes/listeners would otherwise just leak.
   Object.values(PDF_DESIGNER_EDITORS).forEach(ed => { try { ed.destroy(); } catch (e) {} });
   PDF_DESIGNER_EDITORS = {};
-  PDF_DESIGNER_LAYOUT = await api('/offers/pdf-layout');
+  const [layout, template] = await Promise.all([api('/offers/pdf-layout'), api('/offers/pdf-template')]);
+  PDF_DESIGNER_LAYOUT = layout;
   el.innerHTML = `
     <div class="panel">
       <h3>Offer PDF Layout Designer</h3>
@@ -6505,9 +6506,47 @@ PAGES['offer-pdf-designer'] = async (el) => {
         ${PDF_DESIGNER_PIECES.map(p => `<div class="tab pdfd-tab ${PDF_DESIGNER_TAB === p.id ? 'active' : ''}" data-tab="${p.id}" onclick="switchOfferPdfDesignerTab('${p.id}')">${esc(p.label)}</div>`).join('')}
       </div>
       ${PDF_DESIGNER_PIECES.map(p => renderOfferPdfDesignerPanel(p)).join('')}
-    </div>`;
+    </div>
+    ${collapsiblePanel('custom-body-template', 'Full Custom Body Template (Word Upload)', `
+      <p class="muted">Upload a Word (.docx) document to replace the entire offer body (everything except the header/footer/cover above) with your own layout. The upload is converted to HTML once for you to review and mark up below - it isn't saved or activated until you click Save.</p>
+      <p class="muted">Use <code>{{client.name}}</code>, <code>{{offer.subject}}</code>, <code>{{offer.grand_total}}</code>, etc. anywhere as merge fields (unrecognized tokens are left as literal text, so a typo is obvious rather than silently blank). For the scope-of-supply line items, wrap a row template in <code>{{#offer_items}}...{{/offer_items}}</code> - inside it, use <code>{{item.description}}</code>, <code>{{item.qty}}</code>, <code>{{item.unit_price}}</code>, <code>{{item.total_price}}</code>, <code>{{item.item_code}}</code>.</p>
+      <input type="file" id="cbt-file" accept=".docx">
+      <button class="btn small outline" type="button" onclick="convertCustomBodyDocx()">Convert Uploaded Word Doc to HTML</button>
+      <div id="cbt-convert-msg" class="msg" style="display:none;margin-top:8px;"></div>
+      <div style="margin-top:10px;">
+        <label>Template HTML (edit freely, or paste your own)</label>
+        <textarea id="cbt-html" rows="16" style="width:100%;font-family:monospace;font-size:12px;">${esc(template.custom_body_html)}</textarea>
+      </div>
+      <label style="display:block;margin-top:8px;"><input type="checkbox" id="cbt-active" ${template.custom_body_active ? 'checked' : ''}> Active - use this template instead of the built-in offer body</label>
+      <button class="btn small" type="button" onclick="saveCustomBodyTemplate()" style="margin-top:8px;">Save</button>
+      <div id="cbt-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    `)}`;
   await loadOfferPdfDesignerAssets();
   initOfferPdfDesignerTab(PDF_DESIGNER_TAB);
+};
+window.convertCustomBodyDocx = async () => {
+  const fileInput = document.getElementById('cbt-file');
+  const msgEl = document.getElementById('cbt-convert-msg');
+  if (!fileInput.files.length) { alert('Choose a .docx file first.'); return; }
+  const fd = new FormData();
+  fd.append('docx', fileInput.files[0]);
+  msgEl.className = 'msg'; msgEl.style.display = 'block'; msgEl.textContent = 'Converting...';
+  try {
+    const r = await apiUpload('/offers/pdf-template/convert-docx', fd);
+    document.getElementById('cbt-html').value = r.html;
+    msgEl.className = 'msg ok';
+    msgEl.textContent = r.warnings && r.warnings.length ? `Converted, with ${r.warnings.length} note(s): ${r.warnings.join('; ')}` : 'Converted - review and edit the HTML below before saving.';
+  } catch (e) { msgEl.className = 'msg err'; msgEl.textContent = e.message; }
+};
+window.saveCustomBodyTemplate = async () => {
+  const errEl = document.getElementById('cbt-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/offers/pdf-template/custom-body', { method: 'PUT', body: JSON.stringify({
+      active: document.getElementById('cbt-active').checked, html: val('cbt-html'),
+    })});
+    navigate('offer-pdf-designer');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // GrapesJS canvases need to be visible/sized to lay themselves out

@@ -314,6 +314,34 @@ router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   res.json(getOfferPdfTemplate());
 });
 
+// ===================== Full custom body template (Word upload) =====================
+// One-time conversion step: an uploaded .docx becomes HTML the Admin then
+// hand-edits (inserting {{token}} merge fields and a repeat block for the
+// scope-of-supply rows - see lib/offerPdf.js's bodyHtml()/expandRepeatBlocks)
+// before saving it as the active template via PUT /pdf-template/custom-body
+// below. This route only converts and returns the HTML - it does NOT save
+// or activate anything on its own, so an Admin can review/edit first.
+router.post('/pdf-template/convert-docx', requireRole('Admin'), upload.single('docx'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  try {
+    const mammoth = require('mammoth');
+    const result = await mammoth.convertToHtml({ path: req.file.path });
+    res.json({ html: result.value, warnings: (result.messages || []).map(m => m.message) });
+  } catch (e) {
+    res.status(400).json({ error: 'Could not read that file - is it a valid .docx? (' + e.message + ')' });
+  } finally {
+    fs.unlink(req.file.path, () => {});
+  }
+});
+router.put('/pdf-template/custom-body', requireRole('Admin'), (req, res) => {
+  const { active, html } = req.body;
+  const update = {};
+  if (active !== undefined) update.custom_body_active = !!active;
+  if (html !== undefined) update.custom_body_html = stripScriptTags(String(html));
+  setOfferPdfTemplate(update);
+  res.json(getOfferPdfTemplate());
+});
+
 // ===================== Offer PDF Layout Designer (visual drag-and-drop) =====================
 // A newer, higher-precedence alternative to the override pieces above - see
 // lib/settings.js's DEFAULT_OFFER_PDF_LAYOUT for the data shape and
