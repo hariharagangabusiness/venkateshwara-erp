@@ -625,9 +625,18 @@ function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs)
   ITEM_PICKER_STATE[selectId] = { items, renderOptions };
   return `
     <input type="text" id="${selectId}-search" placeholder="Search item..." oninput="filterItemPicker('${selectId}', this.value)"
+      onblur="setTimeout(()=>{const s=document.getElementById('${selectId}'); if(s && document.activeElement!==s) s.removeAttribute('size');}, 150)"
       style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;">
     <select id="${selectId}" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
 }
+// A collapsed native <select> only ever displays its currently-SELECTED
+// option, never the first entry of a filtered list - so typing a search
+// query alone looks like "nothing happened" until the user opens the
+// dropdown. To make the filter visibly do something as you type, expand
+// the select into an inline listbox (the `size` attribute) showing the
+// matches; it collapses back to a normal one-line dropdown once an option
+// is picked or focus leaves the picker (see the delegated 'change'/'blur'
+// listeners below and the search input's onblur above).
 window.filterItemPicker = (selectId, query) => {
   const st = ITEM_PICKER_STATE[selectId];
   const sel = document.getElementById(selectId);
@@ -638,7 +647,15 @@ window.filterItemPicker = (selectId, query) => {
   const currentValue = sel.value;
   sel.innerHTML = st.renderOptions(currentValue ? Number(currentValue) : '', filtered);
   if (currentValue && filtered.some(i => String(i.id) === String(currentValue))) sel.value = currentValue;
+  if (q && filtered.length) sel.setAttribute('size', Math.min(filtered.length + 1, 6));
+  else sel.removeAttribute('size');
 };
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.tagName === 'SELECT' && ITEM_PICKER_STATE[e.target.id]) e.target.removeAttribute('size');
+}, true);
+document.addEventListener('blur', (e) => {
+  if (e.target && e.target.tagName === 'SELECT' && ITEM_PICKER_STATE[e.target.id]) e.target.removeAttribute('size');
+}, true);
 // Clears a picker's search box and restores its full option list - used
 // before programmatically setting a select's value (e.g. auto-filling the
 // item from a picked PR line) so a leftover search filter can't hide the
