@@ -1033,6 +1033,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Per-user Dashboard widget order (drag-to-reorder) - a JSON array of panel
+-- keys, e.g. '["keyMetrics","inventoryOpex","customMetrics",...]'. Stored
+-- per-user (not per-browser/localStorage) so it follows an account across
+-- devices, same way every other "your" setting in this app does. No row
+-- means the Dashboard falls back to its built-in default order - see
+-- public/js/app.js's DASHBOARD_PANEL_ORDER_DEFAULT.
+CREATE TABLE IF NOT EXISTS user_dashboard_layout (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id),
+  panel_order TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Bank Guarantee edit/delete approval gate, same shape and reasoning as
 -- item_pending_changes (Round 23): a bg.manage holder who isn't Admin can
 -- request an edit or delete, but the live row isn't touched until an Admin

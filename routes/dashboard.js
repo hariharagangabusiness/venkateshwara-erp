@@ -70,4 +70,25 @@ router.get('/window-summary', (req, res) => {
 });
 function today() { return new Date().toISOString().slice(0, 10); }
 
+// Per-user Dashboard widget order (drag-to-reorder) - see
+// db/schema.sql's user_dashboard_layout comment. null means "no saved
+// layout yet", which the frontend interprets as its own built-in default.
+router.get('/layout', (req, res) => {
+  const row = db.prepare('SELECT panel_order FROM user_dashboard_layout WHERE user_id = ?').get(req.user.id);
+  res.json({ panel_order: row ? JSON.parse(row.panel_order) : null });
+});
+router.put('/layout', (req, res) => {
+  const order = req.body && req.body.panel_order;
+  if (!Array.isArray(order) || !order.length) return res.status(400).json({ error: 'panel_order must be a non-empty array.' });
+  db.prepare(`
+    INSERT INTO user_dashboard_layout (user_id, panel_order, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at
+  `).run(req.user.id, JSON.stringify(order));
+  res.json({ ok: true });
+});
+router.delete('/layout', (req, res) => {
+  db.prepare('DELETE FROM user_dashboard_layout WHERE user_id = ?').run(req.user.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;

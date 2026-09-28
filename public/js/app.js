@@ -925,64 +925,140 @@ PAGES.dashboard = async (el) => {
         ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}`;
     },
   };
-  el.innerHTML = `
-    <div class="cards">
-      ${statCard('employees', c.employees, 'Active Employees')}
-      ${statCard('projects_active', c.projects_active, 'Active Projects')}
-      ${statCard('open_leads', c.open_leads, 'Open Leads')}
-      ${statCard('pending_expense_vouchers', c.pending_expense_vouchers, 'Pending Expense Vouchers')}
-      ${statCard('pending_leave', c.pending_leave, 'Pending Leave Requests')}
-      ${statCard('pending_purchase_requests', c.pending_purchase_requests, 'Pending Purchase Requests')}
-      ${statCard('low_stock_items', c.low_stock_items, 'Low Stock Items')}
-      ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
-    </div>
-    <div id="stat-detail"></div>
-    <div id="dash-followups-widget"></div>
-    <div class="panel">
-      <h3>Add a Metric to Review</h3>
-      <p class="muted">Pick any metric from another department to pin it here for review — no need to visit that department's own report page.</p>
-      <div class="form-grid">
-        <div style="grid-column:1/-1;"><label>Metric</label>
-          <select id="dash-metric-pick">
-            <option value="">Select a metric...</option>
-            ${DASHBOARD_METRIC_REGISTRY.map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
+  // Each top-level widget below is independently draggable (Dashboard
+  // layout customization) - grouped by what has to stay physically
+  // together (e.g. the stat cards and their own drill-down/follow-ups
+  // widget), not one group per literal <div class="panel">.
+  const panels = {
+    keyMetrics: `
+      <div class="cards">
+        ${statCard('employees', c.employees, 'Active Employees')}
+        ${statCard('projects_active', c.projects_active, 'Active Projects')}
+        ${statCard('open_leads', c.open_leads, 'Open Leads')}
+        ${statCard('pending_expense_vouchers', c.pending_expense_vouchers, 'Pending Expense Vouchers')}
+        ${statCard('pending_leave', c.pending_leave, 'Pending Leave Requests')}
+        ${statCard('pending_purchase_requests', c.pending_purchase_requests, 'Pending Purchase Requests')}
+        ${statCard('low_stock_items', c.low_stock_items, 'Low Stock Items')}
+        ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
+      </div>
+      <div id="stat-detail"></div>
+      <div id="dash-followups-widget"></div>
+    `,
+    customMetrics: `
+      <div class="panel">
+        <h3>Add a Metric to Review</h3>
+        <p class="muted">Pick any metric from another department to pin it here for review — no need to visit that department's own report page.</p>
+        <div class="form-grid">
+          <div style="grid-column:1/-1;"><label>Metric</label>
+            <select id="dash-metric-pick">
+              <option value="">Select a metric...</option>
+              ${DASHBOARD_METRIC_REGISTRY.map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <button class="btn small outline" onclick="addDashboardMetric()">Add</button>
+      </div>
+      <div id="dash-custom-metrics"></div>
+    `,
+    expensesByMode: `
+      <div class="panel">
+        <h3>Expenses by Payment Mode / Accounted Status</h3>
+        ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}
+      </div>
+    `,
+    inventoryOpex: `
+      <div class="panel">
+        <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
+          <select onchange="window.DASH_WINDOW=this.value;navigate('dashboard')">
+            ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${w[0].toUpperCase()+w.slice(1)}</option>`).join('')}
           </select>
         </div>
+        <div class="cards">
+          ${statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win')}
+          ${statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win')}
+          ${statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win')}
+        </div>
+        <div id="stat-detail-win"></div>
+        <h4>Upcoming Job Cards</h4>
+        ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${j.planned_start||'-'}</td><td>${j.planned_end||'-'}</td></tr>`)}
+        <h4>Upcoming Service Requests</h4>
+        ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${s.scheduled_date}</td><td>${esc(s.issue_description)}</td></tr>`)}
       </div>
-      <button class="btn small outline" onclick="addDashboardMetric()">Add</button>
-    </div>
-    <div id="dash-custom-metrics"></div>
-    <div class="panel">
-      <h3>Expenses by Payment Mode / Accounted Status</h3>
-      ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}
-    </div>
-    <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
-        <select onchange="window.DASH_WINDOW=this.value;navigate('dashboard')">
-          ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${w[0].toUpperCase()+w.slice(1)}</option>`).join('')}
-        </select>
+    `,
+    projectDrilldown: `
+      <div class="panel">
+        <h3>Project Drill-Down</h3>
+        <div class="form-grid"><div><label>Project</label><select id="dash-proj-select" onchange="loadProjectDrilldown(this.value)">
+          <option value="">Select a project...</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} - ${esc(p.title)}</option>`).join('')}
+        </select></div></div>
+        <div id="dash-drilldown"></div>
       </div>
-      <div class="cards">
-        ${statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win')}
-        ${statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win')}
-        ${statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win')}
-      </div>
-      <div id="stat-detail-win"></div>
-      <h4>Upcoming Job Cards</h4>
-      ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${j.planned_start||'-'}</td><td>${j.planned_end||'-'}</td></tr>`)}
-      <h4>Upcoming Service Requests</h4>
-      ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${s.scheduled_date}</td><td>${esc(s.issue_description)}</td></tr>`)}
+    `,
+  };
+  const layout = await api('/dashboard/layout').catch(() => ({ panel_order: null }));
+  const order = resolveDashboardOrder(layout.panel_order, Object.keys(panels));
+  el.innerHTML = `
+    <div class="muted" style="margin-bottom:8px;">Drag a widget by its ⠿ handle to rearrange, then Save Layout.
+      <button class="btn small outline" type="button" onclick="saveDashboardLayout()" style="margin-left:8px;">Save Layout</button>
+      <button class="btn small outline" type="button" onclick="resetDashboardLayout()">Reset to Default</button>
     </div>
-    <div class="panel">
-      <h3>Project Drill-Down</h3>
-      <div class="form-grid"><div><label>Project</label><select id="dash-proj-select" onchange="loadProjectDrilldown(this.value)">
-        <option value="">Select a project...</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} - ${esc(p.title)}</option>`).join('')}
-      </select></div></div>
-      <div id="dash-drilldown"></div>
-    </div>
+    <div id="dash-widgets">${order.map(key => dashboardWidgetHTML(key, panels[key])).join('')}</div>
   `;
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
   await renderDashboardCustomMetrics();
+};
+
+const DASHBOARD_WIDGET_LABELS = {
+  keyMetrics: 'Key Metrics', customMetrics: 'Custom Metrics', expensesByMode: 'Expenses by Payment Mode',
+  inventoryOpex: 'Inventory / Opex / Upcoming Schedules', projectDrilldown: 'Project Drill-Down',
+};
+function dashboardWidgetHTML(key, html) {
+  return `<div class="dash-widget" draggable="true" data-key="${key}"
+    ondragstart="dashWidgetDragStart(event)" ondragover="dashWidgetDragOver(event)" ondragend="dashWidgetDragEnd(event)">
+    <div style="cursor:move;user-select:none;color:var(--muted,#888);font-size:12px;padding:2px 0 6px;">&#10021; ${esc(DASHBOARD_WIDGET_LABELS[key] || key)}</div>
+    ${html}
+  </div>`;
+}
+// A saved order might be missing a widget added since it was last saved
+// (appended at the end, in its default position, so nothing new is ever
+// hidden) or naming one that no longer exists (silently dropped).
+function resolveDashboardOrder(saved, allKeys) {
+  if (!Array.isArray(saved) || !saved.length) return allKeys;
+  const known = saved.filter(k => allKeys.includes(k));
+  const missing = allKeys.filter(k => !known.includes(k));
+  return [...known, ...missing];
+}
+let DASH_DRAG_KEY = null;
+window.dashWidgetDragStart = (e) => {
+  DASH_DRAG_KEY = e.currentTarget.dataset.key;
+  e.currentTarget.style.opacity = '0.5';
+  e.dataTransfer.effectAllowed = 'move';
+};
+window.dashWidgetDragEnd = (e) => { e.currentTarget.style.opacity = ''; DASH_DRAG_KEY = null; };
+window.dashWidgetDragOver = (e) => {
+  e.preventDefault();
+  const target = e.currentTarget;
+  if (!DASH_DRAG_KEY || target.dataset.key === DASH_DRAG_KEY) return;
+  const container = document.getElementById('dash-widgets');
+  const dragging = container.querySelector(`[data-key="${DASH_DRAG_KEY}"]`);
+  if (!dragging) return;
+  const rect = target.getBoundingClientRect();
+  const before = (e.clientY - rect.top) < rect.height / 2;
+  container.insertBefore(dragging, before ? target : target.nextSibling);
+};
+window.saveDashboardLayout = async () => {
+  const order = Array.from(document.querySelectorAll('#dash-widgets .dash-widget')).map(w => w.dataset.key);
+  try {
+    await api('/dashboard/layout', { method: 'PUT', body: JSON.stringify({ panel_order: order }) });
+    alert('Layout saved.');
+  } catch (e) { alert(e.message); }
+};
+window.resetDashboardLayout = async () => {
+  if (!confirm('Reset the Dashboard back to its default layout?')) return;
+  try {
+    await api('/dashboard/layout', { method: 'DELETE' });
+    navigate('dashboard');
+  } catch (e) { alert(e.message); }
 };
 
 // Client-side only (per-browser, via localStorage) - the picked set doesn't
