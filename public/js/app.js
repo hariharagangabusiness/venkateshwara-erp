@@ -611,6 +611,44 @@ window.filterList = (key, query) => {
   st.onFilter(filtered);
 };
 
+// Reusable searchable Item Master picker - a small text input that filters
+// a paired <select>'s options as you type, since scrolling a plain dropdown
+// gets painful once the Item Master has more than a couple dozen entries.
+// Same filter-as-you-type idiom as LIST_SEARCH_STATE/filterList above, but
+// drives a <select>'s options instead of a rendered table. `renderOptions`
+// is whatever function the caller already used to build that <select>'s
+// <option> markup (e.g. prItemOptions) - this only adds the search/filter
+// layer in front of it, it doesn't change how items are labeled once you're
+// browsing the (possibly narrowed) list.
+const ITEM_PICKER_STATE = {};
+function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs) {
+  ITEM_PICKER_STATE[selectId] = { items, renderOptions };
+  return `
+    <input type="text" id="${selectId}-search" placeholder="Search item..." oninput="filterItemPicker('${selectId}', this.value)"
+      style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;">
+    <select id="${selectId}" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
+}
+window.filterItemPicker = (selectId, query) => {
+  const st = ITEM_PICKER_STATE[selectId];
+  const sel = document.getElementById(selectId);
+  if (!st || !sel) return;
+  const q = query.trim().toLowerCase();
+  const filtered = !q ? st.items : st.items.filter(i =>
+    (i.name || '').toLowerCase().includes(q) || (i.item_code || '').toLowerCase().includes(q));
+  const currentValue = sel.value;
+  sel.innerHTML = st.renderOptions(currentValue ? Number(currentValue) : '', filtered);
+  if (currentValue && filtered.some(i => String(i.id) === String(currentValue))) sel.value = currentValue;
+};
+// Clears a picker's search box and restores its full option list - used
+// before programmatically setting a select's value (e.g. auto-filling the
+// item from a picked PR line) so a leftover search filter can't hide the
+// option being selected.
+function resetItemPicker(selectId) {
+  const searchEl = document.getElementById(`${selectId}-search`);
+  if (searchEl) searchEl.value = '';
+  window.filterItemPicker(selectId, '');
+}
+
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
   const items = await api(apiPath);
   selectEl.innerHTML = `<option value="">${placeholder || 'Select...'}</option>` +
@@ -887,64 +925,140 @@ PAGES.dashboard = async (el) => {
         ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}`;
     },
   };
-  el.innerHTML = `
-    <div class="cards">
-      ${statCard('employees', c.employees, 'Active Employees')}
-      ${statCard('projects_active', c.projects_active, 'Active Projects')}
-      ${statCard('open_leads', c.open_leads, 'Open Leads')}
-      ${statCard('pending_expense_vouchers', c.pending_expense_vouchers, 'Pending Expense Vouchers')}
-      ${statCard('pending_leave', c.pending_leave, 'Pending Leave Requests')}
-      ${statCard('pending_purchase_requests', c.pending_purchase_requests, 'Pending Purchase Requests')}
-      ${statCard('low_stock_items', c.low_stock_items, 'Low Stock Items')}
-      ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
-    </div>
-    <div id="stat-detail"></div>
-    <div id="dash-followups-widget"></div>
-    <div class="panel">
-      <h3>Add a Metric to Review</h3>
-      <p class="muted">Pick any metric from another department to pin it here for review — no need to visit that department's own report page.</p>
-      <div class="form-grid">
-        <div style="grid-column:1/-1;"><label>Metric</label>
-          <select id="dash-metric-pick">
-            <option value="">Select a metric...</option>
-            ${DASHBOARD_METRIC_REGISTRY.map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
+  // Each top-level widget below is independently draggable (Dashboard
+  // layout customization) - grouped by what has to stay physically
+  // together (e.g. the stat cards and their own drill-down/follow-ups
+  // widget), not one group per literal <div class="panel">.
+  const panels = {
+    keyMetrics: `
+      <div class="cards">
+        ${statCard('employees', c.employees, 'Active Employees')}
+        ${statCard('projects_active', c.projects_active, 'Active Projects')}
+        ${statCard('open_leads', c.open_leads, 'Open Leads')}
+        ${statCard('pending_expense_vouchers', c.pending_expense_vouchers, 'Pending Expense Vouchers')}
+        ${statCard('pending_leave', c.pending_leave, 'Pending Leave Requests')}
+        ${statCard('pending_purchase_requests', c.pending_purchase_requests, 'Pending Purchase Requests')}
+        ${statCard('low_stock_items', c.low_stock_items, 'Low Stock Items')}
+        ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
+      </div>
+      <div id="stat-detail"></div>
+      <div id="dash-followups-widget"></div>
+    `,
+    customMetrics: `
+      <div class="panel">
+        <h3>Add a Metric to Review</h3>
+        <p class="muted">Pick any metric from another department to pin it here for review — no need to visit that department's own report page.</p>
+        <div class="form-grid">
+          <div style="grid-column:1/-1;"><label>Metric</label>
+            <select id="dash-metric-pick">
+              <option value="">Select a metric...</option>
+              ${DASHBOARD_METRIC_REGISTRY.map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <button class="btn small outline" onclick="addDashboardMetric()">Add</button>
+      </div>
+      <div id="dash-custom-metrics"></div>
+    `,
+    expensesByMode: `
+      <div class="panel">
+        <h3>Expenses by Payment Mode / Accounted Status</h3>
+        ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}
+      </div>
+    `,
+    inventoryOpex: `
+      <div class="panel">
+        <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
+          <select onchange="window.DASH_WINDOW=this.value;navigate('dashboard')">
+            ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${w[0].toUpperCase()+w.slice(1)}</option>`).join('')}
           </select>
         </div>
+        <div class="cards">
+          ${statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win')}
+          ${statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win')}
+          ${statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win')}
+        </div>
+        <div id="stat-detail-win"></div>
+        <h4>Upcoming Job Cards</h4>
+        ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${j.planned_start||'-'}</td><td>${j.planned_end||'-'}</td></tr>`)}
+        <h4>Upcoming Service Requests</h4>
+        ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${s.scheduled_date}</td><td>${esc(s.issue_description)}</td></tr>`)}
       </div>
-      <button class="btn small outline" onclick="addDashboardMetric()">Add</button>
-    </div>
-    <div id="dash-custom-metrics"></div>
-    <div class="panel">
-      <h3>Expenses by Payment Mode / Accounted Status</h3>
-      ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}
-    </div>
-    <div class="panel">
-      <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
-        <select onchange="window.DASH_WINDOW=this.value;navigate('dashboard')">
-          ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${w[0].toUpperCase()+w.slice(1)}</option>`).join('')}
-        </select>
+    `,
+    projectDrilldown: `
+      <div class="panel">
+        <h3>Project Drill-Down</h3>
+        <div class="form-grid"><div><label>Project</label><select id="dash-proj-select" onchange="loadProjectDrilldown(this.value)">
+          <option value="">Select a project...</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} - ${esc(p.title)}</option>`).join('')}
+        </select></div></div>
+        <div id="dash-drilldown"></div>
       </div>
-      <div class="cards">
-        ${statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win')}
-        ${statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win')}
-        ${statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win')}
-      </div>
-      <div id="stat-detail-win"></div>
-      <h4>Upcoming Job Cards</h4>
-      ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${j.planned_start||'-'}</td><td>${j.planned_end||'-'}</td></tr>`)}
-      <h4>Upcoming Service Requests</h4>
-      ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${s.scheduled_date}</td><td>${esc(s.issue_description)}</td></tr>`)}
+    `,
+  };
+  const layout = await api('/dashboard/layout').catch(() => ({ panel_order: null }));
+  const order = resolveDashboardOrder(layout.panel_order, Object.keys(panels));
+  el.innerHTML = `
+    <div class="muted" style="margin-bottom:8px;">Drag a widget by its ⠿ handle to rearrange, then Save Layout.
+      <button class="btn small outline" type="button" onclick="saveDashboardLayout()" style="margin-left:8px;">Save Layout</button>
+      <button class="btn small outline" type="button" onclick="resetDashboardLayout()">Reset to Default</button>
     </div>
-    <div class="panel">
-      <h3>Project Drill-Down</h3>
-      <div class="form-grid"><div><label>Project</label><select id="dash-proj-select" onchange="loadProjectDrilldown(this.value)">
-        <option value="">Select a project...</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} - ${esc(p.title)}</option>`).join('')}
-      </select></div></div>
-      <div id="dash-drilldown"></div>
-    </div>
+    <div id="dash-widgets">${order.map(key => dashboardWidgetHTML(key, panels[key])).join('')}</div>
   `;
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
   await renderDashboardCustomMetrics();
+};
+
+const DASHBOARD_WIDGET_LABELS = {
+  keyMetrics: 'Key Metrics', customMetrics: 'Custom Metrics', expensesByMode: 'Expenses by Payment Mode',
+  inventoryOpex: 'Inventory / Opex / Upcoming Schedules', projectDrilldown: 'Project Drill-Down',
+};
+function dashboardWidgetHTML(key, html) {
+  return `<div class="dash-widget" draggable="true" data-key="${key}"
+    ondragstart="dashWidgetDragStart(event)" ondragover="dashWidgetDragOver(event)" ondragend="dashWidgetDragEnd(event)">
+    <div style="cursor:move;user-select:none;color:var(--muted,#888);font-size:12px;padding:2px 0 6px;">&#10021; ${esc(DASHBOARD_WIDGET_LABELS[key] || key)}</div>
+    ${html}
+  </div>`;
+}
+// A saved order might be missing a widget added since it was last saved
+// (appended at the end, in its default position, so nothing new is ever
+// hidden) or naming one that no longer exists (silently dropped).
+function resolveDashboardOrder(saved, allKeys) {
+  if (!Array.isArray(saved) || !saved.length) return allKeys;
+  const known = saved.filter(k => allKeys.includes(k));
+  const missing = allKeys.filter(k => !known.includes(k));
+  return [...known, ...missing];
+}
+let DASH_DRAG_KEY = null;
+window.dashWidgetDragStart = (e) => {
+  DASH_DRAG_KEY = e.currentTarget.dataset.key;
+  e.currentTarget.style.opacity = '0.5';
+  e.dataTransfer.effectAllowed = 'move';
+};
+window.dashWidgetDragEnd = (e) => { e.currentTarget.style.opacity = ''; DASH_DRAG_KEY = null; };
+window.dashWidgetDragOver = (e) => {
+  e.preventDefault();
+  const target = e.currentTarget;
+  if (!DASH_DRAG_KEY || target.dataset.key === DASH_DRAG_KEY) return;
+  const container = document.getElementById('dash-widgets');
+  const dragging = container.querySelector(`[data-key="${DASH_DRAG_KEY}"]`);
+  if (!dragging) return;
+  const rect = target.getBoundingClientRect();
+  const before = (e.clientY - rect.top) < rect.height / 2;
+  container.insertBefore(dragging, before ? target : target.nextSibling);
+};
+window.saveDashboardLayout = async () => {
+  const order = Array.from(document.querySelectorAll('#dash-widgets .dash-widget')).map(w => w.dataset.key);
+  try {
+    await api('/dashboard/layout', { method: 'PUT', body: JSON.stringify({ panel_order: order }) });
+    alert('Layout saved.');
+  } catch (e) { alert(e.message); }
+};
+window.resetDashboardLayout = async () => {
+  if (!confirm('Reset the Dashboard back to its default layout?')) return;
+  try {
+    await api('/dashboard/layout', { method: 'DELETE' });
+    navigate('dashboard');
+  } catch (e) { alert(e.message); }
 };
 
 // Client-side only (per-browser, via localStorage) - the picked set doesn't
@@ -3590,10 +3704,27 @@ PAGES['purchase-requests'] = async (el) => {
   const items = await api('/masters/items');
   const projects = await api('/projects');
   const threshold = (await api('/settings/purchase-quote-threshold')).quote_threshold;
+  const rfqInbox = await api('/purchase/rfq-inbox').catch(() => []);
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
+  window.__RFQ_INBOX = rfqInbox;
   PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
   el.innerHTML = `
+    ${collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
+      <p class="muted">Parsed from the Purchase inbox - nothing here is a real quote yet. Review the details below and either confirm it into a real quote (editable first) or dismiss it.</p>
+      ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="scanRfqMailNow()">Scan Mailbox Now</button> <span id="rfq-scan-result" class="muted" style="margin-left:8px;"></span>` : ''}
+      ${rfqInbox.length ? rfqInbox.map(i => `
+        <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
+          <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span></p>
+          <p style="margin:0 0 4px;"><b>Subject:</b> ${esc(i.subject)||'-'}</p>
+          <p style="margin:0 0 4px;"><b>Matched RFQ:</b> ${i.matched_rfq_request_id ? `${esc(i.purchase_request_no)||'-'} - ${esc(i.rfq_subject)||'-'}` : '<span class="muted">No match found - pick manually below</span>'}
+            ${i.match_confidence ? ` <span class="badge ${i.match_confidence === 'ThreadMatch' ? 'active' : 'Draft'}">${esc(i.match_confidence)}</span>` : ''}</p>
+          <p style="margin:0 0 4px;"><b>Matched Vendor:</b> ${esc(i.matched_vendor_name)||'<span class="muted">None - pick manually below</span>'}${i.guessed_quoted_amount ? ` &middot; Guessed amount: ₹${fmt(i.guessed_quoted_amount)}` : ''}</p>
+          <details style="margin:6px 0;"><summary class="muted" style="cursor:pointer;">Full email text</summary><pre style="white-space:pre-wrap;font-family:inherit;margin:6px 0 0;">${esc(i.body_text)||'-'}</pre></details>
+          <div style="margin-top:8px;"><button class="btn small" onclick="openConfirmRfqResponse(${i.id})">Confirm as Quote</button> <button class="btn small outline" onclick="dismissRfqResponse(${i.id})">Dismiss</button></div>
+          <div id="rfq-inbox-confirm-${i.id}"></div>
+        </div>`).join('') : '<div class="empty">No pending vendor responses.</div>'}
+    `)}
     <div class="panel"><h3>New Purchase Request</h3>
       <div class="form-grid">
         <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
@@ -3621,8 +3752,63 @@ PAGES['purchase-requests'] = async (el) => {
   renderPRLines();
   window.__PR_CACHE = reqs;
 };
-function prItemOptions(selectedId) {
-  const items = window.__PR_ITEMS || [];
+window.scanRfqMailNow = async () => {
+  const resultEl = document.getElementById('rfq-scan-result');
+  resultEl.textContent = 'Scanning...';
+  try {
+    const r = await api('/purchase/rfq-inbox/scan', { method: 'POST' });
+    if (!r.ran) { resultEl.textContent = r.reason || 'Scan did not run.'; return; }
+    resultEl.textContent = `Done: ${r.stored} new, ${r.skipped} already seen, ${r.failed} failed.`;
+    if (r.stored) navigate('purchase-requests');
+  } catch (e) { resultEl.textContent = e.message; }
+};
+window.openConfirmRfqResponse = async (id) => {
+  const item = (window.__RFQ_INBOX || []).find(i => i.id === id);
+  if (!item) return;
+  const [vendors, openRfqs] = await Promise.all([api('/masters/vendors'), api('/purchase/rfq-inbox/open-rfqs')]);
+  const wrap = document.getElementById(`rfq-inbox-confirm-${id}`);
+  wrap.innerHTML = `
+    <div class="form-grid" style="margin-top:10px;border-top:1px solid var(--border,#ccc);padding-top:10px;">
+      <div><label>RFQ</label><select id="ri-rfq-${id}">
+        <option value="">- Select the RFQ this reply belongs to -</option>
+        ${openRfqs.map(r => `<option value="${r.id}" ${item.matched_rfq_request_id===r.id?'selected':''}>${esc(r.purchase_request_no)||'-'} - ${esc(r.subject)}</option>`).join('')}
+      </select></div>
+      <div><label>Vendor</label><select id="ri-vendor-${id}">
+        <option value="">- Select vendor -</option>
+        ${vendors.map(v => `<option value="${v.id}" ${item.matched_vendor_id===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}
+      </select></div>
+      <div><label>Quoted Amount (₹)</label><input id="ri-amount-${id}" type="number" value="${item.guessed_quoted_amount ?? ''}"></div>
+      <div><label>Quoted Qty</label><input id="ri-qty-${id}" type="number"></div>
+      <div><label>Payment Terms</label><input id="ri-terms-${id}"></div>
+      <div><label>Delivery Commit Date</label><input id="ri-delivery-${id}" type="date"></div>
+    </div>
+    <div><label>Notes</label><textarea id="ri-notes-${id}" rows="2" style="width:100%;">${esc(item.body_text)}</textarea></div>
+    <button class="btn small" onclick="saveConfirmRfqResponse(${id})">Save as Quote</button>
+    <button class="btn small outline" type="button" onclick="document.getElementById('rfq-inbox-confirm-${id}').innerHTML=''">Cancel</button>
+    <div id="ri-err-${id}" class="msg err" style="display:none;margin-top:6px;"></div>`;
+};
+window.saveConfirmRfqResponse = async (id) => {
+  const errEl = document.getElementById(`ri-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/purchase/rfq-inbox/${id}/confirm`, { method: 'POST', body: JSON.stringify({
+      rfq_request_id: val(`ri-rfq-${id}`) || undefined, vendor_id: val(`ri-vendor-${id}`) || undefined,
+      quoted_amount: val(`ri-amount-${id}`), quoted_qty: val(`ri-qty-${id}`),
+      payment_terms: val(`ri-terms-${id}`), delivery_commit_date: val(`ri-delivery-${id}`), notes: val(`ri-notes-${id}`),
+    })});
+    navigate('purchase-requests');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.dismissRfqResponse = async (id) => {
+  const reason = prompt('Reason for dismissing this vendor response (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/purchase/rfq-inbox/${id}/dismiss`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
+function prItemOptions(selectedId, itemsOverride) {
+  const items = itemsOverride || window.__PR_ITEMS || [];
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
     .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join('')}`;
 }
@@ -3631,7 +3817,8 @@ function renderPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
-      <td><select onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})">${prItemOptions(l.item_id)}</select></td>
+      <td>${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+        `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
@@ -4000,7 +4187,8 @@ function renderEditPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
     <tr>
-      <td><select onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()">${prItemOptions(l.item_id)}</select></td>
+      <td>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()"`)}</td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;"></td>
@@ -4032,6 +4220,14 @@ PAGES['purchase-orders'] = async (el) => {
   const items = await api('/masters/items');
   const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
   const companyAddresses = await api('/settings/company-addresses').catch(() => []);
+  // Set before building the HTML below, not after - renderPORows()/poEditForm()
+  // (called as part of that build, for each row's hidden Edit panel) read
+  // these globals directly, so assigning them afterward left the Edit PO
+  // item/vendor pickers one render behind (empty on the very first visit).
+  window.__PO_PRS = prs;
+  window.__PO_VENDORS = vendors;
+  window.__PO_ITEMS = items;
+  window.__PO_COMPANY_ADDRESSES = companyAddresses;
   el.innerHTML = `
     <div class="panel"><h3>New Purchase Order</h3>
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
@@ -4039,7 +4235,7 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
         <div id="po-pr-line-wrap" style="display:none;"><label>PR Line Item</label><select id="po-pr-item" onchange="fillPOFromPRLine()"></select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
-        <div><label>Item</label><select id="po-item" onchange="showVendorsForPOItem()">${items.map(i => `<option value="${i.id}">${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join('')}</select></div>
+        <div><label>Item</label>${itemPickerHTML('po-item', items, '', (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}${i.status === 'Pending' ? ' (pending review)' : ''}${i.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''), `onchange="showVendorsForPOItem()"`)}</div>
         <div><label>Quantity</label><input id="po-qty" type="number"></div>
         <div><label>Rate (₹)</label><input id="po-rate" type="number"></div>
         <div><label>HSN Code</label><input id="po-hsn"></div>
@@ -4074,10 +4270,6 @@ PAGES['purchase-orders'] = async (el) => {
       }, 'Search by PO no, vendor, item, status...')}
       <div id="po-table-wrap">${renderPORows(orders)}</div>
     `)}`;
-  window.__PO_PRS = prs;
-  window.__PO_VENDORS = vendors;
-  window.__PO_ITEMS = items;
-  window.__PO_COMPANY_ADDRESSES = companyAddresses;
 };
 function renderPORows(rows) {
   return tableHTML(['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''], rows, o => `
@@ -4106,7 +4298,7 @@ function poEditForm(o) {
   const companyAddresses = window.__PO_COMPANY_ADDRESSES || [];
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
-    <div><label>Item</label><select id="po-edit-item-${o.id}">${items.map(i => `<option value="${i.id}" ${i.id===o.item_id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
+    <div><label>Item</label>${itemPickerHTML(`po-edit-item-${o.id}`, items, o.item_id, (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join(''))}</div>
     <div><label>Quantity</label><input id="po-edit-qty-${o.id}" type="number" value="${o.quantity}"></div>
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
     <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
@@ -4206,7 +4398,9 @@ window.fillPOFromPR = async () => {
 };
 function fillPOFromLine(line) {
   const itemSel = document.getElementById('po-item');
-  if (itemSel && line.item_id) itemSel.value = line.item_id;
+  // A leftover search filter could be hiding the option we're about to
+  // select - clear it first so the option actually exists to select.
+  if (itemSel && line.item_id) { resetItemPicker('po-item'); itemSel.value = line.item_id; }
   const qtyEl = document.getElementById('po-qty');
   if (qtyEl) qtyEl.value = line.quantity;
 }
@@ -6302,7 +6496,8 @@ PAGES['offer-pdf-designer'] = async (el) => {
   // old iframes/listeners would otherwise just leak.
   Object.values(PDF_DESIGNER_EDITORS).forEach(ed => { try { ed.destroy(); } catch (e) {} });
   PDF_DESIGNER_EDITORS = {};
-  PDF_DESIGNER_LAYOUT = await api('/offers/pdf-layout');
+  const [layout, template] = await Promise.all([api('/offers/pdf-layout'), api('/offers/pdf-template')]);
+  PDF_DESIGNER_LAYOUT = layout;
   el.innerHTML = `
     <div class="panel">
       <h3>Offer PDF Layout Designer</h3>
@@ -6311,9 +6506,47 @@ PAGES['offer-pdf-designer'] = async (el) => {
         ${PDF_DESIGNER_PIECES.map(p => `<div class="tab pdfd-tab ${PDF_DESIGNER_TAB === p.id ? 'active' : ''}" data-tab="${p.id}" onclick="switchOfferPdfDesignerTab('${p.id}')">${esc(p.label)}</div>`).join('')}
       </div>
       ${PDF_DESIGNER_PIECES.map(p => renderOfferPdfDesignerPanel(p)).join('')}
-    </div>`;
+    </div>
+    ${collapsiblePanel('custom-body-template', 'Full Custom Body Template (Word Upload)', `
+      <p class="muted">Upload a Word (.docx) document to replace the entire offer body (everything except the header/footer/cover above) with your own layout. The upload is converted to HTML once for you to review and mark up below - it isn't saved or activated until you click Save.</p>
+      <p class="muted">Use <code>{{client.name}}</code>, <code>{{offer.subject}}</code>, <code>{{offer.grand_total}}</code>, etc. anywhere as merge fields (unrecognized tokens are left as literal text, so a typo is obvious rather than silently blank). For the scope-of-supply line items, wrap a row template in <code>{{#offer_items}}...{{/offer_items}}</code> - inside it, use <code>{{item.description}}</code>, <code>{{item.qty}}</code>, <code>{{item.unit_price}}</code>, <code>{{item.total_price}}</code>, <code>{{item.item_code}}</code>.</p>
+      <input type="file" id="cbt-file" accept=".docx">
+      <button class="btn small outline" type="button" onclick="convertCustomBodyDocx()">Convert Uploaded Word Doc to HTML</button>
+      <div id="cbt-convert-msg" class="msg" style="display:none;margin-top:8px;"></div>
+      <div style="margin-top:10px;">
+        <label>Template HTML (edit freely, or paste your own)</label>
+        <textarea id="cbt-html" rows="16" style="width:100%;font-family:monospace;font-size:12px;">${esc(template.custom_body_html)}</textarea>
+      </div>
+      <label style="display:block;margin-top:8px;"><input type="checkbox" id="cbt-active" ${template.custom_body_active ? 'checked' : ''}> Active - use this template instead of the built-in offer body</label>
+      <button class="btn small" type="button" onclick="saveCustomBodyTemplate()" style="margin-top:8px;">Save</button>
+      <div id="cbt-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    `)}`;
   await loadOfferPdfDesignerAssets();
   initOfferPdfDesignerTab(PDF_DESIGNER_TAB);
+};
+window.convertCustomBodyDocx = async () => {
+  const fileInput = document.getElementById('cbt-file');
+  const msgEl = document.getElementById('cbt-convert-msg');
+  if (!fileInput.files.length) { alert('Choose a .docx file first.'); return; }
+  const fd = new FormData();
+  fd.append('docx', fileInput.files[0]);
+  msgEl.className = 'msg'; msgEl.style.display = 'block'; msgEl.textContent = 'Converting...';
+  try {
+    const r = await apiUpload('/offers/pdf-template/convert-docx', fd);
+    document.getElementById('cbt-html').value = r.html;
+    msgEl.className = 'msg ok';
+    msgEl.textContent = r.warnings && r.warnings.length ? `Converted, with ${r.warnings.length} note(s): ${r.warnings.join('; ')}` : 'Converted - review and edit the HTML below before saving.';
+  } catch (e) { msgEl.className = 'msg err'; msgEl.textContent = e.message; }
+};
+window.saveCustomBodyTemplate = async () => {
+  const errEl = document.getElementById('cbt-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/offers/pdf-template/custom-body', { method: 'PUT', body: JSON.stringify({
+      active: document.getElementById('cbt-active').checked, html: val('cbt-html'),
+    })});
+    navigate('offer-pdf-designer');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // GrapesJS canvases need to be visible/sized to lay themselves out
@@ -7672,9 +7905,10 @@ window.focAction = async (id, action) => {
 // plausibly send PO/invoice/SOA-type mail to a vendor or client.
 const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, departments] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, departments] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
-    api('/settings/inbound-mail').catch(() => null), api('/masters/departments'),
+    api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
+    api('/masters/departments'),
   ]);
   el.innerHTML = `
     <div class="panel"><h3>Company Details</h3>
@@ -7753,6 +7987,23 @@ PAGES['company-settings'] = async (el) => {
       <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
       <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
       <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+    `) : ''}
+    ${purchaseInboundMail ? collapsiblePanel('purchase-inbound-mail-settings', 'Inbound Mail (Vendor Quote Responses via Email)', `
+      <p class="muted">Reads a dedicated mailbox over IMAP - separate from the Service inbox above - and drops each vendor reply into the Purchase team's Vendor Quote Responses queue (see the Purchase Requests page) for confirmation into a real quote. Nothing is auto-created from an email without a human confirming it.</p>
+      <div class="form-grid">
+        <div><label>Enabled</label><select id="pim-enabled"><option value="false" ${!purchaseInboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>IMAP Host</label><input id="pim-host" value="${esc(purchaseInboundMail.imap_host)}"></div>
+        <div><label>IMAP Port</label><input id="pim-port" type="number" value="${esc(purchaseInboundMail.imap_port)}"></div>
+        <div><label>Use TLS/SSL (secure)</label><select id="pim-secure"><option value="false" ${!purchaseInboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
+        <div><label>Mailbox Username</label><input id="pim-user" value="${esc(purchaseInboundMail.imap_user)}"></div>
+        <div><label>Mailbox Password</label><input id="pim-pass" type="password" value="${esc(purchaseInboundMail.imap_pass)}"></div>
+        <div><label>Folder</label><input id="pim-mailbox" value="${esc(purchaseInboundMail.mailbox)}"></div>
+        <div><label>Poll Every (minutes)</label><input id="pim-poll" type="number" value="${esc(purchaseInboundMail.poll_minutes)}"></div>
+      </div>
+      <button class="btn" onclick="savePurchaseInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
+      <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+      <div id="pim-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
     `) : ''}
     ${email ? collapsiblePanel('department-email-identities', 'Department Email Identities', `
       <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
@@ -7887,6 +8138,31 @@ window.testInboundMailConnection = async () => {
   resultEl.textContent = 'Connecting...';
   try {
     const r = await api('/settings/inbound-mail/test', { method: 'POST' });
+    resultEl.className = r.ok ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.ok ? 'Connected successfully.' : (r.reason || 'Connection failed.');
+  } catch (e) {
+    resultEl.className = 'msg err';
+    resultEl.textContent = e.message;
+  }
+};
+window.savePurchaseInboundMailSettings = async () => {
+  const errEl = document.getElementById('pim-err'); errEl.style.display = 'none';
+  try {
+    await api('/settings/purchase-inbound-mail', { method: 'PUT', body: JSON.stringify({
+      enabled: val('pim-enabled') === 'true', imap_host: val('pim-host'), imap_port: val('pim-port'),
+      imap_secure: val('pim-secure') === 'true', imap_user: val('pim-user'), imap_pass: val('pim-pass'),
+      mailbox: val('pim-mailbox'), poll_minutes: val('pim-poll'),
+    })});
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.testPurchaseInboundMailConnection = async () => {
+  const resultEl = document.getElementById('pim-test-result');
+  resultEl.className = 'msg';
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Connecting...';
+  try {
+    const r = await api('/settings/purchase-inbound-mail/test', { method: 'POST' });
     resultEl.className = r.ok ? 'msg ok' : 'msg err';
     resultEl.textContent = r.ok ? 'Connected successfully.' : (r.reason || 'Connection failed.');
   } catch (e) {

@@ -963,6 +963,37 @@ CREATE TABLE IF NOT EXISTS rfq_request_emails (
   sent_at TEXT
 );
 
+-- Review queue for mail read from a dedicated Purchase inbox
+-- (lib/inboundRfqMail.js) - a vendor's quoted price/terms replying to an
+-- RFQ, never auto-converted into a real purchase_request_quotes row (same
+-- "review queue, human confirms" reasoning as incoming_service_emails).
+-- match_confidence tells the Purchase Executive how sure the match is:
+-- ThreadMatch (the reply's In-Reply-To/References header matched the exact
+-- outbound RFQ email we sent that vendor) or SenderMatch (fell back to the
+-- sender's address matching a vendor/email this RFQ was sent to, with no
+-- header match - weaker if that vendor has more than one open RFQ from us).
+CREATE TABLE IF NOT EXISTS incoming_rfq_responses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT UNIQUE,
+  from_address TEXT NOT NULL,
+  from_name TEXT,
+  subject TEXT,
+  body_text TEXT,
+  received_at TEXT,
+  matched_rfq_request_id INTEGER REFERENCES rfq_requests(id),
+  matched_vendor_id INTEGER REFERENCES vendors(id),
+  match_confidence TEXT,               -- ThreadMatch, SenderMatch, or NULL if unmatched
+  guessed_quoted_amount REAL,          -- best-effort number pulled from the body
+  status TEXT DEFAULT 'Pending',       -- Pending, Confirmed, Dismissed
+  confirmed_quote_id INTEGER REFERENCES purchase_request_quotes(id),
+  confirmed_by INTEGER REFERENCES users(id),
+  confirmed_at TEXT,
+  dismissed_by INTEGER REFERENCES users(id),
+  dismissed_at TEXT,
+  dismiss_reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ===================== BACKUPS =====================
 -- One row per backup attempt (scheduled or manual) - the durable audit log
 -- an Admin can use to see backup health at a glance and know exactly which
@@ -1000,6 +1031,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   entity_id INTEGER,
   details TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-user Dashboard widget order (drag-to-reorder) - a JSON array of panel
+-- keys, e.g. '["keyMetrics","inventoryOpex","customMetrics",...]'. Stored
+-- per-user (not per-browser/localStorage) so it follows an account across
+-- devices, same way every other "your" setting in this app does. No row
+-- means the Dashboard falls back to its built-in default order - see
+-- public/js/app.js's DASHBOARD_PANEL_ORDER_DEFAULT.
+CREATE TABLE IF NOT EXISTS user_dashboard_layout (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id),
+  panel_order TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Bank Guarantee edit/delete approval gate, same shape and reasoning as

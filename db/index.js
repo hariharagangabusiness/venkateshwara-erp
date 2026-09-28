@@ -892,6 +892,15 @@ const MIGRATIONS = [
   `ALTER TABLE sales_orders ADD COLUMN po_terms_resolution_notes TEXT`,
   `ALTER TABLE sales_orders ADD COLUMN po_terms_resolved_by INTEGER REFERENCES users(id)`,
   `ALTER TABLE sales_orders ADD COLUMN po_terms_resolved_at TEXT`,
+
+  // RFQ vendor-response mailbox scan: captures the outbound RFQ email's
+  // Message-ID at send time, so an inbound reply's In-Reply-To/References
+  // header can be matched back to the exact RFQ+vendor it's replying to
+  // (see lib/inboundRfqMail.js) - a vendor can easily have more than one
+  // open RFQ from us at once, so matching by sender address alone isn't
+  // reliable enough on its own.
+  `ALTER TABLE rfq_request_vendors ADD COLUMN sent_message_id TEXT`,
+  `ALTER TABLE rfq_request_emails ADD COLUMN sent_message_id TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

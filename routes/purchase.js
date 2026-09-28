@@ -12,6 +12,7 @@ const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
+const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const path = require('path');
 const router = express.Router();
 router.use(authRequired);
@@ -293,9 +294,9 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     .run(pr.id, JSON.stringify(item_ids.map(Number)), subject.trim(), body, req.user.id);
   const rfqId = info.lastInsertRowid;
   const insertVendorRow = db.prepare(`INSERT INTO rfq_request_vendors (rfq_request_id, vendor_id, email_status) VALUES (?,?,'Pending')`);
-  const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
+  const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
   const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
-  const updateEmailRow = db.prepare(`UPDATE rfq_request_emails SET email_status=?, email_error=?, sent_at=? WHERE id=?`);
+  const updateEmailRow = db.prepare(`UPDATE rfq_request_emails SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
   const now = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   const fromIdentity = getDepartmentEmailIdentity('Purchase');
 
@@ -314,10 +315,10 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     const personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
     const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
-      updateVendorRow.run('Sent', null, now(), rowId);
+      updateVendorRow.run('Sent', null, now(), result.messageId || null, rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Sent' });
     } else {
-      updateVendorRow.run('Failed', result.reason || 'Unknown error', null, rowId);
+      updateVendorRow.run('Failed', result.reason || 'Unknown error', null, null, rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'Failed', email_error: result.reason });
     }
   }
@@ -327,14 +328,106 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     const personalizedBody = body.split('{{vendor_name}}').join('');
     const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
-      updateEmailRow.run('Sent', null, now(), rowId);
+      updateEmailRow.run('Sent', null, now(), result.messageId || null, rowId);
       results.push({ email, email_status: 'Sent' });
     } else {
-      updateEmailRow.run('Failed', result.reason || 'Unknown error', null, rowId);
+      updateEmailRow.run('Failed', result.reason || 'Unknown error', null, null, rowId);
       results.push({ email, email_status: 'Failed', email_error: result.reason });
     }
   }
   res.json({ id: rfqId, results });
+});
+
+// ===================== RFQ vendor-response mailbox scan =====================
+// Mail read from a dedicated Purchase inbox (lib/inboundRfqMail.js, polled
+// from server.js) lands here first, never straight into
+// purchase_request_quotes - see that file's header comment for the
+// ThreadMatch/SenderMatch matching it already attempted. A Purchase
+// Executive confirms each item into a real quote (pre-filled from the
+// match, editable/completable before saving) or dismisses it.
+router.get('/rfq-inbox', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT irr.*, v.name as matched_vendor_name, r.subject as rfq_subject, r.purchase_request_id, pr.pr_no as purchase_request_no
+    FROM incoming_rfq_responses irr
+    LEFT JOIN vendors v ON v.id = irr.matched_vendor_id
+    LEFT JOIN rfq_requests r ON r.id = irr.matched_rfq_request_id
+    LEFT JOIN purchase_requests pr ON pr.id = r.purchase_request_id
+    WHERE irr.status = 'Pending'
+    ORDER BY irr.received_at DESC
+  `).all();
+  res.json(rows);
+});
+
+// Flat list of every RFQ ever sent, most recent first - populates the
+// manual RFQ picker on an inbox item that didn't auto-match (no thread or
+// sender match found).
+router.get('/rfq-inbox/open-rfqs', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.id, r.subject, r.purchase_request_id, pr.pr_no as purchase_request_no
+    FROM rfq_requests r LEFT JOIN purchase_requests pr ON pr.id = r.purchase_request_id
+    ORDER BY r.id DESC LIMIT 200
+  `).all();
+  res.json(rows);
+});
+
+router.post('/rfq-inbox/:id/confirm', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const item = db.prepare('SELECT * FROM incoming_rfq_responses WHERE id = ?').get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+
+  const rfqRequestId = req.body.rfq_request_id !== undefined && req.body.rfq_request_id !== '' ? req.body.rfq_request_id : item.matched_rfq_request_id;
+  const vendorId = req.body.vendor_id !== undefined && req.body.vendor_id !== '' ? req.body.vendor_id : item.matched_vendor_id;
+  if (!rfqRequestId) return res.status(400).json({ error: 'Pick which RFQ this reply belongs to.' });
+  if (!vendorId) return res.status(400).json({ error: 'Pick which vendor this reply is from.' });
+
+  const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(rfqRequestId);
+  if (!rfq) return res.status(400).json({ error: 'That RFQ no longer exists.' });
+  const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(vendorId);
+  if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists.' });
+
+  const { notes, purchase_request_item_id, payment_terms, delivery_commit_date, quoted_qty } = req.body;
+  let itemId = null;
+  if (purchase_request_item_id) {
+    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ?').get(purchase_request_item_id, rfq.purchase_request_id);
+    if (!line) return res.status(400).json({ error: "That line item does not belong to this RFQ's Purchase Request." });
+    itemId = line.id;
+  }
+  const quotedAmount = req.body.quoted_amount !== undefined && req.body.quoted_amount !== '' ? req.body.quoted_amount : item.guessed_quoted_amount;
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO purchase_request_quotes (purchase_request_id, vendor_id, quoted_amount, notes,
+        purchase_request_item_id, payment_terms, delivery_commit_date, quoted_qty, rfq_request_id, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).run(rfq.purchase_request_id, vendorId, quotedAmount ? Number(quotedAmount) : null, notes || item.body_text || null,
+      itemId, payment_terms || null, delivery_commit_date || null, quoted_qty ? Number(quoted_qty) : null,
+      rfqRequestId, req.user.id);
+    db.prepare(`
+      UPDATE incoming_rfq_responses SET status = 'Confirmed', confirmed_quote_id = ?, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).run(info.lastInsertRowid, req.user.id, item.id);
+    return info;
+  });
+  const info = tx();
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.post('/rfq-inbox/:id/dismiss', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const item = db.prepare('SELECT * FROM incoming_rfq_responses WHERE id = ?').get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+  db.prepare(`
+    UPDATE incoming_rfq_responses SET status = 'Dismissed', dismissed_by = ?, dismissed_at = CURRENT_TIMESTAMP, dismiss_reason = ? WHERE id = ?
+  `).run(req.user.id, req.body && req.body.reason || null, item.id);
+  res.json({ ok: true });
+});
+
+// Manual on-demand poll (Admin only), same escape hatch as Service's
+// equivalent - lets an Admin confirm the mailbox is wired up correctly
+// without waiting for the next scheduled scan.
+router.post('/rfq-inbox/scan', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
+  if (req.user.role_name !== 'Admin') return res.status(403).json({ error: 'Admin only.' });
+  const result = await runInboundRfqScan();
+  res.json(result);
 });
 
 // ---- Submit a high-value (quotes-required) PR into the normal approval chain ----
