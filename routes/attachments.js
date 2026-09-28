@@ -24,14 +24,14 @@ const upload = multer({
 
 const VALID_TYPES = new Set([
   'purchase_request', 'purchase_order', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
-  'foreign_payment',
+  'foreign_payment', 'offer', 'sales_order', 'customer_communication',
 ]);
 
 // Free-form category tag, currently only used by foreign_payment uploads
 // (Payment Advice, Bill of Entry, Bill of Lading, Vendor Invoice, Proforma
 // Invoice, Other) - every other entity type leaves this NULL and just
 // doesn't show a category, same as before this column existed.
-const VALID_DOCUMENT_TYPES = new Set(['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'Other']);
+const VALID_DOCUMENT_TYPES = new Set(['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'GADrawing', 'CADFile', 'CustomerPO', 'Other']);
 
 router.get('/:entityType/:entityId', (req, res) => {
   const { entityType, entityId } = req.params;

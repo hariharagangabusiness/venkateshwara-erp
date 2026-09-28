@@ -1835,15 +1835,25 @@ const SHORT_STAGE_LABELS = {
   Assembling: 'Assembling', Packing: 'Packing', Shipping: 'Shipping', Installation: 'Installation',
 };
 
+function poTermsBadge(o) {
+  if (o.po_terms_status === 'MismatchPending') return `<span class="badge red">PO Mismatch</span>`;
+  if (o.po_terms_status === 'MismatchAcknowledged') return `<span class="badge Draft">Mismatch Acknowledged</span>`;
+  if (o.po_terms_status === 'Matched') return `<span class="badge active">PO Matched</span>`;
+  if (o.po_status === 'NotProvided') return `<span class="muted">No PO</span>`;
+  return `<span class="muted">-</span>`;
+}
 function renderOrderRows(rows) {
-  return tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Annexure', ''], rows, o => `
+  return tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Customer PO', 'Annexure', ''], rows, o => `
     <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
+    <td>${poTermsBadge(o)}</td>
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
+    <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
     ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}</td></tr>
-    <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="8">${soTermsForm(o)}</td></tr>`);
+    <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
+    <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>`);
 }
 window.deleteOrderRow = async (id) => {
   if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
@@ -2107,6 +2117,103 @@ window.saveSOTerms = async (id) => {
   } catch (e) { alert(e.message); }
 };
 
+// ---- Customer PO capture + cross-check against the order's own terms ----
+// PO_FIELD_MAP lets the exact same bgTermsFormFields/readBgTermsFields BG
+// widget used for the order's own terms be reused for the PO's stated BG
+// terms too, by mapping po_abg_* <-> abg_* on the way in/out rather than
+// building a second near-identical form.
+const PO_BG_FIELD_MAP = ['abg_required', 'abg_percentage', 'abg_amount', 'abg_validity_days', 'pbg_required', 'pbg_percentage', 'pbg_amount', 'pbg_validity_days'];
+function poToBgShape(o) {
+  const shaped = {};
+  PO_BG_FIELD_MAP.forEach(k => { shaped[k] = o['po_' + k]; });
+  return shaped;
+}
+function bgShapeToPoFields(fields) {
+  const out = {};
+  PO_BG_FIELD_MAP.forEach(k => { out['po_' + k] = fields[k]; });
+  return out;
+}
+window.toggleSOPo = async (id) => {
+  const row = document.getElementById(`so-po-row-${id}`);
+  const opening = row.style.display === 'none';
+  row.style.display = opening ? '' : 'none';
+  if (opening) await renderSOPoBody(id);
+};
+async function renderSOPoBody(id) {
+  const orders = await api('/sales/orders');
+  const o = orders.find(x => x.id === id);
+  const body = document.getElementById(`so-po-body-${id}`);
+  const mismatches = o.po_mismatch_fields ? JSON.parse(o.po_mismatch_fields) : [];
+  body.innerHTML = `
+    <div class="form-grid">
+      <div><label>Customer PO Status</label>
+        <select id="so-po-status-${id}" onchange="document.getElementById('so-po-details-${id}').style.display = this.value === 'Received' ? '' : 'none'">
+          <option value="Pending" ${o.po_status === 'Pending' ? 'selected' : ''}>Not yet decided</option>
+          <option value="NotProvided" ${o.po_status === 'NotProvided' ? 'selected' : ''}>Not Provided - run on the order's own terms</option>
+          <option value="Received" ${o.po_status === 'Received' ? 'selected' : ''}>Received</option>
+        </select>
+      </div>
+    </div>
+    <div id="so-po-details-${id}" style="display:${o.po_status === 'Received' ? '' : 'none'};">
+      <div class="form-grid">
+        <div><label>PO Number</label><input id="so-po-number-${id}" value="${esc(o.po_number)}"></div>
+        <div><label>PO Date</label><input id="so-po-date-${id}" type="date" value="${o.po_date || ''}"></div>
+        <div><label>PO Delivery Date</label><input id="so-po-delivery-${id}" type="date" value="${o.po_delivery_date || ''}"></div>
+        <div><label>PO LD Rate (%)</label><input id="so-po-ldpct-${id}" type="number" step="0.01" value="${o.po_ld_percentage ?? ''}"></div>
+        <div><label>PO LD Cap (%)</label><input id="so-po-ldcap-${id}" type="number" step="0.01" value="${o.po_ld_cap_percentage ?? ''}"></div>
+      </div>
+      ${bgTermsFormFields(`so-po-${id}`, poToBgShape(o))}
+    </div>
+    <button class="btn small" type="button" onclick="saveSOPo(${id})">Save Customer PO</button>
+    <div id="so-po-err-${id}" class="msg err" style="display:none;margin-top:8px;"></div>
+    ${o.po_terms_status === 'MismatchPending' || o.po_terms_status === 'MismatchAcknowledged' ? `
+      <div class="msg ${o.po_terms_status === 'MismatchPending' ? 'err' : ''}" style="margin-top:10px;">
+        <b>${o.po_terms_status === 'MismatchPending' ? 'Terms mismatch - not-yet-started stages are blocked until this is resolved:' : 'Mismatch acknowledged:'}</b>
+        <ul style="margin:6px 0 0 18px;">${mismatches.map(m => `<li>${esc(m)}</li>`).join('')}</ul>
+        ${o.po_terms_status === 'MismatchAcknowledged' ? `<p class="muted" style="margin:6px 0 0;">${esc(o.po_terms_resolution_notes)}</p>` : `
+        <div style="margin-top:8px;">
+          <button class="btn small" type="button" onclick="acceptPoTerms(${id})">Accept PO's Terms</button>
+          <button class="btn small outline" type="button" onclick="acknowledgePoMismatch(${id})">Acknowledge &amp; Override</button>
+        </div>`}
+      </div>` : ''}
+    <div id="so-po-attachments-${id}" style="margin-top:10px;"></div>`;
+  renderAttachmentsWidget('sales_order', id, document.getElementById(`so-po-attachments-${id}`), ['CustomerPO', 'Other']);
+}
+window.saveSOPo = async (id) => {
+  const errEl = document.getElementById(`so-po-err-${id}`);
+  errEl.style.display = 'none';
+  const status = val(`so-po-status-${id}`);
+  try {
+    if (status === 'Received') {
+      await api(`/sales/orders/${id}/po`, { method: 'PUT', body: JSON.stringify({
+        po_status: 'Received', po_number: val(`so-po-number-${id}`), po_date: val(`so-po-date-${id}`) || null,
+        po_delivery_date: val(`so-po-delivery-${id}`) || null, po_ld_percentage: val(`so-po-ldpct-${id}`) || null,
+        po_ld_cap_percentage: val(`so-po-ldcap-${id}`) || null,
+        ...bgShapeToPoFields(readBgTermsFields(`so-po-${id}`)),
+      })});
+    } else if (status === 'NotProvided') {
+      await api(`/sales/orders/${id}/po`, { method: 'PUT', body: JSON.stringify({ po_status: 'NotProvided' }) });
+    } else {
+      errEl.textContent = 'Pick "Not Provided" or "Received" to save.'; errEl.style.display = 'block'; return;
+    }
+    await renderSOPoBody(id);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.acceptPoTerms = async (id) => {
+  if (!confirm("Overwrite this order's own commercial terms with the customer PO's terms?")) return;
+  try { await api(`/sales/orders/${id}/po/accept-po-terms`, { method: 'POST' }); navigate('orders'); }
+  catch (e) { alert(e.message); }
+};
+window.acknowledgePoMismatch = async (id) => {
+  const reason = prompt('Reason for accepting this mismatch as-is (kept in the audit trail):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('Enter a reason.'); return; }
+  try {
+    await api(`/sales/orders/${id}/po/acknowledge-mismatch`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+    await renderSOPoBody(id);
+  } catch (e) { alert(e.message); }
+};
+
 // ---- Offers / Quotations ----
 async function apiUpload(path, formData, method) {
   const headers = {};
@@ -2292,6 +2399,8 @@ async function renderOfferBuilder(panel) {
     ['boughtout', 'Make of Bought Out Items' + (o.show_bought_out === 0 ? ' (excluded)' : '')],
     ['terms', 'Terms & Conditions'],
     ['text', 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : '')],
+    ['commercial', 'Commercial Terms'],
+    ['attachments', 'Attachments (GA Drawing / CAD)'],
   ];
   panel.innerHTML = `
     <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}</h3>
@@ -2397,7 +2506,7 @@ window.switchOfferTab = async (tab) => {
   const data = await api('/offers/' + CURRENT_OFFER_ID);
   CURRENT_OFFER = data.offer;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  const idx = ['scope', 'tech', 'boughtout', 'terms', 'text'].indexOf(tab);
+  const idx = ['scope', 'tech', 'boughtout', 'terms', 'text', 'commercial', 'attachments'].indexOf(tab);
   document.querySelectorAll('.tab')[idx].classList.add('active');
   renderOfferTab(data);
 };
@@ -2409,7 +2518,43 @@ function renderOfferTab(data) {
   if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0);
   if (CURRENT_OFFER_TAB === 'terms') return renderKvTab(el, data.terms, 'term_key', 'term_value', 'terms', 'Term', 'Value', OFFER_TERM_LIBRARY);
   if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer, data.offer.show_inclusions_exclusions === 0);
+  if (CURRENT_OFFER_TAB === 'commercial') return renderOfferCommercialTab(el, data.offer);
+  if (CURRENT_OFFER_TAB === 'attachments') return renderAttachmentsWidget('offer', data.offer.id, el, ['GADrawing', 'CADFile', 'Other']);
 }
+
+// Delivery/LD/BG terms on the offer itself - what we're proposing to commit
+// to, reusing the exact fields/UI already used for a Sales Order's own
+// commercial terms (bgTermsFormFields/readBgTermsFields). Copied into the
+// Sales Order as its starting terms once the offer is confirmed; an order
+// whose customer never sends a formal PO keeps running on these.
+function renderOfferCommercialTab(el, o) {
+  el.innerHTML = `
+    <p class="muted">What we're proposing to commit to on delivery/LD/BG - carried over to the Sales Order as its starting terms once this offer is confirmed. Optional; fill in whatever is already agreed.</p>
+    <div class="form-grid">
+      <div><label>Promised Delivery Date</label><input id="ob-terms-delivery" type="date" value="${o.promised_delivery_date || ''}"></div>
+      <div><label>LD Rate (%)</label><input id="ob-terms-ldpct" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
+      <div><label>LD Cap (%)</label><input id="ob-terms-ldcap" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+    </div>
+    <div><label>Trigger Conditions</label><textarea id="ob-terms-ldnotes" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+    ${bgTermsFormFields('ob-terms', o)}
+    <button class="btn small" type="button" onclick="saveOfferCommercialTerms()">Save Commercial Terms</button>
+    <div id="ob-terms-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+}
+window.saveOfferCommercialTerms = async () => {
+  const errEl = document.getElementById('ob-terms-err');
+  errEl.style.display = 'none';
+  try {
+    await api(`/offers/${CURRENT_OFFER_ID}/commercial-terms`, { method: 'PATCH', body: JSON.stringify({
+      promised_delivery_date: val('ob-terms-delivery') || null,
+      ld_percentage: val('ob-terms-ldpct') || null,
+      ld_cap_percentage: val('ob-terms-ldcap') || null,
+      ld_trigger_notes: val('ob-terms-ldnotes') || null,
+      ...readBgTermsFields('ob-terms'),
+    })});
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; return; }
+  const data = await api('/offers/' + CURRENT_OFFER_ID);
+  renderOfferCommercialTab(document.getElementById('offer-tab-content'), data.offer);
+};
 
 async function renderScopeTab(el, data) {
   const items = data.items;
@@ -2848,7 +2993,57 @@ window.loadProjectPlan = async () => {
         </div>
       </div>` : ''}
     <div id="pl-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    <div id="pl-comm-${projectId}" style="margin-top:16px;"></div>
   `;
+  renderProjectCommunications(projectId);
+};
+
+// ---- Customer communications: a note/change from the customer, pushed by
+// hand to whichever departments the PM picks, each requiring an
+// acknowledgment (a To-Do the recipient must mark done) rather than just a
+// dismissible notification - see routes/projects.js POST /:id/communications.
+async function renderProjectCommunications(projectId) {
+  const container = document.getElementById(`pl-comm-${projectId}`);
+  if (!container) return;
+  const [departments, history] = await Promise.all([
+    api('/masters/departments'),
+    api(`/projects/${projectId}/communications`),
+  ]);
+  container.innerHTML = collapsiblePanel(`project-communications-${projectId}`, `Customer Communications (${history.length})`, `
+    <p class="muted">Log a note, change, or document from the customer and push it to whichever departments need to know - each recipient gets a To-Do they must mark done to acknowledge it.</p>
+    <div><label>Subject</label><input id="cc-subject-${projectId}" style="width:100%;"></div>
+    <div style="margin-top:6px;"><label>Communication</label><textarea id="cc-message-${projectId}" rows="3" style="width:100%;"></textarea></div>
+    <div style="margin-top:8px;"><b>Notify Departments</b></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;">
+      ${departments.map(d => `<label style="margin:0;font-weight:normal;"><input type="checkbox" class="cc-dept-${projectId}" value="${d.id}"> ${esc(d.name)}</label>`).join('')}
+    </div>
+    <button class="btn small" type="button" style="margin-top:10px;" onclick="sendCustomerCommunication(${projectId})">Send</button>
+    <div id="cc-err-${projectId}" class="msg err" style="display:none;margin-top:8px;"></div>
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
+      ${history.length ? history.map(c => `
+        <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
+          <p style="margin:0 0 4px;"><b>${esc(c.subject)}</b> <span class="muted">- ${esc(c.created_by_name)||'-'} &middot; ${new Date(c.created_at).toLocaleString()}</span></p>
+          <p style="margin:0 0 6px;">${esc(c.message)}</p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            ${c.recipients.map(r => `<span class="badge ${r.ack_status === 'Completed' ? 'active' : (r.user_name ? 'Draft' : 'red')}">${esc(r.department_name)}${r.user_name ? ' (' + esc(r.user_name) + (r.ack_status === 'Completed' ? ' - acknowledged' : ' - pending') + ')' : ' (no HOD configured)'}</span>`).join('')}
+          </div>
+          <div id="cc-att-${c.id}" style="margin-top:6px;"></div>
+        </div>`).join('') : '<div class="empty">No customer communications logged yet.</div>'}
+    </div>
+  `);
+  history.forEach(c => renderAttachmentsWidget('customer_communication', c.id, document.getElementById(`cc-att-${c.id}`)));
+}
+window.sendCustomerCommunication = async (projectId) => {
+  const errEl = document.getElementById(`cc-err-${projectId}`);
+  errEl.style.display = 'none';
+  const departmentIds = Array.from(document.querySelectorAll(`.cc-dept-${projectId}:checked`)).map(cb => Number(cb.value));
+  try {
+    const r = await api(`/projects/${projectId}/communications`, { method: 'POST', body: JSON.stringify({
+      subject: val(`cc-subject-${projectId}`), message: val(`cc-message-${projectId}`), department_ids: departmentIds,
+    })});
+    if (r.skipped && r.skipped.length) alert(`Sent, but no HOD/Supervisor is configured for: ${r.skipped.join(', ')}. Follow up with them some other way.`);
+    await renderProjectCommunications(projectId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.excludeJobCardFromPlan = async (jcId) => {
   if (!confirm("Exclude this department from this project's flow? It won't need a job card at all, and can be brought back any time from the Excluded list below.")) return;
