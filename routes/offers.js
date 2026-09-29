@@ -11,6 +11,7 @@ const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
 const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
+const { compressImage, compressUploadedImageFile } = require('../lib/imageCompress');
 
 const router = express.Router();
 router.use(authRequired);
@@ -27,6 +28,20 @@ const upload = multer({
 });
 
 function offerPerm() { return requirePermission('sales_order.manage', 'lead.manage'); }
+
+// Runs right after multer's upload.single('image') so every offer/library
+// image is shrunk on the way in, not just at PDF/Word render time - keeps
+// disk usage down and makes every later generation cheaper. A compression
+// failure never fails the upload itself (see lib/imageCompress.js).
+async function compressUploadedImage(req, res, next) {
+  if (!req.file) return next();
+  try {
+    const newFilename = await compressUploadedImageFile(req.file.path);
+    req.file.filename = newFilename;
+    req.file.path = path.join(path.dirname(req.file.path), newFilename);
+  } catch (e) { /* leave the file exactly as multer saved it */ }
+  next();
+}
 
 // A scope line picked from the Section Title library needs its own copy of
 // the library's picture, not a shared reference to it - editing/deleting an
@@ -137,7 +152,7 @@ router.put('/field-options/:id', requireRole('Admin'), (req, res) => {
 router.get('/section-titles', offerPerm(), (req, res) => {
   res.json(db.prepare('SELECT * FROM section_title_library ORDER BY title').all());
 });
-router.post('/section-titles', requireRole('Admin'), upload.single('image'), (req, res) => {
+router.post('/section-titles', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
   const { title, description, summary } = req.body;
   if (!String(title || '').trim()) return res.status(400).json({ error: 'Enter a title.' });
   const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
@@ -149,7 +164,7 @@ router.post('/section-titles', requireRole('Admin'), upload.single('image'), (re
     res.status(400).json({ error: 'That section title already exists in the library.' });
   }
 });
-router.put('/section-titles/:id', requireRole('Admin'), upload.single('image'), (req, res) => {
+router.put('/section-titles/:id', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
   const existing = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const { title, description, summary } = req.body;
@@ -546,7 +561,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
-router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
+router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
   const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
   const q = Number(qty || 1), rate = Number(unit_price || 0);
@@ -571,7 +586,7 @@ router.post('/:id/items', offerPerm(), upload.single('image'), (req, res) => {
   res.json({ id: info.lastInsertRowid, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
-router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), (req, res) => {
+router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
   const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
@@ -700,15 +715,20 @@ router.put('/:id/terms', offerPerm(), (req, res) => {
 // Puppeteer renders from an HTML string with no access to this server's own
 // disk, so every image an offer PDF might show (a Scope-of-Supply item's
 // picture, or a reference-only Equipment Description entry's) has to travel
-// as an inline data: URI rather than a file path.
-function withImageDataUri(row) {
+// as an inline data: URI rather than a file path. Also re-runs the same
+// compressImage() pass used at upload time (lib/imageCompress.js) on
+// whatever bytes are actually on disk - a safety net for any image that was
+// uploaded before that upload-time compression existed, so an old offer's
+// PDF/Word doc shrinks too without needing a one-off backfill migration.
+async function withImageDataUri(row) {
   let image_data_uri = null;
   if (row.image_path) {
     try {
       const abs = resolveUploadPath(row.image_path);
-      const ext = path.extname(abs).slice(1).toLowerCase() || 'jpeg';
-      const b64 = fs.readFileSync(abs).toString('base64');
-      image_data_uri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}`;
+      const original = fs.readFileSync(abs);
+      const { buffer, mime } = await compressImage(original);
+      const ext = mime ? 'jpeg' : (path.extname(abs).slice(1).toLowerCase() || 'jpeg');
+      image_data_uri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${buffer.toString('base64')}`;
     } catch (e) { /* image missing on disk - skip silently */ }
   }
   return { ...row, image_data_uri };
@@ -717,8 +737,8 @@ function withImageDataUri(row) {
 router.get('/:id/pdf', async (req, res) => {
   const full = getFullOffer(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
-  const itemsForPdf = full.items.map(withImageDataUri);
-  const equipmentReferencesForPdf = full.equipmentReferences.map(withImageDataUri);
+  const itemsForPdf = await Promise.all(full.items.map(withImageDataUri));
+  const equipmentReferencesForPdf = await Promise.all(full.equipmentReferences.map(withImageDataUri));
   try {
     const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms, equipmentReferencesForPdf);
     const filename = buildDownloadFilename({
@@ -746,8 +766,8 @@ router.get('/:id/pdf', async (req, res) => {
 router.get('/:id/docx', async (req, res) => {
   const full = getFullOffer(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
-  const itemsForDocx = full.items.map(withImageDataUri);
-  const equipmentReferencesForDocx = full.equipmentReferences.map(withImageDataUri);
+  const itemsForDocx = await Promise.all(full.items.map(withImageDataUri));
+  const equipmentReferencesForDocx = await Promise.all(full.equipmentReferences.map(withImageDataUri));
   try {
     const gen = await generateOfferDocx(full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, getCompanySettings(), equipmentReferencesForDocx);
     const filename = buildDownloadFilename({
