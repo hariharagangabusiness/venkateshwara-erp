@@ -459,7 +459,11 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
 
 CREATE TABLE IF NOT EXISTS purchase_orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  po_no TEXT UNIQUE,
+  -- Not UNIQUE: a multi-item PO is several rows sharing one po_no (one row
+  -- per line item - see routes/purchase.js's POST /orders and
+  -- db/index.js's migratePurchaseOrdersDropPoNoUnique() for how an existing
+  -- database with the old UNIQUE constraint gets upgraded in place).
+  po_no TEXT,
   purchase_request_id INTEGER REFERENCES purchase_requests(id),
   vendor_id INTEGER NOT NULL REFERENCES vendors(id),
   item_id INTEGER REFERENCES items(id),
@@ -1033,16 +1037,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Per-user Dashboard widget order (drag-to-reorder) - a JSON array of panel
--- keys, e.g. '["keyMetrics","inventoryOpex","customMetrics",...]'. Stored
--- per-user (not per-browser/localStorage) so it follows an account across
--- devices, same way every other "your" setting in this app does. No row
--- means the Dashboard falls back to its built-in default order - see
--- public/js/app.js's DASHBOARD_PANEL_ORDER_DEFAULT.
-CREATE TABLE IF NOT EXISTS user_dashboard_layout (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id),
+-- Per-user, per-page panel order (drag-to-reorder) - a JSON array of panel
+-- keys, e.g. '["keyMetrics","inventoryOpex","customMetrics",...]'. page_key
+-- identifies which page the saved order belongs to ('dashboard', 'purchase-
+-- requests', 'purchase-orders', 'store', ...) - one page's saved order never
+-- touches another's. Stored per-user (not per-browser/localStorage) so it
+-- follows an account across devices, same way every other "your" setting in
+-- this app does. No row for a given (user, page) means that page falls back
+-- to its own built-in default order - see public/js/app.js's
+-- resolvePanelOrder(). Originally named user_dashboard_layout and scoped to
+-- the Dashboard alone (Round: PDF/PO/layout work) - db/index.js's
+-- migrateUserDashboardLayoutToPageLayout() upgrades an existing database's
+-- old table+rows in place.
+CREATE TABLE IF NOT EXISTS user_page_layout (
+  user_id INTEGER REFERENCES users(id),
+  page_key TEXT NOT NULL,
   panel_order TEXT NOT NULL,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, page_key)
 );
 
 -- Bank Guarantee edit/delete approval gate, same shape and reasoning as

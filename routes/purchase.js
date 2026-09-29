@@ -579,8 +579,25 @@ router.get('/orders', (req, res) => {
     ORDER BY po.id DESC
   `).all());
 });
+// A "Purchase Order" is still stored as one purchase_orders row per line
+// item (no separate po_items table - see the payment_terms migration note
+// in db/index.js), several rows sharing one po_no for a multi-item PO. The
+// route below accepts either the current multi-line shape (`lines: [...]`,
+// what the New Purchase Order form's Add Line Item button sends) or the
+// older single-item shape (item_id/quantity/rate/... at the top level, no
+// `lines`) for any other caller - both funnel into the same insert loop.
 router.post('/orders', requirePermission('purchase_order.manage'), (req, res) => {
-  const { purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, hsn_code, gst_rate, terms, delivery_date, company_address_id } = req.body;
+  const {
+    purchase_request_id, vendor_id, terms, delivery_date, company_address_id, payment_terms,
+    ld_percentage, ld_cap_percentage, ld_trigger_notes,
+  } = req.body;
+  const lines = Array.isArray(req.body.lines) && req.body.lines.length
+    ? req.body.lines
+    : [{
+        item_id: req.body.item_id, quantity: req.body.quantity, rate: req.body.rate,
+        hsn_code: req.body.hsn_code, gst_rate: req.body.gst_rate,
+        purchase_request_item_id: req.body.purchase_request_item_id,
+      }];
   // Validate references before hitting the DB - an empty/missing vendor or
   // item (e.g. no vendors created yet, or a stale item id) otherwise surfaces
   // as a raw "FOREIGN KEY constraint failed" 500, which reads as "Request
@@ -588,40 +605,57 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   if (!vendor_id) return res.status(400).json({ error: 'Pick a vendor. If none exist yet, add one under Vendor Master first.' });
   const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(vendor_id);
   if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists - refresh the page and pick a vendor again.' });
-  if (item_id) {
-    const item = db.prepare('SELECT id FROM items WHERE id = ?').get(item_id);
-    if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
-  }
   if (company_address_id) {
     const addr = db.prepare('SELECT id FROM company_addresses WHERE id = ?').get(company_address_id);
     if (!addr) return res.status(400).json({ error: 'That company address no longer exists - refresh the page and pick one again.' });
   }
-  if (!quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
-  if (!rate || Number(rate) <= 0) return res.status(400).json({ error: 'Enter a rate greater than 0.' });
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const prefix = lines.length > 1 ? `Line ${i + 1}: ` : '';
+    if (l.item_id) {
+      const item = db.prepare('SELECT id FROM items WHERE id = ?').get(l.item_id);
+      if (!item) return res.status(400).json({ error: `${prefix}that item no longer exists - refresh the page and pick an item again.` });
+    }
+    if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
+    if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
+  }
   const poNo = 'PO-' + Date.now();
-  const total = quantity * rate;
-  const gstRate = gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18;
-  const gstAmount = total * gstRate / 100;
-  const info = db.prepare(`
+  const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(poNo, purchase_request_id || null, purchase_request_item_id || null, vendor_id, item_id || null, quantity, rate, total, req.user.id,
-    hsn_code || null, gstRate, gstAmount, terms || null, delivery_date || null, company_address_id || null);
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `);
+  const ids = [];
+  db.transaction(() => {
+    for (const l of lines) {
+      const quantity = Number(l.quantity), rate = Number(l.rate);
+      const total = quantity * rate;
+      const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : 18;
+      const gstAmount = total * gstRate / 100;
+      const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
+        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, terms || null, delivery_date || null,
+        company_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null);
+      ids.push(info.lastInsertRowid);
+    }
+  })();
   if (purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(purchase_request_id);
-  res.json({ id: info.lastInsertRowid, po_no: poNo });
+  res.json({ id: ids[0], ids, po_no: poNo });
 });
 
 // Commercial terms (Round 16): LD clause (delivery_date already exists on
 // purchase_orders from Round 5 and doubles as the promised delivery date).
+// These are all header-level fields shared by every line of a multi-item PO
+// (see POST /orders' `lines` support) - applied to every row sharing this
+// PO's po_no, not just the one line the Terms panel happened to be opened
+// from, so they can't drift out of sync across a multi-line PO's rows.
 router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.manage'), (req, res) => {
-  const order = db.prepare('SELECT id FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const order = db.prepare('SELECT id, po_no FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes } = req.body;
+  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes, payment_terms } = req.body;
   db.prepare(`
-    UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?
-    WHERE id = ?
-  `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, req.params.id);
+    UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?, payment_terms = COALESCE(?, payment_terms)
+    WHERE po_no = ?
+  `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, payment_terms || null, order.po_no);
   res.json({ ok: true });
 });
 
@@ -680,6 +714,18 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     existing.id
   );
   if (changes.length) poAuditLog(req.user.id, 'po_edit', existing.id, changes.join('; '));
+  // Vendor and Our Address are header-level fields shared by every line of
+  // a multi-item PO (see POST /orders' `lines` support) - propagate a
+  // change to them onto every sibling row sharing this PO's po_no so they
+  // can't drift out of sync (item/qty/rate/hsn/gst/terms/delivery_date stay
+  // genuinely per-line, so they're deliberately NOT propagated here).
+  if (req.body.vendor_id !== undefined || req.body.company_address_id !== undefined) {
+    db.prepare(`UPDATE purchase_orders SET vendor_id=?, company_address_id=? WHERE po_no = ? AND id != ?`).run(
+      req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
+      req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
+      existing.po_no, existing.id
+    );
+  }
   res.json({ ok: true });
 });
 
@@ -915,7 +961,13 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
   const findItem = db.prepare('SELECT * FROM items WHERE item_code = ? OR barcode = ?');
-  const findPoByNo = db.prepare('SELECT * FROM purchase_orders WHERE po_no = ?');
+  // A multi-item PO is several purchase_orders rows sharing one po_no (see
+  // POST /orders) - matching by po_no alone would resolve to whichever
+  // sibling row SQLite happens to return first, posting this receipt
+  // against the wrong line item. item_id (already resolved above from this
+  // same row's item_code_or_barcode) disambiguates which line the receipt
+  // is actually for.
+  const findPoByNoAndItem = db.prepare('SELECT * FROM purchase_orders WHERE po_no = ? AND item_id = ?');
   const insertMove = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, moved_by) VALUES (?,?,?,?,?)`);
   const adjustStock = db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = ?');
   const updatePoStatus = db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?');
@@ -939,8 +991,8 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
         if (type !== 'IN') {
           warnings.push(`Row ${rowNum}: po_no is only applied to IN movements - ignored for this OUT row.`);
         } else {
-          po = findPoByNo.get(poNo);
-          if (!po) { warnings.push(`Row ${rowNum}: no Purchase Order matches "${poNo}" - imported without linking to a PO.`); }
+          po = findPoByNoAndItem.get(poNo, item.id);
+          if (!po) { warnings.push(`Row ${rowNum}: no Purchase Order matches "${poNo}" for item "${item.name}" - imported without linking to a PO.`); }
           else if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
             warnings.push(`Row ${rowNum}: PO "${poNo}" is already ${po.status} - imported without linking to it.`);
             po = null;
@@ -1081,6 +1133,12 @@ router.get('/store/challans/:id/pdf', async (req, res) => {
 });
 
 // ---- Purchase Order: PDF / Word / Email to vendor ----
+// A multi-item PO is several purchase_orders rows sharing one po_no (see
+// POST /orders) - `po` here is the one row the caller asked for (so the
+// route path/permission checks stay per-id), but `lines` is every row
+// under that same po_no, which is what the PDF/DOCX/email actually render
+// as one document's item table. A single-item PO just gets a one-row
+// `lines` array, so the generators below never need to special-case it.
 function loadPoBundle(id) {
   const po = db.prepare(`
     SELECT po.*, i.name as item_name FROM purchase_orders po LEFT JOIN items i ON i.id = po.item_id WHERE po.id = ?
@@ -1090,14 +1148,17 @@ function loadPoBundle(id) {
   const companyAddress = po.company_address_id
     ? db.prepare('SELECT * FROM company_addresses WHERE id = ?').get(po.company_address_id)
     : null;
-  return { po, vendor, companyAddress };
+  const lines = db.prepare(`
+    SELECT po.*, i.name as item_name FROM purchase_orders po LEFT JOIN items i ON i.id = po.item_id WHERE po.po_no = ? ORDER BY po.id
+  `).all(po.po_no);
+  return { po, vendor, companyAddress, lines };
 }
 
 router.get('/orders/:id/pdf', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
   try {
-    const gen = await generatePoPdf(bundle.po, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
+    const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1118,7 +1179,7 @@ router.get('/orders/:id/docx', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
   try {
-    const gen = await generatePoDocx(bundle.po, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
+    const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1139,12 +1200,12 @@ router.get('/orders/:id/docx', async (req, res) => {
 router.post('/orders/:id/email', requirePermission('purchase_order.manage'), async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
-  const { po, vendor, companyAddress } = bundle;
+  const { po, vendor, companyAddress, lines } = bundle;
   const toAddress = (vendor && (vendor.po_email || vendor.email)) || null;
   if (!toAddress) return res.status(400).json({ error: 'This vendor has no PO/document delivery email on file - add one under Vendor Master.' });
   let gen;
   try {
-    gen = await generatePoPdf(po, vendor, getCompanySettings(), companyAddress);
+    gen = await generatePoPdf(po, lines, vendor, getCompanySettings(), companyAddress);
     const pdfBuffer = fs.readFileSync(gen.outPath);
     const attachmentName = buildDownloadFilename({
       docType: 'Purchase_Order',

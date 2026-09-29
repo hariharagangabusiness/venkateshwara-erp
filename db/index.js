@@ -901,12 +901,120 @@ const MIGRATIONS = [
   // reliable enough on its own.
   `ALTER TABLE rfq_request_vendors ADD COLUMN sent_message_id TEXT`,
   `ALTER TABLE rfq_request_emails ADD COLUMN sent_message_id TEXT`,
+
+  // ---- Offer Equipment Description references (customer-reference-only,
+  // decoupled from pricing): lets an offer show a library item's picture and
+  // summary on the PDF's Equipment Description page purely for the
+  // customer's reference, without adding it as a priced Scope-of-Supply
+  // line - e.g. a related product a customer would recognize even though
+  // it's not part of what's being quoted. Deliberately its own table rather
+  // than a "reference only" flag on offer_items, so it can never affect
+  // pricing/grand-total logic anywhere that reads offer_items. title/summary/
+  // image_path are copied from the library entry at the moment it's picked
+  // (section_title_library_id is kept only as a soft trace of where it came
+  // from, same as offer_items' relationship to the library) - NOT resolved
+  // live at PDF render time, so editing or deleting the library entry later
+  // never changes what an already-generated/sent offer shows, consistent
+  // with this app's offer-immutability rules.
+  `CREATE TABLE IF NOT EXISTS offer_equipment_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_id INTEGER NOT NULL REFERENCES offers(id),
+    section_title_library_id INTEGER REFERENCES section_title_library(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    image_path TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  // Purchase Order line items (Round: PO multi-line items): payment_terms is
+  // a header-level field, same as delivery_date/ld_*/terms - a multi-item PO
+  // is still stored as one purchase_orders row per line item (see
+  // routes/purchase.js's POST /orders `lines` support), all sharing one
+  // po_no, so this column is duplicated onto every line's row and kept in
+  // sync across them by PATCH /orders/:id/commercial-terms.
+  `ALTER TABLE purchase_orders ADD COLUMN payment_terms TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 }
+
+// purchase_orders.po_no was originally UNIQUE (one row = one PO = one item),
+// but a multi-item PO (Round: PO multi-line items) is now several rows
+// sharing one po_no by design (see routes/purchase.js's POST /orders) - the
+// old UNIQUE constraint blocks exactly that. SQLite has no ALTER TABLE DROP
+// CONSTRAINT, so this rebuilds the table (the standard SQLite technique for
+// dropping a column constraint), preserving every existing row - guarded so
+// it only ever runs once, by checking the live table's own CREATE SQL for
+// the constraint before doing anything. schema.sql's own CREATE TABLE
+// already omits UNIQUE, so this only fires against a database created
+// before this change; a brand-new database never sees po_no as UNIQUE in
+// the first place and this is a same-boot no-op for it.
+function migratePurchaseOrdersDropPoNoUnique() {
+  const row = raw.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_orders'`).get();
+  if (!row || !/po_no\s+TEXT\s+UNIQUE/i.test(row.sql)) return;
+  raw.exec(`
+    BEGIN;
+    CREATE TABLE purchase_orders_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      po_no TEXT,
+      purchase_request_id INTEGER REFERENCES purchase_requests(id),
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+      item_id INTEGER REFERENCES items(id),
+      quantity REAL NOT NULL,
+      rate REAL NOT NULL,
+      total_value REAL,
+      status TEXT DEFAULT 'Open',
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      hsn_code TEXT,
+      gst_rate REAL DEFAULT 18,
+      gst_amount REAL DEFAULT 0,
+      terms TEXT,
+      delivery_date TEXT,
+      ld_percentage REAL,
+      ld_cap_percentage REAL,
+      ld_trigger_notes TEXT,
+      purchase_request_item_id INTEGER REFERENCES purchase_request_items(id),
+      company_address_id INTEGER REFERENCES company_addresses(id),
+      payment_terms TEXT
+    );
+    INSERT INTO purchase_orders_new (id, po_no, purchase_request_id, vendor_id, item_id, quantity, rate, total_value,
+      status, created_by, created_at, hsn_code, gst_rate, gst_amount, terms, delivery_date, ld_percentage,
+      ld_cap_percentage, ld_trigger_notes, purchase_request_item_id, company_address_id)
+    SELECT id, po_no, purchase_request_id, vendor_id, item_id, quantity, rate, total_value,
+      status, created_by, created_at, hsn_code, gst_rate, gst_amount, terms, delivery_date, ld_percentage,
+      ld_cap_percentage, ld_trigger_notes, purchase_request_item_id, company_address_id
+    FROM purchase_orders;
+    DROP TABLE purchase_orders;
+    ALTER TABLE purchase_orders_new RENAME TO purchase_orders;
+    COMMIT;
+  `);
+}
+migratePurchaseOrdersDropPoNoUnique();
+
+// user_dashboard_layout (Dashboard-only, one row per user) was generalized
+// into user_page_layout (one row per user+page - see the table's own
+// comment in schema.sql) so the same drag-to-reorder mechanism could extend
+// to the Purchase and Store & Inventory pages. schema.sql's own CREATE
+// TABLE IF NOT EXISTS above already brings a database up to the new table;
+// this only needs to carry over an existing database's saved Dashboard
+// layouts (as page_key='dashboard') before dropping the old table - a
+// fresh database never had the old table and this is a no-op for it.
+function migrateUserDashboardLayoutToPageLayout() {
+  const oldTable = raw.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='user_dashboard_layout'`).get();
+  if (!oldTable) return;
+  raw.exec(`
+    INSERT INTO user_page_layout (user_id, page_key, panel_order, updated_at)
+    SELECT user_id, 'dashboard', panel_order, updated_at FROM user_dashboard_layout
+    WHERE true
+    ON CONFLICT(user_id, page_key) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at;
+    DROP TABLE user_dashboard_layout;
+  `);
+}
+migrateUserDashboardLayoutToPageLayout();
 
 // ---- Round 40: Offer immutability - child-table triggers ----
 // offers' own two triggers live in schema.sql; these four child tables all
@@ -917,7 +1025,7 @@ for (const stmt of MIGRATIONS) {
 // because these triggers' bodies reference offers.locked, which the
 // migration just added - CREATE TRIGGER resolves that column reference at
 // creation time, so the column must already exist.
-for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms']) {
+for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references']) {
   raw.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_update
     BEFORE UPDATE ON ${table}

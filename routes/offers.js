@@ -415,7 +415,8 @@ function getFullOffer(id) {
   const techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const terms = db.prepare('SELECT * FROM offer_terms WHERE offer_id = ? ORDER BY sort_order, id').all(id);
-  return { offer, client, items, techSpecs, boughtOut, terms };
+  const equipmentReferences = db.prepare('SELECT * FROM offer_equipment_references WHERE offer_id = ? ORDER BY sort_order, id').all(id);
+  return { offer, client, items, techSpecs, boughtOut, terms, equipmentReferences };
 }
 
 router.get('/:id', (req, res) => {
@@ -627,6 +628,36 @@ router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
+// ===================== Equipment Description references (customer-reference
+// pictures/summaries, decoupled from pricing - see db/index.js's
+// offer_equipment_references comment) =====================
+router.post('/:id/equipment-references', offerPerm(), (req, res) => {
+  const { section_title_library_id, revision_reason } = req.body;
+  if (!section_title_library_id) return res.status(400).json({ error: 'Pick a library entry.' });
+  const lib = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(section_title_library_id);
+  if (!lib) return res.status(400).json({ error: 'That library entry no longer exists - refresh and pick again.' });
+  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
+  const imagePath = lib.image_path ? copyLibraryImage(lib.image_path) : null;
+  const info = db.prepare(`
+    INSERT INTO offer_equipment_references (offer_id, section_title_library_id, title, summary, image_path, sort_order)
+    VALUES (?,?,?,?,?,?)
+  `).run(version.id, lib.id, lib.title, lib.summary || null, imagePath, req.body.sort_order || 0);
+  res.json({ id: info.lastInsertRowid, newVersion: version.forked, offerId: version.id });
+});
+router.delete('/:id/equipment-references/:refId', offerPerm(), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_equipment_references WHERE id = ?').get(req.params.refId);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason);
+  const targetRefId = version.equipmentRefIdMap.get(existing.id);
+  // Same reasoning as the Scope-of-Supply item delete above - a forked
+  // copy's row shares the physical file with the frozen earlier version's.
+  if (existing.image_path && !version.forked) {
+    fs.unlink(resolveUploadPath(existing.image_path), () => {});
+  }
+  db.prepare('DELETE FROM offer_equipment_references WHERE id = ?').run(targetRefId);
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
+});
+
 // ===================== Bulk-replace helpers for the editable sheets =====================
 // Each of tech-specs / bought-out / terms is a simple ordered key-value list;
 // the frontend sends the full current list back and we replace wholesale -
@@ -659,23 +690,30 @@ router.put('/:id/terms', offerPerm(), (req, res) => {
 
 // ===================== PDF generation =====================
 
+// Puppeteer renders from an HTML string with no access to this server's own
+// disk, so every image an offer PDF might show (a Scope-of-Supply item's
+// picture, or a reference-only Equipment Description entry's) has to travel
+// as an inline data: URI rather than a file path.
+function withImageDataUri(row) {
+  let image_data_uri = null;
+  if (row.image_path) {
+    try {
+      const abs = resolveUploadPath(row.image_path);
+      const ext = path.extname(abs).slice(1).toLowerCase() || 'jpeg';
+      const b64 = fs.readFileSync(abs).toString('base64');
+      image_data_uri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}`;
+    } catch (e) { /* image missing on disk - skip silently */ }
+  }
+  return { ...row, image_data_uri };
+}
+
 router.get('/:id/pdf', async (req, res) => {
   const full = getFullOffer(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
-  const itemsForPdf = full.items.map(it => {
-    let image_data_uri = null;
-    if (it.image_path) {
-      try {
-        const abs = resolveUploadPath(it.image_path);
-        const ext = path.extname(abs).slice(1).toLowerCase() || 'jpeg';
-        const b64 = fs.readFileSync(abs).toString('base64');
-        image_data_uri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}`;
-      } catch (e) { /* image missing on disk - skip silently */ }
-    }
-    return { ...it, image_data_uri };
-  });
+  const itemsForPdf = full.items.map(withImageDataUri);
+  const equipmentReferencesForPdf = full.equipmentReferences.map(withImageDataUri);
   try {
-    const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms);
+    const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms, equipmentReferencesForPdf);
     const filename = buildDownloadFilename({
       docType: 'Offer',
       reference: full.offer.offer_no,

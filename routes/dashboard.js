@@ -70,24 +70,27 @@ router.get('/window-summary', (req, res) => {
 });
 function today() { return new Date().toISOString().slice(0, 10); }
 
-// Per-user Dashboard widget order (drag-to-reorder) - see
-// db/schema.sql's user_dashboard_layout comment. null means "no saved
-// layout yet", which the frontend interprets as its own built-in default.
-router.get('/layout', (req, res) => {
-  const row = db.prepare('SELECT panel_order FROM user_dashboard_layout WHERE user_id = ?').get(req.user.id);
+// Per-user, per-page panel order (drag-to-reorder) - see db/schema.sql's
+// user_page_layout comment. Originally Dashboard-only (page_key was
+// implicit); :pageKey now lets any page (Purchase Requests/Orders, Vendors,
+// the Store & Inventory pages, ...) save its own independent order under
+// the same account. null means "no saved layout yet for this page", which
+// the frontend interprets as that page's own built-in default order.
+router.get('/layout/:pageKey', (req, res) => {
+  const row = db.prepare('SELECT panel_order FROM user_page_layout WHERE user_id = ? AND page_key = ?').get(req.user.id, req.params.pageKey);
   res.json({ panel_order: row ? JSON.parse(row.panel_order) : null });
 });
-router.put('/layout', (req, res) => {
+router.put('/layout/:pageKey', (req, res) => {
   const order = req.body && req.body.panel_order;
   if (!Array.isArray(order) || !order.length) return res.status(400).json({ error: 'panel_order must be a non-empty array.' });
   db.prepare(`
-    INSERT INTO user_dashboard_layout (user_id, panel_order, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(user_id) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at
-  `).run(req.user.id, JSON.stringify(order));
+    INSERT INTO user_page_layout (user_id, page_key, panel_order, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, page_key) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at
+  `).run(req.user.id, req.params.pageKey, JSON.stringify(order));
   res.json({ ok: true });
 });
-router.delete('/layout', (req, res) => {
-  db.prepare('DELETE FROM user_dashboard_layout WHERE user_id = ?').run(req.user.id);
+router.delete('/layout/:pageKey', (req, res) => {
+  db.prepare('DELETE FROM user_page_layout WHERE user_id = ? AND page_key = ?').run(req.user.id, req.params.pageKey);
   res.json({ ok: true });
 });
 
