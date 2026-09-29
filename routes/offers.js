@@ -675,11 +675,17 @@ function bulkReplace(table, offerId, rows, colA, colB) {
 router.put('/:id/tech-specs', offerPerm(), (req, res) => {
   const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
   bulkReplace('offer_tech_specs', version.id, req.body.rows || [], 'spec_key', 'spec_value');
+  if (req.body.show_tech_specs !== undefined) {
+    db.prepare('UPDATE offers SET show_tech_specs = ? WHERE id = ?').run(req.body.show_tech_specs ? 1 : 0, version.id);
+  }
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/bought-out', offerPerm(), (req, res) => {
   const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
   bulkReplace('offer_bought_out_items', version.id, req.body.rows || [], 'component', 'make');
+  if (req.body.show_bought_out !== undefined) {
+    db.prepare('UPDATE offers SET show_bought_out = ? WHERE id = ?').run(req.body.show_bought_out ? 1 : 0, version.id);
+  }
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/terms', offerPerm(), (req, res) => {

@@ -2446,9 +2446,26 @@ async function afterOfferMutation(result, msg) {
     if (result && result.offerId) CURRENT_OFFER_ID = result.offerId;
     const data = await api('/offers/' + CURRENT_OFFER_ID);
     CURRENT_OFFER = data.offer;
+    refreshOfferTabLabels(data.offer);
     renderOfferTab(data);
     if (msg) showMsg(panel, msg, true);
   }
+}
+// Tab labels show "(excluded)" for a section whose "Include in generated PDF"
+// flag is off - keeps that in sync after an in-place save (saveKvTab/
+// saveTextTab) without re-rendering the whole header and losing tab focus.
+function refreshOfferTabLabels(o) {
+  const labels = {
+    tech: 'Technical Specification' + (o.show_tech_specs === 0 ? ' (excluded)' : ''),
+    boughtout: 'Make of Bought Out Items' + (o.show_bought_out === 0 ? ' (excluded)' : ''),
+    text: 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : ''),
+  };
+  const tabsBar = document.querySelector('#offer-builder-panel .tabs');
+  if (!tabsBar) return;
+  Object.entries(labels).forEach(([id, label]) => {
+    const tabEl = tabsBar.querySelector(`.tab[data-tab-id="${id}"]`);
+    if (tabEl) tabEl.textContent = label;
+  });
 }
 
 PAGES.offers = async (el) => {
@@ -2549,6 +2566,7 @@ async function renderOfferBuilder(panel) {
     ['terms', 'Terms & Conditions'],
     ['text', 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : '')],
     ['commercial', 'Commercial Terms'],
+    ['equipment-ref', 'Reference Equipment'],
     ['attachments', 'Attachments (GA Drawing / CAD)'],
   ];
   panel.innerHTML = `
@@ -2575,13 +2593,7 @@ async function renderOfferBuilder(panel) {
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
       <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
     </div>
-    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;">
-      <b style="width:100%;">Include in generated PDF:</b>
-      <label style="margin:0;font-weight:normal;"><input id="ob-show-tech" type="checkbox" ${o.show_tech_specs !== 0 ? 'checked' : ''}> Technical Specifications</label>
-      <label style="margin:0;font-weight:normal;"><input id="ob-show-boughtout" type="checkbox" ${o.show_bought_out !== 0 ? 'checked' : ''}> Make of Bought-Out Items</label>
-      <label style="margin:0;font-weight:normal;"><input id="ob-show-inclexcl" type="checkbox" ${o.show_inclusions_exclusions !== 0 ? 'checked' : ''}> Inclusions / Exclusions / Utilities</label>
-    </div>
-    <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
+    <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" data-tab-id="${id}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
@@ -2590,6 +2602,13 @@ async function renderOfferBuilder(panel) {
     </div>
   `;
   renderOfferTab(data);
+}
+// The three "Include in generated PDF" checkboxes each live inside their own
+// offer-builder tab now, so at most one is mounted in the DOM at a time -
+// falls back to the last-saved server value for whichever tab isn't active.
+function offerShowFlag(id, currentValue) {
+  const el = document.getElementById(id);
+  return el ? (el.checked ? 1 : 0) : currentValue;
 }
 window.saveOfferHeader = async () => {
   try {
@@ -2601,9 +2620,9 @@ window.saveOfferHeader = async () => {
       drawing_no: val('ob-drawing'), application: val('ob-application'), type_of_system: val('ob-type'), material_of_construction: val('ob-material'),
       inclusions: data.offer.inclusions, exclusions: data.offer.exclusions, utilities_requirement: data.offer.utilities_requirement,
       instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status, revision_reason: reason || null,
-      show_tech_specs: document.getElementById('ob-show-tech').checked ? 1 : 0,
-      show_bought_out: document.getElementById('ob-show-boughtout').checked ? 1 : 0,
-      show_inclusions_exclusions: document.getElementById('ob-show-inclexcl').checked ? 1 : 0,
+      show_tech_specs: offerShowFlag('ob-show-tech', data.offer.show_tech_specs),
+      show_bought_out: offerShowFlag('ob-show-boughtout', data.offer.show_bought_out),
+      show_inclusions_exclusions: offerShowFlag('ob-show-inclexcl', data.offer.show_inclusions_exclusions),
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Header saved');
   } catch (e) { alert(e.message); }
@@ -2654,20 +2673,20 @@ window.switchOfferTab = async (tab) => {
   CURRENT_OFFER_TAB = tab;
   const data = await api('/offers/' + CURRENT_OFFER_ID);
   CURRENT_OFFER = data.offer;
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  const idx = ['scope', 'tech', 'boughtout', 'terms', 'text', 'commercial', 'attachments'].indexOf(tab);
-  document.querySelectorAll('.tab')[idx].classList.add('active');
+  const tabsBar = document.querySelector('#offer-builder-panel .tabs');
+  if (tabsBar) tabsBar.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tabId === tab));
   renderOfferTab(data);
 };
 
 function renderOfferTab(data) {
   const el = document.getElementById('offer-tab-content');
   if (CURRENT_OFFER_TAB === 'scope') return renderScopeTab(el, data);
-  if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value', undefined, data.offer.show_tech_specs === 0);
-  if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0);
+  if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value', undefined, data.offer.show_tech_specs === 0, { id: 'ob-show-tech', field: 'show_tech_specs', label: 'Technical Specifications', checked: data.offer.show_tech_specs !== 0 });
+  if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0, { id: 'ob-show-boughtout', field: 'show_bought_out', label: 'Make of Bought-Out Items', checked: data.offer.show_bought_out !== 0 });
   if (CURRENT_OFFER_TAB === 'terms') return renderKvTab(el, data.terms, 'term_key', 'term_value', 'terms', 'Term', 'Value', OFFER_TERM_LIBRARY);
   if (CURRENT_OFFER_TAB === 'text') return renderTextTab(el, data.offer, data.offer.show_inclusions_exclusions === 0);
   if (CURRENT_OFFER_TAB === 'commercial') return renderOfferCommercialTab(el, data.offer);
+  if (CURRENT_OFFER_TAB === 'equipment-ref') return renderEquipmentReferenceTab(el, data);
   if (CURRENT_OFFER_TAB === 'attachments') return renderAttachmentsWidget('offer', data.offer.id, el, ['GADrawing', 'CADFile', 'Other']);
 }
 
@@ -2744,23 +2763,27 @@ async function renderScopeTab(el, data) {
       <button class="btn" id="it-submit-btn" onclick="addOfferItem()">Add Line</button>
       <button class="btn outline" id="it-cancel-btn" onclick="cancelEditOfferItem()" style="display:none;">Cancel</button>
     </div>
-    <div class="hod-tools" style="margin-top:20px;border-top:1px dashed var(--border);padding-top:14px;">
-      <h4 style="margin-top:0;">Reference Equipment (Customer Reference Only)</h4>
-      <p class="muted">Shows a library item's picture and summary on the PDF's Equipment Description page for the customer's reference - not priced, not part of Scope of Supply. Use this for a related product the customer would recognize even though it isn't being quoted here.</p>
-      <table><thead><tr><th>Picture</th><th>Title</th><th>Summary</th><th></th></tr></thead>
-      <tbody>${equipmentRefs.map(r => `
-        <tr>
-          <td>${r.image_path ? `<img src="${r.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
-          <td>${esc(r.title)}</td>
-          <td style="white-space:pre-wrap;max-width:260px;">${esc(r.summary)||'-'}</td>
-          <td><button class="btn small red" onclick="deleteEquipmentReference(${r.id})">Remove</button></td>
-        </tr>`).join('') || '<tr><td colspan="4" class="empty">No reference equipment added.</td></tr>'}
-      </tbody></table>
-      <div class="form-grid" style="margin-top:8px;">
-        <div><label>Add from library</label><select id="eqref-select"><option value="">- Select a library entry -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
-      </div>
-      <button class="btn small outline" type="button" onclick="addEquipmentReference()">Add Reference</button>
+  `;
+}
+async function renderEquipmentReferenceTab(el, data) {
+  const equipmentRefs = data.equipmentReferences || [];
+  const sectionTitles = await api('/offers/section-titles').catch(() => []);
+  window.__SECTION_TITLES = sectionTitles;
+  el.innerHTML = `
+    <p class="muted">Shows a library item's picture and summary on the PDF's Equipment Description page for the customer's reference - not priced, not part of Scope of Supply. Use this for a related product the customer would recognize even though it isn't being quoted here.</p>
+    <table><thead><tr><th>Picture</th><th>Title</th><th>Summary</th><th></th></tr></thead>
+    <tbody>${equipmentRefs.map(r => `
+      <tr>
+        <td>${r.image_path ? `<img src="${r.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
+        <td>${esc(r.title)}</td>
+        <td style="white-space:pre-wrap;max-width:260px;">${esc(r.summary)||'-'}</td>
+        <td><button class="btn small red" onclick="deleteEquipmentReference(${r.id})">Remove</button></td>
+      </tr>`).join('') || '<tr><td colspan="4" class="empty">No reference equipment added.</td></tr>'}
+    </tbody></table>
+    <div class="form-grid" style="margin-top:8px;">
+      <div><label>Add from library</label><select id="eqref-select"><option value="">- Select a library entry -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
     </div>
+    <button class="btn small outline" type="button" onclick="addEquipmentReference()">Add Reference</button>
   `;
 }
 window.addEquipmentReference = async () => {
@@ -2848,7 +2871,7 @@ window.deleteOfferItem = async (itemId) => {
   } catch (e) { alert(e.message); }
 };
 
-function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel, library, disabled) {
+function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel, library, disabled, flag) {
   // `library` (offer_clause_library rows, category 'term') is only passed
   // for the Terms & Conditions tab - tech-specs/bought-out have no library
   // and keep the plain "+ Add Row" behavior. When Offer Governance's
@@ -2857,12 +2880,14 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
   // rows already on the offer stay fully editable/removable either way.
   const hasLibrary = library !== undefined;
   const strict = hasLibrary && OFFER_REQUIRE_LIBRARY_CLAUSES && ME.role !== 'Admin';
-  // `disabled` is set when the matching "Include in generated PDF" checkbox
-  // above is off - the section is excluded from the offer, so its rows are
-  // shown read-only instead of silently staying editable but invisible in
-  // the PDF.
+  // `flag` ({id, field, label, checked}) is only passed for tabs that have a
+  // matching "Include in generated PDF" toggle (tech-specs/bought-out) - the
+  // Terms tab has none. `disabled` mirrors the flag's last-saved server value.
   el.innerHTML = `
-    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer (see "Include in generated PDF" above) - re-enable it there to edit.</div>` : ''}
+    ${flag ? `<label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border-radius:6px;font-weight:600;">
+      <input id="${flag.id}" type="checkbox" ${flag.checked ? 'checked' : ''}> Include ${esc(flag.label)} in generated PDF
+    </label>` : ''}
+    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer - check the box above and click Save to re-enable it.</div>` : ''}
     <table><thead><tr><th>${keyLabel}</th><th>${valLabel}</th><th></th></tr></thead>
     <tbody id="kv-rows">${rows.map((r, i) => `
       <tr data-i="${i}">
@@ -2878,7 +2903,7 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
       <button class="btn small outline" onclick="addKvRowFromLibrary()">+ Add From Library</button>
     </div>` : '' }
     ${disabled ? '' : !strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
-    ${disabled ? '' : `<button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}')">Save</button>`}
+    ${(flag || !disabled) ? `<button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}'${flag ? `, '${flag.field}', '${flag.id}'` : ''})">Save</button>` : ''}
   `;
   if (hasLibrary) el.dataset.library = JSON.stringify(library);
 }
@@ -2905,7 +2930,7 @@ window.addKvRowFromLibrary = () => {
   tbody.appendChild(tr);
   select.value = '';
 };
-window.saveKvTab = async (endpoint, keyField, valField) => {
+window.saveKvTab = async (endpoint, keyField, valField, flagField, flagCheckboxId) => {
   const rows = Array.from(document.querySelectorAll('#kv-rows tr')).map(tr => ({
     [keyField]: tr.querySelector('.kv-key').value,
     [valField]: tr.querySelector('.kv-val').value
@@ -2913,7 +2938,12 @@ window.saveKvTab = async (endpoint, keyField, valField) => {
   try {
     const reason = confirmOfferRevision(CURRENT_OFFER);
     if (reason === null) return;
-    const r = await api(`/offers/${CURRENT_OFFER_ID}/${endpoint}`, { method: 'PUT', body: JSON.stringify({ rows, revision_reason: reason || null }) });
+    const body = { rows, revision_reason: reason || null };
+    if (flagField) {
+      const cb = document.getElementById(flagCheckboxId);
+      if (cb) body[flagField] = cb.checked ? 1 : 0;
+    }
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/${endpoint}`, { method: 'PUT', body: JSON.stringify(body) });
     await afterOfferMutation(r, 'Saved');
   } catch (e) { alert(e.message); }
 };
@@ -2951,14 +2981,18 @@ window.insertTextLibraryClause = (textareaId, category) => {
 function renderTextTab(el, offer, disabled) {
   const fieldMap = { 'txt-inclusions': 'inclusions', 'txt-exclusions': 'exclusions', 'txt-utilities': 'utilities_requirement', 'txt-air': 'instrument_air_supply' };
   const rowsAttr = { 'txt-inclusions': 3, 'txt-exclusions': 6, 'txt-utilities': 2, 'txt-air': 3 };
-  // `disabled` mirrors renderKvTab's - the "Inclusions / Exclusions / Utilities"
-  // checkbox above is off, so this whole tab is excluded from the offer.
-  el.innerHTML = (disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer (see "Include in generated PDF" above) - re-enable it there to edit.</div>` : '') +
+  // `disabled` mirrors renderKvTab's - the checkbox below is off, so this
+  // whole tab is excluded from the offer.
+  el.innerHTML = `
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border-radius:6px;font-weight:600;">
+      <input id="ob-show-inclexcl" type="checkbox" ${offer.show_inclusions_exclusions !== 0 ? 'checked' : ''}> Include Inclusions / Exclusions / Utilities in generated PDF
+    </label>
+    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer - check the box above and click Save to re-enable it.</div>` : ''}` +
     OFFER_TEXT_FIELDS.map(([textareaId, category, label]) => `
     <label style="margin-top:10px;display:block;">${label}</label>
     <textarea id="${textareaId}" rows="${rowsAttr[textareaId]}" ${disabled ? 'disabled' : ''} style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer[fieldMap[textareaId]])}</textarea>
     ${disabled ? '' : textLibraryPicker(textareaId, category)}
-  `).join('') + (disabled ? '' : `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`);
+  `).join('') + `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`;
 }
 window.saveTextTab = async () => {
   try {
@@ -2970,9 +3004,9 @@ window.saveTextTab = async () => {
       drawing_no: data.offer.drawing_no, application: data.offer.application, type_of_system: data.offer.type_of_system, material_of_construction: data.offer.material_of_construction,
       inclusions: val('txt-inclusions'), exclusions: val('txt-exclusions'), utilities_requirement: val('txt-utilities'), instrument_air_supply: val('txt-air'),
       status: data.offer.status, revision_reason: reason || null,
-      show_tech_specs: document.getElementById('ob-show-tech').checked ? 1 : 0,
-      show_bought_out: document.getElementById('ob-show-boughtout').checked ? 1 : 0,
-      show_inclusions_exclusions: document.getElementById('ob-show-inclexcl').checked ? 1 : 0,
+      show_tech_specs: data.offer.show_tech_specs,
+      show_bought_out: data.offer.show_bought_out,
+      show_inclusions_exclusions: offerShowFlag('ob-show-inclexcl', data.offer.show_inclusions_exclusions),
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Saved');
   } catch (e) { alert(e.message); }
