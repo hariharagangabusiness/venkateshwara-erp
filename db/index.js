@@ -902,6 +902,31 @@ const MIGRATIONS = [
   `ALTER TABLE rfq_request_vendors ADD COLUMN sent_message_id TEXT`,
   `ALTER TABLE rfq_request_emails ADD COLUMN sent_message_id TEXT`,
 
+  // ---- Offer Equipment Description references (customer-reference-only,
+  // decoupled from pricing): lets an offer show a library item's picture and
+  // summary on the PDF's Equipment Description page purely for the
+  // customer's reference, without adding it as a priced Scope-of-Supply
+  // line - e.g. a related product a customer would recognize even though
+  // it's not part of what's being quoted. Deliberately its own table rather
+  // than a "reference only" flag on offer_items, so it can never affect
+  // pricing/grand-total logic anywhere that reads offer_items. title/summary/
+  // image_path are copied from the library entry at the moment it's picked
+  // (section_title_library_id is kept only as a soft trace of where it came
+  // from, same as offer_items' relationship to the library) - NOT resolved
+  // live at PDF render time, so editing or deleting the library entry later
+  // never changes what an already-generated/sent offer shows, consistent
+  // with this app's offer-immutability rules.
+  `CREATE TABLE IF NOT EXISTS offer_equipment_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_id INTEGER NOT NULL REFERENCES offers(id),
+    section_title_library_id INTEGER REFERENCES section_title_library(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    image_path TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+
   // Purchase Order line items (Round: PO multi-line items): payment_terms is
   // a header-level field, same as delivery_date/ld_*/terms - a multi-item PO
   // is still stored as one purchase_orders row per line item (see
@@ -1000,7 +1025,7 @@ migrateUserDashboardLayoutToPageLayout();
 // because these triggers' bodies reference offers.locked, which the
 // migration just added - CREATE TRIGGER resolves that column reference at
 // creation time, so the column must already exist.
-for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms']) {
+for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references']) {
   raw.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_update
     BEFORE UPDATE ON ${table}

@@ -2707,6 +2707,7 @@ window.saveOfferCommercialTerms = async () => {
 
 async function renderScopeTab(el, data) {
   const items = data.items;
+  const equipmentRefs = data.equipmentReferences || [];
   const sectionTitles = await api('/offers/section-titles').catch(() => []);
   window.__SECTION_TITLES = sectionTitles;
   el.innerHTML = `
@@ -2743,8 +2744,44 @@ async function renderScopeTab(el, data) {
       <button class="btn" id="it-submit-btn" onclick="addOfferItem()">Add Line</button>
       <button class="btn outline" id="it-cancel-btn" onclick="cancelEditOfferItem()" style="display:none;">Cancel</button>
     </div>
+    <div class="hod-tools" style="margin-top:20px;border-top:1px dashed var(--border);padding-top:14px;">
+      <h4 style="margin-top:0;">Reference Equipment (Customer Reference Only)</h4>
+      <p class="muted">Shows a library item's picture and summary on the PDF's Equipment Description page for the customer's reference - not priced, not part of Scope of Supply. Use this for a related product the customer would recognize even though it isn't being quoted here.</p>
+      <table><thead><tr><th>Picture</th><th>Title</th><th>Summary</th><th></th></tr></thead>
+      <tbody>${equipmentRefs.map(r => `
+        <tr>
+          <td>${r.image_path ? `<img src="${r.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
+          <td>${esc(r.title)}</td>
+          <td style="white-space:pre-wrap;max-width:260px;">${esc(r.summary)||'-'}</td>
+          <td><button class="btn small red" onclick="deleteEquipmentReference(${r.id})">Remove</button></td>
+        </tr>`).join('') || '<tr><td colspan="4" class="empty">No reference equipment added.</td></tr>'}
+      </tbody></table>
+      <div class="form-grid" style="margin-top:8px;">
+        <div><label>Add from library</label><select id="eqref-select"><option value="">- Select a library entry -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
+      </div>
+      <button class="btn small outline" type="button" onclick="addEquipmentReference()">Add Reference</button>
+    </div>
   `;
 }
+window.addEquipmentReference = async () => {
+  const id = val('eqref-select');
+  if (!id) return;
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/equipment-references`, { method: 'POST', body: JSON.stringify({ section_title_library_id: id, revision_reason: reason || null }) });
+    await afterOfferMutation(r);
+  } catch (e) { alert(e.message); }
+};
+window.deleteEquipmentReference = async (refId) => {
+  if (!confirm('Remove this reference equipment entry?')) return;
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/equipment-references/${refId}`, { method: 'DELETE', body: JSON.stringify({ revision_reason: reason || null }) });
+    await afterOfferMutation(r);
+  } catch (e) { alert(e.message); }
+};
 window.applySectionTitleTemplate = () => {
   const id = val('it-section-select');
   const preview = document.getElementById('it-image-preview');
