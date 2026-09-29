@@ -145,8 +145,13 @@ router.post('/requests', requirePermission('purchase_request.create', 'job_card.
 // near-synonyms), so matching is done in three tiers:
 //   1. normalized-exact (trim/lowercase/collapse-whitespace/singularize)
 //   2. normalized substring match, either direction
-//   3. fallback to ALL vendors when nothing matches
-// so the UI is never left empty.
+//   3. fallback to every vendor that has SOME category on file, when
+//      nothing above matched - a vendor with no category at all never
+//      appears here regardless of tier, so "no category filled in" can't
+//      masquerade as a category match (a genuinely uncategorized item, or
+//      one whose category matches no vendor's, still needs *some* fallback
+//      so the picker isn't left empty, but it should never be padded out
+//      with vendors that plainly haven't been categorized).
 function normalizeCategory(s) {
   return String(s || '')
     .trim()
@@ -181,7 +186,11 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
   }
   const fallback = vendors.length === 0;
   if (fallback) {
-    vendors = db.prepare(`SELECT * FROM vendors WHERE status = 'Active' OR status IS NULL ORDER BY name`).all();
+    vendors = db.prepare(`
+      SELECT * FROM vendors
+      WHERE (status = 'Active' OR status IS NULL) AND category IS NOT NULL AND TRIM(category) != ''
+      ORDER BY name
+    `).all();
     matchType = 'fallback';
   }
   vendors = vendors.map(v => Object.assign({}, v, { match_type: matchType }));
