@@ -60,6 +60,14 @@
   .panel.collapsible.collapsed .panel-head{margin-bottom:0;}
   .panel.collapsible.collapsed .panel-head .chev{transform:rotate(-90deg);}
   .panel.collapsible.collapsed .panel-body{display:none;}
+  .panel-sub{border-top:1px solid var(--border);padding-top:14px;margin-top:14px;}
+  .panel-sub:first-child{border-top:none;padding-top:0;margin-top:0;}
+  .panel-sub .panel-head{cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;margin-bottom:10px;}
+  .panel-sub .panel-head h4{margin:0;}
+  .panel-sub .panel-head .chev{font-size:10px;transition:transform .15s ease;opacity:.6;margin-left:8px;}
+  .panel-sub.collapsed .panel-head{margin-bottom:0;}
+  .panel-sub.collapsed .panel-head .chev{transform:rotate(-90deg);}
+  .panel-sub.collapsed .panel-body{display:none;}
   .nav-item{display:block;padding:9px 16px;font-size:var(--fs-base);line-height:var(--lh-tight);color:#e2e8f0;text-decoration:none;cursor:pointer;border-left:3px solid transparent;}
   .nav-item:hover{background:rgba(255,255,255,.08);}
   .nav-item.active{background:rgba(255,255,255,.14);border-left-color:var(--accent);font-weight:600;}
