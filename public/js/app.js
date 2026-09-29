@@ -469,6 +469,19 @@ window.toggleCollapsiblePanel = (key) => {
   saveExpandedPanels(expanded);
   el.classList.toggle('collapsed');
 };
+// Lighter-weight collapsible section for grouping several already-collapsible
+// panels under one outer collapsiblePanel() (e.g. Company Settings' "Email
+// Settings" group) - same remembered-per-key expand state and toggle handler
+// as collapsiblePanel(), just without the card background/border/padding so
+// nesting one inside the other doesn't look like a card-in-a-card.
+function collapsibleSubsection(key, headHtml, bodyHtml) {
+  const expanded = loadExpandedPanels();
+  const isCollapsed = !expanded[key];
+  return `<div class="panel-sub${isCollapsed ? ' collapsed' : ''}" id="cp-${key}">
+    <div class="panel-head" onclick="toggleCollapsiblePanel('${key}')"><h4>${headHtml}</h4><span class="chev">&#9660;</span></div>
+    <div class="panel-body">${bodyHtml}</div>
+  </div>`;
+}
 // ===================== Mobile sidebar drawer =====================
 // On screens <=768px the sidebar becomes an off-canvas drawer (see the
 // matching @media block in index.html). These just toggle the 'open'
@@ -8124,7 +8137,7 @@ PAGES['company-settings'] = async (el) => {
     api('/masters/departments'),
   ]);
   el.innerHTML = `
-    <div class="panel"><h3>Company Details</h3>
+    ${collapsiblePanel('company-details', 'Company Details', `
       <div class="form-grid">
         <div><label>Legal Name</label><input id="cs-legal" value="${esc(company.legal_name)}"></div>
         <div><label>Trade Name</label><input id="cs-trade" value="${esc(company.trade_name)}"></div>
@@ -8158,49 +8171,76 @@ PAGES['company-settings'] = async (el) => {
         <button class="btn" onclick="saveCompanySettings()">Save Company Details</button>
       </div>
       <div id="cs-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    </div>
+    `)}
     <div id="co-addresses-panel"></div>
-    ${email ? `
-    <div class="panel"><h3>Email Settings (SMTP)</h3>
-      <p class="muted">DB values here override the SMTP_* environment variables. Leave blank to fall back to env vars. If neither is set, automated emails are skipped gracefully with a clear message.</p>
-      <div class="form-grid">
-        <div><label>SMTP Host</label><input id="es-host" value="${esc(email.smtp_host)}"></div>
-        <div><label>SMTP Port</label><input id="es-port" type="number" value="${esc(email.smtp_port)}"></div>
-        <div><label>SMTP User</label><input id="es-user" value="${esc(email.smtp_user)}"></div>
-        <div><label>SMTP Password</label><input id="es-pass" type="password" value="${esc(email.smtp_pass)}"></div>
-        <div><label>Use TLS/SSL (secure)</label><select id="es-secure"><option value="false" ${!email.smtp_secure ? 'selected' : ''}>No</option><option value="true" ${email.smtp_secure ? 'selected' : ''}>Yes</option></select></div>
-        <div><label>From Name</label><input id="es-from-name" value="${esc(email.from_name)}"></div>
-        <div><label>From Address</label><input id="es-from-addr" value="${esc(email.from_address)}"></div>
-      </div>
-      <div><label>Always CC (comma-separated)</label><input id="es-cc" style="width:100%;" value="${esc((email.cc_list||[]).join(', '))}"></div>
-      <button class="btn" onclick="saveEmailSettings()" style="margin-top:10px;">Save Email Settings</button>
-      <div id="es-err" class="msg err" style="display:none;margin-top:8px;"></div>
-      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+    ${collapsiblePanel('email-settings', 'Email Settings', `
+      ${email ? collapsibleSubsection('email-settings-smtp', 'SMTP Settings', `
+        <p class="muted">DB values here override the SMTP_* environment variables. Leave blank to fall back to env vars. If neither is set, automated emails are skipped gracefully with a clear message.</p>
         <div class="form-grid">
-          <div><label>Send Test Email To</label><input id="es-test-to" placeholder="you@example.com"></div>
-          <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendTestEmail()">Send Test Email</button></div>
+          <div><label>SMTP Host</label><input id="es-host" value="${esc(email.smtp_host)}"></div>
+          <div><label>SMTP Port</label><input id="es-port" type="number" value="${esc(email.smtp_port)}"></div>
+          <div><label>SMTP User</label><input id="es-user" value="${esc(email.smtp_user)}"></div>
+          <div><label>SMTP Password</label><input id="es-pass" type="password" value="${esc(email.smtp_pass)}"></div>
+          <div><label>Use TLS/SSL (secure)</label><select id="es-secure"><option value="false" ${!email.smtp_secure ? 'selected' : ''}>No</option><option value="true" ${email.smtp_secure ? 'selected' : ''}>Yes</option></select></div>
+          <div><label>From Name</label><input id="es-from-name" value="${esc(email.from_name)}"></div>
+          <div><label>From Address</label><input id="es-from-addr" value="${esc(email.from_address)}"></div>
         </div>
-        <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
-        <div id="es-test-result" class="msg" style="display:none;"></div>
-      </div>
-    </div>` : ''}
-    ${inboundMail ? collapsiblePanel('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
-      <p class="muted">Reads a dedicated mailbox over IMAP and drops each email into the Service team's Incoming Requests queue (see the Service Requests page) for a HOD/Supervisor to confirm into a real service request. Nothing is auto-created from an email without a human confirming it.</p>
-      <div class="form-grid">
-        <div><label>Enabled</label><select id="im-enabled"><option value="false" ${!inboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${inboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
-        <div><label>IMAP Host</label><input id="im-host" value="${esc(inboundMail.imap_host)}"></div>
-        <div><label>IMAP Port</label><input id="im-port" type="number" value="${esc(inboundMail.imap_port)}"></div>
-        <div><label>Use TLS/SSL (secure)</label><select id="im-secure"><option value="false" ${!inboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${inboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
-        <div><label>Mailbox Username</label><input id="im-user" value="${esc(inboundMail.imap_user)}"></div>
-        <div><label>Mailbox Password</label><input id="im-pass" type="password" value="${esc(inboundMail.imap_pass)}"></div>
-        <div><label>Folder</label><input id="im-mailbox" value="${esc(inboundMail.mailbox)}"></div>
-        <div><label>Poll Every (minutes)</label><input id="im-poll" type="number" value="${esc(inboundMail.poll_minutes)}"></div>
-      </div>
-      <button class="btn" onclick="saveInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
-      <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
-      <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
-      <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
-    `) : ''}
+        <div><label>Always CC (comma-separated)</label><input id="es-cc" style="width:100%;" value="${esc((email.cc_list||[]).join(', '))}"></div>
+        <button class="btn" onclick="saveEmailSettings()" style="margin-top:10px;">Save Email Settings</button>
+        <div id="es-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+          <div class="form-grid">
+            <div><label>Send Test Email To</label><input id="es-test-to" placeholder="you@example.com"></div>
+            <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendTestEmail()">Send Test Email</button></div>
+          </div>
+          <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
+          <div id="es-test-result" class="msg" style="display:none;"></div>
+        </div>
+      `) : ''}
+      ${inboundMail ? collapsibleSubsection('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
+        <p class="muted">Reads a dedicated mailbox over IMAP and drops each email into the Service team's Incoming Requests queue (see the Service Requests page) for a HOD/Supervisor to confirm into a real service request. Nothing is auto-created from an email without a human confirming it.</p>
+        <div class="form-grid">
+          <div><label>Enabled</label><select id="im-enabled"><option value="false" ${!inboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${inboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
+          <div><label>IMAP Host</label><input id="im-host" value="${esc(inboundMail.imap_host)}"></div>
+          <div><label>IMAP Port</label><input id="im-port" type="number" value="${esc(inboundMail.imap_port)}"></div>
+          <div><label>Use TLS/SSL (secure)</label><select id="im-secure"><option value="false" ${!inboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${inboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
+          <div><label>Mailbox Username</label><input id="im-user" value="${esc(inboundMail.imap_user)}"></div>
+          <div><label>Mailbox Password</label><input id="im-pass" type="password" value="${esc(inboundMail.imap_pass)}"></div>
+          <div><label>Folder</label><input id="im-mailbox" value="${esc(inboundMail.mailbox)}"></div>
+          <div><label>Poll Every (minutes)</label><input id="im-poll" type="number" value="${esc(inboundMail.poll_minutes)}"></div>
+        </div>
+        <button class="btn" onclick="saveInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
+        <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+        <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+      `) : ''}
+      ${purchaseInboundMail ? collapsibleSubsection('purchase-inbound-mail-settings', 'Inbound Mail (Vendor Quote Responses via Email)', `
+        <p class="muted">Reads a dedicated mailbox over IMAP - separate from the Service inbox above - and drops each vendor reply into the Purchase team's Vendor Quote Responses queue (see the Purchase Requests page) for confirmation into a real quote. Nothing is auto-created from an email without a human confirming it.</p>
+        <div class="form-grid">
+          <div><label>Enabled</label><select id="pim-enabled"><option value="false" ${!purchaseInboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
+          <div><label>IMAP Host</label><input id="pim-host" value="${esc(purchaseInboundMail.imap_host)}"></div>
+          <div><label>IMAP Port</label><input id="pim-port" type="number" value="${esc(purchaseInboundMail.imap_port)}"></div>
+          <div><label>Use TLS/SSL (secure)</label><select id="pim-secure"><option value="false" ${!purchaseInboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
+          <div><label>Mailbox Username</label><input id="pim-user" value="${esc(purchaseInboundMail.imap_user)}"></div>
+          <div><label>Mailbox Password</label><input id="pim-pass" type="password" value="${esc(purchaseInboundMail.imap_pass)}"></div>
+          <div><label>Folder</label><input id="pim-mailbox" value="${esc(purchaseInboundMail.mailbox)}"></div>
+          <div><label>Poll Every (minutes)</label><input id="pim-poll" type="number" value="${esc(purchaseInboundMail.poll_minutes)}"></div>
+        </div>
+        <button class="btn" onclick="savePurchaseInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
+        <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+        <div id="pim-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
+      `) : ''}
+      ${email ? collapsibleSubsection('department-email-identities', 'Department Email Identities', `
+        <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
+        ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
+          <tr><td>${esc(d.name)}</td>
+          <td><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></td>
+          <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
+        <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
+        <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      `) : ''}
+    `)}
     ${purchaseSettings ? collapsiblePanel('purchase-settings', 'Purchase Settings', `
       <div class="form-grid">
         <div><label>Vendor Quote Threshold (₹)</label><input id="ps-quote-threshold" type="number" value="${esc(purchaseSettings.quote_threshold)}"></div>
@@ -8209,32 +8249,6 @@ PAGES['company-settings'] = async (el) => {
       <textarea id="ps-payment-terms" rows="6" style="width:100%;">${esc((purchaseSettings.payment_terms_options||[]).join('\n'))}</textarea>
       <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
       <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    `) : ''}
-    ${purchaseInboundMail ? collapsiblePanel('purchase-inbound-mail-settings', 'Inbound Mail (Vendor Quote Responses via Email)', `
-      <p class="muted">Reads a dedicated mailbox over IMAP - separate from the Service inbox above - and drops each vendor reply into the Purchase team's Vendor Quote Responses queue (see the Purchase Requests page) for confirmation into a real quote. Nothing is auto-created from an email without a human confirming it.</p>
-      <div class="form-grid">
-        <div><label>Enabled</label><select id="pim-enabled"><option value="false" ${!purchaseInboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
-        <div><label>IMAP Host</label><input id="pim-host" value="${esc(purchaseInboundMail.imap_host)}"></div>
-        <div><label>IMAP Port</label><input id="pim-port" type="number" value="${esc(purchaseInboundMail.imap_port)}"></div>
-        <div><label>Use TLS/SSL (secure)</label><select id="pim-secure"><option value="false" ${!purchaseInboundMail.imap_secure ? 'selected' : ''}>No</option><option value="true" ${purchaseInboundMail.imap_secure ? 'selected' : ''}>Yes</option></select></div>
-        <div><label>Mailbox Username</label><input id="pim-user" value="${esc(purchaseInboundMail.imap_user)}"></div>
-        <div><label>Mailbox Password</label><input id="pim-pass" type="password" value="${esc(purchaseInboundMail.imap_pass)}"></div>
-        <div><label>Folder</label><input id="pim-mailbox" value="${esc(purchaseInboundMail.mailbox)}"></div>
-        <div><label>Poll Every (minutes)</label><input id="pim-poll" type="number" value="${esc(purchaseInboundMail.poll_minutes)}"></div>
-      </div>
-      <button class="btn" onclick="savePurchaseInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
-      <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
-      <div id="pim-err" class="msg err" style="display:none;margin-top:8px;"></div>
-      <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
-    `) : ''}
-    ${email ? collapsiblePanel('department-email-identities', 'Department Email Identities', `
-      <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
-      ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
-        <tr><td>${esc(d.name)}</td>
-        <td><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></td>
-        <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
-        <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
-      <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
   `;
   renderCompanyAddressesPanel();
@@ -8260,8 +8274,7 @@ async function renderCompanyAddressesPanel() {
       <td>${esc(a.gstin)||'-'}</td>
       <td><button class="btn small outline" onclick="deleteCompanyAddress(${a.id})">Delete</button></td>
     </tr>`;
-  panel.innerHTML = `
-    <div class="panel"><h3>Company Bill-to / Ship-to Addresses</h3>
+  panel.innerHTML = collapsiblePanel('company-addresses', 'Company Bill-to / Ship-to Addresses', `
       <p class="muted">Separate factory/office locations, each selectable when creating a Purchase Order so the right address flows into the PO's PDF/Word document.</p>
       ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
       <div class="form-grid" style="margin-top:10px;">
@@ -8278,7 +8291,7 @@ async function renderCompanyAddressesPanel() {
       </div>
       <button class="btn" onclick="addCompanyAddress()">Add Address</button>
       <div id="coaddr-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    </div>`;
+    `);
 }
 window.addCompanyAddress = async () => {
   const errEl = document.getElementById('coaddr-err');
