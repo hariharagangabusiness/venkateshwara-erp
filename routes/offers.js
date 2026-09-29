@@ -6,10 +6,11 @@ const { db } = require('../db');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
+const { generateOfferDocx } = require('../lib/offerDocx');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
-const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece } = require('../lib/settings');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
 
 const router = express.Router();
 router.use(authRequired);
@@ -726,6 +727,36 @@ router.get('/:id/pdf', async (req, res) => {
       partyName: full.client && full.client.name,
       date: new Date(full.offer.offer_date).toISOString().slice(0, 10),
       version: full.offer.version ? 'v' + full.offer.version : undefined,
+    });
+    res.download(gen.outPath, filename, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Editable Word version of the same offer content - a leaner rendering than
+// the PDF (no cover-photo collage, no static Company Profile marketing
+// pages, no custom PDF-template/layout override), same convention as
+// lib/poDocx.js's Purchase Order Word export: the actual quote content in a
+// format the sales team can hand-edit before sending, not a pixel-identical
+// clone of the letterhead PDF.
+router.get('/:id/docx', async (req, res) => {
+  const full = getFullOffer(req.params.id);
+  if (!full) return res.status(404).json({ error: 'Not found' });
+  const itemsForDocx = full.items.map(withImageDataUri);
+  const equipmentReferencesForDocx = full.equipmentReferences.map(withImageDataUri);
+  try {
+    const gen = await generateOfferDocx(full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, getCompanySettings(), equipmentReferencesForDocx);
+    const filename = buildDownloadFilename({
+      docType: 'Offer',
+      reference: full.offer.offer_no,
+      partyName: full.client && full.client.name,
+      date: new Date(full.offer.offer_date).toISOString().slice(0, 10),
+      version: full.offer.version ? 'v' + full.offer.version : undefined,
+      ext: 'docx',
     });
     res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});

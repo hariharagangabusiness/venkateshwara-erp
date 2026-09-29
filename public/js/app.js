@@ -2611,6 +2611,7 @@ async function renderOfferBuilder(panel) {
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
+      <button class="btn outline" onclick="downloadOfferDocx()">Download Word</button>
       ${o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`}
     </div>
   `;
@@ -2661,6 +2662,18 @@ window.downloadOfferPdf = async () => {
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer.pdf'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+};
+window.downloadOfferDocx = async () => {
+  try {
+    const res = await fetch('/api/offers/' + CURRENT_OFFER_ID + '/docx', { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Word document generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer.docx'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 };
