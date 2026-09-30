@@ -518,6 +518,98 @@ router.post('/', offerPerm(), (req, res) => {
   res.json({ id: offerId, offer_no: offerNo });
 });
 
+// Duplicates an image file under uploads/offers with a guaranteed-unique
+// name. copyLibraryImage() above (Date.now()-only) is fine for its
+// single-call-per-request use sites, but copying every item/equipment-
+// reference picture of a whole offer in one request can easily complete
+// more than one fs.copyFileSync within the same millisecond and collide -
+// the counter guarantees uniqueness regardless of how fast the loop runs.
+let offerCopySeq = 0;
+function duplicateOfferImage(imagePath) {
+  if (!imagePath) return null;
+  const srcAbs = resolveUploadPath(imagePath);
+  if (!fs.existsSync(srcAbs)) return null;
+  const destName = `${Date.now()}-${offerCopySeq++}-copy${path.extname(imagePath)}`;
+  fs.copyFileSync(srcAbs, path.join(uploadDir, destName));
+  return '/uploads/offers/' + destName;
+}
+
+// Duplicates an entire offer's content into a brand-new, fully independent
+// offer for a DIFFERENT customer - new offer_no, version 1, no lineage back
+// to the source. This is deliberately separate from ensureEditableVersion's
+// fork (lib/offerVersioning.js), which revises the SAME offer for the SAME
+// customer and keeps a version-history link; a copy is an unrelated new
+// document that just happens to start from the same content.
+//
+// Every picture is physically duplicated on disk (never the path string
+// reused) so later editing/deleting a picture on the new offer can never
+// touch the source offer's files - unlike a version fork, these two offers
+// share no lineage or immutability relationship that would make reusing the
+// file safe.
+//
+// Can copy from an offer in any status, including locked/Won ones -
+// copying never writes to the source, so its lock is irrelevant here.
+router.post('/:id/copy', offerPerm(), (req, res) => {
+  const source = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!source) return res.status(404).json({ error: 'Not found' });
+  const { client_id, lead_id, contact_person, contact_phone, contact_email } = req.body;
+  if (!client_id) return res.status(400).json({ error: 'Pick a customer to copy this offer to.' });
+  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+  if (!client) return res.status(400).json({ error: 'That customer no longer exists - refresh and try again.' });
+
+  const items = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
+  const techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
+  const boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
+  const terms = db.prepare('SELECT * FROM offer_terms WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
+  const equipmentRefs = db.prepare('SELECT * FROM offer_equipment_references WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
+  const offerNo = 'OFR-' + Date.now();
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO offers (offer_no, client_id, lead_id, contact_person, contact_phone, contact_email, subject,
+        drawing_no, application, type_of_system, material_of_construction,
+        inclusions, exclusions, utilities_requirement, instrument_air_supply,
+        show_tech_specs, show_bought_out, show_inclusions_exclusions,
+        promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
+        abg_required, abg_percentage, abg_amount, abg_validity_days,
+        pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
+        created_by)
+      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?)
+    `).run(offerNo, client_id, lead_id || null, contact_person || null, contact_phone || null, contact_email || null, source.subject,
+      source.drawing_no, source.application, source.type_of_system, source.material_of_construction,
+      source.inclusions, source.exclusions, source.utilities_requirement, source.instrument_air_supply,
+      source.show_tech_specs, source.show_bought_out, source.show_inclusions_exclusions,
+      source.promised_delivery_date, source.ld_percentage, source.ld_cap_percentage, source.ld_trigger_notes,
+      source.abg_required, source.abg_percentage, source.abg_amount, source.abg_validity_days,
+      source.pbg_required, source.pbg_percentage, source.pbg_amount, source.pbg_validity_days, source.bg_terms_notes,
+      req.user.id);
+    const newId = Number(info.lastInsertRowid);
+
+    const itemStmt = db.prepare(`
+      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, total_price, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `);
+    items.forEach(it => {
+      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.total_price, it.sort_order);
+    });
+    const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
+    techSpecs.forEach(s => specStmt.run(newId, s.spec_key, s.spec_value, s.sort_order));
+    const boStmt = db.prepare(`INSERT INTO offer_bought_out_items (offer_id, component, make, sort_order) VALUES (?,?,?,?)`);
+    boughtOut.forEach(b => boStmt.run(newId, b.component, b.make, b.sort_order));
+    const termStmt = db.prepare(`INSERT INTO offer_terms (offer_id, term_key, term_value, sort_order) VALUES (?,?,?,?)`);
+    terms.forEach(t => termStmt.run(newId, t.term_key, t.term_value, t.sort_order));
+    const refStmt = db.prepare(`
+      INSERT INTO offer_equipment_references (offer_id, section_title_library_id, title, summary, image_path, sort_order)
+      VALUES (?,?,?,?,?,?)
+    `);
+    equipmentRefs.forEach(r => refStmt.run(newId, r.section_title_library_id, r.title, r.summary, duplicateOfferImage(r.image_path), r.sort_order));
+
+    return newId;
+  });
+  const newId = tx();
+  res.json({ id: newId, offer_no: offerNo });
+});
+
 // ===================== Update header / narrative fields =====================
 
 // Once an offer has moved past Draft (Sent or later), a header edit is a
@@ -785,6 +877,24 @@ router.get('/:id/docx', async (req, res) => {
     console.error(e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Marks a Draft offer as Sent - the point at which it's considered actually
+// handed to the customer, distinct from just drafting it. Refreshes
+// offer_date to today at the same moment: "offer date" should mean "the day
+// this was sent", not "the day someone started typing it", and PDF/Word
+// generation never touches it (they're pure reads of whatever's already
+// stored) - without an explicit action like this the date would otherwise
+// sit stale at Draft-creation time indefinitely, however long it took to
+// actually finish and send the quote.
+router.post('/:id/mark-sent', offerPerm(), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Draft') {
+    return res.status(400).json({ error: `This offer is already ${existing.status} - only a Draft offer can be marked as Sent.` });
+  }
+  db.prepare(`UPDATE offers SET status = 'Sent', offer_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(existing.id);
+  res.json({ ok: true });
 });
 
 // ===================== Confirm -> Sales Order + Execution Queue (Project) =====================
