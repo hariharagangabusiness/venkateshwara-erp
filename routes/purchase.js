@@ -920,19 +920,33 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
 });
 
 router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
-  const { item_id, quantity, project_id } = req.body;
+  const { item_id, quantity, project_id, department_id, client_id } = req.body;
   if (!item_id) return res.status(400).json({ error: 'Pick an item. If the Item Master is empty, add one there first.' });
   if (!quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  // Store fulfills issue requests from every other department, so recording
+  // WHOSE request this is matters even though it has no effect on stock math -
+  // required on every interactive issue (the Excel bulk-upload path below is
+  // unaffected and still leaves it null, since that template has no
+  // department column and this wasn't asked to change).
+  if (!department_id) return res.status(400).json({ error: 'Pick which department this is being issued to.' });
   const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
   if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
   if (item.current_stock < quantity) return res.status(400).json({ error: `Insufficient stock - only ${item.current_stock} ${item.unit || ''} available.` });
+  const department = db.prepare('SELECT id FROM departments WHERE id = ?').get(department_id);
+  if (!department) return res.status(400).json({ error: 'That department no longer exists - refresh the page and try again.' });
   if (project_id) {
     const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(project_id);
     if (!project) return res.status(400).json({ error: 'That project no longer exists - refresh the page and try again.' });
   }
+  if (client_id) {
+    const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+    if (!client) return res.status(400).json({ error: 'That client no longer exists - refresh the page and try again.' });
+  }
   const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, moved_by) VALUES (?, 'OUT', ?, ?, ?, ?)`)
-      .run(item_id, quantity, project_id ? 'Project#' + project_id : null, project_id || null, req.user.id);
+    db.prepare(`
+      INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, department_id, client_id, moved_by)
+      VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)
+    `).run(item_id, quantity, project_id ? 'Project#' + project_id : null, project_id || null, department_id, client_id || null, req.user.id);
     db.prepare(`UPDATE items SET current_stock = current_stock - ? WHERE id = ?`).run(quantity, item_id);
   });
   tx();
@@ -941,7 +955,12 @@ router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
 
 router.get('/store/movements', (req, res) => {
   res.json(db.prepare(`
-    SELECT sm.*, i.name as item_name FROM stock_movements sm JOIN items i ON i.id = sm.item_id ORDER BY sm.id DESC LIMIT 200
+    SELECT sm.*, i.name as item_name, d.name as department_name, c.name as client_name
+    FROM stock_movements sm
+    JOIN items i ON i.id = sm.item_id
+    LEFT JOIN departments d ON d.id = sm.department_id
+    LEFT JOIN clients c ON c.id = sm.client_id
+    ORDER BY sm.id DESC LIMIT 200
   `).all());
 });
 
