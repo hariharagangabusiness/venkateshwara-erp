@@ -2536,6 +2536,9 @@ function refreshOfferTabLabels(o) {
 
 PAGES.offers = async (el) => {
   const [offers, clients, leads] = await Promise.all([api('/offers'), api('/masters/clients'), api('/sales/leads')]);
+  window.__OFFERS_CACHE = offers;
+  window.__OFFERS_CLIENTS = clients;
+  window.__OFFERS_LEADS = leads;
   el.innerHTML = `
     <div class="panel"><h3>New Offer</h3>
       <div class="form-grid">
@@ -2559,6 +2562,23 @@ PAGES.offers = async (el) => {
       }, 'Search by offer no, client, subject, status...')}
       <div id="of-table-wrap">${renderOfferRows(offers)}</div>
     `)}
+    <div class="panel" id="offer-copy-panel" style="display:none;">
+      <h3>Copy Offer to Another Customer</h3>
+      <p class="muted">Copying <b id="ocp-source-label"></b> — creates a brand-new Draft offer (its own offer number, starting at version 1, no link back to the original) with all of this offer's content: scope items, pictures, specifications, terms, everything. The original offer is never changed.</p>
+      <div class="form-grid">
+        <div><label>Customer</label>${clientPickerHTML('ocp-client', clients, '')}</div>
+        <div><label>Linked Enquiry / RFQ (optional)</label><select id="ocp-lead">
+          <option value="">-- None --</option>
+          ${leads.map(l => `<option value="${l.id}">${esc(l.client_name)} - ${esc(l.product_interest || l.enquiry_details || ('Lead #' + l.id))}</option>`).join('')}
+        </select></div>
+        <div><label>Contact Person</label><input id="ocp-contact"></div>
+        <div><label>Contact Phone</label><input id="ocp-phone"></div>
+        <div><label>Contact Email</label><input id="ocp-email"></div>
+      </div>
+      <button class="btn" onclick="submitCopyOffer()">Create Copy</button>
+      <button class="btn outline" type="button" onclick="document.getElementById('offer-copy-panel').style.display='none'">Cancel</button>
+      <div id="ocp-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
   `;
 };
@@ -2566,8 +2586,38 @@ function renderOfferRows(rows) {
   return tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], rows, o => `
     <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
     <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
+    <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
     ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`);
 }
+window.openCopyOfferPanel = (id) => {
+  const o = (window.__OFFERS_CACHE || []).find(x => x.id === id);
+  if (!o) return;
+  window.__COPY_SOURCE_OFFER_ID = id;
+  document.getElementById('ocp-source-label').textContent = `${o.offer_no} (${o.client_name})`;
+  resetSearchPicker('ocp-client');
+  document.getElementById('ocp-lead').value = '';
+  document.getElementById('ocp-contact').value = '';
+  document.getElementById('ocp-phone').value = '';
+  document.getElementById('ocp-email').value = '';
+  document.getElementById('ocp-err').style.display = 'none';
+  const panel = document.getElementById('offer-copy-panel');
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth' });
+};
+window.submitCopyOffer = async () => {
+  const errEl = document.getElementById('ocp-err');
+  errEl.style.display = 'none';
+  const clientId = val('ocp-client');
+  if (!clientId) { errEl.textContent = 'Pick a customer to copy this offer to.'; errEl.style.display = 'block'; return; }
+  try {
+    const r = await api(`/offers/${window.__COPY_SOURCE_OFFER_ID}/copy`, { method: 'POST', body: JSON.stringify({
+      client_id: clientId, lead_id: val('ocp-lead') || null,
+      contact_person: val('ocp-contact'), contact_phone: val('ocp-phone'), contact_email: val('ocp-email'),
+    })});
+    document.getElementById('offer-copy-panel').style.display = 'none';
+    await openOfferBuilder(r.id);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
 window.deleteOfferRow = async (id) => {
   if (!confirm('Permanently delete this offer? This cannot be undone.')) return;
   try {
@@ -2663,6 +2713,7 @@ async function renderOfferBuilder(panel) {
     <div id="offer-tab-content"></div>
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
+      ${o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
       <button class="btn outline" onclick="downloadOfferDocx()">Download Word</button>
       ${o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`}
@@ -2736,6 +2787,13 @@ window.confirmOffer = async () => {
     const r = await api(`/offers/${CURRENT_OFFER_ID}/confirm`, { method: 'POST' });
     alert(`Sales Order ${r.orderNo} created. Project ${r.projCode} queued for execution across all departments.`);
     navigate('projects');
+  } catch (e) { alert(e.message); }
+};
+window.markOfferSent = async () => {
+  if (!confirm('Mark this offer as Sent to the customer? This also updates the Offer Date to today.')) return;
+  try {
+    await api(`/offers/${CURRENT_OFFER_ID}/mark-sent`, { method: 'POST' });
+    await openOfferBuilder(CURRENT_OFFER_ID);
   } catch (e) { alert(e.message); }
 };
 window.unlockOffer = async () => {
