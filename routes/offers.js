@@ -6,12 +6,10 @@ const { db } = require('../db');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
-const { generateOfferDocx } = require('../lib/offerDocx');
-const { validateOfferDocxTemplate, generateOfferDocxFromTemplate, buildStarterTemplateBuffer } = require('../lib/offerDocxTemplate');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
-const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferDocxTemplate, setOfferDocxTemplate, DEFAULT_OFFER_DOCX_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
+const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
 const { compressImage, compressUploadedImageFile } = require('../lib/imageCompress');
 
 const router = express.Router();
@@ -329,68 +327,6 @@ router.delete('/pdf-template', requireRole('Admin'), (req, res) => {
   });
   setOfferPdfTemplate(DEFAULT_OFFER_PDF_TEMPLATE);
   res.json(getOfferPdfTemplate());
-});
-
-// ===================== Word (.docx) export template (Option B) =====================
-// Separate mechanism from the PDF template pieces above - a real .docx file
-// merged via docxtemplater (see lib/offerDocxTemplate.js), not HTML. Always
-// reversible: `active` false (the default) or no template uploaded at all
-// means GET /:id/docx below keeps using lib/offerDocx.js's original fixed
-// layout, unchanged.
-router.get('/docx-template', requireRole('Admin'), (req, res) => {
-  res.json(getOfferDocxTemplate());
-});
-
-const docxTemplateDir = getUploadsSubdir('offers', 'docx-templates');
-const uploadDocxTemplate = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, docxTemplateDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_')),
-  }),
-  limits: { fileSize: 8 * 1024 * 1024 },
-});
-// A bad/malformed template is caught here, before it's ever saved as active -
-// validateOfferDocxTemplate does a dry-run render against sample data and
-// throws a readable error (docxtemplater's own tag-error details) if the
-// uploaded file doesn't parse, so an admin never finds out a template is
-// broken only when someone downloads a real offer.
-router.post('/docx-template', requireRole('Admin'), uploadDocxTemplate.single('docx_template'), (req, res) => {
-  const current = getOfferDocxTemplate();
-  const update = {};
-  if (req.body.active !== undefined) update.active = req.body.active === 'true' || req.body.active === true;
-  if (!req.file) {
-    setOfferDocxTemplate(update);
-    return res.json(getOfferDocxTemplate());
-  }
-  try {
-    const { warnings } = validateOfferDocxTemplate(req.file.path);
-    if (current.template_path) fs.unlink(resolveUploadPath(current.template_path), () => {});
-    update.template_path = '/uploads/offers/docx-templates/' + req.file.filename;
-    setOfferDocxTemplate(update);
-    res.json(Object.assign({}, getOfferDocxTemplate(), { warnings }));
-  } catch (e) {
-    fs.unlink(req.file.path, () => {});
-    res.status(e.status || 400).json({ error: e.message });
-  }
-});
-// Reset to the built-in fixed layout - removes the uploaded template file.
-router.delete('/docx-template', requireRole('Admin'), (req, res) => {
-  const current = getOfferDocxTemplate();
-  if (current.template_path) fs.unlink(resolveUploadPath(current.template_path), () => {});
-  setOfferDocxTemplate(DEFAULT_OFFER_DOCX_TEMPLATE);
-  res.json(getOfferDocxTemplate());
-});
-// A ready-to-edit .docx with every recognized {tag} already placed and
-// explained inline - see lib/offerDocxTemplate.js's buildStarterTemplateBuffer.
-router.get('/docx-template/starter', requireRole('Admin'), async (req, res) => {
-  try {
-    const buffer = await buildStarterTemplateBuffer();
-    res.setHeader('Content-Disposition', 'attachment; filename="Offer-Word-Template-Starter.docx"');
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.send(buffer);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // ===================== Full custom body template (Word upload) =====================
@@ -912,57 +848,11 @@ router.get('/:id/pdf', async (req, res) => {
   }
 });
 
-// Editable Word version of the same offer content - a leaner rendering than
-// the PDF (no cover-photo collage, no static Company Profile marketing
-// pages, no custom PDF-template/layout override), same convention as
-// lib/poDocx.js's Purchase Order Word export: the actual quote content in a
-// format the sales team can hand-edit before sending, not a pixel-identical
-// clone of the letterhead PDF.
-router.get('/:id/docx', async (req, res) => {
-  const full = getFullOffer(req.params.id);
-  if (!full) return res.status(404).json({ error: 'Not found' });
-  const itemsForDocx = await Promise.all(full.items.map(withImageDataUri));
-  const equipmentReferencesForDocx = await Promise.all(full.equipmentReferences.map(withImageDataUri));
-  const company = getCompanySettings();
-  try {
-    const docxTemplate = getOfferDocxTemplate();
-    let gen;
-    if (docxTemplate.active && docxTemplate.template_path) {
-      try {
-        gen = generateOfferDocxFromTemplate(resolveUploadPath(docxTemplate.template_path), full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, company, equipmentReferencesForDocx);
-      } catch (e) {
-        // Never hand back a broken file - a template that fails to render
-        // (edited since its last validated upload, or a source file that
-        // went missing) falls straight back to the built-in fixed layout,
-        // same as the toggle being off. Logged so an admin can find out why.
-        console.error('Custom Offer Word template failed to render, falling back to built-in layout:', e);
-        gen = await generateOfferDocx(full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, company, equipmentReferencesForDocx);
-      }
-    } else {
-      gen = await generateOfferDocx(full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, company, equipmentReferencesForDocx);
-    }
-    const filename = buildDownloadFilename({
-      docType: 'Offer',
-      reference: full.offer.offer_no,
-      partyName: full.client && full.client.name,
-      date: new Date(full.offer.offer_date).toISOString().slice(0, 10),
-      version: full.offer.version ? 'v' + full.offer.version : undefined,
-      ext: 'docx',
-    });
-    res.download(gen.outPath, filename, () => {
-      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // Marks a Draft offer as Sent - the point at which it's considered actually
 // handed to the customer, distinct from just drafting it. Refreshes
 // offer_date to today at the same moment: "offer date" should mean "the day
-// this was sent", not "the day someone started typing it", and PDF/Word
-// generation never touches it (they're pure reads of whatever's already
+// this was sent", not "the day someone started typing it", and PDF
+// generation never touches it (it's a pure read of whatever's already
 // stored) - without an explicit action like this the date would otherwise
 // sit stale at Draft-creation time indefinitely, however long it took to
 // actually finish and send the quote.
