@@ -929,7 +929,7 @@ router.get('/:id/docx', async (req, res) => {
     let gen;
     if (docxTemplate.active && docxTemplate.template_path) {
       try {
-        gen = generateOfferDocxFromTemplate(resolveUploadPath(docxTemplate.template_path), full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, company);
+        gen = generateOfferDocxFromTemplate(resolveUploadPath(docxTemplate.template_path), full.offer, full.client, itemsForDocx, full.techSpecs, full.boughtOut, full.terms, company, equipmentReferencesForDocx);
       } catch (e) {
         // Never hand back a broken file - a template that fails to render
         // (edited since its last validated upload, or a source file that
