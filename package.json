@@ -18,6 +18,7 @@
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "docx": "^9.7.1",
+    "docxtemplater": "^3.71.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "grapesjs": "^0.23.6",
@@ -30,6 +31,7 @@
     "mammoth": "^1.13.0",
     "multer": "^2.3.0",
     "nodemailer": "^10.0.1",
+    "pizzip": "^3.3.0",
     "puppeteer-core": "^25.10.0",
     "sharp": "^0.35.5",
     "xlsx": "^0.18.5"
