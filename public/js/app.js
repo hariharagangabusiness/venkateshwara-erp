@@ -6608,10 +6608,11 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, pdfTemplate, governance, clauses, suggestions] = await Promise.all([
+  const [rows, sectionTitles, pdfTemplate, docxTemplate, governance, clauses, suggestions] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
+    api('/offers/docx-template').catch(() => null), // Admin-only - same
     api('/offers/governance').catch(() => null), // Admin-only - same
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
     isAdmin ? api('/offers/section-title-suggestions') : Promise.resolve([]), // Admin-only review queue
@@ -6705,6 +6706,22 @@ PAGES['offer-options'] = async (el) => {
         <button class="btn outline" onclick="resetPdfTemplate()">Reset All to Default</button>
       </div>
       <div id="pt-err" class="msg err" style="display:none;margin-top:10px;"></div>
+    `) : ''}
+    ${docxTemplate ? collapsiblePanel('offer-docx-template', 'Offer Word (.docx) Template (Optional Override)', `
+      <p class="muted">The "Download Word" button normally uses a built-in fixed layout. To brand it instead: download the starter template below, edit it in Microsoft Word (keep the placeholder tags and the repeatable item row exactly as they are), then upload the edited file here and switch it Active. Turning this off - or leaving no template uploaded - always falls back to the built-in layout, and a template that fails to render at download time also falls back automatically, so nothing is ever at risk of breaking a customer download.</p>
+      <div style="margin-bottom:10px;"><button class="btn small outline" type="button" onclick="downloadTemplateFile('/offers/docx-template/starter', 'Offer-Word-Template-Starter.docx')">Download Starter Template (.docx)</button></div>
+      <table><thead><tr><th>Current Template</th><th>Active</th><th>Upload New (.docx)</th></tr></thead><tbody>
+        <tr>
+          <td>${docxTemplate.template_path ? esc(docxTemplate.template_path.split('/').pop()) : '<span class="muted">None uploaded - using built-in layout</span>'}</td>
+          <td><input type="checkbox" id="dt-active" ${docxTemplate.active ? 'checked' : ''}></td>
+          <td><input type="file" id="dt-file" accept=".docx"></td>
+        </tr>
+      </tbody></table>
+      <div style="margin-top:14px;">
+        <button class="btn" onclick="saveDocxTemplate()">Save Template Settings</button>
+        <button class="btn outline" onclick="resetDocxTemplate()">Reset to Default</button>
+      </div>
+      <div id="dt-err" class="msg err" style="display:none;margin-top:10px;"></div>
     `) : ''}
     ${governance ? collapsiblePanel('offer-governance', 'Offer Governance', `
       <p class="muted">Compliance kill switches - each is instantly reversible, no code change or redeploy needed.</p>
@@ -6821,6 +6838,26 @@ window.savePdfTemplate = async () => {
 window.resetPdfTemplate = async () => {
   if (!confirm('Reset the Offer PDF template to the default letterhead? This removes any uploaded header/footer/cover images.')) return;
   try { await api('/offers/pdf-template', { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.saveDocxTemplate = async () => {
+  const errEl = document.getElementById('dt-err');
+  errEl.style.display = 'none';
+  try {
+    const fd = new FormData();
+    fd.append('active', document.getElementById('dt-active').checked);
+    const fileEl = document.getElementById('dt-file');
+    if (fileEl.files[0]) fd.append('docx_template', fileEl.files[0]);
+    const r = await apiUpload('/offers/docx-template', fd, 'POST');
+    navigate('offer-options');
+    if (r.warnings && r.warnings.length) {
+      alert('Template saved, but it has some placeholders the merge doesn\'t recognize (they\'ll render blank): ' + r.warnings.join(', '));
+    }
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.resetDocxTemplate = async () => {
+  if (!confirm('Reset the Offer Word template to the built-in layout? This removes the uploaded template file.')) return;
+  try { await api('/offers/docx-template', { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
 
