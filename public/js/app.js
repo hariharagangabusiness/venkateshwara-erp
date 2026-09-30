@@ -629,59 +629,112 @@ window.filterList = (key, query) => {
   st.onFilter(filtered);
 };
 
-// Reusable searchable Item Master picker - a small text input that filters
-// a paired <select>'s options as you type, since scrolling a plain dropdown
-// gets painful once the Item Master has more than a couple dozen entries.
-// Same filter-as-you-type idiom as LIST_SEARCH_STATE/filterList above, but
-// drives a <select>'s options instead of a rendered table. `renderOptions`
-// is whatever function the caller already used to build that <select>'s
-// <option> markup (e.g. prItemOptions) - this only adds the search/filter
-// layer in front of it, it doesn't change how items are labeled once you're
-// browsing the (possibly narrowed) list.
-const ITEM_PICKER_STATE = {};
-function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs) {
-  ITEM_PICKER_STATE[selectId] = { items, renderOptions };
+// Reusable searchable picker - a small text input that filters a paired
+// <select>'s options as you type, since scrolling a plain dropdown gets
+// painful once a list has more than a couple dozen entries. Same
+// filter-as-you-type idiom as LIST_SEARCH_STATE/filterList above, but drives
+// a <select>'s options instead of a rendered table. `renderOptions` is
+// whatever function the caller already used to build that <select>'s
+// <option> markup - this only adds the search/filter layer in front of it,
+// it doesn't change how records are labeled once you're browsing the
+// (possibly narrowed) list. `matchFn(record, lowercaseQuery)` decides what
+// counts as a match - the caller picks whichever fields make sense to
+// search (item name/code, project code/title, PO number/vendor/item, ...).
+const SEARCH_PICKER_STATE = {};
+function searchPickerHTML(pickerId, records, selectedValue, renderOptions, matchFn, selectAttrs, placeholder, containerStyle) {
+  SEARCH_PICKER_STATE[pickerId] = { records, renderOptions, matchFn };
   return `
-    <input type="text" id="${selectId}-search" placeholder="Search item..." oninput="filterItemPicker('${selectId}', this.value)"
-      onblur="setTimeout(()=>{const s=document.getElementById('${selectId}'); if(s && document.activeElement!==s) s.removeAttribute('size');}, 150)"
-      style="width:100%;max-width:260px;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;">
-    <select id="${selectId}" style="width:100%;max-width:260px;box-sizing:border-box;" ${selectAttrs || ''}>${renderOptions(selectedId, items)}</select>`;
+    <div style="width:100%;position:relative;${containerStyle || ''}">
+    <input type="text" id="${pickerId}-search" placeholder="${esc(placeholder || 'Search...')}" oninput="filterSearchPicker('${pickerId}', this.value)"
+      onblur="setTimeout(()=>{const s=document.getElementById('${pickerId}'); if(s && document.activeElement!==s) collapseSearchPicker(s);}, 150)"
+      style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;">
+    <select id="${pickerId}" style="width:100%;box-sizing:border-box;" ${selectAttrs || ''}>${renderOptions(selectedValue, records)}</select>
+    </div>`;
 }
 // A collapsed native <select> only ever displays its currently-SELECTED
 // option, never the first entry of a filtered list - so typing a search
 // query alone looks like "nothing happened" until the user opens the
 // dropdown. To make the filter visibly do something as you type, expand
 // the select into an inline listbox (the `size` attribute) showing the
-// matches; it collapses back to a normal one-line dropdown once an option
-// is picked or focus leaves the picker (see the delegated 'change'/'blur'
-// listeners below and the search input's onblur above).
-window.filterItemPicker = (selectId, query) => {
-  const st = ITEM_PICKER_STATE[selectId];
-  const sel = document.getElementById(selectId);
+// matches. That taller listbox is floated as an absolutely-positioned
+// overlay (rather than left to reflow inline) so it doesn't stretch the
+// surrounding form-grid row taller and throw off every field beside it -
+// exactly the misalignment a plain `size` attribute used to cause. It
+// collapses back to a normal one-line dropdown (and drops the overlay
+// styling) once an option is picked or focus leaves the picker.
+function collapseSearchPicker(sel) {
+  sel.removeAttribute('size');
+  sel.style.position = ''; sel.style.zIndex = ''; sel.style.left = ''; sel.style.right = '';
+  sel.style.top = ''; sel.style.background = ''; sel.style.boxShadow = ''; sel.style.border = '';
+}
+function expandSearchPicker(sel, optionCount) {
+  sel.setAttribute('size', Math.min(optionCount + 1, 6));
+  sel.style.position = 'absolute'; sel.style.zIndex = '50'; sel.style.left = '0'; sel.style.right = '0';
+  sel.style.top = '100%'; sel.style.background = '#fff'; sel.style.boxShadow = '0 4px 12px rgba(0,0,0,.18)';
+  sel.style.border = '1px solid var(--border)';
+}
+window.filterSearchPicker = (pickerId, query) => {
+  const st = SEARCH_PICKER_STATE[pickerId];
+  const sel = document.getElementById(pickerId);
   if (!st || !sel) return;
   const q = query.trim().toLowerCase();
-  const filtered = !q ? st.items : st.items.filter(i =>
-    (i.name || '').toLowerCase().includes(q) || (i.item_code || '').toLowerCase().includes(q));
+  const filtered = !q ? st.records : st.records.filter(r => st.matchFn(r, q));
   const currentValue = sel.value;
-  sel.innerHTML = st.renderOptions(currentValue ? Number(currentValue) : '', filtered);
-  if (currentValue && filtered.some(i => String(i.id) === String(currentValue))) sel.value = currentValue;
-  if (q && filtered.length) sel.setAttribute('size', Math.min(filtered.length + 1, 6));
-  else sel.removeAttribute('size');
+  sel.innerHTML = st.renderOptions(currentValue, filtered);
+  if (currentValue && filtered.some(r => String(r.id) === String(currentValue))) sel.value = currentValue;
+  if (q && filtered.length) expandSearchPicker(sel, filtered.length);
+  else collapseSearchPicker(sel);
 };
 document.addEventListener('change', (e) => {
-  if (e.target && e.target.tagName === 'SELECT' && ITEM_PICKER_STATE[e.target.id]) e.target.removeAttribute('size');
+  if (e.target && e.target.tagName === 'SELECT' && SEARCH_PICKER_STATE[e.target.id]) collapseSearchPicker(e.target);
 }, true);
 document.addEventListener('blur', (e) => {
-  if (e.target && e.target.tagName === 'SELECT' && ITEM_PICKER_STATE[e.target.id]) e.target.removeAttribute('size');
+  if (e.target && e.target.tagName === 'SELECT' && SEARCH_PICKER_STATE[e.target.id]) collapseSearchPicker(e.target);
 }, true);
 // Clears a picker's search box and restores its full option list - used
 // before programmatically setting a select's value (e.g. auto-filling the
 // item from a picked PR line) so a leftover search filter can't hide the
 // option being selected.
-function resetItemPicker(selectId) {
-  const searchEl = document.getElementById(`${selectId}-search`);
+function resetSearchPicker(pickerId) {
+  const searchEl = document.getElementById(`${pickerId}-search`);
   if (searchEl) searchEl.value = '';
-  window.filterItemPicker(selectId, '');
+  window.filterSearchPicker(pickerId, '');
+}
+
+// Thin Item Master-specific wrapper over the generic picker above - kept so
+// every existing call site (Purchase Request/Order line items) doesn't need
+// to know about matchFn/searchPickerHTML directly.
+function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs) {
+  return searchPickerHTML(selectId, items, selectedId, renderOptions,
+    (i, q) => (i.name || '').toLowerCase().includes(q) || (i.item_code || '').toLowerCase().includes(q),
+    selectAttrs, 'Search item...', 'max-width:260px;');
+}
+window.filterItemPicker = window.filterSearchPicker;
+function resetItemPicker(selectId) { resetSearchPicker(selectId); }
+
+// Project picker - searches by project code AND title, since a plain
+// dropdown labeled only by code (see purchase-requests' pr-project) is hard
+// to find by name once there are more than a handful of projects.
+function projectOptions(selectedId, projects, placeholder) {
+  return `<option value="">${esc(placeholder || '- General / Not Project-Specific -')}</option>` +
+    projects.map(p => `<option value="${p.id}" ${selectedId && Number(selectedId) === p.id ? 'selected' : ''}>${esc(p.project_code)} - ${esc(p.title)}</option>`).join('');
+}
+function projectPickerHTML(pickerId, projects, selectedId, placeholder) {
+  return searchPickerHTML(pickerId, projects, selectedId,
+    (sel, list) => projectOptions(sel, list, placeholder),
+    (p, q) => (p.project_code || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q),
+    '', 'Search project by code or title...');
+}
+// Client/customer picker - searches by name (clients have no separate code).
+function clientOptions(selectedId, clients, placeholder) {
+  return `<option value="">${esc(placeholder || '- No customer -')}</option>` +
+    clients.map(c => `<option value="${c.id}" ${selectedId && Number(selectedId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+}
+function clientPickerHTML(pickerId, clients, selectedId, placeholder) {
+  return searchPickerHTML(pickerId, clients, selectedId,
+    (sel, list) => clientOptions(sel, list, placeholder),
+    (c, q) => (c.name || '').toLowerCase().includes(q),
+    '', 'Search customer by name...');
 }
 
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
@@ -3865,7 +3918,7 @@ PAGES['purchase-requests'] = async (el) => {
     `),
     'new-request': collapsiblePanel('new-purchase-request', 'New Purchase Request', `
       <div class="form-grid">
-        <div><label>Project (optional)</label><select id="pr-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)}</option>`).join('')}</select></div>
+        <div><label>Project (optional)</label>${projectPickerHTML('pr-project', projects, '')}</div>
       </div>
       <div id="pr-lines"></div>
       <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
@@ -4831,13 +4884,49 @@ window.downloadItemTemplate = () => downloadTemplateFile('/masters/items/templat
 window.uploadItemTemplate = () => uploadTemplateFile('/masters/items/bulk-upload', 'it-upload-file', 'it-upload-result', () => navigate('store'));
 
 // ---- Sheet 2: Stock In / Out ----
+// Renders as two tabs (Receive / Issue to Production), same tab-bar pattern
+// as the Offer Builder - CURRENT_STOCK_TAB persists across navigate()
+// reloads (e.g. right after receiving/issuing something) so the user isn't
+// bounced back to Receive every time.
+let CURRENT_STOCK_TAB = 'receive';
+function stockItemOptions(selectedId, items) {
+  return items.length
+    ? items.map(i => `<option value="${i.id}" ${selectedId && Number(selectedId) === i.id ? 'selected' : ''}>${esc(i.name)}${i.item_code ? ' (' + esc(i.item_code) + ')' : ''} - stock: ${i.current_stock}</option>`).join('')
+    : '<option value="">- No items -</option>';
+}
+// A multi-line PO is several purchase_orders rows sharing one po_no (see
+// routes/purchase.js) - GET /purchase/orders returns that flat per-line
+// list, so it's grouped back into one entry per po_no here rather than
+// showing each line as its own confusingly-similar dropdown option (the
+// exact bug reported: a 2-line PO showed as 2 separate, easy-to-miss-the-
+// other-one options).
+function groupPOsByNo(openPOs) {
+  const map = new Map();
+  for (const po of openPOs) {
+    if (!map.has(po.po_no)) map.set(po.po_no, { po_no: po.po_no, vendor_name: po.vendor_name, lines: [] });
+    map.get(po.po_no).lines.push(po);
+  }
+  return Array.from(map.values());
+}
+function poGroupOptions(selectedPoNo, groups) {
+  return `<option value="">- Not against a PO -</option>` +
+    groups.map(g => `<option value="${esc(g.po_no)}" ${selectedPoNo === g.po_no ? 'selected' : ''}>${esc(g.po_no)} - ${esc(g.vendor_name)} (${g.lines.length} item${g.lines.length > 1 ? 's' : ''})</option>`).join('');
+}
+function poGroupMatch(g, q) {
+  return (g.po_no || '').toLowerCase().includes(q) || (g.vendor_name || '').toLowerCase().includes(q) ||
+    g.lines.some(l => (l.item_name || '').toLowerCase().includes(q));
+}
 async function renderStockInOutSheet(el) {
   const items = (await api('/masters/items')).filter(i => !['Pending', 'Discontinued'].includes(i.status));
   const movements = await api('/purchase/store/movements');
   const openPOs = (await api('/purchase/orders')).filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
-  const projects = await api('/projects');
-  window.__OPEN_POS = openPOs;
+  const [projects, departments, clients] = await Promise.all([api('/projects'), api('/masters/departments'), api('/masters/clients')]);
   window.__STOCK_ITEMS = items;
+  window.__GROUPED_POS = groupPOsByNo(openPOs);
+  window.__STOCK_PROJECTS = projects;
+  window.__STOCK_DEPARTMENTS = departments;
+  window.__STOCK_CLIENTS = clients;
+  const stockTabs = [['receive', 'Receive (IN)'], ['issue', 'Issue to Production (OUT)']];
   const stockPanels = {
     'scan-barcode': `
     <div class="panel"><h3>Scan Barcode</h3>
@@ -4846,31 +4935,11 @@ async function renderStockInOutSheet(el) {
       <div id="st-scan-result" style="margin-top:8px;"></div>
     </div>`,
     'stock-in-out': `
-    <div class="panel"><h3>Stock In / Out</h3>
+    <div class="panel">
+      <h3>Stock In / Out</h3>
       ${!items.length ? `<div class="msg err">No items in the Item Master yet - add one under <a href="#" onclick="navigate('store');return false;">Item Master</a> before recording a stock movement.</div>` : ''}
-      <div class="form-grid">
-        <div><label>Receive against PO (optional)</label>
-          <select id="st-po" onchange="fillStockFromPO()" ${!openPOs.length ? 'disabled' : ''}>
-            <option value="">- Not against a PO -</option>
-            ${openPOs.map(o => `<option value="${o.id}">${esc(o.po_no)} - ${esc(o.vendor_name)} - ${esc(o.item_name)||'-'} (ordered: ${o.quantity}, received: ${o.received_qty}${o.received_qty > 0 ? ', remaining: ' + (o.quantity - o.received_qty) : ''})</option>`).join('')}
-          </select>
-          ${!openPOs.length ? `<div class="muted" style="margin-top:4px;">No Purchase Orders are currently Open - once one is created and not yet fully received, it will show up here.</div>` : ''}
-        </div>
-        <div><label>Issue to Project (for OUT only, optional)</label>
-          <select id="st-project">
-            <option value="">- Not tied to a project -</option>
-            ${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} - ${esc(p.title)}</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <label>Item</label>
-          <input id="st-item-search" placeholder="Type to search by name or code..." autocomplete="off" oninput="filterStockItemOptions()" ${!items.length ? 'disabled' : ''} style="margin-bottom:4px;">
-          <select id="st-item" ${!items.length ? 'disabled' : ''} size="6" style="width:100%;">${items.length ? items.map(i => `<option value="${i.id}" data-barcode="${esc(i.barcode)||''}" data-search="${esc(((i.name||'')+' '+(i.item_code||'')).toLowerCase())}">${esc(i.name)}${i.item_code ? ' (' + esc(i.item_code) + ')' : ''} - stock: ${i.current_stock}</option>`).join('') : '<option value="">- No items -</option>'}</select>
-        </div>
-        <div><label>Quantity</label><input id="st-qty" type="number"></div>
-      </div>
-      <button class="btn green" onclick="storeMove('receive')" ${!items.length ? 'disabled' : ''}>Receive (IN)</button>
-      <button class="btn red" onclick="storeMove('issue')" ${!items.length ? 'disabled' : ''}>Issue to Production (OUT)</button>
+      <div class="tabs" id="stock-panel-tabs">${stockTabs.map(([id, label]) => `<div class="tab ${CURRENT_STOCK_TAB === id ? 'active' : ''}" data-tab-id="${id}" onclick="switchStockTab('${id}')">${label}</div>`).join('')}</div>
+      <div id="stock-tab-content"></div>
     </div>`,
     'bulk-upload': `
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
@@ -4881,13 +4950,15 @@ async function renderStockInOutSheet(el) {
       <div id="st-upload-result" style="margin-top:10px;"></div>
     </div>`,
     'recent-movements': collapsiblePanel('recent-movements', 'Recent Movements', `
-      ${tableHTML(['Item', 'Type', 'Qty', 'Reference', 'Date'], movements.slice(0, 30), m => `
-        <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
+      ${tableHTML(['Item', 'Type', 'Qty', 'Department', 'Customer', 'Reference', 'Date'], movements.slice(0, 30), m => `
+        <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td>
+          <td>${esc(m.department_name)||'-'}</td><td>${esc(m.client_name)||'-'}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
     `),
   };
   const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements' };
   const stockOrder = await fetchPanelOrder('stock-in-out', Object.keys(stockPanels));
   el.innerHTML = reorderablePanelsHTML('stock-in-out', stockPanels, stockOrder, stockLabels);
+  renderStockTabBody();
   const scanEl = document.getElementById('st-scan');
   scanEl.addEventListener('keydown', async (ev) => {
     if (ev.key !== 'Enter') return;
@@ -4897,50 +4968,118 @@ async function renderStockInOutSheet(el) {
     const resEl = document.getElementById('st-scan-result');
     try {
       const item = await api('/masters/items/by-barcode/' + encodeURIComponent(code));
+      if (CURRENT_STOCK_TAB !== 'receive' || val('st-po')) { switchStockTab('receive'); document.getElementById('st-po') && (document.getElementById('st-po').value = ''); renderStockPoLines(); }
       const sel = document.getElementById('st-item');
-      sel.value = item.id;
+      if (sel) sel.value = item.id;
       resEl.innerHTML = `<div class="msg ok">Matched: <b>${esc(item.name)}</b> (stock: ${item.current_stock})</div>`;
     } catch (e) { resEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
   });
   scanEl.focus();
 }
-window.fillStockFromPO = () => {
-  const poId = Number(val('st-po'));
-  if (!poId) return;
-  const po = (window.__OPEN_POS || []).find(o => o.id === poId);
-  if (!po) return;
-  if (po.item_id) { const itemSel = document.getElementById('st-item'); if (itemSel) itemSel.value = po.item_id; }
-  const qtyEl = document.getElementById('st-qty');
-  // Pre-fill the REMAINING quantity, not the full ordered amount - a PO
-  // already partially received (received_qty > 0) would otherwise default
-  // to over-receiving it by that much every time.
-  if (qtyEl) qtyEl.value = Math.max(0, po.quantity - (po.received_qty || 0));
+window.switchStockTab = (tab) => {
+  CURRENT_STOCK_TAB = tab;
+  const tabsBar = document.getElementById('stock-panel-tabs');
+  if (tabsBar) tabsBar.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tabId === tab));
+  renderStockTabBody();
 };
-window.filterStockItemOptions = () => {
-  const q = (val('st-item-search') || '').toLowerCase().trim();
-  const sel = document.getElementById('st-item');
-  if (!sel) return;
-  let firstVisible = null;
-  Array.from(sel.options).forEach(opt => {
-    const matches = !q || (opt.getAttribute('data-search') || '').includes(q);
-    opt.hidden = !matches;
-    if (matches && !firstVisible) firstVisible = opt;
-  });
-  // Keep the current selection if it's still visible; otherwise jump to the
-  // first match so Quantity/Receive act on something the user can actually see.
-  if (sel.selectedOptions.length && sel.selectedOptions[0].hidden && firstVisible) {
-    sel.value = firstVisible.value;
+function renderStockTabBody() {
+  const el = document.getElementById('stock-tab-content');
+  if (!el) return;
+  if (CURRENT_STOCK_TAB === 'receive') return renderReceiveTab(el);
+  if (CURRENT_STOCK_TAB === 'issue') return renderIssueTab(el);
+}
+function renderReceiveTab(el) {
+  const groups = window.__GROUPED_POS || [];
+  el.innerHTML = `
+    <div class="form-grid">
+      <div><label>Receive against PO (optional)</label>
+        ${searchPickerHTML('st-po', groups, '', poGroupOptions, poGroupMatch, 'onchange="renderStockPoLines()"', 'Search by PO no, vendor, or item...')}
+        ${!groups.length ? `<div class="muted" style="margin-top:4px;">No Purchase Orders are currently Open - once one is created and not yet fully received, it will show up here.</div>` : ''}
+      </div>
+      <div><label>Vendor</label><input id="st-po-vendor" value="" disabled></div>
+    </div>
+    <div id="st-po-lines" style="margin-top:10px;"></div>
+  `;
+  renderStockPoLines();
+}
+// Re-renders just the part of the Receive tab below the PO picker: either
+// the selected PO's own line items (each with its own qty-to-receive input
+// and Receive button, for partial/per-line shipments) or, with no PO
+// selected, today's manual item+qty+Receive flow unchanged.
+function renderStockPoLines() {
+  const poNo = val('st-po');
+  const vendorInput = document.getElementById('st-po-vendor');
+  const linesEl = document.getElementById('st-po-lines');
+  if (!linesEl) return;
+  const group = (window.__GROUPED_POS || []).find(g => g.po_no === poNo);
+  if (vendorInput) vendorInput.value = group ? group.vendor_name : '';
+  if (group) {
+    linesEl.innerHTML = `
+      <table><thead><tr><th>Item</th><th>Ordered</th><th>Received</th><th>Qty to Receive</th><th></th></tr></thead>
+      <tbody>${group.lines.map(l => {
+        const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
+        return `<tr>
+          <td>${esc(l.item_name) || '-'}</td>
+          <td>${l.quantity}</td>
+          <td>${l.received_qty || 0}</td>
+          <td><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0" style="width:90px;"></td>
+          <td><button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button></td>
+        </tr>`;
+      }).join('')}</tbody></table>
+    `;
+  } else {
+    const items = window.__STOCK_ITEMS || [];
+    linesEl.innerHTML = `
+      <div class="form-grid">
+        <div><label>Item</label>${itemPickerHTML('st-item', items, '', stockItemOptions)}</div>
+        <div><label>Quantity</label><input id="st-qty" type="number"></div>
+      </div>
+      <button class="btn green" onclick="storeMove('receive')" ${!items.length ? 'disabled' : ''}>Receive (IN)</button>
+    `;
   }
+}
+window.receivePoLine = async (lineId) => {
+  try {
+    const qtyInput = document.getElementById(`st-po-line-qty-${lineId}`);
+    const qty = qtyInput ? qtyInput.value : 0;
+    let line = null;
+    for (const g of (window.__GROUPED_POS || [])) { line = g.lines.find(l => l.id === lineId); if (line) break; }
+    if (!line) return;
+    await api('/purchase/store/receive', { method: 'POST', body: JSON.stringify({ item_id: line.item_id, po_id: line.id, quantity: qty }) });
+    navigate('stock-in-out');
+  } catch (e) { alert(e.message); }
 };
+function renderIssueTab(el) {
+  const items = window.__STOCK_ITEMS || [];
+  const departments = window.__STOCK_DEPARTMENTS || [];
+  const projects = window.__STOCK_PROJECTS || [];
+  const clients = window.__STOCK_CLIENTS || [];
+  el.innerHTML = `
+    <div class="form-grid">
+      <div><label>Department <span class="muted">(who is this being issued to?)</span></label>
+        <select id="st-department"><option value="">- Select department -</option>${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+      </div>
+      <div><label>Project (optional)</label>${projectPickerHTML('st-project', projects, '')}</div>
+      <div><label>Customer (optional)</label>${clientPickerHTML('st-client', clients, '')}</div>
+    </div>
+    <div class="form-grid" style="margin-top:10px;">
+      <div><label>Item</label>${itemPickerHTML('st-item', items, '', stockItemOptions)}</div>
+      <div><label>Quantity</label><input id="st-qty" type="number"></div>
+    </div>
+    <button class="btn red" onclick="storeMove('issue')" ${!items.length ? 'disabled' : ''}>Issue to Production (OUT)</button>
+  `;
+}
 window.storeMove = async (type) => {
   try {
     const body = { item_id: val('st-item'), quantity: val('st-qty') };
-    if (type === 'receive') {
-      const poId = val('st-po');
-      if (poId) body.po_id = poId;
-    } else if (type === 'issue') {
+    if (type === 'issue') {
+      const departmentId = val('st-department');
+      if (!departmentId) { alert('Pick which department this is being issued to.'); return; }
+      body.department_id = departmentId;
       const projectId = val('st-project');
       if (projectId) body.project_id = projectId;
+      const clientId = val('st-client');
+      if (clientId) body.client_id = clientId;
     }
     await api('/purchase/store/' + type, { method: 'POST', body: JSON.stringify(body) });
     navigate('stock-in-out');

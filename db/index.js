@@ -934,6 +934,17 @@ const MIGRATIONS = [
   // po_no, so this column is duplicated onto every line's row and kept in
   // sync across them by PATCH /orders/:id/commercial-terms.
   `ALTER TABLE purchase_orders ADD COLUMN payment_terms TEXT`,
+
+  // Stock In/Out redesign (Round: tabbed Receive/Issue panel): an OUT
+  // movement can now record which department the material was issued to
+  // (Store fulfills requests from every other department and needs to
+  // record whose request it was) and, separately from project_id, which
+  // client it was issued against - a quick customer-facing issue that
+  // isn't tracked as a formal Project. Both nullable: neither applies to
+  // an IN movement, and an OUT movement not tied to either still works
+  // exactly as before.
+  `ALTER TABLE stock_movements ADD COLUMN department_id INTEGER REFERENCES departments(id)`,
+  `ALTER TABLE stock_movements ADD COLUMN client_id INTEGER REFERENCES clients(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
