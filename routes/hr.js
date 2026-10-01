@@ -8,10 +8,21 @@ const router = express.Router();
 router.use(authRequired);
 
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// Matches every field on the Add Employee form (public/js/app.js's
+// addEmployee()) in the same order, so a one-time migration of existing
+// employee data can be done entirely via this one template instead of
+// hand-entering each employee afterward to fill in the rest. Deliberately
+// excludes `bank_account` - a legacy column the Add Employee form itself
+// doesn't use either (it writes bank_name/account_number/ifsc_code), kept
+// only for old data and the Edit Employee screen.
 const EMPLOYEE_TEMPLATE_COLUMNS = [
-  'employee_code', 'full_name', 'department', 'designation', 'date_of_joining',
-  'phone', 'email', 'address', 'bank_account', 'monthly_salary',
+  'employee_code', 'full_name', 'department', 'designation', 'employment_type', 'date_of_joining',
+  'phone', 'email', 'monthly_salary', 'pan_number', 'blood_group',
+  'emergency_contact_name', 'emergency_contact_phone', 'address',
+  'bank_name', 'account_number', 'ifsc_code',
+  'aadhaar_number', 'passport_number', 'visa_availability', 'driving_license_number',
 ];
+const EMPLOYMENT_TYPES = ['Full-time', 'Contract', 'Probation', 'Intern'];
 
 // ---- Employees ----
 router.get('/employees', (req, res) => {
@@ -19,6 +30,40 @@ router.get('/employees', (req, res) => {
     SELECT e.*, d.name as department_name FROM employees e LEFT JOIN departments d ON d.id = e.department_id
     ORDER BY e.full_name
   `).all());
+});
+// Must be registered before GET /employees/:id below - Express matches
+// routes in registration order, and :id matches ANY path segment
+// (including the literal string "template"), so this was previously
+// unreachable: a request for this route was always caught by the :id
+// handler first, which treated "template" as an employee id, found no
+// such row, and returned a plain 404 - "Download Template" never actually
+// worked. Same reasoning applies to bulk-upload below, though that one
+// never collided in practice since it's a POST, not a GET.
+//
+// Downloadable Excel template for bulk employee upload - headers plus one
+// example row, and a Departments sheet listing the exact department names
+// to use (department is matched by name, case-insensitively, on upload).
+router.get('/employees/template', requirePermission('payroll.manage'), (req, res) => {
+  const depts = db.prepare('SELECT name FROM departments ORDER BY name').all().map(d => d.name);
+  const wb = XLSX.utils.book_new();
+  const exampleRow = {
+    employee_code: 'EMP-1001', full_name: 'Jane Doe', department: depts[0] || 'Design', designation: 'Engineer',
+    employment_type: 'Full-time', date_of_joining: '2024-01-15', phone: '9876543210', email: 'jane@example.com',
+    monthly_salary: 25000, pan_number: 'ABCDE1234F', blood_group: 'O+',
+    emergency_contact_name: 'John Doe', emergency_contact_phone: '9123456780', address: 'Faridabad',
+    bank_name: 'State Bank of India', account_number: '000123456789', ifsc_code: 'SBIN0001234',
+    aadhaar_number: '123456789012', passport_number: '', visa_availability: '', driving_license_number: '',
+  };
+  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: EMPLOYEE_TEMPLATE_COLUMNS });
+  XLSX.utils.book_append_sheet(wb, ws, 'Employees');
+  const deptWs = XLSX.utils.aoa_to_sheet([['Department Names (use exactly as spelled here)'], ...depts.map(d => [d])]);
+  XLSX.utils.book_append_sheet(wb, deptWs, 'Departments');
+  const empTypeWs = XLSX.utils.aoa_to_sheet([['Employment Type (use exactly as spelled here)'], ...EMPLOYMENT_TYPES.map(t => [t])]);
+  XLSX.utils.book_append_sheet(wb, empTypeWs, 'Employment Types');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', 'attachment; filename="employee_upload_template.xlsx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
 });
 router.get('/employees/:id', (req, res) => {
   const e = db.prepare(`
@@ -86,27 +131,6 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
   res.json({ ok: true });
 });
 
-// Downloadable Excel template for bulk employee upload - headers plus one
-// example row, and a Departments sheet listing the exact department names
-// to use (department is matched by name, case-insensitively, on upload).
-router.get('/employees/template', requirePermission('payroll.manage'), (req, res) => {
-  const depts = db.prepare('SELECT name FROM departments ORDER BY name').all().map(d => d.name);
-  const wb = XLSX.utils.book_new();
-  const exampleRow = {
-    employee_code: 'EMP-1001', full_name: 'Jane Doe', department: depts[0] || 'Design', designation: 'Engineer',
-    date_of_joining: '2024-01-15', phone: '9876543210', email: 'jane@example.com', address: 'Faridabad',
-    bank_account: '1234567890', monthly_salary: 25000,
-  };
-  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: EMPLOYEE_TEMPLATE_COLUMNS });
-  XLSX.utils.book_append_sheet(wb, ws, 'Employees');
-  const deptWs = XLSX.utils.aoa_to_sheet([['Department Names (use exactly as spelled here)'], ...depts.map(d => [d])]);
-  XLSX.utils.book_append_sheet(wb, deptWs, 'Departments');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="employee_upload_template.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
-});
-
 // Bulk-create or bulk-update employees from a filled-in copy of the template
 // above - matched by employee_code (the durable identifier). Re-uploading
 // the same file after changing a field (e.g. date_of_joining) for an
@@ -129,12 +153,20 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
   }
   const depts = db.prepare('SELECT id, name FROM departments').all();
   const deptByName = new Map(depts.map(d => [d.name.trim().toLowerCase(), d.id]));
-  const insert = db.prepare(`
-    INSERT INTO employees (employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account, monthly_salary)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-  `);
+  const empTypeByLower = new Map(EMPLOYMENT_TYPES.map(t => [t.toLowerCase(), t]));
+  // Full employees-table column list, in the same order as
+  // EMPLOYEE_TEMPLATE_COLUMNS (department/employment_type are looked up/
+  // normalized separately below - their raw spreadsheet values aren't valid
+  // column values directly).
+  const cols = [
+    'employee_code', 'full_name', 'department_id', 'designation', 'employment_type', 'date_of_joining',
+    'phone', 'email', 'monthly_salary', 'pan_number', 'blood_group',
+    'emergency_contact_name', 'emergency_contact_phone', 'address',
+    'bank_name', 'account_number', 'ifsc_code',
+    'aadhaar_number', 'passport_number', 'visa_availability', 'driving_license_number',
+  ];
+  const insert = db.prepare(`INSERT INTO employees (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
   const findByCode = db.prepare('SELECT * FROM employees WHERE employee_code = ?');
-  const cols = ['employee_code', 'full_name', 'department_id', 'designation', 'date_of_joining', 'phone', 'email', 'address', 'bank_account', 'monthly_salary'];
   let inserted = 0, updated = 0;
   const errors = [];
   const tx = db.transaction(() => {
@@ -145,6 +177,9 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
       const deptName = String(row.department || '').trim();
       const deptId = deptName ? deptByName.get(deptName.toLowerCase()) : null;
       if (deptName && !deptId) { errors.push(`Row ${rowNum}: department "${deptName}" not recognized - skipped.`); return; }
+      const empTypeRaw = String(row.employment_type || '').trim();
+      const empType = empTypeRaw ? empTypeByLower.get(empTypeRaw.toLowerCase()) : null;
+      if (empTypeRaw && !empType) { errors.push(`Row ${rowNum}: employment_type "${empTypeRaw}" not recognized - skipped. Use one of: ${EMPLOYMENT_TYPES.join(', ')}.`); return; }
       const code = String(row.employee_code || '').trim() || null;
       const existing = code ? findByCode.get(code) : null;
       if (existing) {
@@ -152,6 +187,7 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
           if (c === 'employee_code') return code;
           if (c === 'full_name') return fullName;
           if (c === 'department_id') return deptName ? deptId : existing.department_id;
+          if (c === 'employment_type') return empType || existing.employment_type;
           if (c === 'monthly_salary') return (String(row.monthly_salary || '').trim() !== '') ? Number(row.monthly_salary) : existing.monthly_salary;
           const raw = String(row[c] || '').trim();
           return raw !== '' ? raw : existing[c];
@@ -160,11 +196,15 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
         updated++;
         return;
       }
-      insert.run(
-        code, fullName, deptId || null, String(row.designation || '') || null,
-        String(row.date_of_joining || '') || null, String(row.phone || '') || null, String(row.email || '') || null,
-        String(row.address || '') || null, String(row.bank_account || '') || null, Number(row.monthly_salary) || 0
-      );
+      const values = cols.map(c => {
+        if (c === 'employee_code') return code;
+        if (c === 'full_name') return fullName;
+        if (c === 'department_id') return deptId || null;
+        if (c === 'employment_type') return empType || 'Full-time';
+        if (c === 'monthly_salary') return Number(row.monthly_salary) || 0;
+        return String(row[c] || '').trim() || null;
+      });
+      insert.run(...values);
       inserted++;
     });
   });
