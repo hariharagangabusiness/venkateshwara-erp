@@ -964,16 +964,22 @@ router.get('/store/movements', (req, res) => {
   `).all());
 });
 
-const STOCK_TEMPLATE_COLUMNS = ['item_code_or_barcode', 'movement_type', 'quantity', 'po_no', 'reference'];
+const STOCK_TEMPLATE_COLUMNS = ['item_code_or_barcode', 'movement_type', 'quantity', 'po_no', 'department', 'project', 'client', 'reference'];
 router.get('/store/movements/template', requirePermission('store.manage'), (req, res) => {
-  const exampleRow = { item_code_or_barcode: 'ITM-1001', movement_type: 'IN', quantity: 50, po_no: 'PO-1024', reference: 'GRN against PO-1024' };
+  const exampleRows = [
+    { item_code_or_barcode: 'ITM-1001', movement_type: 'IN', quantity: 50, po_no: 'PO-1024', department: '', project: '', client: '', reference: 'GRN against PO-1024' },
+    { item_code_or_barcode: 'ITM-1002', movement_type: 'OUT', quantity: 10, po_no: '', department: 'Production', project: 'PRJ-0007', client: 'Acme Industries', reference: 'Issued for assembly' },
+  ];
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: STOCK_TEMPLATE_COLUMNS });
+  const ws = XLSX.utils.json_to_sheet(exampleRows, { header: STOCK_TEMPLATE_COLUMNS });
   XLSX.utils.book_append_sheet(wb, ws, 'StockMovements');
   const note = XLSX.utils.aoa_to_sheet([['Notes'],
     ['movement_type must be IN (stock received) or OUT (issued to production).'],
     ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.'],
     ['po_no is optional and only applies to IN movements - when it matches an open Purchase Order, this receipt counts toward that PO\'s received quantity and updates its status (Open/PartiallyReceived/Received), same as receiving against it from the Purchase Orders page.'],
+    ['department is required for OUT movements (same rule as the Issue screen - Store needs to know which department the stock is going to) and does not apply to IN movements. Match it exactly to a department name already in the system.'],
+    ['project is optional and only applies to OUT movements - match it to a Project Code (e.g. PRJ-0007) or project title.'],
+    ['client is optional and only applies to OUT movements - match it to a Customer name already in the system.'],
   ]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -989,6 +995,9 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
     rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
   const findItem = db.prepare('SELECT * FROM items WHERE item_code = ? OR barcode = ?');
+  const findDepartment = db.prepare('SELECT * FROM departments WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
+  const findProject = db.prepare('SELECT * FROM projects WHERE LOWER(TRIM(project_code)) = LOWER(TRIM(?)) OR LOWER(TRIM(title)) = LOWER(TRIM(?))');
+  const findClient = db.prepare('SELECT * FROM clients WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
   // A multi-item PO is several purchase_orders rows sharing one po_no (see
   // POST /orders) - matching by po_no alone would resolve to whichever
   // sibling row SQLite happens to return first, posting this receipt
@@ -996,7 +1005,7 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
   // same row's item_code_or_barcode) disambiguates which line the receipt
   // is actually for.
   const findPoByNoAndItem = db.prepare('SELECT * FROM purchase_orders WHERE po_no = ? AND item_id = ?');
-  const insertMove = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, moved_by) VALUES (?,?,?,?,?)`);
+  const insertMove = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, department_id, client_id, moved_by) VALUES (?,?,?,?,?,?,?,?)`);
   const adjustStock = db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = ?');
   const updatePoStatus = db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?');
   let inserted = 0; const errors = []; const warnings = [];
@@ -1012,6 +1021,41 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
       const qty = Number(row.quantity) || 0;
       if (qty <= 0) { errors.push(`Row ${rowNum}: quantity must be greater than 0 - skipped.`); return; }
       if (type === 'OUT' && item.current_stock < qty) { errors.push(`Row ${rowNum}: insufficient stock for "${item.name}" - skipped.`); return; }
+      // department/project/client mirror the interactive Issue (OUT) form,
+      // which alone has these fields - Receive (IN) only has po_no. Same
+      // required-for-OUT rule as /store/issue's own check.
+      const deptName = String(row.department || '').trim();
+      let department_id = null;
+      if (type === 'OUT') {
+        if (!deptName) { errors.push(`Row ${rowNum}: department is required for OUT movements - skipped.`); return; }
+        const dept = findDepartment.get(deptName);
+        if (!dept) { errors.push(`Row ${rowNum}: department "${deptName}" not found - skipped.`); return; }
+        department_id = dept.id;
+      } else if (deptName) {
+        warnings.push(`Row ${rowNum}: department only applies to OUT movements - ignored for this IN row.`);
+      }
+      const projectName = String(row.project || '').trim();
+      let project_id = null;
+      if (projectName) {
+        if (type !== 'OUT') {
+          warnings.push(`Row ${rowNum}: project only applies to OUT movements - ignored for this IN row.`);
+        } else {
+          const project = findProject.get(projectName, projectName);
+          if (!project) { errors.push(`Row ${rowNum}: project "${projectName}" not found - skipped.`); return; }
+          project_id = project.id;
+        }
+      }
+      const clientName = String(row.client || '').trim();
+      let client_id = null;
+      if (clientName) {
+        if (type !== 'OUT') {
+          warnings.push(`Row ${rowNum}: client only applies to OUT movements - ignored for this IN row.`);
+        } else {
+          const client = findClient.get(clientName);
+          if (!client) { errors.push(`Row ${rowNum}: client "${clientName}" not found - skipped.`); return; }
+          client_id = client.id;
+        }
+      }
       const poNo = String(row.po_no || '').trim();
       let po = null;
       let reference = String(row.reference || '') || null;
@@ -1029,7 +1073,7 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
           }
         }
       }
-      insertMove.run(item.id, type, qty, reference, req.user.id);
+      insertMove.run(item.id, type, qty, reference, project_id, department_id, client_id, req.user.id);
       adjustStock.run(type === 'IN' ? qty : -qty, item.id);
       if (po) {
         const receivedSoFar = poReceivedQty(po.id);

@@ -124,6 +124,101 @@ const VENDOR_FIELDS = [
 ];
 
 router.get('/vendors', (req, res) => res.json(db.prepare('SELECT * FROM vendors ORDER BY id DESC').all()));
+// Must be registered before GET /vendors/:id below - Express matches routes
+// in registration order, and :id matches ANY single path segment including
+// the literal string "template", so this was previously unreachable: a
+// request for it was always caught by the :id handler first, which treated
+// "template" as a vendor id, found no such row, and returned a plain 404 -
+// "Download Template" never actually worked. Same bug, same fix, as
+// routes/hr.js's employee template route (2026-10-01).
+const VENDOR_STATUSES = ['Active', 'Inactive', 'Blacklisted'];
+const VENDOR_TEMPLATE_COLUMNS = [
+  'name', 'legal_name', 'gstin', 'pan', 'vendor_type', 'status', 'is_msme', 'msme_number', 'state', 'state_code',
+  'address_line1', 'address_line2', 'city', 'pincode', 'country', 'contact_person', 'phone', 'email',
+  'bank_name', 'bank_account_number', 'bank_ifsc', 'bank_account_holder', 'payment_terms',
+  'payment_terms_days', 'category', 'po_email',
+];
+router.get('/vendors/template', requirePermission('purchase_order.manage', 'purchase_request.create'), (req, res) => {
+  const exampleRow = { name: 'ABC Steels Pvt Ltd', legal_name: 'ABC Steels Private Limited', gstin: '06AAACA1234B1Z5',
+    pan: 'AAACA1234B', vendor_type: 'Manufacturer', status: 'Active', is_msme: 'Yes', msme_number: 'UDYAM-HR-01-1234567',
+    state: 'Haryana', state_code: '06', address_line1: 'Plot 12, Sector 24', address_line2: '', city: 'Faridabad',
+    pincode: '121005', country: 'India', contact_person: 'Rakesh Sharma', phone: '9811122233',
+    email: 'sales@abcsteels.example', bank_name: 'HDFC Bank', bank_account_number: '00123456789',
+    bank_ifsc: 'HDFC0000123', bank_account_holder: 'ABC Steels Pvt Ltd', payment_terms: 'Net 30', payment_terms_days: 30,
+    category: 'Raw Material', po_email: 'po@abcsteels.example' };
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: VENDOR_TEMPLATE_COLUMNS });
+  XLSX.utils.book_append_sheet(wb, ws, 'Vendors');
+  const statusWs = XLSX.utils.aoa_to_sheet([['Status (use exactly as spelled here)'], ...VENDOR_STATUSES.map(s => [s])]);
+  XLSX.utils.book_append_sheet(wb, statusWs, 'Status Values');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', 'attachment; filename="vendor_upload_template.xlsx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+router.post('/vendors/bulk-upload', requirePermission('purchase_order.manage', 'purchase_request.create'), uploadMemory.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  let rows;
+  try {
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+  } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
+  const cols = VENDOR_FIELDS.filter(c => c !== 'address');
+  const insert = db.prepare(`INSERT INTO vendors (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+  const findByGstin = db.prepare('SELECT * FROM vendors WHERE gstin = ?');
+  const findByName = db.prepare('SELECT * FROM vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
+  const statusByLower = new Map(VENDOR_STATUSES.map(s => [s.toLowerCase(), s]));
+  let inserted = 0, updated = 0; const errors = [];
+  // Wrapped in a transaction: without one, a mid-file failure (e.g. the DB's
+  // own GSTIN unique index rejecting an old-style duplicate row) used to
+  // throw straight out of this handler, leaving whatever rows had already
+  // been inserted committed with no summary response at all.
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const name = String(row.name || row.legal_name || '').trim();
+      if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
+      const gstin = String(row.gstin || '').trim();
+      if (!validGstin(gstin)) { errors.push(`Row ${rowNum}: GSTIN "${gstin}" looks invalid - skipped.`); return; }
+      const statusRaw = String(row.status || '').trim();
+      const status = statusRaw ? statusByLower.get(statusRaw.toLowerCase()) : null;
+      if (statusRaw && !status) { errors.push(`Row ${rowNum}: status "${statusRaw}" not recognized - skipped. Use one of: ${VENDOR_STATUSES.join(', ')}.`); return; }
+      // Re-uploading the same file (e.g. after exporting, filling in a
+      // missing field, and re-importing) updates the existing vendor
+      // instead of failing on the GSTIN unique index or creating a
+      // duplicate-by-name row. Matched by GSTIN first (the real durable
+      // identifier), falling back to an exact name match when no GSTIN is
+      // given. A blank cell never overwrites an existing value, so a
+      // partial re-export/re-import can't accidentally wipe a field the
+      // file just didn't happen to carry.
+      const existing = (gstin && findByGstin.get(gstin)) || findByName.get(name);
+      if (existing) {
+        const sets = cols.map(c => `${c} = ?`).join(',');
+        const values = cols.map(c => {
+          if (c === 'name') return name;
+          if (c === 'status') return status || existing.status;
+          if (c === 'is_msme') return row.is_msme !== '' ? (/^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0) : existing.is_msme;
+          const raw = row[c];
+          return (raw !== undefined && String(raw).trim() !== '') ? String(raw).trim() : existing[c];
+        });
+        db.prepare(`UPDATE vendors SET ${sets} WHERE id = ?`).run(...values, existing.id);
+        updated++;
+        return;
+      }
+      const values = cols.map(c => {
+        if (c === 'name') return name;
+        if (c === 'status') return status || 'Active';
+        if (c === 'is_msme') return /^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0;
+        if (c === 'country') return String(row.country || '') || 'India';
+        return String(row[c] || '') || null;
+      });
+      insert.run(...values);
+      inserted++;
+    });
+  });
+  tx();
+  res.json({ inserted, updated, skipped: errors.length, errors });
+});
 router.get('/vendors/:id', (req, res) => {
   const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
   if (!v) return res.status(404).json({ error: 'Not found' });
@@ -177,87 +272,6 @@ router.delete('/vendors/:id', requirePermission('purchase_order.manage', 'purcha
   }
   db.prepare('DELETE FROM vendors WHERE id = ?').run(req.params.id);
   res.json({ ok: true, deactivated: false });
-});
-
-const VENDOR_TEMPLATE_COLUMNS = [
-  'name', 'legal_name', 'gstin', 'pan', 'vendor_type', 'is_msme', 'msme_number', 'state', 'state_code',
-  'address_line1', 'address_line2', 'city', 'pincode', 'country', 'contact_person', 'phone', 'email',
-  'bank_name', 'bank_account_number', 'bank_ifsc', 'bank_account_holder', 'payment_terms',
-  'payment_terms_days', 'category', 'po_email',
-];
-router.get('/vendors/template', requirePermission('purchase_order.manage', 'purchase_request.create'), (req, res) => {
-  const exampleRow = { name: 'ABC Steels Pvt Ltd', legal_name: 'ABC Steels Private Limited', gstin: '06AAACA1234B1Z5',
-    pan: 'AAACA1234B', vendor_type: 'Manufacturer', is_msme: 'Yes', msme_number: 'UDYAM-HR-01-1234567',
-    state: 'Haryana', state_code: '06', address_line1: 'Plot 12, Sector 24', address_line2: '', city: 'Faridabad',
-    pincode: '121005', country: 'India', contact_person: 'Rakesh Sharma', phone: '9811122233',
-    email: 'sales@abcsteels.example', bank_name: 'HDFC Bank', bank_account_number: '00123456789',
-    bank_ifsc: 'HDFC0000123', bank_account_holder: 'ABC Steels Pvt Ltd', payment_terms: 'Net 30', payment_terms_days: 30,
-    category: 'Raw Material', po_email: 'po@abcsteels.example' };
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: VENDOR_TEMPLATE_COLUMNS });
-  XLSX.utils.book_append_sheet(wb, ws, 'Vendors');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="vendor_upload_template.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
-});
-router.post('/vendors/bulk-upload', requirePermission('purchase_order.manage', 'purchase_request.create'), uploadMemory.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-  let rows;
-  try {
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-  } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
-  const cols = VENDOR_FIELDS.filter(c => c !== 'address');
-  const insert = db.prepare(`INSERT INTO vendors (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
-  const findByGstin = db.prepare('SELECT * FROM vendors WHERE gstin = ?');
-  const findByName = db.prepare('SELECT * FROM vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))');
-  let inserted = 0, updated = 0; const errors = [];
-  // Wrapped in a transaction: without one, a mid-file failure (e.g. the DB's
-  // own GSTIN unique index rejecting an old-style duplicate row) used to
-  // throw straight out of this handler, leaving whatever rows had already
-  // been inserted committed with no summary response at all.
-  const tx = db.transaction(() => {
-    rows.forEach((row, i) => {
-      const rowNum = i + 2;
-      const name = String(row.name || row.legal_name || '').trim();
-      if (!name) { errors.push(`Row ${rowNum}: name is required - skipped.`); return; }
-      const gstin = String(row.gstin || '').trim();
-      if (!validGstin(gstin)) { errors.push(`Row ${rowNum}: GSTIN "${gstin}" looks invalid - skipped.`); return; }
-      // Re-uploading the same file (e.g. after exporting, filling in a
-      // missing field, and re-importing) updates the existing vendor
-      // instead of failing on the GSTIN unique index or creating a
-      // duplicate-by-name row. Matched by GSTIN first (the real durable
-      // identifier), falling back to an exact name match when no GSTIN is
-      // given. A blank cell never overwrites an existing value, so a
-      // partial re-export/re-import can't accidentally wipe a field the
-      // file just didn't happen to carry.
-      const existing = (gstin && findByGstin.get(gstin)) || findByName.get(name);
-      if (existing) {
-        const sets = cols.map(c => `${c} = ?`).join(',');
-        const values = cols.map(c => {
-          if (c === 'name') return name;
-          if (c === 'is_msme') return row.is_msme !== '' ? (/^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0) : existing.is_msme;
-          const raw = row[c];
-          return (raw !== undefined && String(raw).trim() !== '') ? String(raw).trim() : existing[c];
-        });
-        db.prepare(`UPDATE vendors SET ${sets} WHERE id = ?`).run(...values, existing.id);
-        updated++;
-        return;
-      }
-      const values = cols.map(c => {
-        if (c === 'name') return name;
-        if (c === 'is_msme') return /^(y|yes|true|1)$/i.test(String(row.is_msme || '')) ? 1 : 0;
-        if (c === 'country') return String(row.country || '') || 'India';
-        if (c === 'status') return 'Active';
-        return String(row[c] || '') || null;
-      });
-      insert.run(...values);
-      inserted++;
-    });
-  });
-  tx();
-  res.json({ inserted, updated, skipped: errors.length, errors });
 });
 
 router.get('/items', (req, res) => {
