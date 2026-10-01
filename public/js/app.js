@@ -603,6 +603,57 @@ function tableHTML(columns, rows, rowRenderer) {
   </tbody></table></div>`;
 }
 
+// ---- Click-to-sort table headers ----
+// Opt-in alternative to tableHTML() for a list page that wants sortable
+// column headers - tableHTML() itself is left untouched so every other
+// page using it is unaffected. Same "caller supplies a re-render callback"
+// idiom as LIST_SEARCH_STATE/filterList above: clicking a header only
+// redraws the table into whatever container onSort targets, not the whole
+// page, so in-progress typing in an "Add X" form above the table survives
+// a sort click. `columns` is [{ label, field, type }] - omit `field` for a
+// column that isn't sortable (e.g. a trailing Action column); `type:
+// 'number'` sorts numerically, anything else sorts as a case-insensitive
+// string. Sort state persists per `key` for the session, so leaving and
+// returning to a list keeps the last sort applied.
+const SORT_STATE = {};
+function sortableTableHTML(key, columns, rows, rowRenderer, onSort) {
+  const st = SORT_STATE[key] || (SORT_STATE[key] = { field: null, dir: 'asc' });
+  st.columns = columns; st.rows = rows; st.rowRenderer = rowRenderer; st.onSort = onSort;
+  return renderSortedTable(key);
+}
+function renderSortedTable(key) {
+  const st = SORT_STATE[key];
+  if (!st.rows.length) return '<div class="empty">No records yet.</div>';
+  let rows = st.rows;
+  const activeCol = st.columns.find(c => c.field === st.field);
+  if (activeCol) {
+    rows = [...rows].sort((a, b) => {
+      let av = a[st.field], bv = b[st.field];
+      if (activeCol.type === 'number') { av = Number(av) || 0; bv = Number(bv) || 0; }
+      else { av = (av === null || av === undefined) ? '' : String(av).toLowerCase(); bv = (bv === null || bv === undefined) ? '' : String(bv).toLowerCase(); }
+      if (av < bv) return st.dir === 'asc' ? -1 : 1;
+      if (av > bv) return st.dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+  const headHtml = st.columns.map(c => {
+    if (!c.field) return `<th>${esc(c.label)}</th>`;
+    const active = st.field === c.field;
+    const arrow = active ? (st.dir === 'asc' ? '&#9650;' : '&#9660;') : '&#8645;';
+    return `<th class="sortable${active ? ' sorted' : ''}" onclick="sortTableBy('${key}','${c.field}')" title="Sort by ${esc(c.label)}">${esc(c.label)} <span class="sort-arrow">${arrow}</span></th>`;
+  }).join('');
+  return `<div style="overflow-x:auto;"><table><thead><tr>${headHtml}</tr></thead><tbody>
+    ${rows.map(st.rowRenderer).join('')}
+  </tbody></table></div>`;
+}
+window.sortTableBy = (key, field) => {
+  const st = SORT_STATE[key];
+  if (!st) return;
+  if (st.field === field) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.field = field; st.dir = 'asc'; }
+  if (st.onSort) st.onSort(renderSortedTable(key));
+};
+
 // ---- Generic multi-field list search ----
 // Every "All X" list page (Clients, Sales Orders, Offers, ...) already hands
 // its full row set straight to the browser (these lists are small enough
@@ -5921,6 +5972,22 @@ PAGES['service-reports-dashboard'] = async (el) => {
 };
 
 // ---- Employees ----
+const EMP_LIST_COLUMNS = [
+  { label: 'Code', field: 'employee_code' },
+  { label: 'Name', field: 'full_name' },
+  { label: 'Department', field: 'department_name' },
+  { label: 'Designation', field: 'designation' },
+  { label: 'Type', field: 'employment_type' },
+  { label: 'Salary', field: 'monthly_salary', type: 'number' },
+  { label: 'Status', field: 'status' },
+  { label: 'Action' },
+];
+function employeeRowHTML(e) {
+  const blank = !e.full_name || !e.full_name.trim();
+  return `<tr id="emp-row-${e.id}"${blank ? ' style="background:#fef2f2;"' : ''}><td>${esc(e.employee_code)}</td><td>${blank ? '<span class="muted">(no name set)</span>' : esc(e.full_name)}</td><td>${esc(e.department_name)}</td><td>${esc(e.designation)}</td>
+    <td>${esc(e.employment_type)||'Full-time'}</td><td>₹${fmt(e.monthly_salary)}</td><td>${badge(e.status)}</td>
+    <td><button class="btn small outline" onclick="openEditEmployee(${e.id})">Edit</button></td></tr>`;
+}
 PAGES.employees = async (el) => {
   const emps = await api('/hr/employees');
   const depts = await api('/masters/departments');
@@ -5968,12 +6035,7 @@ PAGES.employees = async (el) => {
     </div>
     ${collapsiblePanel('employees-list', `Employees (${emps.length})`, `
       ${emps.some(e => !e.full_name || !e.full_name.trim()) ? '<div class="msg err">One or more employees below have a blank name (created before this was required) - click Edit on the highlighted row(s) and fill in Full Name.</div>' : ''}
-      ${tableHTML(['Code', 'Name', 'Department', 'Designation', 'Type', 'Salary', 'Status', 'Action'], emps, e => {
-        const blank = !e.full_name || !e.full_name.trim();
-        return `<tr id="emp-row-${e.id}"${blank ? ' style="background:#fef2f2;"' : ''}><td>${esc(e.employee_code)}</td><td>${blank ? '<span class="muted">(no name set)</span>' : esc(e.full_name)}</td><td>${esc(e.department_name)}</td><td>${esc(e.designation)}</td>
-          <td>${esc(e.employment_type)||'Full-time'}</td><td>₹${fmt(e.monthly_salary)}</td><td>${badge(e.status)}</td>
-          <td><button class="btn small outline" onclick="openEditEmployee(${e.id})">Edit</button></td></tr>`;
-      })}
+      <div id="emp-table-container">${sortableTableHTML('employees', EMP_LIST_COLUMNS, emps, employeeRowHTML, html => { document.getElementById('emp-table-container').innerHTML = html; })}</div>
     `)}
     <div class="panel" id="emp-edit-panel" style="display:none;"><h3>Edit Employee</h3><div id="emp-edit-body"></div></div>`;
   window.__EMP_CACHE = emps; window.__EMP_DEPTS = depts;
