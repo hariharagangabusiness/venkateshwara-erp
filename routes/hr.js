@@ -107,7 +107,16 @@ router.get('/employees/template', requirePermission('payroll.manage'), (req, res
   res.send(buf);
 });
 
-// Bulk-create employees from a filled-in copy of the template above.
+// Bulk-create or bulk-update employees from a filled-in copy of the template
+// above - matched by employee_code (the durable identifier). Re-uploading
+// the same file after changing a field (e.g. date_of_joining) for an
+// existing employee_code now applies that change instead of being rejected
+// as a duplicate. A blank cell never overwrites an existing value, so a
+// partial re-export/re-import can't accidentally wipe a field the file just
+// didn't happen to carry - same "upsert, blank never wins" rule as the
+// Vendor/Item Master bulk-uploads (routes/masters.js). A row with no
+// employee_code has nothing to match against, so it's always inserted as a
+// new employee, same as before.
 router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploadMemory.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
   let rows;
@@ -124,27 +133,43 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
     INSERT INTO employees (employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account, monthly_salary)
     VALUES (?,?,?,?,?,?,?,?,?,?)
   `);
-  const existingCodes = new Set(db.prepare('SELECT employee_code FROM employees WHERE employee_code IS NOT NULL').all().map(r => r.employee_code));
-  let inserted = 0;
+  const findByCode = db.prepare('SELECT * FROM employees WHERE employee_code = ?');
+  const cols = ['employee_code', 'full_name', 'department_id', 'designation', 'date_of_joining', 'phone', 'email', 'address', 'bank_account', 'monthly_salary'];
+  let inserted = 0, updated = 0;
   const errors = [];
-  rows.forEach((row, i) => {
-    const rowNum = i + 2; // header is row 1 in the spreadsheet
-    const fullName = String(row.full_name || '').trim();
-    if (!fullName) { errors.push(`Row ${rowNum}: full_name is required - skipped.`); return; }
-    const deptName = String(row.department || '').trim();
-    const deptId = deptName ? deptByName.get(deptName.toLowerCase()) : null;
-    if (deptName && !deptId) { errors.push(`Row ${rowNum}: department "${deptName}" not recognized - skipped.`); return; }
-    const code = String(row.employee_code || '').trim() || null;
-    if (code && existingCodes.has(code)) { errors.push(`Row ${rowNum}: employee_code "${code}" already exists - skipped.`); return; }
-    insert.run(
-      code, fullName, deptId || null, String(row.designation || '') || null,
-      String(row.date_of_joining || '') || null, String(row.phone || '') || null, String(row.email || '') || null,
-      String(row.address || '') || null, String(row.bank_account || '') || null, Number(row.monthly_salary) || 0
-    );
-    if (code) existingCodes.add(code);
-    inserted++;
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const rowNum = i + 2; // header is row 1 in the spreadsheet
+      const fullName = String(row.full_name || '').trim();
+      if (!fullName) { errors.push(`Row ${rowNum}: full_name is required - skipped.`); return; }
+      const deptName = String(row.department || '').trim();
+      const deptId = deptName ? deptByName.get(deptName.toLowerCase()) : null;
+      if (deptName && !deptId) { errors.push(`Row ${rowNum}: department "${deptName}" not recognized - skipped.`); return; }
+      const code = String(row.employee_code || '').trim() || null;
+      const existing = code ? findByCode.get(code) : null;
+      if (existing) {
+        const values = cols.map(c => {
+          if (c === 'employee_code') return code;
+          if (c === 'full_name') return fullName;
+          if (c === 'department_id') return deptName ? deptId : existing.department_id;
+          if (c === 'monthly_salary') return (String(row.monthly_salary || '').trim() !== '') ? Number(row.monthly_salary) : existing.monthly_salary;
+          const raw = String(row[c] || '').trim();
+          return raw !== '' ? raw : existing[c];
+        });
+        db.prepare(`UPDATE employees SET ${cols.map(c => `${c} = ?`).join(',')} WHERE id = ?`).run(...values, existing.id);
+        updated++;
+        return;
+      }
+      insert.run(
+        code, fullName, deptId || null, String(row.designation || '') || null,
+        String(row.date_of_joining || '') || null, String(row.phone || '') || null, String(row.email || '') || null,
+        String(row.address || '') || null, String(row.bank_account || '') || null, Number(row.monthly_salary) || 0
+      );
+      inserted++;
+    });
   });
-  res.json({ inserted, skipped: errors.length, errors });
+  tx();
+  res.json({ inserted, updated, skipped: errors.length, errors });
 });
 
 // ---- Attendance ----
