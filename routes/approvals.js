@@ -95,6 +95,36 @@ function describeEntity(entityType, entityId) {
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
+    case 'purchase_order': {
+      // entityId is always the group's first line (see POST /orders /
+      // PUT /orders/:id) - the group total/line summary need every sibling
+      // row sharing po_no, not just this one line.
+      const r = db.prepare(`
+        SELECT po.po_no as ref, po.approval_id as approval_id, v.name as vendor_name, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
+        FROM purchase_orders po LEFT JOIN vendors v ON v.id = po.vendor_id LEFT JOIN users u ON u.id = po.created_by
+        LEFT JOIN departments d ON d.id = u.department_id WHERE po.id = ?`).get(entityId);
+      if (!r) return {};
+      const group = db.prepare(`
+        SELECT COUNT(*) as line_count, COALESCE(SUM(total_value), 0) as total FROM purchase_orders WHERE po_no = ?
+      `).get(r.ref);
+      const summary = `${group.line_count > 1 ? group.line_count + ' items' : '1 item'} from ${r.vendor_name || 'vendor'} - ₹${group.total}`;
+      // Same "show the prior rejection on a resubmission" courtesy
+      // purchase_request already gets - here every edit restarts the chain
+      // (not just a post-rejection resubmit), so this can surface on any
+      // re-edited PO, not only one that was ever actually rejected.
+      const prior = db.prepare(`
+        SELECT aa.comment, ru.full_name as rejected_by_name
+        FROM approval_actions aa
+        JOIN approvals ap ON ap.id = aa.approval_id
+        LEFT JOIN users ru ON ru.id = aa.actor_user_id
+        WHERE ap.entity_type = 'purchase_order' AND ap.entity_id = ? AND aa.action = 'Rejected' AND ap.id != COALESCE(?, 0)
+        ORDER BY aa.acted_at DESC LIMIT 1
+      `).get(entityId, r.approval_id);
+      return {
+        ref: r.ref, summary, department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+        is_resubmission: !!prior, prior_rejection_reason: prior ? prior.comment : null, prior_rejected_by_name: prior ? prior.rejected_by_name : null,
+      };
+    }
     default:
       return {};
   }
@@ -200,6 +230,19 @@ router.get('/:id/history', (req, res) => {
 });
 
 function syncEntityStatus(entityType, entityId, result) {
+  // A multi-item PO is several purchase_orders rows sharing one po_no (see
+  // POST /orders), but the approval is one per po_no group - its outcome
+  // has to apply to every sibling row, not just the one entity_id the
+  // approval happened to be started against, so this can't go through the
+  // generic single-row `WHERE id = ?` map below.
+  if (entityType === 'purchase_order') {
+    const statusByResult = { Approved: 'Open', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (!newStatus) return;
+    const po = db.prepare('SELECT po_no FROM purchase_orders WHERE id = ?').get(entityId);
+    if (po) db.prepare('UPDATE purchase_orders SET status = ? WHERE po_no = ?').run(newStatus, po.po_no);
+    return;
+  }
   const map = {
     expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
@@ -226,6 +269,7 @@ const ENTITY_LABELS = {
   salary_advance: 'Salary Advance',
   salary_schedule: 'Salary Schedule',
   foreign_payment: 'Foreign Payment Request',
+  purchase_order: 'Purchase Order',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -291,11 +335,12 @@ router.post('/:id/provide-info', (req, res) => {
 // slowest since they usually need supporting paperwork first).
 const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
-  salary_schedule: 5, foc_request: 3, bg_reminder_log: 2,
+  salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
   salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
+  purchase_order: 'purchase_orders',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

@@ -945,6 +945,12 @@ const MIGRATIONS = [
   // exactly as before.
   `ALTER TABLE stock_movements ADD COLUMN department_id INTEGER REFERENCES departments(id)`,
   `ALTER TABLE stock_movements ADD COLUMN client_id INTEGER REFERENCES clients(id)`,
+
+  // Purchase Order approval gate (Purchase HOD -> Management, value-gated) -
+  // same approval_id-on-the-entity pattern purchase_requests already uses,
+  // so the PR resubmit/"prior rejection" UX conventions carry straight over.
+  // See bootstrapPurchaseOrderApproval() below for the chain/steps themselves.
+  `ALTER TABLE purchase_orders ADD COLUMN approval_id INTEGER REFERENCES approvals(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1365,4 +1371,32 @@ function bootstrapBgManageGrant() {
   } catch (e) { console.error('[db] bg.manage grant backfill failed:', e.message); }
 }
 
-module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant };
+// Purchase Order approval gate: every PO now needs the Purchase department's
+// own HOD to sign off (step 1, always required - there's no separate
+// "Purchase HOD" role, just a Purchase-role user flagged is_supervisor=1,
+// same model every other HOD check in this app already uses), then
+// Management above a value threshold (step 2) that an Admin can retune any
+// time from the Approval Matrix page - this bootstrap only ever sets the
+// *default* (Rs 50,000, same default PurchaseRequest's own Management step
+// already uses) and never overwrites it once the chain exists, same
+// ON CONFLICT DO NOTHING guarantee bootstrapForeignPayments() relies on.
+// Same ordering requirement as the bootstraps above: must run AFTER
+// db/seed.js on a brand-new database, so server.js calls it right after its
+// own isNew-gated seed step - and safe to re-run on every boot either way.
+function bootstrapPurchaseOrderApproval() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('PurchaseOrder', 'Purchase order approval (Purchase HOD -> Management)')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'PurchaseOrder'`).get().id;
+    const purchaseRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Purchase'`).get()?.id;
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const upsertPoStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    if (purchaseRoleId) upsertPoStep.run(chainId, 1, purchaseRoleId, 0, 1);
+    if (managementRoleId) upsertPoStep.run(chainId, 2, managementRoleId, 50000, 0);
+  } catch (e) { console.error('[db] Purchase Order approval bootstrap failed:', e.message); }
+}
+
+module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval };
