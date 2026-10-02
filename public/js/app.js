@@ -4110,7 +4110,8 @@ function renderPRLines() {
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
       <td>${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-        `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</td>
+        `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}
+        <button class="btn small outline" type="button" style="margin-top:4px;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button></td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
@@ -4574,7 +4575,8 @@ function renderPOLines() {
     <tr>
       <td>${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
         (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
-        `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}</td>
+        `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}
+        <button class="btn small outline" type="button" style="margin-top:4px;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button></td>
       <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
       <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
       <td><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
@@ -4745,6 +4747,85 @@ window.togglePOAttachments = (id) => {
   row.style.display = showing ? 'none' : '';
   if (!showing) renderAttachmentsWidget('purchase_order', id, document.getElementById(`po-attachments-${id}`));
 };
+// ---- Item Price History ----
+// Pure read against purchase_orders (already carries item_id/vendor_id/
+// rate/created_at per line, one row per PO line) - no new table. `opts.
+// vendorSelectId`, when set, adds a "Use this vendor" button per row that
+// writes straight into that <select> (the New/Edit PO form's single
+// top-level vendor field - a PO is one vendor for every line, so this is
+// how price history actually drives the vendor choice instead of just
+// informing it). Omitted entirely from the Purchase Request context, which
+// has no vendor field to set.
+window.showItemPriceHistory = async (itemId, opts) => {
+  if (!itemId) { alert('Pick an item first.'); return; }
+  window.__IPH_OPTS = opts || {};
+  const overlay = document.createElement('div');
+  overlay.id = 'iph-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  overlay.innerHTML = `<div style="background:#fff;border-radius:8px;max-width:800px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;" onclick="event.stopPropagation()">
+    <div id="iph-body"><p class="muted">Loading price history...</p></div>
+  </div>`;
+  overlay.onclick = () => closeItemPriceHistory();
+  document.body.appendChild(overlay);
+  await loadItemPriceHistory(itemId);
+};
+window.closeItemPriceHistory = () => {
+  const el = document.getElementById('iph-overlay');
+  if (el) el.remove();
+};
+window.loadItemPriceHistory = async (itemId, from, to) => {
+  const body = document.getElementById('iph-body');
+  if (!body) return;
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  try {
+    const data = await api(`/purchase/items/${itemId}/price-history${qs.toString() ? '?' + qs.toString() : ''}`);
+    const opts = window.__IPH_OPTS || {};
+    const rates = data.rows.map(r => Number(r.rate));
+    const min = rates.length ? Math.min(...rates) : null;
+    const max = rates.length ? Math.max(...rates) : null;
+    const latest = data.rows[0];
+    const cols = ['Date', 'PO No', 'Vendor', 'Qty', 'Rate (₹)', 'Status'].concat(opts.vendorSelectId ? [''] : []);
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+        <h3 style="margin:0;">Price History — ${esc(data.item.name)}${data.item.item_code ? ' (' + esc(data.item.item_code) + ')' : ''}</h3>
+        <button class="btn small outline" type="button" onclick="closeItemPriceHistory()">Close</button>
+      </div>
+      <div class="form-grid" style="margin-bottom:12px;">
+        <div><label>From</label><input type="date" id="iph-from" value="${data.from}"></div>
+        <div><label>To</label><input type="date" id="iph-to" value="${data.to}"></div>
+        <div style="align-self:end;"><button class="btn small outline" type="button" onclick="loadItemPriceHistory(${itemId}, val('iph-from'), val('iph-to'))">Apply</button></div>
+      </div>
+      ${data.rows.length ? `
+        <div class="form-grid" style="margin-bottom:12px;">
+          <div><span class="muted">Lowest</span><br><b>₹${fmt(min)}</b></div>
+          <div><span class="muted">Highest</span><br><b>₹${fmt(max)}</b></div>
+          <div><span class="muted">Latest</span><br><b>₹${fmt(latest.rate)}</b> <span class="muted">(${esc(latest.vendor_name)||'-'}, ${new Date(latest.created_at).toLocaleDateString()})</span></div>
+        </div>
+        ${tableHTML(cols, data.rows, r => `
+          <tr>
+            <td>${new Date(r.created_at).toLocaleDateString()}</td>
+            <td>${esc(r.po_no)}</td>
+            <td>${esc(r.vendor_name)||'-'}</td>
+            <td>${r.quantity}</td>
+            <td>₹${fmt(r.rate)}</td>
+            <td>${badge(r.status)}</td>
+            ${opts.vendorSelectId ? `<td>${r.vendor_id ? `<button class="btn small outline" type="button" onclick="useVendorFromHistory(${r.vendor_id})">Use this vendor</button>` : ''}</td>` : ''}
+          </tr>`)}
+      ` : '<p class="muted">No purchase history for this item in the selected range.</p>'}
+    `;
+  } catch (e) {
+    body.innerHTML = `<div class="msg err">${esc(e.message)}</div><button class="btn small outline" type="button" onclick="closeItemPriceHistory()" style="margin-top:10px;">Close</button>`;
+  }
+};
+window.useVendorFromHistory = (vendorId) => {
+  const opts = window.__IPH_OPTS || {};
+  const sel = opts.vendorSelectId ? document.getElementById(opts.vendorSelectId) : null;
+  if (sel) sel.value = vendorId;
+  closeItemPriceHistory();
+};
+
 // Shows vendors matching ANY of the currently-picked line items (union),
 // since a multi-line PO's lines can span more than one item - see
 // PO_LINES/renderPOLines() above.
@@ -4753,13 +4834,31 @@ window.showVendorsForPOLines = async () => {
   const itemIds = [...new Set(PO_LINES.map(l => l.item_id).filter(Boolean))];
   if (!itemIds.length) { box.style.display = 'none'; return; }
   try {
-    const results = await Promise.all(itemIds.map(id => api('/purchase/vendors-for-item/' + id).catch(() => ({ vendors: [], fallback: true }))));
-    const anyFallback = results.some(r => r.fallback);
+    const [catResults, historyResults] = await Promise.all([
+      Promise.all(itemIds.map(id => api('/purchase/vendors-for-item/' + id).catch(() => ({ vendors: [], fallback: true })))),
+      Promise.all(itemIds.map(id => api('/purchase/items/' + id + '/price-history').catch(() => ({ rows: [] })))),
+    ]);
+    const anyFallback = catResults.some(r => r.fallback);
     const vendorMap = new Map();
-    results.forEach(r => (r.vendors || []).forEach(v => vendorMap.set(v.id, v)));
+    catResults.forEach(r => (r.vendors || []).forEach(v => vendorMap.set(v.id, v)));
     const vendors = [...vendorMap.values()];
+    // Most recent rate seen for each vendor across the picked items (not
+    // which item it was for) - purely informational annotation, doesn't
+    // change who's matched. Turns a bare name list into "ABC Steels - last
+    // ₹105, 12 Jun 2026" so the suggestion box is actually useful for
+    // deciding, not just listing candidates.
+    const lastByVendor = new Map();
+    historyResults.forEach(h => (h.rows || []).forEach(r => {
+      const prev = lastByVendor.get(r.vendor_id);
+      if (!prev || new Date(r.created_at) > new Date(prev.created_at)) lastByVendor.set(r.vendor_id, r);
+    }));
     box.style.display = 'block';
-    box.innerHTML = `<b>${anyFallback ? 'All vendors' : 'Vendors matching these items\' categories'}</b> (${vendors.length}): ${vendors.map(v => esc(v.name)).join(', ') || 'None on file yet.'}`;
+    box.innerHTML = `<b>${anyFallback ? 'All vendors' : 'Vendors matching these items\' categories'}</b> (${vendors.length}): ${
+      vendors.length ? vendors.map(v => {
+        const last = lastByVendor.get(v.id);
+        return esc(v.name) + (last ? ` <span class="muted">(last ₹${fmt(last.rate)}, ${new Date(last.created_at).toLocaleDateString()})</span>` : '');
+      }).join(', ') : 'None on file yet.'
+    }`;
   } catch (e) { box.style.display = 'none'; }
 };
 // Loads every line of the selected PR into PO_LINES (not just one at a
@@ -4790,6 +4889,7 @@ window.addPO = async () => {
       company_address_id: val('po-company-address') || null,
       ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
     })});
+    alert(`Purchase Order ${r.po_no} submitted for approval (Purchase HOD, then Management if above the value threshold) - it can't be sent to the vendor or received against until approved.`);
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };
@@ -4880,7 +4980,8 @@ async function renderItemMasterSheet(el) {
           <td>${i.status === 'Discontinued'
             ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
             : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
-               <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}</td></tr>`)}
+               <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}
+               <button class="btn small outline" type="button" onclick="showItemPriceHistory(${i.id})">Price History</button></td></tr>`)}
     `),
   };
   const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
@@ -8505,6 +8606,10 @@ PAGES['company-settings'] = async (el) => {
       </div>
       <label>Payment Terms Options <span class="muted">(one per line - feeds the Payment Terms dropdown on the Purchase Order form)</span></label>
       <textarea id="ps-payment-terms" rows="6" style="width:100%;">${esc((purchaseSettings.payment_terms_options||[]).join('\n'))}</textarea>
+      <div style="margin-top:10px;">
+        <label><input type="checkbox" id="ps-allow-pending-email" ${purchaseSettings.allow_pending_po_email ? 'checked' : ''}>
+          Allow emailing/downloading a Purchase Order that's still pending approval <span class="muted">(shows a "Pending Approval" banner on the document - off by default, since a PO can't be sent to a vendor until Purchase HOD/Management sign off)</span></label>
+      </div>
       <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
       <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
@@ -8619,6 +8724,7 @@ window.savePurchaseSettings = async () => {
     const paymentTerms = document.getElementById('ps-payment-terms').value.split('\n').map(s => s.trim()).filter(Boolean);
     await api('/settings/purchase', { method: 'PUT', body: JSON.stringify({
       quote_threshold: val('ps-quote-threshold'), payment_terms_options: paymentTerms,
+      allow_pending_po_email: document.getElementById('ps-allow-pending-email').checked,
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }

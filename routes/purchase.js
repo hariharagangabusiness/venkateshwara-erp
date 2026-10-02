@@ -197,6 +197,29 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
   res.json({ vendors, fallback });
 });
 
+// Item price history - every purchase_orders row already carries item_id,
+// vendor_id, rate and created_at (one row per PO line - see POST /orders),
+// so this is a pure read against data that already exists, no new table.
+// Defaults to the last 1 year; `from`/`to` (YYYY-MM-DD) let the caller widen
+// or narrow that window. Cancelled/Rejected lines are included (flagged via
+// their own `status`, same as everywhere else in this app) rather than
+// silently dropped - a cancelled PO's rate is still useful context when
+// comparing what was actually quoted/ordered over time.
+router.get('/items/:itemId/price-history', requirePermission('purchase_order.manage', 'purchase_request.create'), (req, res) => {
+  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.itemId);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const to = req.query.to || new Date().toISOString().slice(0, 10);
+  const from = req.query.from || new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT po.id, po.po_no, po.vendor_id, v.name as vendor_name, po.quantity, po.rate, po.total_value,
+      po.status, po.created_at
+    FROM purchase_orders po LEFT JOIN vendors v ON v.id = po.vendor_id
+    WHERE po.item_id = ? AND date(po.created_at) BETWEEN date(?) AND date(?)
+    ORDER BY po.created_at DESC
+  `).all(item.id, from, to);
+  res.json({ item: { id: item.id, name: item.name, item_code: item.item_code, unit: item.unit }, from, to, rows });
+});
+
 // ---- Multi-vendor quotes for a Purchase Request (Round 13) ----
 router.get('/requests/:id/quotes', (req, res) => {
   res.json(db.prepare(`
@@ -629,16 +652,23 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
   }
   const poNo = 'PO-' + Date.now();
+  // Every PO now starts PendingApproval rather than live/Open - the
+  // approval chain below (Purchase HOD, then Management above a
+  // value threshold) has to actually clear before it can be received
+  // against or sent to the vendor. See lib/approvals.js/PurchaseOrder
+  // chain, bootstrapped in db/index.js.
   const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
   `);
   const ids = [];
+  let totalOrderValue = 0;
   db.transaction(() => {
     for (const l of lines) {
       const quantity = Number(l.quantity), rate = Number(l.rate);
       const total = quantity * rate;
+      totalOrderValue += total;
       const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : 18;
       const gstAmount = total * gstRate / 100;
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
@@ -647,8 +677,10 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       ids.push(info.lastInsertRowid);
     }
   })();
+  const approvalId = approvals.startApproval('PurchaseOrder', 'purchase_order', ids[0], totalOrderValue, req.user.id);
+  db.prepare('UPDATE purchase_orders SET approval_id = ? WHERE po_no = ?').run(approvalId, poNo);
   if (purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(purchase_request_id);
-  res.json({ id: ids[0], ids, po_no: poNo });
+  res.json({ id: ids[0], ids, po_no: poNo, status: 'PendingApproval' });
 });
 
 // Commercial terms (Round 16): LD clause (delivery_date already exists on
@@ -722,7 +754,6 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
     existing.id
   );
-  if (changes.length) poAuditLog(req.user.id, 'po_edit', existing.id, changes.join('; '));
   // Vendor and Our Address are header-level fields shared by every line of
   // a multi-item PO (see POST /orders' `lines` support) - propagate a
   // change to them onto every sibling row sharing this PO's po_no so they
@@ -734,6 +765,24 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
       req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
       existing.po_no, existing.id
     );
+  }
+  // Any edit sends the whole PO back through approval from scratch - a
+  // prior sign-off no longer reflects what's actually in the order. Applies
+  // uniformly regardless of what state the approval was in (still pending,
+  // already cleared, or previously rejected) - same reject-edit-resubmit
+  // spirit Purchase Requests already use (POST /requests/:id/resubmit),
+  // just unconditional here rather than only from Rejected. The superseded
+  // approval row is marked out of lib/approvals.js's pendingForUser() (which
+  // only ever surfaces status='Pending') so it can't double up with the new
+  // cycle in anyone's approval queue.
+  if (changes.length) {
+    if (existing.approval_id) {
+      db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
+    }
+    const groupTotal = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t FROM purchase_orders WHERE po_no = ?').get(existing.po_no).t;
+    const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
+    db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, existing.po_no);
+    poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
   }
   res.json({ ok: true });
 });
@@ -757,6 +806,9 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
       if (otherLivePOs === 0) {
         db.prepare(`UPDATE purchase_requests SET status = 'Approved' WHERE id = ? AND status = 'OrderPlaced'`).run(existing.purchase_request_id);
       }
+    }
+    if (existing.approval_id) {
+      db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
     }
   });
   tx();
@@ -892,6 +944,9 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   if (po_id) {
     po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(po_id);
     if (!po) return res.status(400).json({ error: 'That Purchase Order no longer exists - refresh the page and try again.' });
+    if (['PendingApproval', 'Rejected'].includes(po.status)) {
+      return res.status(400).json({ error: `This Purchase Order is still ${po.status === 'PendingApproval' ? 'pending approval' : 'Rejected'} and cannot receive stock until it is approved.` });
+    }
     if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
       return res.status(400).json({ error: `This Purchase Order is already ${po.status} and can no longer receive stock against it.` });
     }
@@ -1065,8 +1120,8 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
         } else {
           po = findPoByNoAndItem.get(poNo, item.id);
           if (!po) { warnings.push(`Row ${rowNum}: no Purchase Order matches "${poNo}" for item "${item.name}" - imported without linking to a PO.`); }
-          else if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
-            warnings.push(`Row ${rowNum}: PO "${poNo}" is already ${po.status} - imported without linking to it.`);
+          else if (['PendingApproval', 'Rejected', 'Received', 'Cancelled', 'Closed'].includes(po.status)) {
+            warnings.push(`Row ${rowNum}: PO "${poNo}" is ${po.status} - imported without linking to it.`);
             po = null;
           } else {
             reference = 'PO#' + po.id;
@@ -1226,9 +1281,25 @@ function loadPoBundle(id) {
   return { po, vendor, companyAddress, lines };
 }
 
+// Shared gate for PDF/Word download and emailing the vendor: a PO still
+// PendingApproval (or already Rejected) hasn't been authorized, so sending
+// it anywhere a vendor could see it defeats the point of the approval gate.
+// An Admin can lift this via Purchase Settings' "Allow emailing a Purchase
+// Order that's pending approval" toggle for a genuinely urgent case -
+// lib/poPdf.js/lib/poDocx.js both check `po.status` themselves and add a
+// visible "Pending Approval" banner whenever this override is the reason
+// the document was generated at all, so it never reads as authorized.
+function poSendBlocked(po) {
+  if (!['PendingApproval', 'Rejected'].includes(po.status)) return null;
+  if (po.status === 'PendingApproval' && getPurchaseSettings().allow_pending_po_email) return null;
+  return `This Purchase Order is ${po.status === 'PendingApproval' ? 'still pending approval' : 'Rejected'} and cannot be sent to the vendor yet.`;
+}
+
 router.get('/orders/:id/pdf', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const blocked = poSendBlocked(bundle.po);
+  if (blocked) return res.status(400).json({ error: blocked });
   try {
     const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
     const filename = buildDownloadFilename({
@@ -1250,6 +1321,8 @@ router.get('/orders/:id/pdf', async (req, res) => {
 router.get('/orders/:id/docx', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const blocked = poSendBlocked(bundle.po);
+  if (blocked) return res.status(400).json({ error: blocked });
   try {
     const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
     const filename = buildDownloadFilename({
@@ -1273,6 +1346,8 @@ router.post('/orders/:id/email', requirePermission('purchase_order.manage'), asy
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
   const { po, vendor, companyAddress, lines } = bundle;
+  const blocked = poSendBlocked(po);
+  if (blocked) return res.status(400).json({ error: blocked });
   const toAddress = (vendor && (vendor.po_email || vendor.email)) || null;
   if (!toAddress) return res.status(400).json({ error: 'This vendor has no PO/document delivery email on file - add one under Vendor Master.' });
   let gen;
