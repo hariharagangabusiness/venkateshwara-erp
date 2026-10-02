@@ -23,7 +23,7 @@ const upload = multer({
 });
 
 const VALID_TYPES = new Set([
-  'purchase_request', 'purchase_order', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
+  'purchase_request', 'purchase_order', 'purchase_invoice', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
   'foreign_payment', 'offer', 'sales_order', 'customer_communication',
 ]);
 

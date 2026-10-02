@@ -13,6 +13,7 @@ const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
+const { poReceivedQty } = require('../lib/purchaseOrders');
 const path = require('path');
 const router = express.Router();
 router.use(authRequired);
@@ -923,12 +924,8 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
 // ---- Store: GRN receive & issue to production ----
 // A PO's own `quantity` is the ordered amount; how much has actually come
 // in is derived from stock_movements (movement_type='IN', reference =
-// 'PO#'+id) rather than stored redundantly on the PO row - same "derive,
-// don't duplicate" reasoning as everywhere else in this codebase that
-// tracks a running total against a source document.
-function poReceivedQty(poId) {
-  return db.prepare(`SELECT COALESCE(SUM(quantity), 0) as n FROM stock_movements WHERE movement_type = 'IN' AND reference = ?`).get('PO#' + poId).n;
-}
+// 'PO#'+id) - see lib/purchaseOrders.js's poReceivedQty(), also used by
+// routes/finance.js's Purchase Invoice booking.
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   const { item_id, quantity, po_id, project_id } = req.body;
   // Validate before hitting the DB - an empty/missing item_id (e.g. the Item

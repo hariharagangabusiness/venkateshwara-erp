@@ -12,6 +12,7 @@ const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
+const { poReceivedQty } = require('../lib/purchaseOrders');
 const router = express.Router();
 router.use(authRequired);
 
@@ -529,6 +530,298 @@ router.get('/invoices/:id/pdf', async (req, res) => {
   }
 });
 
+// ===================== Accounts Payable: Purchase Invoices =====================
+// Booking a vendor's bill against what's actually been received on a PO
+// (never the full ordered quantity - routes/purchase.js's poReceivedQty()
+// is the same helper /store/receive already uses). Mirrors the Sales
+// Invoice shape (own numbered sequence, CGST/SGST-vs-IGST split by state)
+// but flowing the other direction, plus a few things only the payable side
+// needs: the vendor's own bill number/date (required for GSTR-2B matching),
+// optional TDS withholding, and payment recorded as its own finance_ledger
+// row per instalment rather than a single mark-paid flag, so partial
+// payments (e.g. "50% Advance + 50% Against Delivery") are a first-class
+// case, not a workaround.
+function nextPurchaseInvoiceNo() {
+  const now = new Date();
+  const fyStart = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+  const key = 'purchase_invoice_seq_' + fy;
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const next = row ? Number(row.value) + 1 : 1;
+  db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(next));
+  return `PINV/${fy}/${String(next).padStart(4, '0')}`;
+}
+function nextCreditNoteNo() {
+  const now = new Date();
+  const fyStart = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+  const key = 'vendor_credit_note_seq_' + fy;
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const next = row ? Number(row.value) + 1 : 1;
+  db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(next));
+  return `VCN/${fy}/${String(next).padStart(4, '0')}`;
+}
+// Every purchase_orders row already carries its own received quantity via
+// poReceivedQty() - "billable" is that minus whatever's already been
+// invoiced (across any non-cancelled purchase invoice) against that exact
+// line, so a PO billed in two instalments can't be double-invoiced.
+function poLineBillableQty(poLineId) {
+  const received = poReceivedQty(poLineId);
+  const invoiced = db.prepare(`
+    SELECT COALESCE(SUM(pii.quantity), 0) as n
+    FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+    WHERE pii.purchase_order_line_id = ? AND pi.status != 'Cancelled' AND pi.status != 'Rejected'
+  `).get(poLineId).n;
+  return received - invoiced;
+}
+function purchaseInvoicePaidAmount(invoiceId) {
+  return db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as n FROM finance_ledger WHERE reference_table = 'purchase_invoices' AND reference_id = ?
+  `).get(invoiceId).n;
+}
+function purchaseInvoiceCreditedAmount(invoiceId) {
+  return db.prepare(`
+    SELECT COALESCE(SUM(total_value), 0) as n FROM vendor_credit_notes WHERE purchase_invoice_id = ? AND status != 'Cancelled'
+  `).get(invoiceId).n;
+}
+
+router.get('/purchase-invoices', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT pi.*, v.name as vendor_name
+    FROM purchase_invoices pi JOIN vendors v ON v.id = pi.vendor_id
+    ORDER BY pi.id DESC
+  `).all();
+  res.json(rows.map(r => {
+    const paid = purchaseInvoicePaidAmount(r.id);
+    const credited = purchaseInvoiceCreditedAmount(r.id);
+    return { ...r, paid_amount: paid, credited_amount: credited, due_amount: Math.max(0, r.net_payable - paid - credited) };
+  }));
+});
+// Lines on this PO (across every status except Cancelled) with how much of
+// each is still billable - drives the New Purchase Invoice form's line
+// picker so it only ever offers quantity that's actually been received and
+// not already invoiced.
+// Registered before '/purchase-invoices/:id' - Express matches routes in
+// registration order, and ':id' matches any path segment including the
+// literal string "billable-po-lines", which would otherwise swallow this
+// route (same :id-before-literal-sibling bug already hit and fixed twice
+// elsewhere in this codebase: the Employee and Vendor template routes).
+router.get('/purchase-invoices/billable-po-lines', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const poNo = req.query.po_no;
+  if (!poNo) return res.status(400).json({ error: 'po_no is required.' });
+  const lines = db.prepare(`
+    SELECT po.*, i.name as item_name FROM purchase_orders po LEFT JOIN items i ON i.id = po.item_id
+    WHERE po.po_no = ? AND po.status != 'Cancelled'
+  `).all(poNo);
+  res.json(lines.map(l => ({ ...l, received_qty: poReceivedQty(l.id), billable_qty: poLineBillableQty(l.id) })).filter(l => l.billable_qty > 0));
+});
+router.get('/purchase-invoices/:id', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
+  const inv = db.prepare(`
+    SELECT pi.*, v.name as vendor_name, v.gstin as vendor_gstin_onfile FROM purchase_invoices pi JOIN vendors v ON v.id = pi.vendor_id WHERE pi.id = ?
+  `).get(req.params.id);
+  if (!inv) return res.status(404).json({ error: 'Not found' });
+  const items = db.prepare(`
+    SELECT pii.*, i.name as item_name FROM purchase_invoice_items pii LEFT JOIN items i ON i.id = pii.item_id
+    WHERE pii.invoice_id = ? ORDER BY pii.sort_order, pii.id
+  `).all(inv.id);
+  const payments = db.prepare(`
+    SELECT * FROM finance_ledger WHERE reference_table = 'purchase_invoices' AND reference_id = ? ORDER BY entry_date
+  `).all(inv.id);
+  const creditNotes = db.prepare(`SELECT * FROM vendor_credit_notes WHERE purchase_invoice_id = ? ORDER BY id`).all(inv.id);
+  const paid = purchaseInvoicePaidAmount(inv.id);
+  const credited = purchaseInvoiceCreditedAmount(inv.id);
+  res.json({ invoice: { ...inv, paid_amount: paid, credited_amount: credited, due_amount: Math.max(0, inv.net_payable - paid - credited) }, items, payments, creditNotes });
+});
+
+router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const { po_no, vendor_id, vendor_invoice_no, vendor_invoice_date, tds_rate } = req.body;
+  if (!vendor_id) return res.status(400).json({ error: 'Pick a vendor.' });
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(vendor_id);
+  if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists - refresh the page and pick a vendor again.' });
+  if (!vendor_invoice_no || !String(vendor_invoice_no).trim()) return res.status(400).json({ error: "Enter the vendor's own invoice/bill number." });
+  if (!vendor_invoice_date) return res.status(400).json({ error: "Enter the date on the vendor's bill." });
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one line item.' });
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const prefix = lines.length > 1 ? `Line ${i + 1}: ` : '';
+    if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
+    if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
+    if (l.purchase_order_line_id) {
+      const billable = poLineBillableQty(l.purchase_order_line_id);
+      if (Number(l.quantity) > billable) {
+        return res.status(400).json({ error: `${prefix}only ${billable} is still billable against that PO line (already received/invoiced accounted for).` });
+      }
+    }
+  }
+  const company = getCompanySettings();
+  const sameState = vendor.state && company.state && vendor.state.trim().toLowerCase() === company.state.trim().toLowerCase();
+  let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
+  const lineRows = lines.map((l, i) => {
+    const qty = Number(l.quantity), rate = Number(l.rate);
+    const taxable = qty * rate;
+    const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : (company.default_gst_rate || 18);
+    taxableTotal += taxable;
+    const taxAmt = taxable * gstRate / 100;
+    if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
+    return {
+      purchase_order_line_id: l.purchase_order_line_id || null, item_id: l.item_id || null,
+      description: l.description || l.item_name || 'Item', hsn_code: l.hsn_code || null,
+      quantity: qty, unit: l.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i,
+    };
+  });
+  const totalValue = taxableTotal + cgst + sgst + igst;
+  const tdsRate = Number(tds_rate) || 0;
+  const tdsAmount = taxableTotal * tdsRate / 100;
+  const netPayable = totalValue - tdsAmount;
+  const invoiceNo = nextPurchaseInvoiceNo();
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO purchase_invoices (invoice_no, po_no, vendor_id, vendor_invoice_no, vendor_invoice_date, vendor_gstin, vendor_state,
+        taxable_value, cgst, sgst, igst, total_value, tds_rate, tds_amount, net_payable, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'PendingApproval', ?)
+    `).run(invoiceNo, po_no || null, vendor_id, String(vendor_invoice_no).trim(), vendor_invoice_date, vendor.gstin || null, vendor.state || null,
+      taxableTotal, cgst, sgst, igst, totalValue, tdsRate, tdsAmount, netPayable, req.user.id);
+    const insertItem = db.prepare(`
+      INSERT INTO purchase_invoice_items (invoice_id, purchase_order_line_id, item_id, description, hsn_code, quantity, unit, rate, taxable_value, gst_rate, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.purchase_order_line_id, r.item_id, r.description, r.hsn_code, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order));
+    return info.lastInsertRowid;
+  });
+  const id = tx();
+  const approvalId = approvals.startApproval('PurchaseInvoice', 'purchase_invoice', id, netPayable, req.user.id);
+  db.prepare('UPDATE purchase_invoices SET approval_id = ? WHERE id = ?').run(approvalId, id);
+  res.json({ id, invoice_no: invoiceNo, status: 'PendingApproval' });
+});
+
+router.post('/purchase-invoices/:id/cancel', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const inv = db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(req.params.id);
+  if (!inv) return res.status(404).json({ error: 'Not found' });
+  if (['PartiallyPaid', 'Paid'].includes(inv.status)) {
+    return res.status(400).json({ error: 'A payment has already been recorded against this invoice - it can no longer be cancelled.' });
+  }
+  if (inv.status === 'Cancelled') return res.status(400).json({ error: 'This invoice is already cancelled.' });
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE purchase_invoices SET status = 'Cancelled' WHERE id = ?`).run(inv.id);
+    if (inv.approval_id) {
+      db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(inv.approval_id);
+    }
+  });
+  tx();
+  res.json({ ok: true });
+});
+
+// Payment only once Approved (or already PartiallyPaid - a second/third
+// instalment) - the formal approval chain above is what actually gates
+// money leaving, this is just the bookkeeping record of each instalment.
+router.post('/purchase-invoices/:id/record-payment', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const inv = db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(req.params.id);
+  if (!inv) return res.status(404).json({ error: 'Not found' });
+  if (!['Approved', 'PartiallyPaid'].includes(inv.status)) {
+    return res.status(400).json({ error: `This invoice must be Approved before a payment can be recorded against it (currently ${inv.status}).` });
+  }
+  const amount = Number(req.body.amount);
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Enter a payment amount greater than 0.' });
+  const paidSoFar = purchaseInvoicePaidAmount(inv.id);
+  const credited = purchaseInvoiceCreditedAmount(inv.id);
+  const due = inv.net_payable - paidSoFar - credited;
+  if (amount > due + 0.01) return res.status(400).json({ error: `That's more than the ₹${fmt2(due)} currently due on this invoice.` });
+  const reference = (req.body.reference || '').trim() || null;
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO finance_ledger (type, reference_table, reference_id, amount, direction, description, created_by)
+      VALUES ('PurchaseInvoice', 'purchase_invoices', ?, ?, 'Outflow', ?, ?)
+    `).run(inv.id, amount, `Payment against ${inv.invoice_no}${reference ? ' (' + reference + ')' : ''}`, req.user.id);
+    const newPaid = paidSoFar + amount;
+    const newStatus = newPaid + credited >= inv.net_payable - 0.01 ? 'Paid' : 'PartiallyPaid';
+    db.prepare(`UPDATE purchase_invoices SET status = ? WHERE id = ?`).run(newStatus, inv.id);
+  });
+  tx();
+  res.json({ ok: true });
+});
+function fmt2(n) { return Number(n || 0).toFixed(2); }
+
+// ===================== Vendor Credit Notes =====================
+router.get('/vendor-credit-notes', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT vcn.*, v.name as vendor_name, pi.invoice_no as purchase_invoice_no
+    FROM vendor_credit_notes vcn JOIN vendors v ON v.id = vcn.vendor_id
+    JOIN purchase_invoices pi ON pi.id = vcn.purchase_invoice_id
+    ORDER BY vcn.id DESC
+  `).all());
+});
+router.post('/vendor-credit-notes', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const { purchase_invoice_id, vendor_credit_note_no, reason, taxable_value, gst_rate } = req.body;
+  const inv = db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(purchase_invoice_id);
+  if (!inv) return res.status(400).json({ error: 'That purchase invoice no longer exists.' });
+  if (inv.status === 'Cancelled') return res.status(400).json({ error: 'This invoice is cancelled - a credit note against it would not make sense.' });
+  const taxable = Number(taxable_value);
+  if (!taxable || taxable <= 0) return res.status(400).json({ error: 'Enter a taxable value greater than 0.' });
+  const company = getCompanySettings();
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(inv.vendor_id);
+  const sameState = vendor && vendor.state && company.state && vendor.state.trim().toLowerCase() === company.state.trim().toLowerCase();
+  const gstRate = Number(gst_rate) || 0;
+  const taxAmt = taxable * gstRate / 100;
+  let cgst = 0, sgst = 0, igst = 0;
+  if (sameState) { cgst = taxAmt / 2; sgst = taxAmt / 2; } else { igst = taxAmt; }
+  const total = taxable + cgst + sgst + igst;
+  const alreadyCredited = purchaseInvoiceCreditedAmount(inv.id);
+  const alreadyPaid = purchaseInvoicePaidAmount(inv.id);
+  if (alreadyCredited + alreadyPaid + total > inv.net_payable + 0.01) {
+    return res.status(400).json({ error: `That would credit more than the ₹${fmt2(inv.net_payable - alreadyCredited - alreadyPaid)} remaining on this invoice.` });
+  }
+  const cnNo = nextCreditNoteNo();
+  const info = db.prepare(`
+    INSERT INTO vendor_credit_notes (credit_note_no, vendor_credit_note_no, purchase_invoice_id, vendor_id, reason, taxable_value, cgst, sgst, igst, total_value, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `).run(cnNo, (vendor_credit_note_no || '').trim() || null, inv.id, inv.vendor_id, reason || null, taxable, cgst, sgst, igst, total, req.user.id);
+  // A fully/over-credited invoice needs no further payment - same
+  // "net_payable minus paid minus credited <= 0" rule record-payment uses.
+  if (alreadyCredited + alreadyPaid + total >= inv.net_payable - 0.01 && inv.status !== 'Cancelled') {
+    db.prepare(`UPDATE purchase_invoices SET status = 'Paid' WHERE id = ? AND status IN ('Approved', 'PartiallyPaid')`).run(inv.id);
+  }
+  res.json({ id: info.lastInsertRowid, credit_note_no: cnNo });
+});
+router.post('/vendor-credit-notes/:id/cancel', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const cn = db.prepare('SELECT * FROM vendor_credit_notes WHERE id = ?').get(req.params.id);
+  if (!cn) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE vendor_credit_notes SET status = 'Cancelled' WHERE id = ?`).run(cn.id);
+  // The invoice may have been auto-marked Paid when this credit note fully
+  // covered it - if it's no longer covered now, drop it back so the due
+  // amount (now positive again) shows up in Pending Purchase Bills.
+  const inv = db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(cn.purchase_invoice_id);
+  if (inv && inv.status === 'Paid') {
+    const paid = purchaseInvoicePaidAmount(inv.id);
+    const credited = purchaseInvoiceCreditedAmount(inv.id);
+    if (paid + credited < inv.net_payable - 0.01) {
+      db.prepare(`UPDATE purchase_invoices SET status = ? WHERE id = ?`).run(paid > 0 ? 'PartiallyPaid' : 'Approved', inv.id);
+    }
+  }
+  res.json({ ok: true });
+});
+
+// ===================== Pending Purchase Bills (AP aging) =====================
+router.get('/pending-purchase-bills', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT pi.*, v.name as vendor_name, v.payment_terms_days as vendor_payment_terms_days
+    FROM purchase_invoices pi JOIN vendors v ON v.id = pi.vendor_id
+    WHERE pi.status IN ('PendingApproval', 'Approved', 'PartiallyPaid', 'Rejected', 'InfoRequested')
+    ORDER BY pi.booking_date
+  `).all();
+  const today = new Date();
+  const result = rows.map(r => {
+    const paid = purchaseInvoicePaidAmount(r.id);
+    const credited = purchaseInvoiceCreditedAmount(r.id);
+    const due = Math.max(0, r.net_payable - paid - credited);
+    const termsDays = r.vendor_payment_terms_days || 30;
+    const dueDate = new Date(new Date(r.booking_date).getTime() + termsDays * 86400000);
+    const daysOverdue = Math.max(0, Math.round((today - dueDate) / 86400000));
+    return { ...r, paid_amount: paid, credited_amount: credited, due_amount: due, due_date: dueDate.toISOString().slice(0, 10), days_overdue: daysOverdue };
+  }).filter(r => r.due_amount > 0.01);
+  res.json(result);
+});
+
 // ===================== Proforma Invoices (Round 22) =====================
 // Advance / pre-dispatch payment requests against a sales order - not a tax
 // document (see db/index.js Round 22 comment). Reuses the same GST-split
@@ -855,10 +1148,13 @@ router.get('/gst-summary', requirePermission('report.view_all', 'expense_voucher
   const output = db.prepare(invQ).get(...params);
   const outputGst = (output.cgst || 0) + (output.sgst || 0) + (output.igst || 0);
 
-  let poQ = `SELECT COALESCE(SUM(gst_amount),0) as itc FROM purchase_orders WHERE 1=1`;
+  // ITC now sources from actually-booked Purchase Invoices rather than
+  // Purchase Orders - a PO is just a commitment, not a tax document, so it
+  // was only ever an approximation. Cancelled/Rejected bills claim nothing.
+  let poQ = `SELECT COALESCE(SUM(cgst + sgst + igst),0) as itc FROM purchase_invoices WHERE status NOT IN ('Cancelled', 'Rejected')`;
   const poParams = [];
-  if (from) { poQ += ' AND created_at >= ?'; poParams.push(from); }
-  if (to) { poQ += ' AND created_at <= ?'; poParams.push(to + ' 23:59:59'); }
+  if (from) { poQ += ' AND booking_date >= ?'; poParams.push(from); }
+  if (to) { poQ += ' AND booking_date <= ?'; poParams.push(to + ' 23:59:59'); }
   const input = db.prepare(poQ).get(...poParams);
   const itc = input.itc || 0;
 

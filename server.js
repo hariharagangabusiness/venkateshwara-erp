@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval } = require('./db');
+const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -26,6 +26,7 @@ if (isNew) {
 bootstrapForeignPayments();
 bootstrapBgManageGrant();
 bootstrapPurchaseOrderApproval();
+bootstrapPurchaseInvoiceApproval();
 
 const app = express();
 app.use(cors());
