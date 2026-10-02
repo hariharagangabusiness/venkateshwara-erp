@@ -1610,6 +1610,43 @@ async function renderApprovalDrilldown(key) {
       </p>`;
       history = hist;
       attachType = 'foreign_payment';
+    } else if (r.entity_type === 'purchase_order') {
+      // GET /orders already returns every column an approver would need
+      // (vendor_name/item_name joined in, plus every terms/LD field) - no
+      // dedicated single-PO endpoint exists, so filter the full list down
+      // to this PO's po_no (a multi-item PO is several rows sharing one).
+      const [allOrders, hist] = await Promise.all([api('/purchase/orders'), api(`/approvals/${r.id}/history`)]);
+      const lines = allOrders.filter(o => o.po_no === r.ref);
+      history = hist;
+      attachType = 'purchase_order';
+      if (!lines.length) {
+        extraHtml = '<p class="muted">Purchase Order not found.</p>';
+      } else {
+        const first = lines[0];
+        const vendor = await api(`/masters/vendors/${first.vendor_id}`).catch(() => null);
+        const taxable = lines.reduce((s, l) => s + Number(l.total_value || 0), 0);
+        const gstAmt = lines.reduce((s, l) => s + Number(l.gst_amount || 0), 0);
+        extraHtml = `
+          <h5 style="margin:8px 0 4px;">Vendor</h5>
+          <p style="font-size:13px;margin:0 0 8px;">
+            <b>${esc((vendor && (vendor.legal_name || vendor.name)) || first.vendor_name)}</b> &nbsp; <b>GSTIN:</b> ${esc(vendor && vendor.gstin) || '-'}<br>
+            ${vendor && vendor.contact_person ? `<b>Contact:</b> ${esc(vendor.contact_person)}${vendor.phone ? ' (' + esc(vendor.phone) + ')' : ''}<br>` : ''}
+          </p>
+          <h5 style="margin:8px 0 4px;">Terms</h5>
+          <p style="font-size:13px;margin:0 0 8px;">
+            <b>Payment Terms:</b> ${esc(first.payment_terms)||'-'} &nbsp; <b>Delivery Date:</b> ${esc(first.delivery_date)||'-'} &nbsp;
+            <b>Our Address:</b> ${first.company_address_type ? esc(first.company_address_type) + (first.company_address_label ? ' - ' + esc(first.company_address_label) : '') : '-'}<br>
+            <b>LD Rate:</b> ${first.ld_percentage != null ? first.ld_percentage + '%' : '-'} &nbsp; <b>LD Cap:</b> ${first.ld_cap_percentage != null ? first.ld_cap_percentage + '%' : '-'}
+            ${first.ld_trigger_notes ? `<br><b>LD Trigger Notes:</b> ${esc(first.ld_trigger_notes)}` : ''}
+            ${first.terms ? `<br><b>Additional Terms:</b> ${esc(first.terms)}` : ''}
+          </p>
+          <h5 style="margin:8px 0 4px;">Line Items</h5>
+          ${tableHTML(['Item', 'Qty', 'Rate (₹)', 'HSN', 'GST %', 'Total (₹)', 'Status', ''], lines, l => `
+            <tr><td>${esc(l.item_name)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.rate)}</td><td>${esc(l.hsn_code)||'-'}</td><td>${l.gst_rate||0}%</td><td>₹${fmt(l.total_value)}</td><td>${badge(l.status)}</td>
+            <td>${l.item_id ? `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${l.item_id})">Price History</button>` : ''}</td></tr>`)}
+          <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Taxable:</b> ₹${fmt(taxable)} &nbsp; <b>GST:</b> ₹${fmt(gstAmt)} &nbsp; <b>Grand Total:</b> ₹${fmt(taxable + gstAmt)}</p>
+        `;
+      }
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -4109,9 +4146,11 @@ function renderPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
-      <td>${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-        `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}
-        <button class="btn small outline" type="button" style="margin-top:4px;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button></td>
+      <td><div style="display:flex;gap:6px;align-items:center;">
+        <div style="flex:1;min-width:0;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</div>
+        <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
+      </div></td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
@@ -4573,10 +4612,12 @@ function renderPOLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item', 'Quantity', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
     <tr>
-      <td>${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
-        (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
-        `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}
-        <button class="btn small outline" type="button" style="margin-top:4px;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button></td>
+      <td><div style="display:flex;gap:6px;align-items:center;">
+        <div style="flex:1;min-width:0;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
+          (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
+          `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}</div>
+        <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button>
+      </div></td>
       <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
       <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
       <td><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
