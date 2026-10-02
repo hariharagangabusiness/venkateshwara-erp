@@ -125,6 +125,18 @@ function describeEntity(entityType, entityId) {
         is_resubmission: !!prior, prior_rejection_reason: prior ? prior.comment : null, prior_rejected_by_name: prior ? prior.rejected_by_name : null,
       };
     }
+    case 'purchase_invoice': {
+      const r = db.prepare(`
+        SELECT pi.invoice_no as ref, pi.vendor_invoice_no, pi.net_payable, pi.po_no, v.name as vendor_name,
+          u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name
+        FROM purchase_invoices pi JOIN vendors v ON v.id = pi.vendor_id LEFT JOIN users u ON u.id = pi.created_by
+        LEFT JOIN departments d ON d.id = u.department_id WHERE pi.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `${r.vendor_name} bill ${r.vendor_invoice_no} (${r.po_no || 'no PO'}) - ₹${Number(r.net_payable || 0).toFixed(2)}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+      };
+    }
     default:
       return {};
   }
@@ -243,6 +255,16 @@ function syncEntityStatus(entityType, entityId, result) {
     if (po) db.prepare('UPDATE purchase_orders SET status = ? WHERE po_no = ?').run(newStatus, po.po_no);
     return;
   }
+  // A single row (no po_no-style grouping) - the only reason this isn't
+  // just another row in the generic map below is 'PendingApproval' as the
+  // "back to pending" label (matching the PO status naming convention the
+  // user already sees), not the generic map's hardcoded literal 'Pending'.
+  if (entityType === 'purchase_invoice') {
+    const statusByResult = { Approved: 'Approved', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE purchase_invoices SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   const map = {
     expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
@@ -270,6 +292,7 @@ const ENTITY_LABELS = {
   salary_schedule: 'Salary Schedule',
   foreign_payment: 'Foreign Payment Request',
   purchase_order: 'Purchase Order',
+  purchase_invoice: 'Purchase Invoice (Vendor Bill)',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -335,12 +358,12 @@ router.post('/:id/provide-info', (req, res) => {
 // slowest since they usually need supporting paperwork first).
 const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
-  salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3,
+  salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
   salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
-  purchase_order: 'purchase_orders',
+  purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

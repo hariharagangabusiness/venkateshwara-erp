@@ -951,6 +951,74 @@ const MIGRATIONS = [
   // so the PR resubmit/"prior rejection" UX conventions carry straight over.
   // See bootstrapPurchaseOrderApproval() below for the chain/steps themselves.
   `ALTER TABLE purchase_orders ADD COLUMN approval_id INTEGER REFERENCES approvals(id)`,
+
+  // ---- Accounts Payable: Purchase Invoices (vendor bills) + vendor Credit
+  // Notes. Separate from purchase_orders (a commitment, already approved on
+  // its own) - a Purchase Invoice is booking what the vendor actually
+  // billed, which can only ever be for quantity already received (see
+  // purchase_order_line_id below, checked against poReceivedQty() at
+  // booking time in routes/finance.js). Own invoice_no sequence (our
+  // internal booking reference) alongside the vendor's own bill number/date,
+  // which is what GST return matching actually needs. See
+  // bootstrapPurchaseInvoiceApproval() for the approval chain.
+  `CREATE TABLE IF NOT EXISTS purchase_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_no TEXT UNIQUE,              -- our internal booking reference, e.g. PINV/2026-27/0001
+    po_no TEXT,                          -- the PO group this bill is against
+    vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+    vendor_invoice_no TEXT NOT NULL,     -- the vendor's own bill number - needed for GSTR-2B matching
+    vendor_invoice_date TEXT NOT NULL,   -- date printed on the vendor's bill
+    booking_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    vendor_gstin TEXT,
+    vendor_state TEXT,
+    taxable_value REAL DEFAULT 0,
+    cgst REAL DEFAULT 0,
+    sgst REAL DEFAULT 0,
+    igst REAL DEFAULT 0,
+    total_value REAL DEFAULT 0,
+    tds_rate REAL DEFAULT 0,
+    tds_amount REAL DEFAULT 0,
+    net_payable REAL DEFAULT 0,          -- total_value - tds_amount - what's actually transferred to the vendor
+    status TEXT DEFAULT 'PendingApproval', -- PendingApproval, Approved, Rejected, InfoRequested, PartiallyPaid, Paid, Cancelled
+    approval_id INTEGER REFERENCES approvals(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS purchase_invoice_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES purchase_invoices(id),
+    purchase_order_line_id INTEGER REFERENCES purchase_orders(id), -- which PO line this bills against
+    item_id INTEGER REFERENCES items(id),
+    description TEXT NOT NULL,
+    hsn_code TEXT,
+    quantity REAL DEFAULT 1,
+    unit TEXT DEFAULT 'Nos',
+    rate REAL DEFAULT 0,
+    taxable_value REAL DEFAULT 0,
+    gst_rate REAL DEFAULT 18,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // Payments themselves are NOT a column on purchase_invoices - each one is
+  // its own finance_ledger row (type='PurchaseInvoice', direction='Outflow',
+  // reference_id=invoice id), same ledger every other outflow already uses.
+  // paid/due is always computed by summing those rows, so there's no running
+  // total that can drift out of sync with the ledger.
+  `CREATE TABLE IF NOT EXISTS vendor_credit_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    credit_note_no TEXT UNIQUE,          -- our internal reference
+    vendor_credit_note_no TEXT,          -- the vendor's own CN number, if they gave one
+    purchase_invoice_id INTEGER NOT NULL REFERENCES purchase_invoices(id),
+    vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+    reason TEXT,
+    taxable_value REAL DEFAULT 0,
+    cgst REAL DEFAULT 0,
+    sgst REAL DEFAULT 0,
+    igst REAL DEFAULT 0,
+    total_value REAL DEFAULT 0,
+    status TEXT DEFAULT 'Active',        -- Active, Cancelled
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1399,4 +1467,36 @@ function bootstrapPurchaseOrderApproval() {
   } catch (e) { console.error('[db] Purchase Order approval bootstrap failed:', e.message); }
 }
 
-module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval };
+// Accounts Payable: booking a Purchase Invoice (vendor bill) starts this
+// chain immediately, same shape as ExpenseVoucher - step 1 is the Accounts
+// department's own HOD (always required), step 2 is Management above a
+// value threshold (default Rs 50,000, admin-editable from the Approval
+// Matrix page, same as every other chain). Only once Approved can a payment
+// actually be recorded against the invoice - this is how "payment needs
+// sign-off" is enforced, without a second approval cycle per payment
+// instalment. Same idempotent INSERT OR IGNORE / ON CONFLICT DO NOTHING
+// guarantee as the other bootstraps - safe on every boot.
+function bootstrapPurchaseInvoiceApproval() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('purchase_invoice.manage')`);
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT (SELECT id FROM roles WHERE name = 'Accounts'), (SELECT id FROM permissions WHERE code = 'purchase_invoice.manage')
+      WHERE (SELECT id FROM roles WHERE name = 'Accounts') IS NOT NULL
+        AND (SELECT id FROM permissions WHERE code = 'purchase_invoice.manage') IS NOT NULL
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('PurchaseInvoice', 'Vendor bill payment approval (Accounts HOD -> Management)')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'PurchaseInvoice'`).get().id;
+    const accountsRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Accounts'`).get()?.id;
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const upsertPiStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    if (accountsRoleId) upsertPiStep.run(chainId, 1, accountsRoleId, 0, 1);
+    if (managementRoleId) upsertPiStep.run(chainId, 2, managementRoleId, 50000, 0);
+  } catch (e) { console.error('[db] Purchase Invoice approval bootstrap failed:', e.message); }
+}
+
+module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval };

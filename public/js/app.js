@@ -366,6 +366,7 @@ const NAV = [
     { id: 'finance-ledger', label: 'Finance Ledger' },
     { id: 'monthly-reconciliation', label: 'Monthly Reconciliation' },
     { id: 'sales-invoices', label: 'Sales Invoices' },
+    { id: 'purchase-invoices', label: 'Purchase Invoices (AP)' },
     { id: 'soa', label: 'Statement of Accounts' },
     { id: 'operating-expenses', label: 'Operating Expenses' },
     // Monthly Expense Tracker / Year Summary / Categories retired here -
@@ -1647,6 +1648,32 @@ async function renderApprovalDrilldown(key) {
           <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Taxable:</b> ₹${fmt(taxable)} &nbsp; <b>GST:</b> ₹${fmt(gstAmt)} &nbsp; <b>Grand Total:</b> ₹${fmt(taxable + gstAmt)}</p>
         `;
       }
+    } else if (r.entity_type === 'purchase_invoice') {
+      const [detail, hist] = await Promise.all([api(`/finance/purchase-invoices/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      const { invoice: inv, items } = detail;
+      history = hist;
+      attachType = 'purchase_invoice';
+      const vendor = await api(`/masters/vendors/${inv.vendor_id}`).catch(() => null);
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">Vendor</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>${esc((vendor && (vendor.legal_name || vendor.name)) || inv.vendor_name)}</b> &nbsp; <b>GSTIN:</b> ${esc(inv.vendor_gstin)||'-'}<br>
+          ${vendor && vendor.contact_person ? `<b>Contact:</b> ${esc(vendor.contact_person)}${vendor.phone ? ' (' + esc(vendor.phone) + ')' : ''}<br>` : ''}
+        </p>
+        <h5 style="margin:8px 0 4px;">Bill Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>Vendor's Invoice No:</b> ${esc(inv.vendor_invoice_no)} &nbsp; <b>Date:</b> ${esc(inv.vendor_invoice_date)} &nbsp;
+          <b>Against PO:</b> ${esc(inv.po_no)||'-'}
+        </p>
+        <h5 style="margin:8px 0 4px;">Line Items</h5>
+        ${tableHTML(['Item', 'Qty', 'Rate (₹)', 'HSN', 'GST %', 'Taxable (₹)', ''], items, it => `
+          <tr><td>${esc(it.item_name)||esc(it.description)}</td><td>${it.quantity}</td><td>₹${fmt(it.rate)}</td><td>${esc(it.hsn_code)||'-'}</td><td>${it.gst_rate}%</td><td>₹${fmt(it.taxable_value)}</td>
+          <td>${it.item_id ? `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${it.item_id})">Price History</button>` : ''}</td></tr>`)}
+        <p style="font-size:13px;margin:8px 0 0;text-align:right;">
+          <b>Taxable:</b> ₹${fmt(inv.taxable_value)} &nbsp; <b>GST:</b> ₹${fmt(inv.cgst + inv.sgst + inv.igst)} &nbsp; <b>Total:</b> ₹${fmt(inv.total_value)}<br>
+          ${inv.tds_amount > 0 ? `<b>TDS (${inv.tds_rate}%):</b> ₹${fmt(inv.tds_amount)} &nbsp; ` : ''}<b>Net Payable:</b> ₹${fmt(inv.net_payable)}
+        </p>
+      `;
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -8940,6 +8967,181 @@ window.emailInvoice = async (id) => {
     const result = await api(`/finance/invoices/${id}/email`, { method: 'POST' });
     alert(result.sent ? `Invoice emailed to ${result.to}.` : (result.message || 'Email was not sent.'));
   } catch (e) { alert(e.message); }
+};
+
+// ===================== Accounts Payable: Purchase Invoices =====================
+// Booking a vendor's bill against a PO - mirrors the Sales Invoice page's
+// shape (own numbered sequence, GST split) but flowing the other direction.
+// A PO is picked first, then its billable lines (received-but-not-yet-
+// invoiced quantity - see GET /finance/purchase-invoices/billable-po-lines)
+// load in, so booking can never over-bill a PO. Goes through the same
+// approval-then-pay flow Purchase Orders just got: PendingApproval ->
+// Approved (Accounts HOD, then Management above a value threshold) before
+// any payment can be recorded against it.
+let PI_LINES = [];
+window.loadBillablePOLines = async () => {
+  const poNo = val('pi-po');
+  const box = document.getElementById('pi-lines-box');
+  PI_LINES = [];
+  if (!poNo) { box.innerHTML = ''; return; }
+  try {
+    const lines = await api('/finance/purchase-invoices/billable-po-lines?po_no=' + encodeURIComponent(poNo));
+    if (!lines.length) {
+      box.innerHTML = '<p class="muted">Nothing on this PO is currently billable - either nothing has been received yet, or everything received has already been invoiced.</p>';
+      return;
+    }
+    PI_LINES = lines.map(l => ({
+      purchase_order_line_id: l.id, item_id: l.item_id, item_name: l.item_name, hsn_code: l.hsn_code || '',
+      gst_rate: l.gst_rate || 18, billable_qty: l.billable_qty, quantity: l.billable_qty, rate: l.rate,
+    }));
+    renderPILines();
+  } catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
+function renderPILines() {
+  const box = document.getElementById('pi-lines-box');
+  if (!box) return;
+  box.innerHTML = tableHTML(['Item', 'Billable Qty', 'Bill Qty', 'Rate (₹)', 'HSN', 'GST %'], PI_LINES, (l, i) => `
+    <tr><td>${esc(l.item_name)||'-'}</td><td>${fmt(l.billable_qty)}</td>
+      <td><input type="number" value="${l.quantity}" max="${l.billable_qty}" min="0" onchange="PI_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
+      <td><input type="number" value="${l.rate}" onchange="PI_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
+      <td><input value="${esc(l.hsn_code)}" onchange="PI_LINES[${i}].hsn_code=this.value" style="width:90px;"></td>
+      <td><input type="number" value="${l.gst_rate}" onchange="PI_LINES[${i}].gst_rate=Number(this.value)" style="width:70px;"></td></tr>`);
+}
+window.loadVendorPOsForInvoice = async () => {
+  const vendorId = Number(val('pi-vendor'));
+  const sel = document.getElementById('pi-po');
+  const orders = window.__PI_ORDERS || [];
+  const poNos = [...new Set(orders.filter(o => o.vendor_id === vendorId && o.status !== 'Cancelled').map(o => o.po_no))];
+  sel.innerHTML = '<option value="">-- Select PO --</option>' + poNos.map(no => `<option value="${esc(no)}">${esc(no)}</option>`).join('');
+  document.getElementById('pi-lines-box').innerHTML = '';
+  PI_LINES = [];
+};
+PAGES['purchase-invoices'] = async (el) => {
+  const [vendors, orders, invoices, creditNotes, pendingBills] = await Promise.all([
+    api('/masters/vendors'), api('/purchase/orders'), api('/finance/purchase-invoices'),
+    api('/finance/vendor-credit-notes'), api('/finance/pending-purchase-bills'),
+  ]);
+  window.__PI_ORDERS = orders;
+  PI_LINES = [];
+  el.innerHTML = `
+    <div class="panel"><h3>Book Purchase Invoice (Vendor Bill)</h3>
+      <div class="form-grid">
+        <div><label>Vendor</label><select id="pi-vendor" onchange="loadVendorPOsForInvoice()"><option value="">-- Select vendor --</option>${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></div>
+        <div><label>Purchase Order</label><select id="pi-po" onchange="loadBillablePOLines()"><option value="">-- Pick a vendor first --</option></select></div>
+        <div><label>Vendor's Invoice No.</label><input id="pi-vendor-inv-no" placeholder="As printed on their bill"></div>
+        <div><label>Vendor's Invoice Date</label><input id="pi-vendor-inv-date" type="date"></div>
+        <div><label>TDS Rate (%) <span class="muted">(if applicable)</span></label><input id="pi-tds-rate" type="number" step="0.01" value="0"></div>
+      </div>
+      <div id="pi-lines-box" style="margin-top:10px;"></div>
+      <button class="btn" onclick="bookPurchaseInvoice()" style="margin-top:10px;">Book Invoice</button>
+      <div id="pi-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    </div>
+    ${collapsiblePanel('purchase-invoices-list', `Purchase Invoices (${invoices.length})`, `
+      ${tableHTML(['Invoice No', 'Vendor', 'Vendor Bill No', 'PO', 'Taxable', 'GST', 'TDS', 'Net Payable', 'Paid', 'Due', 'Status', ''], invoices, i => `
+        <tr><td>${esc(i.invoice_no)}</td><td>${esc(i.vendor_name)}</td><td>${esc(i.vendor_invoice_no)}</td><td>${esc(i.po_no)||'-'}</td>
+        <td>₹${fmt(i.taxable_value)}</td><td>₹${fmt(i.cgst + i.sgst + i.igst)}</td><td>₹${fmt(i.tds_amount)}</td>
+        <td>₹${fmt(i.net_payable)}</td><td>₹${fmt(i.paid_amount)}</td><td>₹${fmt(i.due_amount)}</td><td>${badge(i.status)}</td>
+        <td>
+          <button class="btn small outline" type="button" onclick="togglePIDetail(${i.id})">Details</button>
+          ${['Approved', 'PartiallyPaid'].includes(i.status) ? `<button class="btn small" type="button" onclick="recordPIPayment(${i.id})">Record Payment</button>
+          <button class="btn small outline" type="button" onclick="openCreditNoteForm(${i.id})">Credit Note</button>` : ''}
+          ${!['PartiallyPaid', 'Paid', 'Cancelled'].includes(i.status) ? `<button class="btn small outline" type="button" onclick="cancelPurchaseInvoice(${i.id})">Cancel</button>` : ''}
+        </td></tr>
+        <tr id="pi-detail-row-${i.id}" style="display:none;"><td colspan="12"><div id="pi-detail-${i.id}"></div></td></tr>`)}
+    `)}
+    ${collapsiblePanel('vendor-credit-notes-list', `Vendor Credit Notes (${creditNotes.length})`, `
+      ${tableHTML(['Credit Note No', "Vendor's CN No", 'Vendor', 'Against Invoice', 'Taxable', 'GST', 'Total', 'Status', ''], creditNotes, c => `
+        <tr><td>${esc(c.credit_note_no)}</td><td>${esc(c.vendor_credit_note_no)||'-'}</td><td>${esc(c.vendor_name)}</td><td>${esc(c.purchase_invoice_no)}</td>
+        <td>₹${fmt(c.taxable_value)}</td><td>₹${fmt(c.cgst + c.sgst + c.igst)}</td><td>₹${fmt(c.total_value)}</td><td>${badge(c.status)}</td>
+        <td>${c.status === 'Active' ? `<button class="btn small outline" type="button" onclick="cancelCreditNote(${c.id})">Cancel</button>` : ''}</td></tr>`)}
+    `)}
+    ${collapsiblePanel('pending-purchase-bills', `Pending Purchase Bills (${pendingBills.length})`, `
+      <p class="muted">Booked-but-unpaid vendor bills, with how overdue each is against that vendor's own payment-terms days.</p>
+      ${tableHTML(['Invoice No', 'Vendor', 'Booking Date', 'Due Date', 'Due Amount', 'Days Overdue', 'Status'], pendingBills, p => `
+        <tr><td>${esc(p.invoice_no)}</td><td>${esc(p.vendor_name)}</td><td>${new Date(p.booking_date).toLocaleDateString()}</td>
+        <td>${p.due_date}</td><td>₹${fmt(p.due_amount)}</td>
+        <td>${p.days_overdue > 0 ? `<span class="badge Rejected">${p.days_overdue}d overdue</span>` : '<span class="muted">Not yet due</span>'}</td>
+        <td>${badge(p.status)}</td></tr>`)}
+    `)}`;
+};
+window.bookPurchaseInvoice = async () => {
+  const errEl = document.getElementById('pi-err'); errEl.style.display = 'none';
+  const vendorId = val('pi-vendor'), poNo = val('pi-po');
+  if (!vendorId) { errEl.textContent = 'Pick a vendor.'; errEl.style.display = 'block'; return; }
+  const lines = PI_LINES.filter(l => Number(l.quantity) > 0);
+  if (!lines.length) { errEl.textContent = 'Pick a PO with at least one billable line, with a quantity greater than 0.'; errEl.style.display = 'block'; return; }
+  try {
+    await api('/finance/purchase-invoices', { method: 'POST', body: JSON.stringify({
+      vendor_id: vendorId, po_no: poNo || null,
+      vendor_invoice_no: val('pi-vendor-inv-no'), vendor_invoice_date: val('pi-vendor-inv-date'),
+      tds_rate: val('pi-tds-rate') || 0, lines,
+    })});
+    alert('Purchase Invoice booked - submitted for approval (Accounts HOD, then Management if above the value threshold). A payment cannot be recorded until it is approved.');
+    navigate('purchase-invoices');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.togglePIDetail = async (id) => {
+  const row = document.getElementById(`pi-detail-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  const box = document.getElementById(`pi-detail-${id}`);
+  box.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const { invoice, items, payments } = await api(`/finance/purchase-invoices/${id}`);
+    box.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+      <h5 style="margin:0 0 6px;">Line Items</h5>
+      ${tableHTML(['Item', 'Qty', 'Rate (₹)', 'HSN', 'GST %', 'Taxable (₹)'], items, it => `
+        <tr><td>${esc(it.item_name)||esc(it.description)}</td><td>${it.quantity}</td><td>₹${fmt(it.rate)}</td><td>${esc(it.hsn_code)||'-'}</td><td>${it.gst_rate}%</td><td>₹${fmt(it.taxable_value)}</td></tr>`)}
+      <h5 style="margin:10px 0 6px;">Payments</h5>
+      ${payments.length ? tableHTML(['Date', 'Amount', 'Description'], payments, p => `
+        <tr><td>${new Date(p.entry_date).toLocaleDateString()}</td><td>₹${fmt(p.amount)}</td><td>${esc(p.description)||'-'}</td></tr>`) : '<p class="muted">No payments recorded yet.</p>'}
+      <div id="pi-attachments-${id}" style="margin-top:10px;"></div>
+    </div>`;
+    renderAttachmentsWidget('purchase_invoice', id, document.getElementById(`pi-attachments-${id}`));
+  } catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
+window.recordPIPayment = async (id) => {
+  const amount = prompt('Payment amount (₹):');
+  if (!amount) return;
+  const reference = prompt('Payment reference (cheque no / UTR / mode - optional):') || '';
+  try {
+    await api(`/finance/purchase-invoices/${id}/record-payment`, { method: 'POST', body: JSON.stringify({ amount, reference }) });
+    navigate('purchase-invoices');
+  } catch (e) { alert(e.message); }
+};
+window.cancelPurchaseInvoice = async (id) => {
+  if (!confirm('Cancel this purchase invoice?')) return;
+  try { await api(`/finance/purchase-invoices/${id}/cancel`, { method: 'POST' }); navigate('purchase-invoices'); }
+  catch (e) { alert(e.message); }
+};
+window.openCreditNoteForm = (invoiceId) => {
+  const body = `
+    <div class="form-grid">
+      <div><label>Vendor's Credit Note No. (optional)</label><input id="cn-modal-vendor-no"></div>
+      <div><label>Taxable Value (₹)</label><input id="cn-modal-taxable" type="number"></div>
+      <div><label>GST Rate (%)</label><input id="cn-modal-gst" type="number" value="18"></div>
+      <div><label>Reason</label><input id="cn-modal-reason" placeholder="e.g. rate correction, short supply"></div>
+    </div>
+    <button class="btn small" type="button" onclick="submitCreditNote(${invoiceId})">Save Credit Note</button>
+    <div id="cn-modal-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  openMiniModal('Vendor Credit Note', body);
+};
+window.submitCreditNote = async (invoiceId) => {
+  const errEl = document.getElementById('cn-modal-err'); errEl.style.display = 'none';
+  try {
+    await api('/finance/vendor-credit-notes', { method: 'POST', body: JSON.stringify({
+      purchase_invoice_id: invoiceId, vendor_credit_note_no: val('cn-modal-vendor-no'),
+      taxable_value: val('cn-modal-taxable'), gst_rate: val('cn-modal-gst') || 0, reason: val('cn-modal-reason'),
+    })});
+    closeMiniModal();
+    navigate('purchase-invoices');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.cancelCreditNote = async (id) => {
+  if (!confirm('Cancel this credit note?')) return;
+  try { await api(`/finance/vendor-credit-notes/${id}/cancel`, { method: 'POST' }); navigate('purchase-invoices'); }
+  catch (e) { alert(e.message); }
 };
 
 // ===================== Statement of Accounts =====================
