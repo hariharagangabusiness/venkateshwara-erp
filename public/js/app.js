@@ -1635,8 +1635,9 @@ async function renderApprovalDrilldown(key) {
           </p>
           <h5 style="margin:8px 0 4px;">Terms</h5>
           <p style="font-size:13px;margin:0 0 8px;">
-            <b>Payment Terms:</b> ${esc(first.payment_terms)||'-'} &nbsp; <b>Delivery Date:</b> ${esc(first.delivery_date)||'-'} &nbsp;
-            <b>Our Address:</b> ${first.company_address_type ? esc(first.company_address_type) + (first.company_address_label ? ' - ' + esc(first.company_address_label) : '') : '-'}<br>
+            <b>Payment Terms:</b> ${esc(first.payment_terms)||'-'} &nbsp; <b>Delivery Date:</b> ${esc(first.delivery_date)||'-'}<br>
+            <b>Bill-To Address:</b> ${first.company_address_label ? esc(first.company_address_label) : '-'} &nbsp;
+            <b>Ship-To Address:</b> ${first.company_ship_address_label ? esc(first.company_ship_address_label) : '-'}<br>
             <b>LD Rate:</b> ${first.ld_percentage != null ? first.ld_percentage + '%' : '-'} &nbsp; <b>LD Cap:</b> ${first.ld_cap_percentage != null ? first.ld_cap_percentage + '%' : '-'}
             ${first.ld_trigger_notes ? `<br><b>LD Trigger Notes:</b> ${esc(first.ld_trigger_notes)}` : ''}
             ${first.terms ? `<br><b>Additional Terms:</b> ${esc(first.terms)}` : ''}
@@ -4610,7 +4611,8 @@ PAGES['purchase-orders'] = async (el) => {
       </div>
       <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       <div class="form-grid" style="margin-top:8px;">
-        <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-company-address"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}">${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
+        <div><label>Bill-To Address</label><select id="po-bill-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}">${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
+        <div><label>Ship-To Address</label><select id="po-ship-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}">${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
       </div>
       <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Create PO</button>
     `),
@@ -4754,7 +4756,8 @@ function poEditForm(o) {
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
     <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
     <div><label>GST Rate (%)</label><input id="po-edit-gst-${o.id}" type="number" value="${o.gst_rate}"></div>
-    <div><label>Our Address (Bill-To/Ship-To)</label><select id="po-edit-address-${o.id}"><option value="">- Default (from Company Settings) -</option>${companyAddresses.map(a => `<option value="${a.id}" ${a.id===o.company_address_id?'selected':''}>${esc(a.address_type)}${a.label ? ' - ' + esc(a.label) : ''}</option>`).join('')}</select></div>
+    <div><label>Bill-To Address</label><select id="po-edit-bill-address-${o.id}"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}" ${a.id===o.company_address_id?'selected':''}>${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
+    <div><label>Ship-To Address</label><select id="po-edit-ship-address-${o.id}"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}" ${a.id===o.company_ship_address_id?'selected':''}>${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
   </div>
   <div><label>Terms</label><textarea id="po-edit-terms-${o.id}" rows="2" style="width:100%;">${esc(o.terms||'')}</textarea></div>
   <button class="btn small" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
@@ -4772,7 +4775,8 @@ window.savePOEdit = async (id) => {
       vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`),
       quantity: val(`po-edit-qty-${id}`), rate: val(`po-edit-rate-${id}`),
       hsn_code: val(`po-edit-hsn-${id}`), gst_rate: val(`po-edit-gst-${id}`), terms: val(`po-edit-terms-${id}`),
-      company_address_id: val(`po-edit-address-${id}`) || null,
+      company_address_id: val(`po-edit-bill-address-${id}`) || null,
+      company_ship_address_id: val(`po-edit-ship-address-${id}`) || null,
     })});
     navigate('purchase-orders');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
@@ -4954,7 +4958,8 @@ window.addPO = async () => {
       purchase_request_id: val('po-pr') || null,
       vendor_id: val('po-vendor'), lines: PO_LINES,
       delivery_date: val('po-delivery'), payment_terms: val('po-payment-terms') || null,
-      company_address_id: val('po-company-address') || null,
+      company_address_id: val('po-bill-address') || null,
+      company_ship_address_id: val('po-ship-address') || null,
       ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
     })});
     alert(`Purchase Order ${r.po_no} submitted for approval (Purchase HOD, then Management if above the value threshold) - it can't be sent to the vendor or received against until approved.`);

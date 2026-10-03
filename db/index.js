@@ -1019,6 +1019,14 @@ const MIGRATIONS = [
     created_by INTEGER REFERENCES users(id),
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // The original `company_address_id` only ever let a PO carry ONE of our
+  // addresses, printed as a single "Our Address" box regardless of whether
+  // the admin had tagged it Billing or Shipping in Company Settings - a
+  // vendor PO commonly needs both, and they're often different (Head
+  // Office for billing, a factory for delivery). `company_address_id` now
+  // means Bill-To specifically; this new column is Ship-To. Both stay
+  // optional and independent, same as the single field was before.
+  `ALTER TABLE purchase_orders ADD COLUMN company_ship_address_id INTEGER REFERENCES company_addresses(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

@@ -604,11 +604,14 @@ router.get('/requests/:id/approval-history', (req, res) => {
 // ---- Purchase Orders ----
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
-    SELECT po.*, v.name as vendor_name, i.name as item_name, ca.label as company_address_label, ca.address_type as company_address_type,
+    SELECT po.*, v.name as vendor_name, i.name as item_name,
+      ca.label as company_address_label, ca.address_type as company_address_type,
+      sa.label as company_ship_address_label, sa.address_type as company_ship_address_type,
       COALESCE((SELECT SUM(sm.quantity) FROM stock_movements sm WHERE sm.movement_type = 'IN' AND sm.reference = 'PO#' || po.id), 0) as received_qty
     FROM purchase_orders po
     JOIN vendors v ON v.id = po.vendor_id LEFT JOIN items i ON i.id = po.item_id
     LEFT JOIN company_addresses ca ON ca.id = po.company_address_id
+    LEFT JOIN company_addresses sa ON sa.id = po.company_ship_address_id
     ORDER BY po.id DESC
   `).all());
 });
@@ -621,7 +624,7 @@ router.get('/orders', (req, res) => {
 // `lines`) for any other caller - both funnel into the same insert loop.
 router.post('/orders', requirePermission('purchase_order.manage'), (req, res) => {
   const {
-    purchase_request_id, vendor_id, terms, delivery_date, company_address_id, payment_terms,
+    purchase_request_id, vendor_id, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
     ld_percentage, ld_cap_percentage, ld_trigger_notes,
   } = req.body;
   const lines = Array.isArray(req.body.lines) && req.body.lines.length
@@ -640,7 +643,11 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   if (!vendor) return res.status(400).json({ error: 'That vendor no longer exists - refresh the page and pick a vendor again.' });
   if (company_address_id) {
     const addr = db.prepare('SELECT id FROM company_addresses WHERE id = ?').get(company_address_id);
-    if (!addr) return res.status(400).json({ error: 'That company address no longer exists - refresh the page and pick one again.' });
+    if (!addr) return res.status(400).json({ error: 'That Bill-To address no longer exists - refresh the page and pick one again.' });
+  }
+  if (company_ship_address_id) {
+    const addr = db.prepare('SELECT id FROM company_addresses WHERE id = ?').get(company_ship_address_id);
+    if (!addr) return res.status(400).json({ error: 'That Ship-To address no longer exists - refresh the page and pick one again.' });
   }
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
@@ -660,8 +667,8 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   // chain, bootstrapped in db/index.js.
   const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
   `);
   const ids = [];
   let totalOrderValue = 0;
@@ -674,7 +681,7 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       const gstAmount = total * gstRate / 100;
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
         quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, terms || null, delivery_date || null,
-        company_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null);
+        company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null);
       ids.push(info.lastInsertRowid);
     }
   })();
@@ -701,8 +708,8 @@ router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.m
   res.json({ ok: true });
 });
 
-const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'terms', 'delivery_date', 'company_address_id'];
-const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Our address' };
+const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'terms', 'delivery_date', 'company_address_id', 'company_ship_address_id'];
+const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Bill-To address', company_ship_address_id: 'Ship-To address' };
 function poAuditLog(userId, action, poId, details) {
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(userId, action, 'purchase_order', poId, details || null);
@@ -723,7 +730,11 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   }
   if (req.body.company_address_id) {
     const addr = db.prepare('SELECT id FROM company_addresses WHERE id = ?').get(req.body.company_address_id);
-    if (!addr) return res.status(400).json({ error: 'That company address no longer exists - refresh the page and pick one again.' });
+    if (!addr) return res.status(400).json({ error: 'That Bill-To address no longer exists - refresh the page and pick one again.' });
+  }
+  if (req.body.company_ship_address_id) {
+    const addr = db.prepare('SELECT id FROM company_addresses WHERE id = ?').get(req.body.company_ship_address_id);
+    if (!addr) return res.status(400).json({ error: 'That Ship-To address no longer exists - refresh the page and pick one again.' });
   }
   const quantity = req.body.quantity !== undefined ? Number(req.body.quantity) : existing.quantity;
   const rate = req.body.rate !== undefined ? Number(req.body.rate) : existing.rate;
@@ -742,7 +753,7 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   });
 
   db.prepare(`
-    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, terms=?, delivery_date=?, company_address_id=?
+    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, terms=?, delivery_date=?, company_address_id=?, company_ship_address_id=?
     WHERE id=?
   `).run(
     req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
@@ -753,17 +764,20 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     req.body.terms !== undefined ? (req.body.terms || null) : existing.terms,
     req.body.delivery_date !== undefined ? (req.body.delivery_date || null) : existing.delivery_date,
     req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
+    req.body.company_ship_address_id !== undefined ? (req.body.company_ship_address_id || null) : existing.company_ship_address_id,
     existing.id
   );
-  // Vendor and Our Address are header-level fields shared by every line of
-  // a multi-item PO (see POST /orders' `lines` support) - propagate a
-  // change to them onto every sibling row sharing this PO's po_no so they
-  // can't drift out of sync (item/qty/rate/hsn/gst/terms/delivery_date stay
-  // genuinely per-line, so they're deliberately NOT propagated here).
-  if (req.body.vendor_id !== undefined || req.body.company_address_id !== undefined) {
-    db.prepare(`UPDATE purchase_orders SET vendor_id=?, company_address_id=? WHERE po_no = ? AND id != ?`).run(
+  // Vendor and Bill-To/Ship-To address are header-level fields shared by
+  // every line of a multi-item PO (see POST /orders' `lines` support) -
+  // propagate a change to them onto every sibling row sharing this PO's
+  // po_no so they can't drift out of sync (item/qty/rate/hsn/gst/terms/
+  // delivery_date stay genuinely per-line, so they're deliberately NOT
+  // propagated here).
+  if (req.body.vendor_id !== undefined || req.body.company_address_id !== undefined || req.body.company_ship_address_id !== undefined) {
+    db.prepare(`UPDATE purchase_orders SET vendor_id=?, company_address_id=?, company_ship_address_id=? WHERE po_no = ? AND id != ?`).run(
       req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
       req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
+      req.body.company_ship_address_id !== undefined ? (req.body.company_ship_address_id || null) : existing.company_ship_address_id,
       existing.po_no, existing.id
     );
   }
@@ -835,12 +849,12 @@ router.get('/orders/:id/audit-log', (req, res) => {
 // received") so it behaves identically to a PO raised natively - GRN
 // receive, edit, cancel, PDF/Word/email all just work on it afterwards.
 const PO_IMPORT_STATUSES = ['Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled'];
-const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date', 'bill_ship_address'];
+const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date', 'bill_address', 'ship_address'];
 router.get('/orders/import-template', requirePermission('purchase_order.manage'), (req, res) => {
   const exampleRow = {
     po_no: 'PO-LEGACY-1024', vendor_name: 'Acme Steel Traders', item_code_or_barcode: 'ITM-1001', quantity: 50, rate: 250,
     hsn_code: '7208', gst_rate: 18, delivery_date: '2025-06-30', terms: 'Standard terms apply', status: 'Open', po_date: '2025-04-01',
-    bill_ship_address: 'Head Office',
+    bill_address: 'Head Office', ship_address: 'Factory - Faridabad',
   };
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet([exampleRow], { header: PO_IMPORT_COLUMNS });
@@ -851,7 +865,7 @@ router.get('/orders/import-template', requirePermission('purchase_order.manage')
     ['item_code_or_barcode can be either the item\'s Item Code or its printed barcode number.'],
     ['status is optional (defaults to Open) - one of: ' + PO_IMPORT_STATUSES.join(', ') + '.'],
     ['po_date is optional (defaults to today) - the order\'s original date, so imported history sorts correctly.'],
-    ['bill_ship_address is optional - matched by its Label in Company Settings > Bill-To/Ship-To Addresses (case-insensitive); leave blank to import without one.'],
+    ['bill_address and ship_address are both optional and independent - each matched by its Label in Company Settings > Bill-To/Ship-To Addresses (case-insensitive); leave either blank to import without it.'],
   ]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -873,8 +887,8 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
   const insertVendor = db.prepare(`INSERT INTO vendors (name, legal_name, status) VALUES (?, ?, 'Active')`);
   const insertPO = db.prepare(`
     INSERT INTO purchase_orders (po_no, vendor_id, item_id, quantity, rate, total_value, status, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at, company_address_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at, company_address_id, company_ship_address_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   let inserted = 0; const errors = []; const warnings = [];
   rows.forEach((row, i) => {
@@ -898,12 +912,19 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
       const info = insertVendor.run(vendorName, vendorName);
       vendor = { id: info.lastInsertRowid };
     }
-    const addressLabel = String(row.bill_ship_address || '').trim();
-    let addressId = null;
-    if (addressLabel) {
-      const addr = findAddressByLabel.get(addressLabel);
-      if (!addr) { warnings.push(`Row ${rowNum}: no Bill-To/Ship-To address matches "${addressLabel}" - imported without one.`); }
-      else addressId = addr.id;
+    const billAddressLabel = String(row.bill_address || '').trim();
+    let billAddressId = null;
+    if (billAddressLabel) {
+      const addr = findAddressByLabel.get(billAddressLabel);
+      if (!addr) { warnings.push(`Row ${rowNum}: no Bill-To/Ship-To address matches "${billAddressLabel}" (bill_address) - imported without one.`); }
+      else billAddressId = addr.id;
+    }
+    const shipAddressLabel = String(row.ship_address || '').trim();
+    let shipAddressId = null;
+    if (shipAddressLabel) {
+      const addr = findAddressByLabel.get(shipAddressLabel);
+      if (!addr) { warnings.push(`Row ${rowNum}: no Bill-To/Ship-To address matches "${shipAddressLabel}" (ship_address) - imported without one.`); }
+      else shipAddressId = addr.id;
     }
     const gstRate = row.gst_rate !== '' && row.gst_rate !== undefined ? Number(row.gst_rate) : 18;
     const total = qty * rate;
@@ -915,7 +936,7 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
     const createdAt = poDate ? poDate + ' 00:00:00' : new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     insertPO.run(poNo, vendor.id, item.id, qty, rate, total, status, req.user.id,
       String(row.hsn_code || '') || null, gstRate, gstAmount, String(row.terms || '') || null,
-      String(row.delivery_date || '') || null, createdAt, addressId);
+      String(row.delivery_date || '') || null, createdAt, billAddressId, shipAddressId);
     inserted++;
   });
   res.json({ inserted, skipped: errors.length, errors, warnings });
@@ -1272,10 +1293,13 @@ function loadPoBundle(id) {
   const companyAddress = po.company_address_id
     ? db.prepare('SELECT * FROM company_addresses WHERE id = ?').get(po.company_address_id)
     : null;
+  const companyShipAddress = po.company_ship_address_id
+    ? db.prepare('SELECT * FROM company_addresses WHERE id = ?').get(po.company_ship_address_id)
+    : null;
   const lines = db.prepare(`
     SELECT po.*, i.name as item_name FROM purchase_orders po LEFT JOIN items i ON i.id = po.item_id WHERE po.po_no = ? ORDER BY po.id
   `).all(po.po_no);
-  return { po, vendor, companyAddress, lines };
+  return { po, vendor, companyAddress, companyShipAddress, lines };
 }
 
 // Shared gate for PDF/Word download and emailing the vendor: a PO still
@@ -1298,7 +1322,7 @@ router.get('/orders/:id/pdf', async (req, res) => {
   const blocked = poSendBlocked(bundle.po);
   if (blocked) return res.status(400).json({ error: blocked });
   try {
-    const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
+    const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1321,7 +1345,7 @@ router.get('/orders/:id/docx', async (req, res) => {
   const blocked = poSendBlocked(bundle.po);
   if (blocked) return res.status(400).json({ error: blocked });
   try {
-    const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress);
+    const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1342,14 +1366,14 @@ router.get('/orders/:id/docx', async (req, res) => {
 router.post('/orders/:id/email', requirePermission('purchase_order.manage'), async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
-  const { po, vendor, companyAddress, lines } = bundle;
+  const { po, vendor, companyAddress, companyShipAddress, lines } = bundle;
   const blocked = poSendBlocked(po);
   if (blocked) return res.status(400).json({ error: blocked });
   const toAddress = (vendor && (vendor.po_email || vendor.email)) || null;
   if (!toAddress) return res.status(400).json({ error: 'This vendor has no PO/document delivery email on file - add one under Vendor Master.' });
   let gen;
   try {
-    gen = await generatePoPdf(po, lines, vendor, getCompanySettings(), companyAddress);
+    gen = await generatePoPdf(po, lines, vendor, getCompanySettings(), companyAddress, companyShipAddress);
     const pdfBuffer = fs.readFileSync(gen.outPath);
     const attachmentName = buildDownloadFilename({
       docType: 'Purchase_Order',
