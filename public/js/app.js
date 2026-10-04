@@ -358,6 +358,10 @@ const NAV = [
     { id: 'advances', label: 'Salary Advances' },
     { id: 'payroll', label: 'Payroll' },
     { id: 'leave-balances', label: 'Leave Balances Master' },
+    { id: 'referral-incentives', label: 'Referral Incentives' },
+    { id: 'salary-hikes', label: 'Salary Hike History' },
+    { id: 'salary-hike-cycles', label: 'Salary Hike Cycles' },
+    { id: 'salary-report', label: 'Salary Report' },
   ]},
   { group: 'Finance', items: [
     { id: 'expenses', label: 'Expense Vouchers' },
@@ -1673,6 +1677,33 @@ async function renderApprovalDrilldown(key) {
         <p style="font-size:13px;margin:8px 0 0;text-align:right;">
           <b>Taxable:</b> ₹${fmt(inv.taxable_value)} &nbsp; <b>GST:</b> ₹${fmt(inv.cgst + inv.sgst + inv.igst)} &nbsp; <b>Total:</b> ₹${fmt(inv.total_value)}<br>
           ${inv.tds_amount > 0 ? `<b>TDS (${inv.tds_rate}%):</b> ₹${fmt(inv.tds_amount)} &nbsp; ` : ''}<b>Net Payable:</b> ₹${fmt(inv.net_payable)}
+        </p>
+      `;
+    } else if (r.entity_type === 'referral_incentive') {
+      const [list, hist] = await Promise.all([api('/hr/referral-incentives'), api(`/approvals/${r.id}/history`)]);
+      const ri = list.find(x => x.id === r.entity_id);
+      history = hist;
+      extraHtml = ri ? `
+        <h5 style="margin:8px 0 4px;">Referral Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>Referred Employee:</b> ${esc(ri.employee_name)} (${esc(ri.employee_status)}) &nbsp; <b>Referred By:</b> ${esc(ri.referred_by_name)}<br>
+          <b>Incentive Amount:</b> ₹${fmt(ri.incentive_amount)} &nbsp; <b>Probation Ended:</b> ${ri.probation_end_date||'-'}
+        </p>
+      ` : '<p class="muted">Referral incentive record not found.</p>';
+    } else if (r.entity_type === 'salary_hike_cycle') {
+      const [bundle, hist] = await Promise.all([api(`/hr/salary-hike-cycles/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      const { cycle, items } = bundle;
+      history = hist;
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">Cycle Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;"><b>${esc(cycle.cycle_name)}</b> &nbsp; <b>Effective Year:</b> ${cycle.effective_year||'-'}</p>
+        <h5 style="margin:8px 0 4px;">Proposed Hikes (${items.length})</h5>
+        ${tableHTML(['Employee', 'Department', 'Current (₹)', 'Hike', 'Proposed (₹)', 'Delta (₹)'], items, i => `
+          <tr><td>${esc(i.employee_name)}</td><td>${esc(i.department_name)||'-'}</td><td>₹${fmt(i.current_salary)}</td>
+          <td>${i.hike_type === 'Fixed' ? '₹' + fmt(i.hike_value) : i.hike_value + '%'}</td><td>₹${fmt(i.proposed_salary)}</td><td>₹${fmt(i.proposed_salary - i.current_salary)}</td></tr>`)}
+        <p style="font-size:13px;margin:8px 0 0;text-align:right;">
+          <b>Total Current:</b> ₹${fmt(items.reduce((s,i)=>s+i.current_salary,0))} &nbsp;
+          <b>Total Proposed:</b> ₹${fmt(items.reduce((s,i)=>s+i.proposed_salary,0))}
         </p>
       `;
     }
@@ -6146,6 +6177,11 @@ PAGES['service-reports-dashboard'] = async (el) => {
 };
 
 // ---- Employees ----
+const EXIT_REASONS = [
+  'Resignation - Better Opportunity', 'Resignation - Personal Reasons', 'Resignation - Relocation', 'Resignation - Higher Studies',
+  'Termination - Performance', 'Termination - Misconduct', 'Termination - Redundancy', 'Retirement', 'End of Contract', 'Other',
+];
+const EXIT_RECOMMENDATIONS = ['Eligible for Rehire', 'Not Eligible for Rehire', 'Eligible with Conditions'];
 const EMP_LIST_COLUMNS = [
   { label: 'Code', field: 'employee_code' },
   { label: 'Name', field: 'full_name' },
@@ -6182,6 +6218,12 @@ PAGES.employees = async (el) => {
         <div><label>Emergency Contact Name</label><input id="em-ec-name"></div>
         <div><label>Emergency Contact Phone</label><input id="em-ec-phone"></div>
         <div><label>Address</label><input id="em-address"></div>
+      </div>
+      <h4 style="margin:14px 0 6px;">Referral</h4>
+      <div class="form-grid">
+        <div><label>Referred By (if a referral hire)</label><select id="em-referred-by"><option value="">- Not a referral -</option>${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}${e.employee_code ? ' (' + esc(e.employee_code) + ')' : ''}</option>`).join('')}</select></div>
+        <div><label>Referral Incentive Amount (₹)</label><input id="em-referral-amount" type="number" placeholder="0"></div>
+        <div><label>Probation End Date</label><input id="em-probation-end" type="date"></div>
       </div>
       <h4 style="margin:14px 0 6px;">Bank Details</h4>
       <div class="form-grid">
@@ -6225,6 +6267,8 @@ window.addEmployee = async () => {
       bank_name: val('em-bank-name'), account_number: val('em-bank-acct'), ifsc_code: val('em-bank-ifsc'),
       aadhaar_number: val('em-aadhaar'), passport_number: val('em-passport'), visa_availability: val('em-visa'),
       driving_license_number: val('em-dl'),
+      referred_by_employee_id: val('em-referred-by') || null, referral_incentive_amount: val('em-referral-amount') || 0,
+      probation_end_date: val('em-probation-end') || null,
     })});
     navigate('employees');
   } catch (e) { alert(e.message); }
@@ -6255,6 +6299,14 @@ window.openEditEmployee = (id) => {
       <div><label>Address</label><input id="eme-address" value="${esc(e.address)||''}"></div>
       <div><label>Status</label><select id="eme-status"><option value="active" ${e.status==='active'?'selected':''}>Active</option><option value="resigned" ${e.status==='resigned'?'selected':''}>Resigned</option><option value="terminated" ${e.status==='terminated'?'selected':''}>Terminated</option></select></div>
       <div><label>Exit Date (if resigned/terminated)</label><input id="eme-exit" type="date" value="${e.exit_date||''}"></div>
+      <div><label>Exit Reason</label><select id="eme-exit-reason"><option value="">-</option>${EXIT_REASONS.map(r => `<option ${r===e.exit_reason?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div><label>Exit Recommendation</label><select id="eme-exit-rec"><option value="">-</option>${EXIT_RECOMMENDATIONS.map(r => `<option ${r===e.exit_recommendation?'selected':''}>${r}</option>`).join('')}</select></div>
+    </div>
+    <h4 style="margin:14px 0 6px;">Referral</h4>
+    <div class="form-grid">
+      <div><label>Referred By (if a referral hire)</label><select id="eme-referred-by"><option value="">- Not a referral -</option>${(window.__EMP_CACHE||[]).filter(x => x.id !== e.id).map(x => `<option value="${x.id}" ${x.id===e.referred_by_employee_id?'selected':''}>${esc(x.full_name)}${x.employee_code ? ' (' + esc(x.employee_code) + ')' : ''}</option>`).join('')}</select></div>
+      <div><label>Referral Incentive Amount (₹)</label><input id="eme-referral-amount" type="number" value="${e.referral_incentive_amount||0}"></div>
+      <div><label>Probation End Date</label><input id="eme-probation-end" type="date" value="${e.probation_end_date||''}"></div>
     </div>
     <h4 style="margin:14px 0 6px;">Bank Details</h4>
     <div class="form-grid">
@@ -6283,13 +6335,194 @@ window.saveEditEmployee = async (id) => {
       monthly_salary: val('eme-salary'), pan_number: val('eme-pan'), blood_group: val('eme-blood'),
       emergency_contact_name: val('eme-ec-name'), emergency_contact_phone: val('eme-ec-phone'), address: val('eme-address'),
       status: val('eme-status'), exit_date: val('eme-exit') || null,
+      exit_reason: val('eme-exit-reason') || null, exit_recommendation: val('eme-exit-rec') || null,
       bank_name: val('eme-bank-name'), account_number: val('eme-bank-acct'), ifsc_code: val('eme-bank-ifsc'),
       aadhaar_number: val('eme-aadhaar'), passport_number: val('eme-passport'), visa_availability: val('eme-visa'),
       driving_license_number: val('eme-dl'),
+      referred_by_employee_id: val('eme-referred-by') || null, referral_incentive_amount: val('eme-referral-amount') || 0,
+      probation_end_date: val('eme-probation-end') || null,
     })});
     navigate('employees');
   } catch (e) { alert(e.message); }
 };
+
+// ---- Referral Incentives ----
+PAGES['referral-incentives'] = async (el) => {
+  const list = await api('/hr/referral-incentives');
+  const rows = r => `<tr>
+    <td>${esc(r.employee_name)}</td><td>${esc(r.referred_by_name)}</td><td>₹${fmt(r.incentive_amount)}</td>
+    <td>${r.probation_end_date||'-'}</td><td>${badge(r.status)}</td><td>${r.payment_reference ? esc(r.payment_reference) + (r.paid_date ? ' (' + r.paid_date + ')' : '') : '-'}</td>
+    <td>
+      ${r.status === 'Eligible' ? `<button class="btn small" type="button" onclick="submitReferralIncentive(${r.id})">Submit for Approval</button>` : ''}
+      ${r.status === 'Approved' ? `<button class="btn small" type="button" onclick="markReferralIncentivePaid(${r.id})">Mark Paid</button>` : ''}
+    </td></tr>`;
+  el.innerHTML = `
+    <div class="panel"><h3>Referral Incentives</h3>
+      <p class="muted">Created automatically when an employee is added with a referrer and incentive amount (Add Employee's Referral section). Becomes Eligible once the referred employee's probation period passes - forfeited automatically if they exit before then.</p>
+      ${tableHTML(['Referred Employee', 'Referred By', 'Amount', 'Probation Ends', 'Status', 'Payment Ref', ''], list, rows)}
+    </div>`;
+};
+window.submitReferralIncentive = async (id) => {
+  try { await api(`/hr/referral-incentives/${id}/submit-for-approval`, { method: 'POST', body: '{}' }); navigate('referral-incentives'); }
+  catch (e) { alert(e.message); }
+};
+window.markReferralIncentivePaid = async (id) => {
+  const ref = prompt('Payment reference (cheque no / UTR / mode - optional):') || '';
+  try { await api(`/hr/referral-incentives/${id}/mark-paid`, { method: 'POST', body: JSON.stringify({ payment_reference: ref }) }); navigate('referral-incentives'); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- Salary Hike History ----
+PAGES['salary-hikes'] = async (el) => {
+  const emps = await api('/hr/employees');
+  const hikes = await api('/hr/salary-hikes');
+  el.innerHTML = `
+    <div class="panel"><h3>Backfill Historical Hikes</h3>
+      <p class="muted">For migrating past years' hike records - does NOT change an employee's current salary (use Edit Employee for that).</p>
+      <button class="btn outline" type="button" onclick="downloadTemplateFile('/hr/salary-hikes/template', 'salary_hikes_upload_template.xlsx')">Download Template</button>
+      ${bulkUploadPanelHTML('sh-upload-file')}
+      <button class="btn" onclick="uploadTemplateFile('/hr/salary-hikes/bulk-upload', 'sh-upload-file', 'sh-upload-result', () => navigate('salary-hikes'))" style="margin-top:6px;">Upload Filled Template</button>
+      <div id="sh-upload-result" style="margin-top:10px;"></div>
+    </div>
+    ${collapsiblePanel('salary-hike-history', `Hike History (${hikes.length})`, `
+      ${tableHTML(['Employee', 'Previous (₹)', 'Hike', 'New (₹)', 'Year', 'Effective Date', 'Source'], hikes, h => `
+        <tr><td>${esc(h.employee_name)}</td><td>₹${fmt(h.previous_salary)}</td>
+        <td>${h.hike_type === 'Fixed' ? '₹' + fmt(h.hike_value) : h.hike_value + '%'}</td>
+        <td>₹${fmt(h.new_salary)}</td><td>${h.effective_year||'-'}</td><td>${h.effective_date||'-'}</td><td>${esc(h.source)}</td></tr>`)}
+    `)}`;
+};
+
+// ---- Salary Hike Cycles ----
+PAGES['salary-hike-cycles'] = async (el) => {
+  const cycles = await api('/hr/salary-hike-cycles');
+  el.innerHTML = `
+    <div class="panel"><h3>New Hike Cycle</h3>
+      <div class="form-grid">
+        <div><label>Cycle Name</label><input id="shc-name" placeholder="e.g. FY2026-27 Annual Hike"></div>
+        <div><label>Effective Year</label><input id="shc-year" type="number" value="${new Date().getFullYear()}"></div>
+      </div>
+      <button class="btn" onclick="createHikeCycle()">Create Draft</button>
+    </div>
+    ${collapsiblePanel('hike-cycles-list', `Hike Cycles (${cycles.length})`, `
+      ${tableHTML(['Cycle', 'Year', 'Employees', 'Total Increase (₹)', 'Status', ''], cycles, c => `
+        <tr><td>${esc(c.cycle_name)}</td><td>${c.effective_year||'-'}</td><td>${c.item_count}</td><td>₹${fmt(c.total_increase)}</td><td>${badge(c.status)}</td>
+        <td><button class="btn small outline" type="button" onclick="openHikeCycle(${c.id})">Open</button></td></tr>`)}
+    `)}
+    <div class="panel" id="shc-detail-panel" style="display:none;"></div>`;
+};
+window.createHikeCycle = async () => {
+  if (!val('shc-name').trim()) { alert('Cycle name is required.'); return; }
+  try {
+    const r = await api('/hr/salary-hike-cycles', { method: 'POST', body: JSON.stringify({ cycle_name: val('shc-name'), effective_year: val('shc-year') }) });
+    navigate('salary-hike-cycles');
+    setTimeout(() => openHikeCycle(r.id), 300);
+  } catch (e) { alert(e.message); }
+};
+window.openHikeCycle = async (id) => {
+  const [bundle, depts] = await Promise.all([api(`/hr/salary-hike-cycles/${id}`), api('/masters/departments')]);
+  const { cycle, items } = bundle;
+  const panel = document.getElementById('shc-detail-panel');
+  const totalCurrent = items.reduce((s, i) => s + i.current_salary, 0);
+  const totalProposed = items.reduce((s, i) => s + i.proposed_salary, 0);
+  const editable = cycle.status === 'Draft';
+  panel.innerHTML = `
+    <h3>${esc(cycle.cycle_name)} <span class="muted">(${cycle.effective_year||'-'})</span> ${badge(cycle.status)}</h3>
+    ${editable ? `
+      <h4 style="margin:10px 0 6px;">Bulk-Apply a Hike</h4>
+      <div class="form-grid">
+        <div><label>Department (optional - blank applies to every active employee)</label><select id="shc-bulk-dept"><option value="">- All departments -</option>${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+        <div><label>Hike Type</label><select id="shc-bulk-type"><option value="Percent">Percent</option><option value="Fixed">Fixed (₹)</option></select></div>
+        <div><label>Hike Value</label><input id="shc-bulk-value" type="number" placeholder="e.g. 10"></div>
+      </div>
+      <button class="btn small" type="button" onclick="bulkApplyHike(${cycle.id})">Apply</button>
+      <h4 style="margin:14px 0 6px;">Add / Update One Employee</h4>
+      <div class="form-grid">
+        <div><label>Employee</label><select id="shc-item-emp">${(window.__EMP_CACHE||[]).map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select></div>
+        <div><label>Hike Type</label><select id="shc-item-type"><option value="Percent">Percent</option><option value="Fixed">Fixed (₹)</option></select></div>
+        <div><label>Hike Value</label><input id="shc-item-value" type="number"></div>
+      </div>
+      <button class="btn small outline" type="button" onclick="addHikeItem(${cycle.id})">Add/Update</button>
+    ` : ''}
+    <h4 style="margin:14px 0 6px;">Proposed Hikes (${items.length})</h4>
+    ${tableHTML(['Employee', 'Department', 'Current (₹)', 'Hike', 'Proposed (₹)', 'Delta (₹)', editable ? '' : null].filter(x => x !== null), items, i => `
+      <tr><td>${esc(i.employee_name)}</td><td>${esc(i.department_name)||'-'}</td><td>₹${fmt(i.current_salary)}</td>
+      <td>${i.hike_type === 'Fixed' ? '₹' + fmt(i.hike_value) : i.hike_value + '%'}</td><td>₹${fmt(i.proposed_salary)}</td><td>₹${fmt(i.proposed_salary - i.current_salary)}</td>
+      ${editable ? `<td><button class="btn small outline" type="button" onclick="removeHikeItem(${cycle.id},${i.id})">Remove</button></td>` : ''}</tr>`)}
+    <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Total Current:</b> ₹${fmt(totalCurrent)} &nbsp; <b>Total Proposed:</b> ₹${fmt(totalProposed)} &nbsp; <b>Total Increase:</b> ₹${fmt(totalProposed - totalCurrent)}</p>
+    ${editable ? `<button class="btn" onclick="submitHikeCycle(${cycle.id})" style="margin-top:10px;">Submit for Approval</button>` : ''}
+    ${cycle.status === 'Rejected' ? `<button class="btn" onclick="reopenHikeCycle(${cycle.id})" style="margin-top:10px;">Reopen as Draft</button>` : ''}
+  `;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (!window.__EMP_CACHE) window.__EMP_CACHE = await api('/hr/employees');
+};
+window.bulkApplyHike = async (cycleId) => {
+  try {
+    await api(`/hr/salary-hike-cycles/${cycleId}/bulk-apply`, { method: 'POST', body: JSON.stringify({
+      department_id: val('shc-bulk-dept') || null, hike_type: val('shc-bulk-type'), hike_value: val('shc-bulk-value'),
+    })});
+    openHikeCycle(cycleId);
+  } catch (e) { alert(e.message); }
+};
+window.addHikeItem = async (cycleId) => {
+  try {
+    await api(`/hr/salary-hike-cycles/${cycleId}/items`, { method: 'POST', body: JSON.stringify({
+      employee_id: val('shc-item-emp'), hike_type: val('shc-item-type'), hike_value: val('shc-item-value'),
+    })});
+    openHikeCycle(cycleId);
+  } catch (e) { alert(e.message); }
+};
+window.removeHikeItem = async (cycleId, itemId) => {
+  try { await api(`/hr/salary-hike-cycles/${cycleId}/items/${itemId}`, { method: 'DELETE' }); openHikeCycle(cycleId); }
+  catch (e) { alert(e.message); }
+};
+window.submitHikeCycle = async (cycleId) => {
+  if (!confirm('Submit this cycle for approval? It will no longer be editable until a decision is made.')) return;
+  try {
+    await api(`/hr/salary-hike-cycles/${cycleId}/submit-for-approval`, { method: 'POST', body: '{}' });
+    alert('Submitted for approval - HR HOD, then Management.');
+    navigate('salary-hike-cycles');
+  } catch (e) { alert(e.message); }
+};
+window.reopenHikeCycle = async (cycleId) => {
+  try { await api(`/hr/salary-hike-cycles/${cycleId}/reopen`, { method: 'POST', body: '{}' }); openHikeCycle(cycleId); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- Salary Report (department-wise / org-wide, oversight-scoped) ----
+PAGES['salary-report'] = async (el) => {
+  const [report, cycles] = await Promise.all([api('/hr/salary-report'), api('/hr/salary-hike-cycles').catch(() => [])]);
+  const appliedCycles = cycles.filter(c => c.status === 'Applied' || c.status === 'PendingApproval' || c.status === 'Approved');
+  el.innerHTML = `
+    <div class="panel"><h3>Salary Report</h3>
+      <div class="form-grid">
+        <div><label>Compare Against Cycle (optional)</label><select id="sr-cycle" onchange="loadSalaryReport()"><option value="">- Current salaries only -</option>${appliedCycles.map(c => `<option value="${c.id}">${esc(c.cycle_name)}</option>`).join('')}</select></div>
+      </div>
+      <div id="sr-body"></div>
+    </div>`;
+  renderSalaryReport(report);
+};
+window.loadSalaryReport = async () => {
+  const cycleId = val('sr-cycle');
+  const report = await api('/hr/salary-report' + (cycleId ? `?cycle_id=${cycleId}` : ''));
+  renderSalaryReport(report);
+};
+function renderSalaryReport(report) {
+  const body = document.getElementById('sr-body');
+  const hasProposed = report.rows.some(r => r.proposed_salary != null);
+  body.innerHTML = `
+    <h4 style="margin:10px 0 6px;">By Department</h4>
+    ${tableHTML(['Department', 'Headcount', 'Total Current (₹)', 'Min (₹)', 'Max (₹)'].concat(hasProposed ? ['Total Proposed (₹)', 'Min Proposed (₹)', 'Max Proposed (₹)'] : []), report.departments, d => `
+      <tr><td>${esc(d.department_name)}</td><td>${d.headcount}</td><td>₹${fmt(d.total_current)}</td><td>₹${fmt(d.min_current)}</td><td>₹${fmt(d.max_current)}</td>
+      ${hasProposed ? `<td>${d.total_proposed!=null?'₹'+fmt(d.total_proposed):'-'}</td><td>${d.min_proposed!=null?'₹'+fmt(d.min_proposed):'-'}</td><td>${d.max_proposed!=null?'₹'+fmt(d.max_proposed):'-'}</td>` : ''}</tr>`)}
+    <p style="font-size:13px;margin:10px 0;"><b>Org-wide:</b> ${report.org_wide.headcount} employees, total ₹${fmt(report.org_wide.total_current)}, min ₹${fmt(report.org_wide.min_current)}, max ₹${fmt(report.org_wide.max_current)}
+      ${hasProposed && report.org_wide.total_proposed != null ? ` &rarr; proposed total ₹${fmt(report.org_wide.total_proposed)}, min ₹${fmt(report.org_wide.min_proposed)}, max ₹${fmt(report.org_wide.max_proposed)}` : ''}</p>
+    ${collapsiblePanel('salary-report-detail', `Employee Detail (${report.rows.length})`, `
+      ${tableHTML(['Employee', 'Department', 'Current (₹)'].concat(hasProposed ? ['Proposed (₹)'] : []), report.rows, r => `
+        <tr><td>${esc(r.full_name)}</td><td>${esc(r.department_name)||'-'}</td><td>₹${fmt(r.current_salary)}</td>
+        ${hasProposed ? `<td>${r.proposed_salary!=null?'₹'+fmt(r.proposed_salary):'-'}</td>` : ''}</tr>`)}
+    `)}`;
+}
 
 // ---- Attendance ----
 PAGES.attendance = async (el) => {
