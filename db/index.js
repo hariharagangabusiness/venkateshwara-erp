@@ -1805,8 +1805,32 @@ function bootstrapSalesFulfillmentApprovals() {
   } catch (e) { console.error('[db] Sales fulfillment approval bootstrap failed:', e.message); }
 }
 
+// One-time (but safe to re-run every boot) data repair: PUT /employees/:id
+// used to write `monthly_salary`/`referral_incentive_amount` straight
+// through from the request body without the same `|| 0` fallback
+// POST /employees already applied, so saving the Edit Employee form with
+// either field left blank (e.g. opening Edit on a row whose value was NULL,
+// which a `type="number"` input renders as empty) sent an empty string -
+// not a well-formed numeric literal, so SQLite's REAL-affinity conversion
+// left it stored as literal TEXT ''. A single such row then poisoned any
+// JS `reduce((s, v) => s + v, 0)` over the column (e.g. the Salary Report's
+// department totals - `number + '' ` silently becomes string concatenation,
+// not addition, visible in the UI as an absurd digit-string total).
+// Both write sites are now fixed to never write that, but any row already
+// corrupted on an existing database needs fixing too - `typeof(col) = 'text'`
+// only ever matches a non-numeric value like this (a real number stored in
+// a REAL-affinity column always reads back as 'integer'/'real'), so this
+// can't touch a legitimate figure. Reset to 0, the same fallback the write
+// paths themselves use for "no value given".
+function repairCorruptedEmployeeNumericFields() {
+  try {
+    raw.exec(`UPDATE employees SET monthly_salary = 0 WHERE typeof(monthly_salary) IN ('text', 'blob')`);
+    raw.exec(`UPDATE employees SET referral_incentive_amount = 0 WHERE typeof(referral_incentive_amount) IN ('text', 'blob')`);
+  } catch (e) { console.error('[db] employee numeric-field repair failed:', e.message); }
+}
+
 module.exports = {
   db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
-  bootstrapSalesFulfillmentApprovals,
+  bootstrapSalesFulfillmentApprovals, repairCorruptedEmployeeNumericFields,
 };
