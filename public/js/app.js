@@ -4384,11 +4384,19 @@ window.uploadVendorTemplate = () => uploadTemplateFile('/masters/vendors/bulk-up
 // ---- Purchase Requests ----
 let PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
 PAGES['purchase-requests'] = async (el) => {
-  const reqs = await api('/purchase/requests');
-  const items = await api('/masters/items');
-  const projects = await api('/projects');
-  const threshold = (await api('/settings/purchase-quote-threshold')).quote_threshold;
-  const rfqInbox = await api('/purchase/rfq-inbox').catch(() => []);
+  // All 6 of these are independent reads - fired together (rather than one
+  // `await` after another) so the page's total load time is the slowest of
+  // them, not their sum. Panel keys are static, so fetchPanelOrder's layout
+  // read doesn't need to wait for the panels themselves to be built.
+  const [reqs, items, projects, thresholdSetting, rfqInbox, prOrder] = await Promise.all([
+    api('/purchase/requests'),
+    api('/masters/items'),
+    api('/projects'),
+    api('/settings/purchase-quote-threshold'),
+    api('/purchase/rfq-inbox').catch(() => []),
+    fetchPanelOrder('purchase-requests', ['rfq-inbox', 'new-request', 'list']),
+  ]);
+  const threshold = thresholdSetting.quote_threshold;
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
   window.__RFQ_INBOX = rfqInbox;
@@ -4433,7 +4441,6 @@ PAGES['purchase-requests'] = async (el) => {
     `),
   };
   const prLabels = { 'rfq-inbox': 'Vendor Quote Responses (Email)', 'new-request': 'New Purchase Request', 'list': 'Purchase Requests List' };
-  const prOrder = await fetchPanelOrder('purchase-requests', Object.keys(prPanels));
   el.innerHTML = `
     ${reorderablePanelsHTML('purchase-requests', prPanels, prOrder, prLabels)}
     <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
@@ -4905,24 +4912,38 @@ window.saveEditPR = async (id) => {
 // ---- Purchase Orders ----
 let PO_LINES = [];
 PAGES['purchase-orders'] = async (el) => {
-  const orders = await api('/purchase/orders');
+  // All 7 of these are independent reads - fired together (rather than one
+  // `await` after another) so the page's total load time is the slowest of
+  // them, not their sum. Panel keys are static, so fetchPanelOrder's layout
+  // read doesn't need to wait for the panels themselves to be built.
+  const [orders, vendorsRaw, items, prsRaw, companyAddresses, purchaseSettings, poOrder] = await Promise.all([
+    api('/purchase/orders'),
+    api('/masters/vendors'),
+    api('/masters/items'),
+    api('/purchase/requests'),
+    api('/settings/company-addresses').catch(() => []),
+    api('/settings/purchase').catch(() => null),
+    fetchPanelOrder('purchase-orders', ['new-po', 'bulk-import', 'list']),
+  ]);
   // Only Active vendors are offered when creating a new PO - Inactive/
   // Blacklisted ones stay visible/editable in Vendor Master (and on POs that
   // already reference them) but drop out of the picker.
-  const vendors = (await api('/masters/vendors')).filter(v => (v.status || 'Active') === 'Active');
-  const items = await api('/masters/items');
-  const prs = (await api('/purchase/requests')).filter(r => r.status === 'Approved');
-  const companyAddresses = await api('/settings/company-addresses').catch(() => []);
-  const paymentTermsOptions = (await api('/settings/purchase').catch(() => null) || {}).payment_terms_options || [];
-  // Set before building the HTML below, not after - renderPORows()/poEditForm()
-  // (called as part of that build, for each row's hidden Edit panel) read
-  // these globals directly, so assigning them afterward left the Edit PO
-  // item/vendor pickers one render behind (empty on the very first visit).
+  const vendors = vendorsRaw.filter(v => (v.status || 'Active') === 'Active');
+  const prs = prsRaw.filter(r => r.status === 'Approved');
+  const paymentTermsOptions = (purchaseSettings || {}).payment_terms_options || [];
+  // Set before building the HTML below, not after - renderPOLines() (called
+  // as part of that build) and the lazily-built per-row Edit/Terms panels
+  // (poEditForm()/poTermsForm(), built on first toggle - see togglePOEdit/
+  // togglePOTerms below) all read these globals directly rather than taking
+  // them as arguments, so assigning them afterward would leave pickers empty.
   window.__PO_PRS = prs;
   window.__PO_VENDORS = vendors;
   window.__PO_ITEMS = items;
   window.__PO_COMPANY_ADDRESSES = companyAddresses;
   window.__PO_PAYMENT_TERMS = paymentTermsOptions;
+  // Flat id->row lookup for the lazy Edit/Terms panels - rows only ever need
+  // their own PO line's data, found by id, not the whole list.
+  window.__PO_ORDERS_CACHE = orders;
   PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
   const poPanels = {
     'new-po': collapsiblePanel('new-purchase-order', 'New Purchase Order', `
@@ -4964,7 +4985,6 @@ PAGES['purchase-orders'] = async (el) => {
     `),
   };
   const poLabels = { 'new-po': 'New Purchase Order', 'bulk-import': 'Bulk Import Open POs', 'list': 'Purchase Orders List' };
-  const poOrder = await fetchPanelOrder('purchase-orders', Object.keys(poPanels));
   el.innerHTML = reorderablePanelsHTML('purchase-orders', poPanels, poOrder, poLabels);
   renderPOLines();
 };
@@ -5018,8 +5038,8 @@ function renderSinglePORow(o) {
     <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button></td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
-    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11">${poTermsForm(o)}</td></tr>
-    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11">${poEditForm(o)}</td></tr>
+    <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
+    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>
     <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`;
 }
 function renderMultiLinePOGroup(lines) {
@@ -5039,7 +5059,7 @@ function renderMultiLinePOGroup(lines) {
       <td>${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
       <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}</td>
     </tr>
-    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11">${poEditForm(o)}</td></tr>`).join('');
+    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
       <td><b>${esc(first.po_no)}</b></td><td>${esc(first.vendor_name)}</td>
@@ -5057,7 +5077,7 @@ function renderMultiLinePOGroup(lines) {
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button></td></tr>
     <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
-    <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11">${poTermsForm(first)}</td></tr>
+    <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${first.id}"></div></td></tr>
     <tr id="po-history-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-history-${first.id}"></div></td></tr>
     ${lineRows}`;
 }
@@ -5097,7 +5117,16 @@ function poEditForm(o) {
 }
 window.togglePOEdit = (id) => {
   const row = document.getElementById(`po-edit-row-${id}`);
-  row.style.display = row.style.display !== 'none' ? 'none' : '';
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  // Built once, on first open, rather than for every row up front - this
+  // form embeds the full vendor list and the full searchable item picker,
+  // which gets expensive multiplied across every PO row on page load.
+  if (!showing && !row.dataset.built) {
+    const o = (window.__PO_ORDERS_CACHE || []).find(x => x.id === id);
+    if (o) document.getElementById(`po-edit-body-${id}`).innerHTML = poEditForm(o);
+    row.dataset.built = '1';
+  }
 };
 window.savePOEdit = async (id) => {
   const errEl = document.getElementById(`po-edit-err-${id}`);
@@ -5311,7 +5340,13 @@ function poTermsForm(o) {
 }
 window.togglePOTerms = (id) => {
   const row = document.getElementById(`po-terms-row-${id}`);
-  row.style.display = row.style.display !== 'none' ? 'none' : '';
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing && !row.dataset.built) {
+    const o = (window.__PO_ORDERS_CACHE || []).find(x => x.id === id);
+    if (o) document.getElementById(`po-terms-body-${id}`).innerHTML = poTermsForm(o);
+    row.dataset.built = '1';
+  }
 };
 window.savePOTerms = async (id) => {
   try {
