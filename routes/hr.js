@@ -126,6 +126,20 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     return res.status(400).json({ error: 'Full Name cannot be blank.' });
   }
   const pick = (key, fallback) => (f[key] !== undefined ? f[key] : fallback);
+  // monthly_salary/referral_incentive_amount are REAL columns - unlike
+  // pick(), a blank field (the form sends "" for an empty number input,
+  // e.g. when the employee's existing value was NULL and nobody filled it
+  // in) falls back to the existing value instead of being written through
+  // as-is. "" isn't a well-formed numeric literal, so SQLite's REAL-affinity
+  // conversion leaves it stored as literal text - which then silently turns
+  // any `reduce((s, v) => s + v, 0)` over the column into string
+  // concatenation the moment it hits that row (see the Salary Report bug
+  // this was found from). Same "blank never overwrites" rule the bulk
+  // uploads already use for exactly this reason.
+  const pickNum = (key, fallback) => {
+    if (f[key] === undefined || String(f[key]).trim() === '') return fallback;
+    return Number(f[key]) || 0;
+  };
   const newStatus = pick('status', existing.status) || 'active';
   db.prepare(`
     UPDATE employees SET employee_code=?, full_name=?, department_id=?, designation=?, date_of_joining=?, phone=?, email=?, address=?,
@@ -138,7 +152,7 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     pick('employee_code', existing.employee_code), pick('full_name', existing.full_name), pick('department_id', existing.department_id),
     pick('designation', existing.designation), pick('date_of_joining', existing.date_of_joining), pick('phone', existing.phone),
     pick('email', existing.email), pick('address', existing.address), pick('bank_account', existing.bank_account),
-    pick('monthly_salary', existing.monthly_salary), newStatus,
+    pickNum('monthly_salary', existing.monthly_salary), newStatus,
     f.reporting_manager_id !== undefined ? (f.reporting_manager_id || null) : existing.reporting_manager_id,
     pick('employment_type', existing.employment_type) || 'Full-time', pick('pan_number', existing.pan_number),
     pick('blood_group', existing.blood_group), pick('emergency_contact_name', existing.emergency_contact_name),
@@ -147,7 +161,7 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     pick('aadhaar_number', existing.aadhaar_number), pick('passport_number', existing.passport_number),
     pick('visa_availability', existing.visa_availability), pick('driving_license_number', existing.driving_license_number),
     f.referred_by_employee_id !== undefined ? (f.referred_by_employee_id || null) : existing.referred_by_employee_id,
-    pick('referral_incentive_amount', existing.referral_incentive_amount),
+    pickNum('referral_incentive_amount', existing.referral_incentive_amount),
     pick('probation_end_date', existing.probation_end_date) || null,
     pick('exit_reason', existing.exit_reason) || null, pick('exit_recommendation', existing.exit_recommendation) || null,
     existing.id
@@ -889,7 +903,15 @@ router.get('/salary-report', (req, res) => {
   }
   const rows = employees.map(e => ({
     employee_id: e.id, full_name: e.full_name, department_id: e.department_id, department_name: e.department_name,
-    current_salary: e.monthly_salary, proposed_salary: cycleItemsByEmployee.has(e.id) ? cycleItemsByEmployee.get(e.id) : null,
+    // Number()-coerced, not trusted as-is: a Salary Report bug traced back
+    // to monthly_salary occasionally being written as a literal empty
+    // string (see repairCorruptedEmployeeNumericFields() in db/index.js) -
+    // summarize()'s reduce below silently turns into string concatenation
+    // the moment it hits one non-numeric value, producing an absurd total
+    // for the whole department. Coercing here, once, protects every
+    // consumer (this summary, min/max, the frontend table) at the source.
+    current_salary: Number(e.monthly_salary) || 0,
+    proposed_salary: cycleItemsByEmployee.has(e.id) ? (Number(cycleItemsByEmployee.get(e.id)) || 0) : null,
   }));
   const byDept = new Map();
   rows.forEach(r => {
