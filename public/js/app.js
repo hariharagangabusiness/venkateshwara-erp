@@ -529,12 +529,7 @@ window.closeSidebarDrawer = closeSidebarDrawer;
 
 function renderSidebar() {
   const el = document.getElementById('sidebar');
-  // Swaps to the Company Settings logo once one's on file (BRAND, loaded
-  // pre-login by loadBranding() and reused here) - falls back to the plain
-  // text wordmark otherwise, same as before this existed.
-  el.innerHTML = (BRAND && BRAND.logo_path)
-    ? `<div class="brand"><img src="${esc(BRAND.logo_path)}" alt="${esc(BRAND.display_name || 'Company logo')}"><span>ERP System</span></div>`
-    : `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
+  el.innerHTML = `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
   const groups = [...NAV];
   if (DEPT_OWN_GROUP.items.length) groups.splice(3, 0, DEPT_OWN_GROUP); // right after Projects Management
   // Placed right after Projects Management too (not appended at the very
@@ -10825,10 +10820,11 @@ window.uploadDataImportFile = async () => {
 };
 
 // ===================== Boot on load if token exists =====================
-// loadBranding() runs alongside checkForResetToken() (independent reads) but
-// is awaited before boot() so renderSidebar() never runs with BRAND still
-// unset - it'd otherwise render the text wordmark first and only swap to
-// the logo on the next sidebar re-render (e.g. the first nav-group toggle).
+// loadBranding() runs alongside checkForResetToken() (independent reads) and
+// populates the login screen's logo - the sidebar always shows the plain
+// text wordmark regardless, so there's no ordering dependency against
+// boot()/renderSidebar() here; both are just batched together as the two
+// independent startup reads this page needs before it can show anything.
 Promise.all([checkForResetToken(), loadBranding()]).then(([hadResetToken]) => {
   if (!hadResetToken && TOKEN) boot();
 });
