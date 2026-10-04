@@ -1118,6 +1118,125 @@ const MIGRATIONS = [
     proposed_salary REAL DEFAULT 0,
     notes TEXT
   )`,
+  // ---- Sales fulfillment: Sales Order line items, FG Packing/Dispatch,
+  // Sale Rejection MRN, Sales Credit Notes ----
+  // Sales Orders never had line items before this - a single row with
+  // order_value/description. This table is purely additive: an SO with no
+  // rows here keeps behaving exactly as before (manual order_value), so
+  // nothing existing breaks. A new SO built with lines has its order_value
+  // computed as the sum of its lines instead. item_id is optional - most
+  // lines are custom-fabricated equipment, not a stocked Items Master row
+  // (per the owner's own confirmation: Items Master has no Finished-Goods
+  // concept), but a line selling an actual stocked/catalog item can still
+  // link one.
+  `CREATE TABLE IF NOT EXISTS sales_order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
+    item_id INTEGER REFERENCES items(id),
+    description TEXT NOT NULL,
+    hsn_code TEXT,
+    quantity REAL DEFAULT 1,
+    unit TEXT DEFAULT 'Nos',
+    rate REAL DEFAULT 0,
+    value REAL DEFAULT 0,
+    gst_rate REAL DEFAULT 18,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // A dispatch event against one or more sales_order_items lines - a big
+  // project ships in several of these over time, each covering part of a
+  // line's ordered quantity (see lib/soItems.js's soLineDispatchableQty(),
+  // same "billable qty" discipline Purchase Invoices already use against PO
+  // lines). Starts PendingApproval and only becomes Dispatched once BOTH
+  // Accounts and Management have signed off - see
+  // bootstrapSalesFulfillmentApprovals() below. payment_override_by/_note
+  // record when Management pushed a dispatch through despite an unpaid
+  // Pre-Dispatch proforma invoice (see routes/sales.js's dispatch hard-gate)
+  // - left NULL on the normal, non-overridden path.
+  `CREATE TABLE IF NOT EXISTS fg_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dispatch_no TEXT UNIQUE,
+    sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
+    project_id INTEGER REFERENCES projects(id),
+    client_id INTEGER REFERENCES clients(id),
+    dispatch_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    vehicle_no TEXT,
+    transporter_name TEXT,
+    eway_bill_no TEXT,
+    sales_invoice_id INTEGER REFERENCES sales_invoices(id),
+    status TEXT DEFAULT 'PendingApproval',
+    approval_id INTEGER REFERENCES approvals(id),
+    payment_override_by INTEGER REFERENCES users(id),
+    payment_override_note TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS fg_dispatch_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dispatch_id INTEGER NOT NULL REFERENCES fg_dispatches(id),
+    sales_order_item_id INTEGER NOT NULL REFERENCES sales_order_items(id),
+    quantity REAL DEFAULT 0,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // A customer rejecting/returning goods from a SPECIFIC prior dispatch -
+  // can't reject what was never dispatched, so this always points at an
+  // fg_dispatch (and the specific dispatched line(s) within it, via
+  // sale_rejection_mrn_items below), not the sales order in the abstract.
+  // `resolution` is deliberately never set automatically on Approved - the
+  // owner wants a human choice afterwards (Generate Credit Note, or Create
+  // FOC Replacement Request riding the existing FOC feature's own approval
+  // flow) rather than the system picking one. The linked credit note/FOC
+  // request is found by querying sales_credit_notes/foc_requests for a row
+  // pointing back at this mrn (derive, don't duplicate the link both ways).
+  `CREATE TABLE IF NOT EXISTS sale_rejection_mrns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mrn_no TEXT UNIQUE,
+    fg_dispatch_id INTEGER NOT NULL REFERENCES fg_dispatches(id),
+    sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
+    project_id INTEGER REFERENCES projects(id),
+    client_id INTEGER REFERENCES clients(id),
+    rejection_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT,
+    description TEXT,
+    disposition TEXT DEFAULT 'Rework',
+    resolution TEXT DEFAULT 'Unresolved',
+    status TEXT DEFAULT 'PendingApproval',
+    approval_id INTEGER REFERENCES approvals(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS sale_rejection_mrn_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mrn_id INTEGER NOT NULL REFERENCES sale_rejection_mrns(id),
+    fg_dispatch_item_id INTEGER NOT NULL REFERENCES fg_dispatch_items(id),
+    quantity_rejected REAL DEFAULT 0,
+    sort_order INTEGER DEFAULT 0
+  )`,
+  // Customer-side mirror of vendor_credit_notes (Accounts Payable, 2026-10-02)
+  // - reduces what's receivable against the original sales_invoice, same
+  // shape just the other direction of the relationship. Created manually
+  // from an Approved MRN (never automatically), one per MRN at most in
+  // practice though nothing enforces that.
+  `CREATE TABLE IF NOT EXISTS sales_credit_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    credit_note_no TEXT UNIQUE,
+    sale_rejection_mrn_id INTEGER NOT NULL REFERENCES sale_rejection_mrns(id),
+    sales_invoice_id INTEGER REFERENCES sales_invoices(id),
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    reason TEXT,
+    taxable_value REAL DEFAULT 0,
+    cgst REAL DEFAULT 0,
+    sgst REAL DEFAULT 0,
+    igst REAL DEFAULT 0,
+    total_value REAL DEFAULT 0,
+    status TEXT DEFAULT 'Active',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // Traces a replacement FOC request back to the MRN that caused it - the
+  // existing foc_requests table already carries everything else needed
+  // (sales_order_id, project_id, reason free text), this is the one new
+  // link.
+  `ALTER TABLE foc_requests ADD COLUMN source_mrn_id INTEGER REFERENCES sale_rejection_mrns(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1638,7 +1757,56 @@ function bootstrapHrCompensationApprovals() {
   } catch (e) { console.error('[db] HR compensation approval bootstrap failed:', e.message); }
 }
 
+// FG Dispatch and Sale Rejection MRN (Phases E/D, 2026-10). Dispatch is a
+// two-step chain, Accounts then Management, BOTH always required
+// (min_amount 0 - goods physically leaving the building isn't a
+// value-threshold policy the way PO/PI's step 2 is). The hard block for an
+// unpaid Pre-Dispatch proforma invoice lives in routes/sales.js's dispatch
+// creation route itself, not in this chain - by the time a dispatch reaches
+// this approval, payment is either already confirmed or was explicitly
+// overridden by Management, so these two steps are a normal "does this
+// shipment look right" sign-off, not a second payment check.
+// SaleRejectionMRN is a single step, the Sales department's own HOD - the
+// rejection record itself isn't a financial release event (unlike its two
+// optional follow-ups, Credit Note / FOC Replacement, which ride their own
+// existing gates - see db/index.js's sales_credit_notes/foc_requests
+// comments). Same idempotent bootstrap guarantee as every chain above.
+function bootstrapSalesFulfillmentApprovals() {
+  try {
+    const accountsRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Accounts'`).get()?.id;
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const salesRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Sales'`).get()?.id;
+    // Management needs to actually be able to raise a dispatch to exercise
+    // the owner-confirmed "unpaid Pre-Dispatch proforma override" on
+    // POST /sales/dispatches - that route is gated by sales_order.manage
+    // like every other Sales Order route, and Management doesn't carry it
+    // by default (same gap bootstrapBgManageGrant() fixed for Accounts/
+    // bg.manage). Idempotent, same as every grant in this app.
+    if (managementRoleId) {
+      raw.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT ${managementRoleId}, id FROM permissions WHERE code = 'sales_order.manage'
+      `);
+    }
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('FgDispatch', 'Finished goods dispatch approval (Accounts -> Management)')`);
+    const fgChainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'FgDispatch'`).get().id;
+    if (accountsRoleId) upsertStep.run(fgChainId, 1, accountsRoleId, 0, 1);
+    if (managementRoleId) upsertStep.run(fgChainId, 2, managementRoleId, 0, 0);
+
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('SaleRejectionMRN', 'Customer goods rejection/return approval (Sales HOD)')`);
+    const mrnChainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'SaleRejectionMRN'`).get().id;
+    if (salesRoleId) upsertStep.run(mrnChainId, 1, salesRoleId, 0, 1);
+  } catch (e) { console.error('[db] Sales fulfillment approval bootstrap failed:', e.message); }
+}
+
 module.exports = {
   db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
+  bootstrapSalesFulfillmentApprovals,
 };

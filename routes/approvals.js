@@ -4,6 +4,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
+const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
 const router = express.Router();
 router.use(authRequired);
 
@@ -159,6 +160,33 @@ function describeEntity(entityType, entityId) {
       return {
         ref: r.ref, summary: `${r.item_count} employee(s) - total increase ₹${Number(r.total_increase || 0).toFixed(2)}`,
         department_id: null, department_name: null, raised_by_name: r.raised_by_name,
+      };
+    }
+    case 'fg_dispatch': {
+      const r = db.prepare(`
+        SELECT fd.dispatch_no as ref, so.order_no, c.name as client_name, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name,
+          (SELECT COUNT(*) FROM fg_dispatch_items WHERE dispatch_id = fd.id) as item_count,
+          fd.payment_override_note
+        FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id LEFT JOIN clients c ON c.id = fd.client_id
+        LEFT JOIN users u ON u.id = fd.created_by LEFT JOIN departments d ON d.id = u.department_id WHERE fd.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `${r.item_count} line(s) - ${r.order_no} for ${r.client_name || 'customer'}${r.payment_override_note ? ' (payment override)' : ''}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+      };
+    }
+    case 'sale_rejection_mrn': {
+      const r = db.prepare(`
+        SELECT m.mrn_no as ref, fd.dispatch_no, m.disposition, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name,
+          (SELECT COALESCE(SUM(mi.quantity_rejected * soi.rate), 0) FROM sale_rejection_mrn_items mi
+            JOIN fg_dispatch_items fdi ON fdi.id = mi.fg_dispatch_item_id JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+            WHERE mi.mrn_id = m.id) as total_value
+        FROM sale_rejection_mrns m JOIN fg_dispatches fd ON fd.id = m.fg_dispatch_id
+        LEFT JOIN users u ON u.id = m.created_by LEFT JOIN departments d ON d.id = u.department_id WHERE m.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `Rejection against ${r.dispatch_no} (${r.disposition}) - ₹${Number(r.total_value || 0).toFixed(2)}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
     default:
@@ -334,6 +362,44 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE salary_hike_cycles SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // On final Approved (both Accounts and Management steps cleared), flips
+  // to 'Dispatched' and auto-completes the project's Packing/Shipping job
+  // card stages (if not already) - closes the loop between production and
+  // dispatch tracking without a second, parallel "mark as shipped" step.
+  // Deliberately raw UPDATEs here rather than calling the interactive
+  // PATCH /job-cards/:id route - that route's HOD/assignee permission
+  // checks are for a human acting on their own department's card, not a
+  // system-triggered completion once Sales/Accounts/Management have
+  // approved the goods actually leaving.
+  if (entityType === 'fg_dispatch') {
+    if (result === 'Approved') {
+      const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(entityId);
+      db.prepare(`UPDATE fg_dispatches SET status = 'Dispatched' WHERE id = ?`).run(entityId);
+      if (dispatch && dispatch.project_id) {
+        ['Packing', 'Shipping'].forEach(stage => {
+          const jc = db.prepare(`SELECT * FROM job_cards WHERE project_id = ? AND stage = ? AND parent_job_card_id IS NULL`).get(dispatch.project_id, stage);
+          if (jc && jc.status !== 'Completed' && jc.status !== 'NotApplicable') {
+            db.prepare(`UPDATE job_cards SET status = 'Completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(jc.id);
+            advanceProjectStatus(db, dispatch.project_id);
+            releaseDependents(db, jc.id);
+          }
+        });
+      }
+      return;
+    }
+    const statusByResult = { Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE fg_dispatches SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
+  // Single-row, same shape as purchase_invoice - 'Pending' maps back to
+  // 'PendingApproval' (the entity's own pre-approval status word).
+  if (entityType === 'sale_rejection_mrn') {
+    const statusByResult = { Approved: 'Approved', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE sale_rejection_mrns SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   const map = {
     expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
@@ -364,6 +430,8 @@ const ENTITY_LABELS = {
   purchase_invoice: 'Purchase Invoice (Vendor Bill)',
   referral_incentive: 'Referral Incentive',
   salary_hike_cycle: 'Salary Hike Cycle',
+  fg_dispatch: 'FG Dispatch',
+  sale_rejection_mrn: 'Sale Rejection MRN',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -430,13 +498,14 @@ router.post('/:id/provide-info', (req, res) => {
 const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
-  referral_incentive: 5, salary_hike_cycle: 5,
+  referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
   salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
   referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
+  fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;
