@@ -1027,6 +1027,97 @@ const MIGRATIONS = [
   // means Bill-To specifically; this new column is Ship-To. Both stay
   // optional and independent, same as the single field was before.
   `ALTER TABLE purchase_orders ADD COLUMN company_ship_address_id INTEGER REFERENCES company_addresses(id)`,
+  // ---- HR: employee referral incentives + annual salary hike cycles ----
+  // referred_by_employee_id/referral_incentive_amount/probation_end_date are
+  // set at hire time on the Add Employee form; exit_reason/exit_recommendation
+  // are set on the Edit Employee form only when status moves to
+  // resigned/terminated (same optional-until-relevant pattern as the
+  // pre-existing exit_date column).
+  `ALTER TABLE employees ADD COLUMN referred_by_employee_id INTEGER REFERENCES employees(id)`,
+  `ALTER TABLE employees ADD COLUMN referral_incentive_amount REAL DEFAULT 0`,
+  `ALTER TABLE employees ADD COLUMN probation_end_date TEXT`,
+  `ALTER TABLE employees ADD COLUMN exit_reason TEXT`,
+  `ALTER TABLE employees ADD COLUMN exit_recommendation TEXT`,
+  // One row per referred hire (not per referrer - a referrer can refer many
+  // people over time, each tracked independently). Status flow:
+  // PendingProbation (just hired, probation_end_date snapshotted from the
+  // referred employee's own row at creation time) -> Eligible (the daily
+  // scan in lib/referralIncentiveScan.js flips this once probation_end_date
+  // has passed and the referred employee is still active) -> PendingApproval
+  // (HR explicitly submits an Eligible row - this isn't automatic, since HR
+  // should confirm the referral terms still hold before starting a payout
+  // approval) -> Approved/Rejected via the generic approval engine ('HR'
+  // HOD only - see bootstrapHrCompensationApprovals()) -> Paid (HR marks
+  // manually with a payment reference, same explicit-payment pattern as
+  // Purchase Invoice's record-payment action). Forfeited short-circuits
+  // PendingProbation/Eligible/PendingApproval the moment the REFERRED
+  // employee's own status is set to resigned/terminated before their
+  // probation completed (routes/hr.js's employee PUT route checks this
+  // inline - not left to the scan, so it's immediate, not next-scan-cycle).
+  `CREATE TABLE IF NOT EXISTS referral_incentives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id),
+    referred_by_employee_id INTEGER NOT NULL REFERENCES employees(id),
+    incentive_amount REAL DEFAULT 0,
+    probation_end_date TEXT,
+    status TEXT DEFAULT 'PendingProbation',
+    approval_id INTEGER REFERENCES approvals(id),
+    payment_reference TEXT,
+    paid_date TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // Permanent hike history, one row per actual raise - exists independently
+  // of salary_hike_cycles so a manually-entered historical hike (from before
+  // this system, backfilled via bulk-upload) and a hike produced by a Cycle
+  // both live in the same place and show up identically in an employee's
+  // history. cycle_id is NULL for a Manual-source row.
+  `CREATE TABLE IF NOT EXISTS salary_hikes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id),
+    previous_salary REAL DEFAULT 0,
+    hike_type TEXT DEFAULT 'Percent',
+    hike_value REAL DEFAULT 0,
+    new_salary REAL DEFAULT 0,
+    effective_year INTEGER,
+    effective_date TEXT,
+    source TEXT DEFAULT 'Manual',
+    cycle_id INTEGER REFERENCES salary_hike_cycles(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // The annual planning run itself. Draft (HR builds/edits
+  // salary_hike_cycle_items below) -> PendingApproval (HR submits - starts
+  // the 'SalaryHikeCycle' chain, HR HOD then Management) -> Approved, at
+  // which point routes/approvals.js's syncEntityStatus atomically writes one
+  // salary_hikes row per item and updates each employee's monthly_salary,
+  // then flips this to Applied in the same transaction -> or Rejected,
+  // which (like a Purchase Request) can be edited and resubmitted rather
+  // than needing a brand new cycle.
+  `CREATE TABLE IF NOT EXISTS salary_hike_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_name TEXT NOT NULL,
+    effective_year INTEGER,
+    status TEXT DEFAULT 'Draft',
+    approval_id INTEGER REFERENCES approvals(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    applied_at TEXT
+  )`,
+  // current_salary is a snapshot taken when the item is added/edited (not
+  // read live from employees at Approved-time) so what the approver actually
+  // reviewed is what gets applied, even if someone edits the employee's
+  // salary elsewhere in the gap between submission and approval.
+  `CREATE TABLE IF NOT EXISTS salary_hike_cycle_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id INTEGER NOT NULL REFERENCES salary_hike_cycles(id),
+    employee_id INTEGER NOT NULL REFERENCES employees(id),
+    current_salary REAL DEFAULT 0,
+    hike_type TEXT DEFAULT 'Percent',
+    hike_value REAL DEFAULT 0,
+    proposed_salary REAL DEFAULT 0,
+    notes TEXT
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1507,4 +1598,47 @@ function bootstrapPurchaseInvoiceApproval() {
   } catch (e) { console.error('[db] Purchase Invoice approval bootstrap failed:', e.message); }
 }
 
-module.exports = { db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval };
+// Referral incentive payouts and annual salary hike cycles both route
+// through the HR department's own HOD first (role 'HR' + requires_supervisor
+// = 1, same is_supervisor-flag HOD model every other chain in this app uses)
+// - HR already owns and builds both of these (same as how Accounts owns and
+// books every Purchase Invoice), so "HOD" here means HR's HOD specifically,
+// not each individual employee's own department HOD (this codebase's
+// existing cross-department chains - ExpenseVoucher/Leave/PurchaseInvoice -
+// all route to one fixed owning department's HOD, never to "whichever
+// department the entity happens to belong to"; a per-raiser-department HOD
+// step isn't something the generic engine supports, and would be a much
+// larger change to lib/approvals.js's role-based canAct() for comparatively
+// little benefit here). ReferralIncentive is a single step (a referral
+// payout is a modest, routine amount) - SalaryHikeCycle adds a Management
+// step after, unconditionally (min_amount 0, not value-gated like
+// PurchaseOrder/PurchaseInvoice's step 2) since an annual compensation
+// decision affects the whole org regardless of its total value. Same
+// idempotent INSERT OR IGNORE / ON CONFLICT DO NOTHING guarantee as every
+// other bootstrap here - safe on every boot, never overwrites an
+// admin-retuned step once the chain exists.
+function bootstrapHrCompensationApprovals() {
+  try {
+    const hrRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'HR'`).get()?.id;
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('ReferralIncentive', 'Employee referral incentive payout approval (HR HOD)')`);
+    const riChainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'ReferralIncentive'`).get().id;
+    if (hrRoleId) upsertStep.run(riChainId, 1, hrRoleId, 0, 1);
+
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('SalaryHikeCycle', 'Annual salary hike cycle approval (HR HOD -> Management)')`);
+    const shChainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'SalaryHikeCycle'`).get().id;
+    if (hrRoleId) upsertStep.run(shChainId, 1, hrRoleId, 0, 1);
+    if (managementRoleId) upsertStep.run(shChainId, 2, managementRoleId, 0, 0);
+  } catch (e) { console.error('[db] HR compensation approval bootstrap failed:', e.message); }
+}
+
+module.exports = {
+  db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
+  bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
+};

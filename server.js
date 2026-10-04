@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval } = require('./db');
+const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -27,6 +27,7 @@ bootstrapForeignPayments();
 bootstrapBgManageGrant();
 bootstrapPurchaseOrderApproval();
 bootstrapPurchaseInvoiceApproval();
+bootstrapHrCompensationApprovals();
 
 const app = express();
 app.use(cors());
@@ -93,6 +94,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 const { runScan } = require('./lib/bgReminderScan');
 const { runSoaScan } = require('./lib/soaScan');
 const { runFpBoeScan } = require('./lib/foreignPaymentBoeScan');
+const { runReferralIncentiveScan } = require('./lib/referralIncentiveScan');
 function runReminderScanSafely() {
   try {
     const result = runScan();
@@ -118,6 +120,15 @@ function runReminderScanSafely() {
     if (boeCreated) console.log(`[fp-boe-scan] ${boeCreated} Bill of Entry reminder(s) raised`);
   } catch (e) {
     console.error('[fp-boe-scan] failed:', e.message);
+  }
+  // Referral incentive probation-complete flip - same piggyback reasoning
+  // as the SOA/BOE scans above (idempotent, a 6-hourly cadence is plenty
+  // for a date-based eligibility check).
+  try {
+    const eligibleCount = runReferralIncentiveScan();
+    if (eligibleCount) console.log(`[referral-incentive-scan] ${eligibleCount} incentive(s) became eligible`);
+  } catch (e) {
+    console.error('[referral-incentive-scan] failed:', e.message);
   }
 }
 setTimeout(runReminderScanSafely, 5000); // let the server finish booting first

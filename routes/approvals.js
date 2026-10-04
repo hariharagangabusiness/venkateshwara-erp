@@ -137,6 +137,30 @@ function describeEntity(entityType, entityId) {
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
+    case 'referral_incentive': {
+      const r = db.prepare(`
+        SELECT ri.id as ref, ri.incentive_amount, e.full_name as employee_name, e.department_id as department_id, d.name as department_name,
+          u.full_name as raised_by_name
+        FROM referral_incentives ri JOIN employees e ON e.id = ri.employee_id LEFT JOIN departments d ON d.id = e.department_id
+        LEFT JOIN users u ON u.id = ri.created_by WHERE ri.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: 'RI-' + r.ref, summary: `Referral incentive for ${r.employee_name} - ₹${Number(r.incentive_amount || 0).toFixed(2)}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+      };
+    }
+    case 'salary_hike_cycle': {
+      const r = db.prepare(`
+        SELECT shc.cycle_name as ref, u.full_name as raised_by_name,
+          (SELECT COUNT(*) FROM salary_hike_cycle_items WHERE cycle_id = shc.id) as item_count,
+          (SELECT COALESCE(SUM(proposed_salary - current_salary), 0) FROM salary_hike_cycle_items WHERE cycle_id = shc.id) as total_increase
+        FROM salary_hike_cycles shc LEFT JOIN users u ON u.id = shc.created_by WHERE shc.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `${r.item_count} employee(s) - total increase ₹${Number(r.total_increase || 0).toFixed(2)}`,
+        department_id: null, department_name: null, raised_by_name: r.raised_by_name,
+      };
+    }
     default:
       return {};
   }
@@ -265,6 +289,51 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE purchase_invoices SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // Same single-row shape as purchase_invoice above, except 'Pending' maps
+  // back to 'Eligible' (the entity's own pre-approval status word) rather
+  // than a generic 'PendingApproval' - an "Ask for More Info" round-trip on
+  // a referral incentive should read as "still Eligible, under review", not
+  // regress it to looking like it hasn't been submitted yet.
+  if (entityType === 'referral_incentive') {
+    const statusByResult = { Approved: 'Approved', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE referral_incentives SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
+  // On final Approved, atomically writes one salary_hikes row per item and
+  // updates each employee's monthly_salary, then flips the cycle straight
+  // to 'Applied' in the same transaction - there's no separate manual
+  // "apply" action, since by the time Management has signed off there's
+  // nothing left for a human to decide. Rejected/InfoRequested/Pending all
+  // behave like any other single-row chain (see salary_hike_cycles' own
+  // reopen route in routes/hr.js for how a Rejected cycle gets edited and
+  // resubmitted afterwards).
+  if (entityType === 'salary_hike_cycle') {
+    if (result === 'Approved') {
+      const items = db.prepare('SELECT * FROM salary_hike_cycle_items WHERE cycle_id = ?').all(entityId);
+      const insertHike = db.prepare(`
+        INSERT INTO salary_hikes (employee_id, previous_salary, hike_type, hike_value, new_salary, effective_year, effective_date, source, cycle_id, created_by)
+        VALUES (?,?,?,?,?,?,?,'Cycle',?,?)
+      `);
+      const updateSalary = db.prepare('UPDATE employees SET monthly_salary = ? WHERE id = ?');
+      const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(entityId);
+      const today = new Date().toISOString().slice(0, 10);
+      const tx = db.transaction(() => {
+        items.forEach(item => {
+          insertHike.run(item.employee_id, item.current_salary, item.hike_type, item.hike_value, item.proposed_salary,
+            cycle.effective_year || new Date().getFullYear(), today, entityId, cycle.created_by);
+          updateSalary.run(item.proposed_salary, item.employee_id);
+        });
+        db.prepare(`UPDATE salary_hike_cycles SET status = 'Applied', applied_at = ? WHERE id = ?`).run(today, entityId);
+      });
+      tx();
+      return;
+    }
+    const statusByResult = { Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE salary_hike_cycles SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   const map = {
     expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
@@ -293,6 +362,8 @@ const ENTITY_LABELS = {
   foreign_payment: 'Foreign Payment Request',
   purchase_order: 'Purchase Order',
   purchase_invoice: 'Purchase Invoice (Vendor Bill)',
+  referral_incentive: 'Referral Incentive',
+  salary_hike_cycle: 'Salary Hike Cycle',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -359,11 +430,13 @@ router.post('/:id/provide-info', (req, res) => {
 const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
+  referral_incentive: 5, salary_hike_cycle: 5,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
   salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
+  referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

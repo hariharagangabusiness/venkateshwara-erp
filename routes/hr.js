@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
+const { inOversightDept, oversightDepartmentIds } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
 
@@ -75,7 +76,8 @@ router.get('/employees/:id', (req, res) => {
 router.post('/employees', requirePermission('payroll.manage'), (req, res) => {
   const { employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account,
     monthly_salary, reporting_manager_id, employment_type, pan_number, blood_group, emergency_contact_name, emergency_contact_phone,
-    bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number } = req.body;
+    bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number,
+    referred_by_employee_id, referral_incentive_amount, probation_end_date } = req.body;
   // Nothing enforced this before, so an employee could be added with the
   // Full Name field left blank - it saved silently and then sat in the
   // Employees table forever with a blank Name column, with no obvious way
@@ -84,16 +86,32 @@ router.post('/employees', requirePermission('payroll.manage'), (req, res) => {
   if (!full_name || !String(full_name).trim()) {
     return res.status(400).json({ error: 'Full Name is required.' });
   }
+  if (referred_by_employee_id) {
+    const referrer = db.prepare('SELECT id FROM employees WHERE id = ?').get(referred_by_employee_id);
+    if (!referrer) return res.status(400).json({ error: 'That referring employee no longer exists - refresh the page and pick again.' });
+  }
   const info = db.prepare(`
     INSERT INTO employees (employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account,
       monthly_salary, reporting_manager_id, employment_type, pan_number, blood_group, emergency_contact_name, emergency_contact_phone,
-      bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number,
+      referred_by_employee_id, referral_incentive_amount, probation_end_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account, monthly_salary || 0,
     reporting_manager_id || null, employment_type || 'Full-time', pan_number || null, blood_group || null,
     emergency_contact_name || null, emergency_contact_phone || null,
     bank_name || null, account_number || null, ifsc_code || null, aadhaar_number || null, passport_number || null,
-    visa_availability || null, driving_license_number || null);
+    visa_availability || null, driving_license_number || null,
+    referred_by_employee_id || null, referral_incentive_amount || 0, probation_end_date || null);
+  // A referral only ever produces one referral_incentives row, created here
+  // at hire time - not something HR adds separately later. No incentive
+  // amount or no referrer means nothing to track, so this silently no-ops
+  // rather than creating a zero-value row that would just clutter the list.
+  if (referred_by_employee_id && Number(referral_incentive_amount) > 0) {
+    db.prepare(`
+      INSERT INTO referral_incentives (employee_id, referred_by_employee_id, incentive_amount, probation_end_date, created_by)
+      VALUES (?,?,?,?,?)
+    `).run(info.lastInsertRowid, referred_by_employee_id, Number(referral_incentive_amount), probation_end_date || null, req.user.id);
+  }
   res.json({ id: info.lastInsertRowid });
 });
 // Full edit - every field on the employee master is editable, including
@@ -108,17 +126,19 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     return res.status(400).json({ error: 'Full Name cannot be blank.' });
   }
   const pick = (key, fallback) => (f[key] !== undefined ? f[key] : fallback);
+  const newStatus = pick('status', existing.status) || 'active';
   db.prepare(`
     UPDATE employees SET employee_code=?, full_name=?, department_id=?, designation=?, date_of_joining=?, phone=?, email=?, address=?,
       bank_account=?, monthly_salary=?, status=?, reporting_manager_id=?, employment_type=?, pan_number=?, blood_group=?,
       emergency_contact_name=?, emergency_contact_phone=?, exit_date=?,
-      bank_name=?, account_number=?, ifsc_code=?, aadhaar_number=?, passport_number=?, visa_availability=?, driving_license_number=?
+      bank_name=?, account_number=?, ifsc_code=?, aadhaar_number=?, passport_number=?, visa_availability=?, driving_license_number=?,
+      referred_by_employee_id=?, referral_incentive_amount=?, probation_end_date=?, exit_reason=?, exit_recommendation=?
     WHERE id=?
   `).run(
     pick('employee_code', existing.employee_code), pick('full_name', existing.full_name), pick('department_id', existing.department_id),
     pick('designation', existing.designation), pick('date_of_joining', existing.date_of_joining), pick('phone', existing.phone),
     pick('email', existing.email), pick('address', existing.address), pick('bank_account', existing.bank_account),
-    pick('monthly_salary', existing.monthly_salary), pick('status', existing.status) || 'active',
+    pick('monthly_salary', existing.monthly_salary), newStatus,
     f.reporting_manager_id !== undefined ? (f.reporting_manager_id || null) : existing.reporting_manager_id,
     pick('employment_type', existing.employment_type) || 'Full-time', pick('pan_number', existing.pan_number),
     pick('blood_group', existing.blood_group), pick('emergency_contact_name', existing.emergency_contact_name),
@@ -126,8 +146,29 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     pick('bank_name', existing.bank_name), pick('account_number', existing.account_number), pick('ifsc_code', existing.ifsc_code),
     pick('aadhaar_number', existing.aadhaar_number), pick('passport_number', existing.passport_number),
     pick('visa_availability', existing.visa_availability), pick('driving_license_number', existing.driving_license_number),
+    f.referred_by_employee_id !== undefined ? (f.referred_by_employee_id || null) : existing.referred_by_employee_id,
+    pick('referral_incentive_amount', existing.referral_incentive_amount),
+    pick('probation_end_date', existing.probation_end_date) || null,
+    pick('exit_reason', existing.exit_reason) || null, pick('exit_recommendation', existing.exit_recommendation) || null,
     existing.id
   );
+  // An employee who is THEMSELVES a referred hire still has a live
+  // referral_incentives row (status PendingProbation/Eligible/PendingApproval)
+  // right up until their own probation completes - if they exit before that,
+  // the incentive their referrer would have earned is forfeited immediately,
+  // not left to sit until the next scan run picks up a status that no longer
+  // makes sense (an exited employee can never become 'Eligible').
+  if (['resigned', 'terminated'].includes(newStatus) && !['resigned', 'terminated'].includes(existing.status)) {
+    const live = db.prepare(`
+      SELECT * FROM referral_incentives WHERE employee_id = ? AND status IN ('PendingProbation', 'Eligible', 'PendingApproval')
+    `).get(existing.id);
+    if (live) {
+      db.prepare(`UPDATE referral_incentives SET status = 'Forfeited' WHERE id = ?`).run(live.id);
+      if (live.approval_id) {
+        db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(live.approval_id);
+      }
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -593,6 +634,284 @@ router.get('/payroll-vouchers', (req, res) => {
   res.json(db.prepare(`
     SELECT pv.*, e.full_name FROM payroll_vouchers pv JOIN employees e ON e.id = pv.employee_id ORDER BY pv.id DESC
   `).all());
+});
+
+// ---- Referral Incentives ----
+// Status flow: PendingProbation -> Eligible (lib/referralIncentiveScan.js,
+// 6-hourly) -> PendingApproval (explicit HR submit below) -> Approved/
+// Rejected (generic approval engine, 'ReferralIncentive' chain, HR HOD only)
+// -> Paid (explicit HR mark-paid below, same pattern as Purchase Invoice's
+// record-payment). Forfeited is set inline by the employee PUT route above
+// the moment the REFERRED employee's own status becomes resigned/terminated.
+router.get('/referral-incentives', requirePermission('payroll.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT ri.*, e.full_name as employee_name, e.status as employee_status, r.full_name as referred_by_name
+    FROM referral_incentives ri
+    JOIN employees e ON e.id = ri.employee_id
+    JOIN employees r ON r.id = ri.referred_by_employee_id
+    ORDER BY ri.id DESC
+  `).all());
+});
+router.post('/referral-incentives/:id/submit-for-approval', requirePermission('payroll.manage'), (req, res) => {
+  const ri = db.prepare('SELECT * FROM referral_incentives WHERE id = ?').get(req.params.id);
+  if (!ri) return res.status(404).json({ error: 'Not found' });
+  if (ri.status !== 'Eligible') return res.status(400).json({ error: `This incentive is ${ri.status}, not Eligible - it can't be submitted for approval.` });
+  const approvalId = approvals.startApproval('ReferralIncentive', 'referral_incentive', ri.id, ri.incentive_amount, req.user.id);
+  db.prepare(`UPDATE referral_incentives SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, ri.id);
+  res.json({ ok: true });
+});
+router.post('/referral-incentives/:id/mark-paid', requirePermission('payroll.manage'), (req, res) => {
+  const ri = db.prepare('SELECT * FROM referral_incentives WHERE id = ?').get(req.params.id);
+  if (!ri) return res.status(404).json({ error: 'Not found' });
+  if (ri.status !== 'Approved') return res.status(400).json({ error: `This incentive is ${ri.status}, not Approved - it can't be marked paid yet.` });
+  const { payment_reference } = req.body;
+  db.prepare(`UPDATE referral_incentives SET status = 'Paid', payment_reference = ?, paid_date = ? WHERE id = ?`)
+    .run(payment_reference || null, today(), ri.id);
+  res.json({ ok: true });
+});
+
+// ---- Salary Hikes (permanent per-employee history) ----
+router.get('/salary-hikes', requirePermission('payroll.manage'), (req, res) => {
+  const where = req.query.employee_id ? 'WHERE sh.employee_id = ?' : '';
+  const params = req.query.employee_id ? [req.query.employee_id] : [];
+  res.json(db.prepare(`
+    SELECT sh.*, e.full_name as employee_name FROM salary_hikes sh JOIN employees e ON e.id = sh.employee_id
+    ${where} ORDER BY sh.effective_year DESC, sh.id DESC
+  `).all(...params));
+});
+const SALARY_HIKE_TEMPLATE_COLUMNS = ['employee_code', 'previous_salary', 'hike_type', 'hike_value', 'new_salary', 'effective_year', 'effective_date'];
+router.get('/salary-hikes/template', requirePermission('payroll.manage'), (req, res) => {
+  const wb = XLSX.utils.book_new();
+  const exampleRow = { employee_code: 'EMP-1001', previous_salary: 25000, hike_type: 'Percent', hike_value: 10, new_salary: 27500, effective_year: 2025, effective_date: '2025-04-01' };
+  const ws = XLSX.utils.json_to_sheet([exampleRow], { header: SALARY_HIKE_TEMPLATE_COLUMNS });
+  XLSX.utils.book_append_sheet(wb, ws, 'SalaryHikes');
+  const note = XLSX.utils.aoa_to_sheet([['Notes'],
+    ['For backfilling past years\' hikes only - this does NOT change an employee\'s current salary (use Edit Employee for that). Each row is a historical record.'],
+    ['employee_code is matched against the Employee master - an unrecognized code errors that row.'],
+    ['hike_type is Percent or Fixed. new_salary is optional - if left blank it\'s computed from previous_salary and hike_type/hike_value.'],
+  ]);
+  XLSX.utils.book_append_sheet(wb, note, 'Notes');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', 'attachment; filename="salary_hikes_upload_template.xlsx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+router.post('/salary-hikes/bulk-upload', requirePermission('payroll.manage'), uploadMemory.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  let rows;
+  try {
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+  } catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel workbook.' }); }
+  const findByCode = db.prepare('SELECT id FROM employees WHERE employee_code = ?');
+  const insert = db.prepare(`
+    INSERT INTO salary_hikes (employee_id, previous_salary, hike_type, hike_value, new_salary, effective_year, effective_date, source, created_by)
+    VALUES (?,?,?,?,?,?,?,'Manual',?)
+  `);
+  let inserted = 0; const errors = [];
+  rows.forEach((row, i) => {
+    const rowNum = i + 2;
+    const code = String(row.employee_code || '').trim();
+    if (!code) { errors.push(`Row ${rowNum}: employee_code is required - skipped.`); return; }
+    const emp = findByCode.get(code);
+    if (!emp) { errors.push(`Row ${rowNum}: no employee matches "${code}" - skipped.`); return; }
+    const prevSalary = Number(row.previous_salary) || 0;
+    const hikeType = String(row.hike_type || '').trim() === 'Fixed' ? 'Fixed' : 'Percent';
+    const hikeValue = Number(row.hike_value) || 0;
+    const newSalary = String(row.new_salary || '').trim() !== ''
+      ? Number(row.new_salary)
+      : (hikeType === 'Percent' ? prevSalary * (1 + hikeValue / 100) : prevSalary + hikeValue);
+    const effectiveYear = Number(row.effective_year) || null;
+    if (!effectiveYear) { errors.push(`Row ${rowNum}: effective_year is required - skipped.`); return; }
+    insert.run(emp.id, prevSalary, hikeType, hikeValue, newSalary, effectiveYear, String(row.effective_date || '').trim() || null, req.user.id);
+    inserted++;
+  });
+  res.json({ inserted, skipped: errors.length, errors });
+});
+
+// ---- Salary Hike Cycles (annual planning run) ----
+router.get('/salary-hike-cycles', requirePermission('payroll.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT shc.*,
+      (SELECT COUNT(*) FROM salary_hike_cycle_items WHERE cycle_id = shc.id) as item_count,
+      (SELECT COALESCE(SUM(proposed_salary - current_salary), 0) FROM salary_hike_cycle_items WHERE cycle_id = shc.id) as total_increase
+    FROM salary_hike_cycles shc ORDER BY shc.id DESC
+  `).all());
+});
+router.post('/salary-hike-cycles', requirePermission('payroll.manage'), (req, res) => {
+  const { cycle_name, effective_year } = req.body;
+  if (!cycle_name || !String(cycle_name).trim()) return res.status(400).json({ error: 'Cycle name is required.' });
+  const info = db.prepare(`INSERT INTO salary_hike_cycles (cycle_name, effective_year, created_by) VALUES (?,?,?)`)
+    .run(String(cycle_name).trim(), effective_year || null, req.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+function hikeCycleBundle(id) {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(id);
+  if (!cycle) return null;
+  const items = db.prepare(`
+    SELECT shci.*, e.full_name as employee_name, e.department_id as department_id, d.name as department_name
+    FROM salary_hike_cycle_items shci JOIN employees e ON e.id = shci.employee_id LEFT JOIN departments d ON d.id = e.department_id
+    WHERE shci.cycle_id = ? ORDER BY d.name, e.full_name
+  `).all(id);
+  return { cycle, items };
+}
+router.get('/salary-hike-cycles/:id', requirePermission('payroll.manage'), (req, res) => {
+  const bundle = hikeCycleBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  res.json(bundle);
+});
+function computeProposedSalary(currentSalary, hikeType, hikeValue) {
+  return hikeType === 'Fixed' ? currentSalary + Number(hikeValue || 0) : currentSalary * (1 + Number(hikeValue || 0) / 100);
+}
+// Add/update a single employee's proposed hike within this cycle - upserts
+// by (cycle_id, employee_id), snapshotting the employee's CURRENT
+// monthly_salary at the moment this is set (not read live again at
+// approval time - see salary_hike_cycle_items' table comment in
+// db/index.js for why).
+router.post('/salary-hike-cycles/:id/items', requirePermission('payroll.manage'), (req, res) => {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) return res.status(404).json({ error: 'Not found' });
+  if (cycle.status !== 'Draft') return res.status(400).json({ error: `This cycle is ${cycle.status}, not Draft - it can no longer be edited.` });
+  const { employee_id, hike_type, hike_value, notes } = req.body;
+  const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(employee_id);
+  if (!emp) return res.status(400).json({ error: 'That employee no longer exists - refresh the page and pick again.' });
+  const hikeType = hike_type === 'Fixed' ? 'Fixed' : 'Percent';
+  const currentSalary = Number(emp.monthly_salary || 0);
+  const proposedSalary = computeProposedSalary(currentSalary, hikeType, hike_value);
+  const existing = db.prepare('SELECT id FROM salary_hike_cycle_items WHERE cycle_id = ? AND employee_id = ?').get(cycle.id, employee_id);
+  if (existing) {
+    db.prepare(`UPDATE salary_hike_cycle_items SET current_salary=?, hike_type=?, hike_value=?, proposed_salary=?, notes=? WHERE id=?`)
+      .run(currentSalary, hikeType, Number(hike_value || 0), proposedSalary, notes || null, existing.id);
+    res.json({ id: existing.id });
+  } else {
+    const info = db.prepare(`
+      INSERT INTO salary_hike_cycle_items (cycle_id, employee_id, current_salary, hike_type, hike_value, proposed_salary, notes)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(cycle.id, employee_id, currentSalary, hikeType, Number(hike_value || 0), proposedSalary, notes || null);
+    res.json({ id: info.lastInsertRowid });
+  }
+});
+// Apply the same %/fixed hike to every active employee in scope at once -
+// department_id filters to one department, omitted means every active
+// employee org-wide. Overwrites any item already in this cycle for an
+// affected employee (re-running with different numbers is how "redo the
+// whole department" works, not a separate undo step).
+router.post('/salary-hike-cycles/:id/bulk-apply', requirePermission('payroll.manage'), (req, res) => {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) return res.status(404).json({ error: 'Not found' });
+  if (cycle.status !== 'Draft') return res.status(400).json({ error: `This cycle is ${cycle.status}, not Draft - it can no longer be edited.` });
+  const { department_id, hike_type, hike_value } = req.body;
+  const hikeType = hike_type === 'Fixed' ? 'Fixed' : 'Percent';
+  const employees = department_id
+    ? db.prepare(`SELECT * FROM employees WHERE status = 'active' AND department_id = ?`).all(department_id)
+    : db.prepare(`SELECT * FROM employees WHERE status = 'active'`).all();
+  const upsert = db.prepare('SELECT id FROM salary_hike_cycle_items WHERE cycle_id = ? AND employee_id = ?');
+  const update = db.prepare(`UPDATE salary_hike_cycle_items SET current_salary=?, hike_type=?, hike_value=?, proposed_salary=? WHERE id=?`);
+  const insert = db.prepare(`INSERT INTO salary_hike_cycle_items (cycle_id, employee_id, current_salary, hike_type, hike_value, proposed_salary) VALUES (?,?,?,?,?,?)`);
+  const tx = db.transaction(() => {
+    employees.forEach(emp => {
+      const currentSalary = Number(emp.monthly_salary || 0);
+      const proposedSalary = computeProposedSalary(currentSalary, hikeType, hike_value);
+      const existing = upsert.get(cycle.id, emp.id);
+      if (existing) update.run(currentSalary, hikeType, Number(hike_value || 0), proposedSalary, existing.id);
+      else insert.run(cycle.id, emp.id, currentSalary, hikeType, Number(hike_value || 0), proposedSalary);
+    });
+  });
+  tx();
+  res.json({ applied: employees.length });
+});
+router.delete('/salary-hike-cycles/:id/items/:itemId', requirePermission('payroll.manage'), (req, res) => {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) return res.status(404).json({ error: 'Not found' });
+  if (cycle.status !== 'Draft') return res.status(400).json({ error: `This cycle is ${cycle.status}, not Draft - it can no longer be edited.` });
+  db.prepare('DELETE FROM salary_hike_cycle_items WHERE id = ? AND cycle_id = ?').run(req.params.itemId, cycle.id);
+  res.json({ ok: true });
+});
+router.post('/salary-hike-cycles/:id/submit-for-approval', requirePermission('payroll.manage'), (req, res) => {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) return res.status(404).json({ error: 'Not found' });
+  if (cycle.status !== 'Draft') return res.status(400).json({ error: `This cycle is ${cycle.status}, not Draft - it can't be submitted.` });
+  const items = db.prepare('SELECT * FROM salary_hike_cycle_items WHERE cycle_id = ?').all(cycle.id);
+  if (!items.length) return res.status(400).json({ error: 'Add at least one employee to this cycle before submitting.' });
+  const totalIncrease = items.reduce((s, i) => s + (i.proposed_salary - i.current_salary), 0);
+  const approvalId = approvals.startApproval('SalaryHikeCycle', 'salary_hike_cycle', cycle.id, totalIncrease, req.user.id);
+  db.prepare(`UPDATE salary_hike_cycles SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, cycle.id);
+  res.json({ ok: true });
+});
+// A Rejected cycle stays as an honest record (the rejected approval row and
+// its comment aren't touched) but can be reopened for editing and
+// resubmitted - same "fix and try again" spirit as a Purchase Request's
+// reject-edit-resubmit cycle, just without needing a brand new cycle row.
+router.post('/salary-hike-cycles/:id/reopen', requirePermission('payroll.manage'), (req, res) => {
+  const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) return res.status(404).json({ error: 'Not found' });
+  if (cycle.status !== 'Rejected') return res.status(400).json({ error: `This cycle is ${cycle.status}, not Rejected - only a rejected cycle can be reopened.` });
+  db.prepare(`UPDATE salary_hike_cycles SET status = 'Draft' WHERE id = ?`).run(cycle.id);
+  res.json({ ok: true });
+});
+
+// ---- Department-wise / org-wide salary view (oversight-scoped) ----
+// Admin/Management see every department; a department HOD sees only their
+// own department(s) (home department plus anything granted via role
+// oversight - same inOversightDept() model every other cross-department
+// report in this app already uses). cycle_id is optional - when given,
+// each employee's post-hike figure comes from that cycle's own items (0 if
+// the employee isn't in it); omitted, only current-salary figures are shown.
+function isGlobalHrViewer(user) {
+  return user.role_name === 'Admin' || user.role_name === 'Management';
+}
+router.get('/salary-report', (req, res) => {
+  const user = req.user;
+  if (!isGlobalHrViewer(user) && !user.is_supervisor) {
+    return res.status(403).json({ error: 'Only a department HOD, Management, or Admin can view this report.' });
+  }
+  const accessibleDeptIds = isGlobalHrViewer(user)
+    ? null // null = no restriction
+    : new Set([user.department_id, ...oversightDepartmentIds(db, user.id)].filter(id => id != null));
+  if (req.query.department_id) {
+    const deptId = Number(req.query.department_id);
+    if (accessibleDeptIds && !accessibleDeptIds.has(deptId)) {
+      return res.status(403).json({ error: "You don't have oversight of that department." });
+    }
+  }
+  const employees = db.prepare(`
+    SELECT e.id, e.full_name, e.department_id, d.name as department_name, e.monthly_salary
+    FROM employees e LEFT JOIN departments d ON d.id = e.department_id
+    WHERE e.status = 'active'
+  `).all().filter(e => {
+    if (req.query.department_id) return e.department_id === Number(req.query.department_id);
+    return accessibleDeptIds ? accessibleDeptIds.has(e.department_id) : true;
+  });
+  const cycleItemsByEmployee = new Map();
+  if (req.query.cycle_id) {
+    db.prepare('SELECT employee_id, proposed_salary FROM salary_hike_cycle_items WHERE cycle_id = ?').all(req.query.cycle_id)
+      .forEach(i => cycleItemsByEmployee.set(i.employee_id, i.proposed_salary));
+  }
+  const rows = employees.map(e => ({
+    employee_id: e.id, full_name: e.full_name, department_id: e.department_id, department_name: e.department_name,
+    current_salary: e.monthly_salary, proposed_salary: cycleItemsByEmployee.has(e.id) ? cycleItemsByEmployee.get(e.id) : null,
+  }));
+  const byDept = new Map();
+  rows.forEach(r => {
+    const key = r.department_id || 0;
+    if (!byDept.has(key)) byDept.set(key, { department_id: r.department_id, department_name: r.department_name || 'Unassigned', rows: [] });
+    byDept.get(key).rows.push(r);
+  });
+  const summarize = (list) => {
+    const currents = list.map(r => r.current_salary);
+    const proposeds = list.filter(r => r.proposed_salary != null).map(r => r.proposed_salary);
+    return {
+      headcount: list.length,
+      total_current: currents.reduce((s, v) => s + v, 0),
+      min_current: currents.length ? Math.min(...currents) : 0,
+      max_current: currents.length ? Math.max(...currents) : 0,
+      total_proposed: proposeds.length ? proposeds.reduce((s, v) => s + v, 0) : null,
+      min_proposed: proposeds.length ? Math.min(...proposeds) : null,
+      max_proposed: proposeds.length ? Math.max(...proposeds) : null,
+    };
+  };
+  const departments = [...byDept.values()].map(d => ({ department_id: d.department_id, department_name: d.department_name, ...summarize(d.rows) }));
+  res.json({ rows, departments, org_wide: summarize(rows) });
 });
 
 module.exports = router;
