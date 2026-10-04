@@ -890,6 +890,22 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
       full.offer.pbg_required, full.offer.pbg_percentage, full.offer.pbg_amount, full.offer.pbg_validity_days, full.offer.bg_terms_notes);
     const salesOrderId = soInfo.lastInsertRowid;
 
+    // Copy the offer's line items across so the order has real dispatchable
+    // lines from day one (FG Dispatch/Sale Rejection MRN need these - see
+    // routes/sales.js) - offer_items has no GST rate field, so each line
+    // defaults to the company's standard rate; Sales can correct any line
+    // afterwards via the Sales Order's own item editor.
+    if (full.items.length) {
+      const insertSoItem = db.prepare(`
+        INSERT INTO sales_order_items (sales_order_id, description, quantity, unit, rate, value, gst_rate, sort_order)
+        VALUES (?,?,?,?,?,?,18,?)
+      `);
+      full.items.forEach(it => insertSoItem.run(
+        salesOrderId, it.section_title || it.description || it.item_code || 'Item',
+        Number(it.qty) || 1, 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0
+      ));
+    }
+
     const projCode = 'PRJ-' + Date.now();
     const projInfo = db.prepare(`
       INSERT INTO projects (project_code, sales_order_id, title, pm_id, start_date)

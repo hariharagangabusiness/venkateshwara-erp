@@ -7,6 +7,10 @@ const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
+const { getCompanySettings } = require('../lib/settings');
+const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
+const { generateFgDispatchPdf } = require('../lib/fgDispatchPdf');
+const approvals = require('../lib/approvals');
 const router = express.Router();
 router.use(authRequired);
 
@@ -240,13 +244,37 @@ router.get('/orders', (req, res) => {
     SELECT so.*, c.name as client_name FROM sales_orders so JOIN clients c ON c.id = so.client_id ORDER BY so.id DESC
   `).all());
 });
+// `lines` is optional (Round 2026-10 addition) - an order built without any
+// keeps behaving exactly as before (manual order_value, no items row at
+// all). When lines are given, order_value is computed as their sum instead
+// of trusting whatever the caller passed for it, same "derive, don't trust
+// a duplicate" reasoning as every other computed total in this codebase.
 router.post('/orders', requirePermission('sales_order.manage'), async (req, res) => {
   const { lead_id, client_id, description, order_value } = req.body;
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.description || !String(l.description).trim()) return res.status(400).json({ error: `Line ${i + 1}: enter a description.` });
+    if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `Line ${i + 1}: enter a quantity greater than 0.` });
+    if (l.rate === undefined || l.rate === null || Number(l.rate) < 0) return res.status(400).json({ error: `Line ${i + 1}: enter a rate.` });
+  }
+  const computedValue = lines.length ? lines.reduce((s, l) => s + Number(l.quantity) * Number(l.rate), 0) : order_value;
   const orderNo = 'SO-' + Date.now();
   const info = db.prepare(`
     INSERT INTO sales_orders (order_no, lead_id, client_id, description, order_value, created_by)
     VALUES (?,?,?,?,?,?)
-  `).run(orderNo, lead_id || null, client_id, description, order_value, req.user.id);
+  `).run(orderNo, lead_id || null, client_id, description, computedValue, req.user.id);
+  if (lines.length) {
+    const insertItem = db.prepare(`
+      INSERT INTO sales_order_items (sales_order_id, item_id, description, hsn_code, quantity, unit, rate, value, gst_rate, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `);
+    lines.forEach((l, i) => insertItem.run(
+      info.lastInsertRowid, l.item_id || null, String(l.description).trim(), l.hsn_code || null,
+      Number(l.quantity), l.unit || 'Nos', Number(l.rate), Number(l.quantity) * Number(l.rate),
+      l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : 18, i
+    ));
+  }
   if (lead_id) db.prepare(`UPDATE leads SET stage = 'Won' WHERE id = ?`).run(lead_id);
 
   const result = { id: info.lastInsertRowid, order_no: orderNo };
@@ -271,6 +299,67 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   }
 
   res.json(result);
+});
+
+// ---- Sales Order line items ----
+// Lines can be added/edited after the order is created too (a big project's
+// scope is rarely fully known on day one) - the only real restriction is
+// that a line already claimed by a dispatch (see lib/soItems.js) can't be
+// deleted or shrunk below what's already been dispatched against it.
+router.get('/orders/:id/items', (req, res) => {
+  const items = db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ? ORDER BY sort_order, id').all(req.params.id);
+  res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })));
+});
+function recomputeOrderValue(salesOrderId) {
+  const total = db.prepare('SELECT COALESCE(SUM(value), 0) as t FROM sales_order_items WHERE sales_order_id = ?').get(salesOrderId).t;
+  db.prepare('UPDATE sales_orders SET order_value = ? WHERE id = ?').run(total, salesOrderId);
+}
+router.post('/orders/:id/items', requirePermission('sales_order.manage'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const { description, item_id, hsn_code, quantity, unit, rate, gst_rate } = req.body;
+  if (!description || !String(description).trim()) return res.status(400).json({ error: 'Enter a description.' });
+  if (!quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  if (rate === undefined || rate === null || Number(rate) < 0) return res.status(400).json({ error: 'Enter a rate.' });
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort_order), -1) as m FROM sales_order_items WHERE sales_order_id = ?').get(order.id).m;
+  const value = Number(quantity) * Number(rate);
+  const info = db.prepare(`
+    INSERT INTO sales_order_items (sales_order_id, item_id, description, hsn_code, quantity, unit, rate, value, gst_rate, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(order.id, item_id || null, String(description).trim(), hsn_code || null, Number(quantity), unit || 'Nos', Number(rate), value,
+    gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18, maxSort + 1);
+  recomputeOrderValue(order.id);
+  res.json({ id: info.lastInsertRowid });
+});
+router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), (req, res) => {
+  const item = db.prepare('SELECT * FROM sales_order_items WHERE id = ? AND sales_order_id = ?').get(req.params.itemId, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  const { description, hsn_code, quantity, unit, rate, gst_rate } = req.body;
+  const newQty = quantity !== undefined ? Number(quantity) : item.quantity;
+  const alreadyDispatched = item.quantity - soLineDispatchableQty(item);
+  if (newQty < alreadyDispatched) {
+    return res.status(400).json({ error: `Cannot reduce quantity below ${alreadyDispatched} - that much has already been dispatched against this line.` });
+  }
+  const newRate = rate !== undefined ? Number(rate) : item.rate;
+  db.prepare(`
+    UPDATE sales_order_items SET description=?, hsn_code=?, quantity=?, unit=?, rate=?, value=?, gst_rate=? WHERE id=?
+  `).run(
+    description !== undefined ? String(description).trim() : item.description, hsn_code !== undefined ? (hsn_code || null) : item.hsn_code,
+    newQty, unit !== undefined ? unit : item.unit, newRate, newQty * newRate,
+    gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : item.gst_rate, item.id
+  );
+  recomputeOrderValue(item.sales_order_id);
+  res.json({ ok: true });
+});
+router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), (req, res) => {
+  const item = db.prepare('SELECT * FROM sales_order_items WHERE id = ? AND sales_order_id = ?').get(req.params.itemId, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  if (soLineDispatchableQty(item) < item.quantity) {
+    return res.status(400).json({ error: 'This line already has a dispatch against it and cannot be removed.' });
+  }
+  db.prepare('DELETE FROM sales_order_items WHERE id = ?').run(item.id);
+  recomputeOrderValue(item.sales_order_id);
+  res.json({ ok: true });
 });
 
 // Admin-only permanent delete, for cleaning up an order that was created by
@@ -497,6 +586,315 @@ router.post('/orders/:id/regenerate-annexure', requirePermission('sales_order.ma
     console.error('Annexure regeneration failed:', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===================== FG Packing & Dispatch =====================
+function nextSeqNo(prefix, keyBase) {
+  const now = new Date();
+  const fyStart = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+  const key = `${keyBase}_seq_${fy}`;
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const next = row ? Number(row.value) + 1 : 1;
+  db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(next));
+  return `${prefix}/${fy}/${String(next).padStart(4, '0')}`;
+}
+
+router.get('/dispatches', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT fd.*, so.order_no, c.name as client_name
+    FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id LEFT JOIN clients c ON c.id = fd.client_id
+    ORDER BY fd.id DESC
+  `).all());
+});
+// Lines on this SO that still have quantity left to dispatch - drives the
+// New Dispatch form's line picker. See lib/soItems.js's
+// soLineDispatchableQty() - a PendingApproval dispatch already reserves its
+// quantity, so this never lets two dispatches over-claim the same units.
+router.get('/orders/:id/dispatchable-lines', requirePermission('sales_order.manage'), (req, res) => {
+  const items = db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ? ORDER BY sort_order, id').all(req.params.id);
+  res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })).filter(it => it.dispatchable_qty > 0));
+});
+// A SO can have more than one live Pre-Dispatch proforma invoice in theory,
+// but in practice this just needs to know: is there one that's been raised
+// and NOT yet marked Received (paid)? If so, the commercial term "balance
+// against Pre-Dispatch proforma before dispatch" hasn't been satisfied yet.
+function unpaidPreDispatchProforma(salesOrderId) {
+  return db.prepare(`
+    SELECT * FROM proforma_invoices WHERE sales_order_id = ? AND invoice_type = 'PreDispatch' AND status NOT IN ('Received', 'Cancelled')
+    ORDER BY id DESC LIMIT 1
+  `).get(salesOrderId);
+}
+router.post('/dispatches', requirePermission('sales_order.manage'), (req, res) => {
+  const { sales_order_id, vehicle_no, transporter_name, eway_bill_no } = req.body;
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  const so = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(sales_order_id);
+  if (!so) return res.status(400).json({ error: 'That sales order no longer exists - refresh the page and pick again.' });
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one line item to dispatch.' });
+  const soItems = new Map(db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ?').all(so.id).map(i => [i.id, i]));
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const item = soItems.get(Number(l.sales_order_item_id));
+    if (!item) return res.status(400).json({ error: `Line ${i + 1}: that order line no longer exists.` });
+    const qty = Number(l.quantity);
+    if (!qty || qty <= 0) return res.status(400).json({ error: `Line ${i + 1}: enter a quantity greater than 0.` });
+    const dispatchable = soLineDispatchableQty(item);
+    if (qty > dispatchable + 0.0001) {
+      return res.status(400).json({ error: `Line ${i + 1} (${item.description}): only ${dispatchable} still dispatchable, not ${qty}.` });
+    }
+  }
+  // Hard payment gate: the SO's Pre-Dispatch proforma invoice (if one was
+  // ever raised) must be marked Received before goods go out - unless the
+  // person creating this dispatch is Management (or Admin, which bypasses
+  // every gate in this app), in which case it's let through with the
+  // override recorded and shown visibly on the dispatch.
+  const unpaid = unpaidPreDispatchProforma(so.id);
+  const isOverrideEligible = req.user.role_name === 'Management' || req.user.role_name === 'Admin';
+  if (unpaid && !isOverrideEligible) {
+    return res.status(400).json({
+      error: `This order's Pre-Dispatch Proforma Invoice ${unpaid.proforma_no} has not been marked Received (paid) yet - dispatch is blocked until payment is confirmed. Only Management can override this.`,
+    });
+  }
+  const paymentOverrideNote = unpaid && isOverrideEligible
+    ? `Dispatched despite Pre-Dispatch Proforma Invoice ${unpaid.proforma_no} not yet marked Received - overridden by ${req.user.full_name} (${req.user.role_name}).`
+    : null;
+
+  const project = db.prepare('SELECT id FROM projects WHERE sales_order_id = ?').get(so.id);
+  const dispatchNo = nextSeqNo('DISP', 'dispatch');
+  const totalAmount = lines.reduce((s, l) => {
+    const item = soItems.get(Number(l.sales_order_item_id));
+    return s + Number(l.quantity) * (item ? item.rate : 0);
+  }, 0);
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO fg_dispatches (dispatch_no, sales_order_id, project_id, client_id, vehicle_no, transporter_name, eway_bill_no,
+        status, payment_override_by, payment_override_note, created_by)
+      VALUES (?,?,?,?,?,?,?, 'PendingApproval', ?,?,?)
+    `).run(dispatchNo, so.id, project ? project.id : null, so.client_id, vehicle_no || null, transporter_name || null, eway_bill_no || null,
+      paymentOverrideNote ? req.user.id : null, paymentOverrideNote, req.user.id);
+    const dispatchId = info.lastInsertRowid;
+    const insertItem = db.prepare(`INSERT INTO fg_dispatch_items (dispatch_id, sales_order_item_id, quantity, sort_order) VALUES (?,?,?,?)`);
+    lines.forEach((l, i) => insertItem.run(dispatchId, l.sales_order_item_id, Number(l.quantity), i));
+    return dispatchId;
+  });
+  const dispatchId = tx();
+  const approvalId = approvals.startApproval('FgDispatch', 'fg_dispatch', dispatchId, totalAmount, req.user.id);
+  db.prepare('UPDATE fg_dispatches SET approval_id = ? WHERE id = ?').run(approvalId, dispatchId);
+  res.json({ id: dispatchId, dispatch_no: dispatchNo, status: 'PendingApproval' });
+});
+function dispatchBundle(id) {
+  const dispatch = db.prepare(`
+    SELECT fd.*, so.order_no FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id WHERE fd.id = ?
+  `).get(id);
+  if (!dispatch) return null;
+  const items = db.prepare(`
+    SELECT fdi.*, soi.description, soi.hsn_code, soi.unit, soi.rate
+    FROM fg_dispatch_items fdi JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+    WHERE fdi.dispatch_id = ? ORDER BY fdi.sort_order, fdi.id
+  `).all(id);
+  return { dispatch, items };
+}
+router.get('/dispatches/:id', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  const bundle = dispatchBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  res.json(bundle);
+});
+router.post('/dispatches/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
+  const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(req.params.id);
+  if (!dispatch) return res.status(404).json({ error: 'Not found' });
+  if (!['PendingApproval', 'InfoRequested'].includes(dispatch.status)) {
+    return res.status(400).json({ error: `This dispatch is ${dispatch.status} and can no longer be cancelled.` });
+  }
+  db.prepare(`UPDATE fg_dispatches SET status = 'Cancelled' WHERE id = ?`).run(dispatch.id);
+  if (dispatch.approval_id) {
+    db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(dispatch.approval_id);
+  }
+  res.json({ ok: true });
+});
+router.get('/dispatches/:id/pdf', async (req, res) => {
+  const bundle = dispatchBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(bundle.dispatch.client_id);
+  let gen;
+  try {
+    gen = await generateFgDispatchPdf(bundle.dispatch, bundle.items, client, getCompanySettings());
+    res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}.pdf`, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===================== Sale Rejection MRN =====================
+router.get('/mrns', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT m.*, fd.dispatch_no, so.order_no, c.name as client_name,
+      (SELECT id FROM sales_credit_notes WHERE sale_rejection_mrn_id = m.id AND status != 'Cancelled' LIMIT 1) as credit_note_id,
+      (SELECT id FROM foc_requests WHERE source_mrn_id = m.id LIMIT 1) as foc_request_id
+    FROM sale_rejection_mrns m
+    JOIN fg_dispatches fd ON fd.id = m.fg_dispatch_id JOIN sales_orders so ON so.id = m.sales_order_id LEFT JOIN clients c ON c.id = m.client_id
+    ORDER BY m.id DESC
+  `).all());
+});
+// Lines on this dispatch that still have quantity left to reject - a
+// PendingApproval MRN already reserves its quantity (lib/soItems.js's
+// dispatchItemRejectableQty()), so two MRNs can't over-claim the same units.
+router.get('/dispatches/:id/rejectable-lines', requirePermission('sales_order.manage'), (req, res) => {
+  const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(req.params.id);
+  if (!dispatch) return res.status(404).json({ error: 'Not found' });
+  if (dispatch.status !== 'Dispatched') return res.json([]);
+  const items = db.prepare(`
+    SELECT fdi.*, soi.description, soi.hsn_code, soi.unit, soi.rate
+    FROM fg_dispatch_items fdi JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+    WHERE fdi.dispatch_id = ? ORDER BY fdi.sort_order, fdi.id
+  `).all(dispatch.id);
+  res.json(items.map(it => ({ ...it, rejectable_qty: dispatchItemRejectableQty(it) })).filter(it => it.rejectable_qty > 0));
+});
+const MRN_DISPOSITIONS = ['Rework', 'Scrap', 'ReturnToStock'];
+router.post('/mrns', requirePermission('sales_order.manage'), (req, res) => {
+  const { fg_dispatch_id, reason, description, disposition } = req.body;
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(fg_dispatch_id);
+  if (!dispatch) return res.status(400).json({ error: 'That dispatch no longer exists - refresh the page and pick again.' });
+  if (dispatch.status !== 'Dispatched') return res.status(400).json({ error: 'Only a fully Dispatched shipment can have a rejection raised against it.' });
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one rejected line item.' });
+  const dispatchItems = new Map(db.prepare('SELECT * FROM fg_dispatch_items WHERE dispatch_id = ?').all(dispatch.id).map(i => [i.id, i]));
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const item = dispatchItems.get(Number(l.fg_dispatch_item_id));
+    if (!item) return res.status(400).json({ error: `Line ${i + 1}: that dispatched line no longer exists.` });
+    const qty = Number(l.quantity_rejected);
+    if (!qty || qty <= 0) return res.status(400).json({ error: `Line ${i + 1}: enter a quantity greater than 0.` });
+    const rejectable = dispatchItemRejectableQty(item);
+    if (qty > rejectable + 0.0001) {
+      return res.status(400).json({ error: `Line ${i + 1}: only ${rejectable} still rejectable on this dispatch line, not ${qty}.` });
+    }
+  }
+  const dispositionValue = MRN_DISPOSITIONS.includes(disposition) ? disposition : 'Rework';
+  const mrnNo = nextSeqNo('MRN', 'mrn');
+  const soItemRates = new Map(db.prepare('SELECT id, rate FROM sales_order_items').all().map(r => [r.id, r.rate]));
+  const totalValue = lines.reduce((s, l) => {
+    const item = dispatchItems.get(Number(l.fg_dispatch_item_id));
+    return s + Number(l.quantity_rejected) * (item ? (soItemRates.get(item.sales_order_item_id) || 0) : 0);
+  }, 0);
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO sale_rejection_mrns (mrn_no, fg_dispatch_id, sales_order_id, project_id, client_id, reason, description, disposition, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?, 'PendingApproval', ?)
+    `).run(mrnNo, dispatch.id, dispatch.sales_order_id, dispatch.project_id, dispatch.client_id, reason || null, description || null, dispositionValue, req.user.id);
+    const mrnId = info.lastInsertRowid;
+    const insertItem = db.prepare(`INSERT INTO sale_rejection_mrn_items (mrn_id, fg_dispatch_item_id, quantity_rejected, sort_order) VALUES (?,?,?,?)`);
+    lines.forEach((l, i) => insertItem.run(mrnId, l.fg_dispatch_item_id, Number(l.quantity_rejected), i));
+    return mrnId;
+  });
+  const mrnId = tx();
+  const approvalId = approvals.startApproval('SaleRejectionMRN', 'sale_rejection_mrn', mrnId, totalValue, req.user.id);
+  db.prepare('UPDATE sale_rejection_mrns SET approval_id = ? WHERE id = ?').run(approvalId, mrnId);
+  res.json({ id: mrnId, mrn_no: mrnNo, status: 'PendingApproval' });
+});
+function mrnBundle(id) {
+  const mrn = db.prepare(`
+    SELECT m.*, fd.dispatch_no, so.order_no FROM sale_rejection_mrns m
+    JOIN fg_dispatches fd ON fd.id = m.fg_dispatch_id JOIN sales_orders so ON so.id = m.sales_order_id WHERE m.id = ?
+  `).get(id);
+  if (!mrn) return null;
+  const items = db.prepare(`
+    SELECT mi.*, soi.description, soi.hsn_code, soi.unit, soi.rate, soi.gst_rate
+    FROM sale_rejection_mrn_items mi
+    JOIN fg_dispatch_items fdi ON fdi.id = mi.fg_dispatch_item_id
+    JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+    WHERE mi.mrn_id = ? ORDER BY mi.sort_order, mi.id
+  `).all(id);
+  const creditNote = db.prepare(`SELECT * FROM sales_credit_notes WHERE sale_rejection_mrn_id = ? AND status != 'Cancelled' LIMIT 1`).get(id);
+  const focRequest = db.prepare(`SELECT * FROM foc_requests WHERE source_mrn_id = ? LIMIT 1`).get(id);
+  return { mrn, items, creditNote, focRequest };
+}
+router.get('/mrns/:id', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  const bundle = mrnBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  res.json(bundle);
+});
+router.post('/mrns/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
+  const mrn = db.prepare('SELECT * FROM sale_rejection_mrns WHERE id = ?').get(req.params.id);
+  if (!mrn) return res.status(404).json({ error: 'Not found' });
+  if (!['PendingApproval', 'InfoRequested'].includes(mrn.status)) {
+    return res.status(400).json({ error: `This MRN is ${mrn.status} and can no longer be cancelled.` });
+  }
+  db.prepare(`UPDATE sale_rejection_mrns SET status = 'Cancelled' WHERE id = ?`).run(mrn.id);
+  if (mrn.approval_id) {
+    db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(mrn.approval_id);
+  }
+  res.json({ ok: true });
+});
+
+// ---- MRN resolution: Sales Credit Note or FOC Replacement (manual, never automatic) ----
+router.post('/mrns/:id/resolve-credit-note', requirePermission('sales_order.manage'), (req, res) => {
+  const bundle = mrnBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const { mrn, items } = bundle;
+  if (mrn.status !== 'Approved') return res.status(400).json({ error: 'This MRN must be Approved before a resolution can be recorded.' });
+  if (mrn.resolution !== 'Unresolved') return res.status(400).json({ error: `This MRN is already resolved (${mrn.resolution}).` });
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(mrn.client_id);
+  const company = getCompanySettings();
+  const invoice = db.prepare(`SELECT * FROM sales_invoices WHERE sales_order_id = ? AND status != 'Cancelled' ORDER BY id DESC LIMIT 1`).get(mrn.sales_order_id);
+  const buyerState = invoice ? invoice.buyer_state : '';
+  const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
+  let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
+  items.forEach(it => {
+    const taxable = it.quantity_rejected * it.rate;
+    taxableTotal += taxable;
+    const taxAmt = taxable * (it.gst_rate || 0) / 100;
+    if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
+  });
+  const total = taxableTotal + cgst + sgst + igst;
+  const creditNoteNo = nextSeqNo('SCN', 'sales_credit_note');
+  const info = db.prepare(`
+    INSERT INTO sales_credit_notes (credit_note_no, sale_rejection_mrn_id, sales_invoice_id, client_id, reason, taxable_value, cgst, sgst, igst, total_value, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `).run(creditNoteNo, mrn.id, invoice ? invoice.id : null, mrn.client_id, mrn.reason || null, taxableTotal, cgst, sgst, igst, total, req.user.id);
+  db.prepare(`UPDATE sale_rejection_mrns SET resolution = 'CreditNote' WHERE id = ?`).run(mrn.id);
+  res.json({ id: info.lastInsertRowid, credit_note_no: creditNoteNo });
+});
+router.post('/mrns/:id/resolve-foc', requirePermission('sales_order.manage'), (req, res) => {
+  const bundle = mrnBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const { mrn, items } = bundle;
+  if (mrn.status !== 'Approved') return res.status(400).json({ error: 'This MRN must be Approved before a resolution can be recorded.' });
+  if (mrn.resolution !== 'Unresolved') return res.status(400).json({ error: `This MRN is already resolved (${mrn.resolution}).` });
+  const totalQty = items.reduce((s, it) => s + it.quantity_rejected, 0);
+  const totalValue = items.reduce((s, it) => s + it.quantity_rejected * it.rate, 0);
+  const { quantity, unit, estimated_value } = req.body;
+  const focNo = 'FOC-' + Date.now();
+  const info = db.prepare(`
+    INSERT INTO foc_requests (foc_no, sales_order_id, project_id, department_id, requested_by, client_id, item_description, quantity, unit, estimated_value, reason, source_mrn_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(focNo, mrn.sales_order_id, mrn.project_id, req.user.department_id, req.user.id, mrn.client_id,
+    `Replacement for ${mrn.mrn_no}${mrn.description ? ': ' + mrn.description : ''}`,
+    quantity || totalQty, unit || (items[0] && items[0].unit) || 'Nos', estimated_value !== undefined ? estimated_value : totalValue,
+    mrn.reason || null, mrn.id);
+  db.prepare(`UPDATE sale_rejection_mrns SET resolution = 'ReplacementFOC' WHERE id = ?`).run(mrn.id);
+  res.json({ id: info.lastInsertRowid, foc_no: focNo });
+});
+
+// ===================== Sales Credit Notes =====================
+router.get('/credit-notes', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT scn.*, c.name as client_name, m.mrn_no FROM sales_credit_notes scn
+    LEFT JOIN clients c ON c.id = scn.client_id LEFT JOIN sale_rejection_mrns m ON m.id = scn.sale_rejection_mrn_id
+    ORDER BY scn.id DESC
+  `).all());
+});
+router.post('/credit-notes/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
+  const cn = db.prepare('SELECT * FROM sales_credit_notes WHERE id = ?').get(req.params.id);
+  if (!cn) return res.status(404).json({ error: 'Not found' });
+  if (cn.status === 'Cancelled') return res.status(400).json({ error: 'This credit note is already cancelled.' });
+  db.prepare(`UPDATE sales_credit_notes SET status = 'Cancelled' WHERE id = ?`).run(cn.id);
+  db.prepare(`UPDATE sale_rejection_mrns SET resolution = 'Unresolved' WHERE id = ?`).run(cn.sale_rejection_mrn_id);
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -317,6 +317,9 @@ const NAV = [
     { id: 'offer-options', label: 'Offer Field Options' },
     { id: 'offer-pdf-designer', label: 'Offer PDF Layout Designer' },
     { id: 'orders', label: 'Sales Orders' },
+    { id: 'fg-dispatches', label: 'FG Packing & Dispatch' },
+    { id: 'sale-rejection-mrns', label: 'Sale Rejection MRN' },
+    { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
     { id: 'sales-targets', label: 'Sales Targets' },
@@ -1706,6 +1709,37 @@ async function renderApprovalDrilldown(key) {
           <b>Total Proposed:</b> ₹${fmt(items.reduce((s,i)=>s+i.proposed_salary,0))}
         </p>
       `;
+    } else if (r.entity_type === 'fg_dispatch') {
+      const [bundle, hist] = await Promise.all([api(`/sales/dispatches/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      const { dispatch, items } = bundle;
+      history = hist;
+      attachType = 'fg_dispatch';
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">Dispatch Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>Against Order:</b> ${esc(dispatch.order_no)} &nbsp; <b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp;
+          <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'}
+        </p>
+        ${dispatch.payment_override_note ? `<p class="msg err" style="display:block;">${esc(dispatch.payment_override_note)}</p>` : ''}
+        <h5 style="margin:8px 0 4px;">Line Items (${items.length})</h5>
+        ${tableHTML(['Description', 'Qty', 'Unit', 'HSN', 'Rate (₹)'], items, it => `
+          <tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${esc(it.hsn_code)||'-'}</td><td>₹${fmt(it.rate)}</td></tr>`)}
+      `;
+    } else if (r.entity_type === 'sale_rejection_mrn') {
+      const [bundle, hist] = await Promise.all([api(`/sales/mrns/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      const { mrn, items } = bundle;
+      history = hist;
+      attachType = 'sale_rejection_mrn';
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">Rejection Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>Against Dispatch:</b> ${esc(mrn.dispatch_no)} (${esc(mrn.order_no)}) &nbsp; <b>Reason:</b> ${esc(mrn.reason)||'-'} &nbsp; <b>Disposition:</b> ${esc(mrn.disposition)}
+        </p>
+        ${mrn.description ? `<p style="font-size:13px;margin:0 0 8px;">${esc(mrn.description)}</p>` : ''}
+        <h5 style="margin:8px 0 4px;">Rejected Lines (${items.length})</h5>
+        ${tableHTML(['Description', 'Qty Rejected', 'Unit', 'Rate (₹)'], items, it => `
+          <tr><td>${esc(it.description)}</td><td>${it.quantity_rejected}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td></tr>`)}
+      `;
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -2212,11 +2246,269 @@ function renderOrderRows(rows) {
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
+    <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
     ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
-    <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>`);
+    <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>
+    <tr id="so-items-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-items-body-${o.id}"></div></td></tr>`);
 }
+window.toggleSOItems = async (id) => {
+  const row = document.getElementById(`so-items-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  await loadSOItems(id);
+};
+async function loadSOItems(id) {
+  const body = document.getElementById(`so-items-body-${id}`);
+  body.innerHTML = '<p class="muted">Loading...</p>';
+  const items = await api(`/sales/orders/${id}/items`);
+  body.innerHTML = `
+    ${tableHTML(['Description', 'Qty', 'Unit', 'Rate (₹)', 'Value (₹)', 'HSN', 'GST %', 'Dispatchable', ''], items, it => `
+      <tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td><td>₹${fmt(it.value)}</td>
+      <td>${esc(it.hsn_code)||'-'}</td><td>${it.gst_rate}%</td><td>${it.dispatchable_qty}</td>
+      <td>${it.dispatchable_qty === it.quantity ? `<button class="btn small outline" type="button" onclick="removeSOItem(${id},${it.id})">Remove</button>` : ''}</td></tr>`)}
+    <h5 style="margin:10px 0 6px;">Add Line Item</h5>
+    <div class="form-grid">
+      <div><label>Description</label><input id="so-item-desc-${id}"></div>
+      <div><label>Quantity</label><input id="so-item-qty-${id}" type="number" value="1"></div>
+      <div><label>Unit</label><input id="so-item-unit-${id}" value="Nos"></div>
+      <div><label>Rate (₹)</label><input id="so-item-rate-${id}" type="number"></div>
+      <div><label>HSN Code</label><input id="so-item-hsn-${id}"></div>
+      <div><label>GST Rate (%)</label><input id="so-item-gst-${id}" type="number" value="18"></div>
+    </div>
+    <button class="btn small" type="button" onclick="addSOItem(${id})">Add</button>`;
+}
+window.addSOItem = async (id) => {
+  try {
+    await api(`/sales/orders/${id}/items`, { method: 'POST', body: JSON.stringify({
+      description: val(`so-item-desc-${id}`), quantity: val(`so-item-qty-${id}`), unit: val(`so-item-unit-${id}`),
+      rate: val(`so-item-rate-${id}`), hsn_code: val(`so-item-hsn-${id}`), gst_rate: val(`so-item-gst-${id}`),
+    })});
+    await loadSOItems(id);
+  } catch (e) { alert(e.message); }
+};
+window.removeSOItem = async (orderId, itemId) => {
+  if (!confirm('Remove this line item?')) return;
+  try { await api(`/sales/orders/${orderId}/items/${itemId}`, { method: 'DELETE' }); await loadSOItems(orderId); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- FG Packing & Dispatch ----
+let DISPATCH_LINES = [];
+window.loadDispatchableLines = async () => {
+  const soId = val('disp-so');
+  DISPATCH_LINES = [];
+  if (!soId) { renderDispatchLines(); return; }
+  const lines = await api(`/sales/orders/${soId}/dispatchable-lines`);
+  DISPATCH_LINES = lines.map(l => ({ sales_order_item_id: l.id, description: l.description, unit: l.unit, dispatchable_qty: l.dispatchable_qty, quantity: l.dispatchable_qty }));
+  renderDispatchLines();
+};
+function renderDispatchLines() {
+  const el = document.getElementById('disp-lines');
+  if (!el) return;
+  if (!DISPATCH_LINES.length) { el.innerHTML = '<p class="muted">Pick a sales order with dispatchable lines.</p>'; return; }
+  el.innerHTML = tableHTML(['Line', 'Dispatchable Qty', 'Dispatch Qty', 'Unit'], DISPATCH_LINES, (l, i) => `
+    <tr><td>${esc(l.description)}</td><td>${l.dispatchable_qty}</td>
+    <td><input type="number" value="${l.quantity}" max="${l.dispatchable_qty}" onchange="DISPATCH_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
+    <td>${esc(l.unit)}</td></tr>`);
+}
+PAGES['fg-dispatches'] = async (el) => {
+  const [orders, dispatches] = await Promise.all([api('/sales/orders'), api('/sales/dispatches')]);
+  el.innerHTML = `
+    <div class="panel"><h3>New Dispatch</h3>
+      <div class="form-grid">
+        <div><label>Sales Order</label><select id="disp-so" onchange="loadDispatchableLines()"><option value="">- Select -</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+        <div><label>Vehicle No</label><input id="disp-vehicle"></div>
+        <div><label>Transporter</label><input id="disp-transporter"></div>
+        <div><label>E-Way Bill No</label><input id="disp-eway"></div>
+      </div>
+      <div id="disp-lines"><p class="muted">Pick a sales order with dispatchable lines.</p></div>
+      <button class="btn" onclick="submitDispatch()" style="margin-top:8px;">Dispatch</button>
+    </div>
+    ${collapsiblePanel('dispatches-list', `Dispatches (${dispatches.length})`, `
+      ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
+        <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
+        <td>
+          <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
+          <a href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event,${d.id})">PDF</a>
+          ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
+        </td></tr>
+        <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
+    `)}`;
+};
+window.submitDispatch = async () => {
+  const lines = DISPATCH_LINES.filter(l => l.quantity > 0).map(l => ({ sales_order_item_id: l.sales_order_item_id, quantity: l.quantity }));
+  if (!lines.length) { alert('Pick a sales order and at least one line with quantity > 0.'); return; }
+  try {
+    await api('/sales/dispatches', { method: 'POST', body: JSON.stringify({
+      sales_order_id: val('disp-so'), vehicle_no: val('disp-vehicle'), transporter_name: val('disp-transporter'),
+      eway_bill_no: val('disp-eway'), lines,
+    })});
+    alert('Dispatch submitted for approval - Accounts, then Management.');
+    navigate('fg-dispatches');
+  } catch (e) { alert(e.message); }
+};
+window.toggleDispatchDetail = async (id) => {
+  const row = document.getElementById(`disp-detail-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  const box = document.getElementById(`disp-detail-${id}`);
+  box.innerHTML = '<p class="muted">Loading...</p>';
+  const { dispatch, items } = await api(`/sales/dispatches/${id}`);
+  box.innerHTML = `
+    <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+      ${dispatch.payment_override_note ? `<p class="msg err" style="display:block;">${esc(dispatch.payment_override_note)}</p>` : ''}
+      <p style="font-size:13px;"><b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp; <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'}</p>
+      ${tableHTML(['Description', 'Qty', 'Unit', 'HSN'], items, it => `<tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${esc(it.hsn_code)||'-'}</td></tr>`)}
+    </div>`;
+};
+window.downloadDispatchPdf = async (ev, id) => {
+  ev.preventDefault();
+  try {
+    const res = await fetch(`/api/sales/dispatches/${id}/pdf`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `dispatch-${id}.pdf`; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+  return false;
+};
+window.cancelDispatch = async (id) => {
+  if (!confirm('Cancel this dispatch? This cannot be undone.')) return;
+  try { await api(`/sales/dispatches/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('fg-dispatches'); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- Sale Rejection MRN ----
+const MRN_DISPOSITIONS = ['Rework', 'Scrap', 'ReturnToStock'];
+let MRN_LINES = [];
+window.loadRejectableLines = async () => {
+  const dispId = val('mrn-dispatch');
+  MRN_LINES = [];
+  if (!dispId) { renderMrnLines(); return; }
+  const lines = await api(`/sales/dispatches/${dispId}/rejectable-lines`);
+  MRN_LINES = lines.map(l => ({ fg_dispatch_item_id: l.id, description: l.description, unit: l.unit, rejectable_qty: l.rejectable_qty, quantity_rejected: l.rejectable_qty }));
+  renderMrnLines();
+};
+function renderMrnLines() {
+  const el = document.getElementById('mrn-lines');
+  if (!el) return;
+  if (!MRN_LINES.length) { el.innerHTML = '<p class="muted">Pick a Dispatched shipment with rejectable lines.</p>'; return; }
+  el.innerHTML = tableHTML(['Line', 'Rejectable Qty', 'Qty Rejected', 'Unit'], MRN_LINES, (l, i) => `
+    <tr><td>${esc(l.description)}</td><td>${l.rejectable_qty}</td>
+    <td><input type="number" value="${l.quantity_rejected}" max="${l.rejectable_qty}" onchange="MRN_LINES[${i}].quantity_rejected=Number(this.value)" style="width:90px;"></td>
+    <td>${esc(l.unit)}</td></tr>`);
+}
+PAGES['sale-rejection-mrns'] = async (el) => {
+  const [dispatches, mrns] = await Promise.all([api('/sales/dispatches'), api('/sales/mrns')]);
+  const dispatchedOnes = dispatches.filter(d => d.status === 'Dispatched');
+  el.innerHTML = `
+    <div class="panel"><h3>New Sale Rejection MRN</h3>
+      <div class="form-grid">
+        <div><label>Dispatch</label><select id="mrn-dispatch" onchange="loadRejectableLines()"><option value="">- Select -</option>${dispatchedOnes.map(d => `<option value="${d.id}">${esc(d.dispatch_no)} - ${esc(d.order_no)} (${esc(d.client_name)})</option>`).join('')}</select></div>
+        <div><label>Reason</label><select id="mrn-reason"><option>Quality Issue</option><option>Wrong Specification</option><option>Damaged in Transit</option><option>Customer Cancelled</option><option>Other</option></select></div>
+        <div><label>Disposition</label><select id="mrn-disposition">${MRN_DISPOSITIONS.map(d => `<option>${d}</option>`).join('')}</select></div>
+      </div>
+      <div><label>Description / Notes</label><textarea id="mrn-desc" rows="2" style="width:100%;"></textarea></div>
+      <div id="mrn-lines"><p class="muted">Pick a Dispatched shipment with rejectable lines.</p></div>
+      <button class="btn" onclick="submitMrn()" style="margin-top:8px;">Raise MRN</button>
+    </div>
+    ${collapsiblePanel('mrns-list', `Sale Rejection MRNs (${mrns.length})`, `
+      ${tableHTML(['MRN No', 'Dispatch', 'Order', 'Client', 'Disposition', 'Status', 'Resolution', ''], mrns, m => `
+        <tr><td>${esc(m.mrn_no)}</td><td>${esc(m.dispatch_no)}</td><td>${esc(m.order_no)}</td><td>${esc(m.client_name)}</td><td>${esc(m.disposition)}</td>
+        <td>${badge(m.status)}</td><td>${esc(m.resolution)}</td>
+        <td>
+          <button class="btn small outline" type="button" onclick="toggleMrnDetail(${m.id})">Details</button>
+          ${m.status === 'Approved' && m.resolution === 'Unresolved' ? `
+            <button class="btn small outline" type="button" onclick="resolveMrnCreditNote(${m.id})">Generate Credit Note</button>
+            <button class="btn small outline" type="button" onclick="resolveMrnFoc(${m.id})">Create FOC Replacement</button>` : ''}
+          ${['PendingApproval','InfoRequested'].includes(m.status) ? `<button class="btn small red" type="button" onclick="cancelMrn(${m.id})">Cancel</button>` : ''}
+        </td></tr>
+        <tr id="mrn-detail-row-${m.id}" style="display:none;"><td colspan="8"><div id="mrn-detail-${m.id}"></div></td></tr>`)}
+    `)}`;
+};
+window.submitMrn = async () => {
+  const lines = MRN_LINES.filter(l => l.quantity_rejected > 0).map(l => ({ fg_dispatch_item_id: l.fg_dispatch_item_id, quantity_rejected: l.quantity_rejected }));
+  if (!lines.length) { alert('Pick a dispatch and at least one line with quantity > 0.'); return; }
+  try {
+    await api('/sales/mrns', { method: 'POST', body: JSON.stringify({
+      fg_dispatch_id: val('mrn-dispatch'), reason: val('mrn-reason'), description: val('mrn-desc'), disposition: val('mrn-disposition'), lines,
+    })});
+    alert('MRN raised - submitted for Sales HOD approval.');
+    navigate('sale-rejection-mrns');
+  } catch (e) { alert(e.message); }
+};
+window.toggleMrnDetail = async (id) => {
+  const row = document.getElementById(`mrn-detail-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  const box = document.getElementById(`mrn-detail-${id}`);
+  box.innerHTML = '<p class="muted">Loading...</p>';
+  const { mrn, items, creditNote, focRequest } = await api(`/sales/mrns/${id}`);
+  box.innerHTML = `
+    <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+      <p style="font-size:13px;"><b>Reason:</b> ${esc(mrn.reason)||'-'} &nbsp; <b>Disposition:</b> ${esc(mrn.disposition)}</p>
+      ${mrn.description ? `<p style="font-size:13px;">${esc(mrn.description)}</p>` : ''}
+      ${tableHTML(['Description', 'Qty Rejected', 'Unit', 'Rate (₹)'], items, it => `<tr><td>${esc(it.description)}</td><td>${it.quantity_rejected}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td></tr>`)}
+      ${creditNote ? `<p style="font-size:13px;"><b>Credit Note:</b> ${esc(creditNote.credit_note_no)} - ₹${fmt(creditNote.total_value)}</p>` : ''}
+      ${focRequest ? `<p style="font-size:13px;"><b>FOC Replacement:</b> ${esc(focRequest.foc_no)} (${esc(focRequest.status)})</p>` : ''}
+    </div>`;
+};
+window.resolveMrnCreditNote = async (id) => {
+  if (!confirm('Generate a Sales Credit Note for this MRN?')) return;
+  try { await api(`/sales/mrns/${id}/resolve-credit-note`, { method: 'POST', body: '{}' }); navigate('sale-rejection-mrns'); }
+  catch (e) { alert(e.message); }
+};
+window.resolveMrnFoc = async (id) => {
+  if (!confirm('Create a replacement FOC request for this MRN? It will need its own FOC approval.')) return;
+  try { await api(`/sales/mrns/${id}/resolve-foc`, { method: 'POST', body: '{}' }); navigate('sale-rejection-mrns'); }
+  catch (e) { alert(e.message); }
+};
+window.cancelMrn = async (id) => {
+  if (!confirm('Cancel this MRN? This cannot be undone.')) return;
+  try { await api(`/sales/mrns/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('sale-rejection-mrns'); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- Sales Credit Notes ----
+PAGES['sales-credit-notes'] = async (el) => {
+  const notes = await api('/sales/credit-notes');
+  el.innerHTML = `
+    <div class="panel"><h3>Sales Credit Notes</h3>
+      <p class="muted">Generated from an Approved Sale Rejection MRN - see the Sale Rejection MRN page to raise one.</p>
+      ${tableHTML(['Credit Note No', 'Client', 'From MRN', 'Taxable (₹)', 'GST (₹)', 'Total (₹)', 'Status', ''], notes, c => `
+        <tr><td>${esc(c.credit_note_no)}</td><td>${esc(c.client_name)}</td><td>${esc(c.mrn_no)||'-'}</td><td>₹${fmt(c.taxable_value)}</td>
+        <td>₹${fmt(c.cgst + c.sgst + c.igst)}</td><td>₹${fmt(c.total_value)}</td><td>${badge(c.status)}</td>
+        <td>${c.status !== 'Cancelled' ? `<button class="btn small red" type="button" onclick="cancelSalesCreditNote(${c.id})">Cancel</button>` : ''}</td></tr>`)}
+    </div>`;
+};
+window.cancelSalesCreditNote = async (id) => {
+  if (!confirm('Cancel this credit note?')) return;
+  try { await api(`/sales/credit-notes/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('sales-credit-notes'); }
+  catch (e) { alert(e.message); }
+};
+let SO_LINES = [];
+function renderSOLines() {
+  const el = document.getElementById('so-lines');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Description', 'Quantity', 'Unit', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], SO_LINES, (l, i) => `
+    <tr>
+      <td><input value="${esc(l.description||'')}" onchange="SO_LINES[${i}].description=this.value" style="min-width:160px;"></td>
+      <td><input type="number" value="${l.quantity}" onchange="SO_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
+      <td><input value="${esc(l.unit||'Nos')}" onchange="SO_LINES[${i}].unit=this.value" style="width:80px;"></td>
+      <td><input type="number" value="${l.rate}" onchange="SO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
+      <td><input value="${esc(l.hsn_code||'')}" onchange="SO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
+      <td><input type="number" value="${l.gst_rate}" onchange="SO_LINES[${i}].gst_rate=Number(this.value)" style="width:80px;"></td>
+      <td><button class="btn small outline" type="button" onclick="SO_LINES.splice(${i},1);renderSOLines()">✕</button></td>
+    </tr>`);
+}
+window.addSOLine = () => { SO_LINES.push({ description: '', quantity: 1, unit: 'Nos', rate: 0, hsn_code: '', gst_rate: 18 }); renderSOLines(); };
+
 window.deleteOrderRow = async (id) => {
   if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
   try {
@@ -2227,15 +2519,21 @@ window.deleteOrderRow = async (id) => {
 PAGES.orders = async (el) => {
   const orders = await api('/sales/orders');
   const wonLeads = (await api('/sales/leads')).filter(l => l.stage === 'Won');
+  SO_LINES = [];
   el.innerHTML = `
     <div class="panel">
       <h3>New Sales Order</h3>
       <div class="form-grid">
         <div><label>Client</label><select id="so-client"></select></div>
         <div><label>From Lead (optional)</label><select id="so-lead"><option value="">-</option>${wonLeads.map(l => `<option value="${l.id}">#${l.id} ${esc(l.client_name)}</option>`).join('')}</select></div>
-        <div><label>Order Value (₹)</label><input id="so-value" type="number"></div>
         <div><label>Description</label><textarea id="so-desc" rows="1"></textarea></div>
         <div><label>Promised Delivery Date</label><input id="so-delivery" type="date"></div>
+      </div>
+      <h4 style="margin:14px 0 6px;">Line Items <span class="muted">(optional - leave empty and set Order Value manually for a simple order with no dispatch tracking)</span></h4>
+      <div id="so-lines"></div>
+      <button class="btn small outline" type="button" onclick="addSOLine()">+ Add Line Item</button>
+      <div class="form-grid" style="margin-top:10px;">
+        <div><label>Order Value (₹) <span class="muted">(ignored once a line item is added - computed automatically instead)</span></label><input id="so-value" type="number"></div>
       </div>
       <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
         <h4 style="margin-top:0;">LD Clause (optional)</h4>
@@ -2258,6 +2556,7 @@ PAGES.orders = async (el) => {
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     `)}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
+  renderSOLines();
 };
 window.reportOrders = async () => {
   const orders = await api('/sales/orders');
@@ -2433,9 +2732,11 @@ function readBgTermsFields(prefix) {
   };
 }
 window.addOrder = async () => {
+  const lines = SO_LINES.filter(l => l.description && l.description.trim());
   try {
     const r = await api('/sales/orders', { method: 'POST', body: JSON.stringify({
-      client_id: val('so-client'), lead_id: val('so-lead') || null, order_value: val('so-value'), description: val('so-desc')
+      client_id: val('so-client'), lead_id: val('so-lead') || null, order_value: val('so-value'), description: val('so-desc'),
+      lines,
     })});
     // Commercial terms aren't accepted by the create endpoint (kept
     // separate/optional, Round 16) - a second call sets them if the user
