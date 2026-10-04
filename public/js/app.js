@@ -15,6 +15,26 @@ async function api(path, opts = {}) {
 
 function has(...codes) { return ME && (ME.role === 'Admin' || codes.some(c => PERMS.has(c))); }
 
+// ===================== Branding (logo on the login screen + sidebar) =====================
+// Fetched once, before login - /auth/branding is unauthenticated by design
+// (the login screen has no token yet) - and cached here for renderSidebar()
+// to reuse after sign-in too, so there's only ever the one request per page
+// load rather than fetching it again post-login.
+let BRAND = null;
+async function loadBranding() {
+  try {
+    BRAND = await api('/auth/branding');
+  } catch (e) { BRAND = null; return; } // purely decorative - login/sidebar fall back to the text wordmark
+  if (!BRAND.logo_path) return;
+  ['login-logo-main', 'login-logo-forgot', 'login-logo-reset'].forEach(id => {
+    const img = document.getElementById(id);
+    if (!img) return;
+    img.src = BRAND.logo_path;
+    img.alt = BRAND.display_name || 'Company logo';
+    img.style.display = 'block';
+  });
+}
+
 // ===================== Auth =====================
 async function doLogin() {
   const username = document.getElementById('login-username').value.trim();
@@ -509,7 +529,12 @@ window.closeSidebarDrawer = closeSidebarDrawer;
 
 function renderSidebar() {
   const el = document.getElementById('sidebar');
-  el.innerHTML = `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
+  // Swaps to the Company Settings logo once one's on file (BRAND, loaded
+  // pre-login by loadBranding() and reused here) - falls back to the plain
+  // text wordmark otherwise, same as before this existed.
+  el.innerHTML = (BRAND && BRAND.logo_path)
+    ? `<div class="brand"><img src="${esc(BRAND.logo_path)}" alt="${esc(BRAND.display_name || 'Company logo')}"><span>ERP System</span></div>`
+    : `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
   const groups = [...NAV];
   if (DEPT_OWN_GROUP.items.length) groups.splice(3, 0, DEPT_OWN_GROUP); // right after Projects Management
   // Placed right after Projects Management too (not appended at the very
@@ -10800,6 +10825,10 @@ window.uploadDataImportFile = async () => {
 };
 
 // ===================== Boot on load if token exists =====================
-checkForResetToken().then(hadResetToken => {
+// loadBranding() runs alongside checkForResetToken() (independent reads) but
+// is awaited before boot() so renderSidebar() never runs with BRAND still
+// unset - it'd otherwise render the text wordmark first and only swap to
+// the logo on the next sidebar re-render (e.g. the first nav-group toggle).
+Promise.all([checkForResetToken(), loadBranding()]).then(([hadResetToken]) => {
   if (!hadResetToken && TOKEN) boot();
 });

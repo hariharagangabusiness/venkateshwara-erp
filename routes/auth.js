@@ -6,8 +6,22 @@ const { SECRET, authRequired } = require('../middleware/auth');
 const { createToken, verifyToken, consumeToken } = require('../lib/passwordReset');
 const { sendMail } = require('../lib/mailer');
 const { computeAllowedPages } = require('../lib/pageAccess');
+const { getCompanySettings } = require('../lib/settings');
 
 const router = express.Router();
+
+// Unauthenticated by design - the login screen has no token yet to show the
+// company logo with. Deliberately returns only the two fields the login
+// screen (and, once signed in, the sidebar brand block) actually need -
+// never the full company_settings object, which also carries GSTIN, bank
+// details and addresses that have no business being reachable pre-login.
+// The logo image itself is already servable without auth (plain
+// express.static over /uploads in server.js) - this just tells the frontend
+// which file to point at.
+router.get('/branding', (req, res) => {
+  const company = getCompanySettings();
+  res.json({ logo_path: company.logo_path || '', display_name: company.legal_name || company.trade_name || '' });
+});
 
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
