@@ -411,9 +411,13 @@ router.put('/governance', requireRole('Admin'), (req, res) => {
 
 router.get('/', (req, res) => {
   const { client_id, lead_id } = req.query;
+  // Standard Templates (is_template=1) are never real customer quotes, so
+  // they're excluded from this list by default - see GET /templates below,
+  // the library view every offer-permission user (not just Admin) can
+  // browse to pick one to copy from.
   let q = `
     SELECT o.*, c.name as client_name, l.enquiry_details as lead_enquiry_details
-    FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id WHERE 1=1
+    FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id WHERE o.is_template = 0
   `;
   const params = [];
   if (client_id) { q += ' AND o.client_id = ?'; params.push(client_id); }
@@ -422,10 +426,27 @@ router.get('/', (req, res) => {
   res.json(db.prepare(q).all(...params));
 });
 
+// Offer Templates library (2026-10-06) - Standard Templates an Admin
+// maintains for Sales to reuse. Open to anyone with offer access to browse
+// (so they can pick one to copy from via POST /:id/copy - "Create Offer
+// from Template" in the UI); only Admin can create/edit/delete one (see
+// the is_template branch of POST / below, and ensureEditableVersion's own
+// is_template guard in lib/offerVersioning.js). Registered before GET
+// /:id - Express matches routes in registration order and ':id' would
+// otherwise swallow the literal string "templates", the same
+// :id-before-literal-sibling bug already hit and fixed several times
+// elsewhere in this codebase (Employee/Vendor "Download Template", the
+// Purchase Invoice line picker).
+router.get('/templates', offerPerm(), (req, res) => {
+  res.json(db.prepare(`SELECT * FROM offers WHERE is_template = 1 ORDER BY id DESC`).all());
+});
+
 function getFullOffer(id) {
   const offer = db.prepare('SELECT * FROM offers WHERE id = ?').get(id);
   if (!offer) return null;
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(offer.client_id);
+  // A Standard Template has no client (client_id is null) - see is_template
+  // above.
+  const client = offer.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(offer.client_id) : null;
   const items = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY sort_order, id').all(id);
@@ -448,8 +469,11 @@ router.get('/:id', (req, res) => {
 // the Sales Order as its starting terms when the offer is confirmed (see
 // POST /:id/confirm below).
 router.patch('/:id/commercial-terms', offerPerm(), (req, res) => {
-  const existing = db.prepare('SELECT id FROM offers WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, is_template FROM offers WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.is_template && req.user.role_name !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admin can edit a Standard Template - use "Create Offer from Template" to start a real customer offer from it.' });
+  }
   const {
     promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
     abg_required, abg_percentage, abg_amount, abg_validity_days,
@@ -486,19 +510,27 @@ router.get('/:id/versions', (req, res) => {
 // ===================== Create =====================
 
 router.post('/', offerPerm(), (req, res) => {
-  const { client_id, lead_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no } = req.body;
-  if (!client_id) return res.status(400).json({ error: 'client_id is required' });
+  const { client_id, lead_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no, is_template } = req.body;
+  // A Standard Template (Offer Templates library, 2026-10-06) isn't tied to
+  // any real customer - Admin-only to create (and, via
+  // ensureEditableVersion's own guard, to edit afterward); everyone else
+  // with offer access can only browse the library and copy one into a real
+  // customer offer (POST /:id/copy - unaffected, see that route's comment).
+  if (is_template && req.user.role_name !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admin can create a Standard Template.' });
+  }
+  if (!is_template && !client_id) return res.status(400).json({ error: 'client_id is required' });
   const offerNo = 'OFR-' + Date.now();
 
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO offers (offer_no, client_id, lead_id, contact_person, contact_phone, contact_email, subject,
         application, type_of_system, material_of_construction, drawing_no,
-        inclusions, exclusions, utilities_requirement, instrument_air_supply, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(offerNo, client_id, lead_id || null, contact_person, contact_phone, contact_email, subject,
+        inclusions, exclusions, utilities_requirement, instrument_air_supply, is_template, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(offerNo, is_template ? null : client_id, is_template ? null : (lead_id || null), contact_person, contact_phone, contact_email, subject,
       application, type_of_system, material_of_construction, drawing_no,
-      defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, req.user.id);
+      defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, is_template ? 1 : 0, req.user.id);
     const offerId = info.lastInsertRowid;
 
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
@@ -624,11 +656,19 @@ router.put('/:id', offerPerm(), (req, res) => {
   const f = req.body;
   const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  // A Standard Template stays Draft forever (mark-sent is blocked on one -
+  // see POST /:id/mark-sent), so the ensureEditableVersion() call below
+  // never actually runs for it (it's conditional on having left Draft) -
+  // its own is_template guard would never fire here. Checked directly
+  // instead, same as commercial-terms/mark-sent/confirm above.
+  if (existing.is_template && req.user.role_name !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admin can edit a Standard Template - use "Create Offer from Template" to start a real customer offer from it.' });
+  }
 
   let targetId = existing.id;
   let forked = false;
   if (existing.status !== 'Draft' && !f.statusOnly) {
-    const version = ensureEditableVersion(existing.id, req.user.id, f.revision_reason);
+    const version = ensureEditableVersion(existing.id, req.user.id, f.revision_reason, req.user.role_name === 'Admin');
     targetId = version.id;
     forked = true;
   }
@@ -654,7 +694,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 
 router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
   const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
-  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
+  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   let imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
   // No file uploaded by hand, but a library entry was picked and it has a
@@ -682,7 +722,7 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const version = ensureEditableVersion(existing.offer_id, req.user.id, revision_reason);
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const targetItemId = version.itemIdMap.get(existing.id);
   let imagePath = existing.image_path;
   if (req.file) {
@@ -721,7 +761,7 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
 router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason);
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason, req.user.role_name === 'Admin');
   const targetItemId = version.itemIdMap.get(existing.id);
   // Same reasoning as the image replacement above - a forked copy's row
   // shares the physical file with the frozen earlier version's row.
@@ -743,7 +783,7 @@ router.post('/:id/equipment-references', offerPerm(), (req, res) => {
   if (!section_title_library_id) return res.status(400).json({ error: 'Pick a library entry.' });
   const lib = db.prepare('SELECT * FROM section_title_library WHERE id = ?').get(section_title_library_id);
   if (!lib) return res.status(400).json({ error: 'That library entry no longer exists - refresh and pick again.' });
-  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason);
+  const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const imagePath = lib.image_path ? copyLibraryImage(lib.image_path) : null;
   const info = db.prepare(`
     INSERT INTO offer_equipment_references (offer_id, section_title_library_id, title, summary, image_path, sort_order)
@@ -754,7 +794,7 @@ router.post('/:id/equipment-references', offerPerm(), (req, res) => {
 router.delete('/:id/equipment-references/:refId', offerPerm(), (req, res) => {
   const existing = db.prepare('SELECT * FROM offer_equipment_references WHERE id = ?').get(req.params.refId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason);
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason, req.user.role_name === 'Admin');
   const targetRefId = version.equipmentRefIdMap.get(existing.id);
   // Same reasoning as the Scope-of-Supply item delete above - a forked
   // copy's row shares the physical file with the frozen earlier version's.
@@ -780,7 +820,7 @@ function bulkReplace(table, offerId, rows, colA, colB) {
 }
 
 router.put('/:id/tech-specs', offerPerm(), (req, res) => {
-  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
   bulkReplace('offer_tech_specs', version.id, req.body.rows || [], 'spec_key', 'spec_value');
   if (req.body.show_tech_specs !== undefined) {
     db.prepare('UPDATE offers SET show_tech_specs = ? WHERE id = ?').run(req.body.show_tech_specs ? 1 : 0, version.id);
@@ -788,7 +828,7 @@ router.put('/:id/tech-specs', offerPerm(), (req, res) => {
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/bought-out', offerPerm(), (req, res) => {
-  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
   bulkReplace('offer_bought_out_items', version.id, req.body.rows || [], 'component', 'make');
   if (req.body.show_bought_out !== undefined) {
     db.prepare('UPDATE offers SET show_bought_out = ? WHERE id = ?').run(req.body.show_bought_out ? 1 : 0, version.id);
@@ -796,7 +836,7 @@ router.put('/:id/bought-out', offerPerm(), (req, res) => {
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 router.put('/:id/terms', offerPerm(), (req, res) => {
-  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason);
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
   bulkReplace('offer_terms', version.id, req.body.rows || [], 'term_key', 'term_value');
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
@@ -859,6 +899,11 @@ router.get('/:id/pdf', async (req, res) => {
 router.post('/:id/mark-sent', offerPerm(), (req, res) => {
   const existing = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  // A Standard Template was never meant to go to anyone - unlike the
+  // content-edit routes, nobody (not even Admin) can mark one Sent.
+  if (existing.is_template) {
+    return res.status(400).json({ error: 'A Standard Template cannot be marked Sent - use "Create Offer from Template" to start a real customer offer first.' });
+  }
   if (existing.status !== 'Draft') {
     return res.status(400).json({ error: `This offer is already ${existing.status} - only a Draft offer can be marked as Sent.` });
   }
@@ -871,6 +916,11 @@ router.post('/:id/mark-sent', offerPerm(), (req, res) => {
 router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req, res) => {
   const full = getFullOffer(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
+  // A Standard Template has no real customer to create a Sales Order
+  // against (client_id is null) - nobody can confirm one, same as mark-sent.
+  if (full.offer.is_template) {
+    return res.status(400).json({ error: 'A Standard Template cannot be confirmed into a Sales Order - use "Create Offer from Template" to start a real customer offer first.' });
+  }
   if (full.offer.status === 'Won' && full.offer.sales_order_id) {
     return res.status(400).json({ error: 'Offer already confirmed into a sales order' });
   }
