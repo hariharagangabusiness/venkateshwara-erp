@@ -1681,6 +1681,9 @@ async function renderApprovalDrilldown(key) {
         const vendor = await api(`/masters/vendors/${first.vendor_id}`).catch(() => null);
         const taxable = lines.reduce((s, l) => s + Number(l.total_value || 0), 0);
         const gstAmt = lines.reduce((s, l) => s + Number(l.gst_amount || 0), 0);
+        const freight = Number(first.freight || 0);
+        const freightGstRate = Number(first.freight_gst_rate || 0);
+        const freightGst = freight * freightGstRate / 100;
         extraHtml = `
           <h5 style="margin:8px 0 4px;">Vendor</h5>
           <p style="font-size:13px;margin:0 0 8px;">
@@ -1697,10 +1700,12 @@ async function renderApprovalDrilldown(key) {
             ${first.terms ? `<br><b>Additional Terms:</b> ${esc(first.terms)}` : ''}
           </p>
           <h5 style="margin:8px 0 4px;">Line Items</h5>
-          ${tableHTML(['Item', 'Qty', 'Rate (₹)', 'HSN', 'GST %', 'Total (₹)', 'Status', ''], lines, l => `
-            <tr><td>${esc(l.item_name)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.rate)}</td><td>${esc(l.hsn_code)||'-'}</td><td>${l.gst_rate||0}%</td><td>₹${fmt(l.total_value)}</td><td>${badge(l.status)}</td>
+          ${tableHTML(['Item', 'Qty', 'Unit', 'Rate (₹)', 'Disc %', 'HSN', 'GST %', 'Total (₹)', 'Status', ''], lines, l => `
+            <tr><td>${esc(l.item_name)||'-'}</td><td>${l.quantity}</td><td>${esc(l.unit)||'Nos'}</td><td>₹${fmt(l.rate)}</td><td>${Number(l.discount_percent)||0}%</td><td>${esc(l.hsn_code)||'-'}</td><td>${l.gst_rate||0}%</td><td>₹${fmt(l.total_value)}</td><td>${badge(l.status)}</td>
             <td>${l.item_id ? `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${l.item_id})">Price History</button>` : ''}</td></tr>`)}
-          <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Taxable:</b> ₹${fmt(taxable)} &nbsp; <b>GST:</b> ₹${fmt(gstAmt)} &nbsp; <b>Grand Total:</b> ₹${fmt(taxable + gstAmt)}</p>
+          <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Taxable:</b> ₹${fmt(taxable)} &nbsp; <b>GST:</b> ₹${fmt(gstAmt)}
+            ${freight ? ` &nbsp; <b>Freight:</b> ₹${fmt(freight)} &nbsp; <b>Freight GST (${freightGstRate}%):</b> ₹${fmt(freightGst)}` : ''}
+            &nbsp; <b>Grand Total:</b> ₹${fmt(taxable + gstAmt + freight + freightGst)}</p>
         `;
       }
     } else if (r.entity_type === 'purchase_invoice') {
@@ -4957,6 +4962,31 @@ window.saveEditPR = async (id) => {
 };
 
 // ---- Purchase Orders ----
+// Unit of Measurement picker: a dropdown of the 3 common presets plus
+// "Other..." which reveals a free-text box for anything else - used on both
+// the New PO line-items table (array-backed, via `assignExpr`) and the
+// single-line Edit PO form (read back at Save time via unitPickerValue(),
+// no live assignment needed there since that form has no backing array).
+const PO_UNIT_PRESETS = ['KGS', 'Nos', 'Meters'];
+function unitPickerHTML(id, currentValue, assignExpr) {
+  const isPreset = PO_UNIT_PRESETS.includes(currentValue);
+  const selVal = isPreset ? currentValue : (currentValue ? 'Other' : 'Nos');
+  const assign = assignExpr ? `${assignExpr}=unitPickerValue('${id}');` : '';
+  return `<select id="${id}" onchange="toggleUnitOther('${id}');${assign}" style="width:80px;">
+      ${PO_UNIT_PRESETS.map(u => `<option value="${esc(u)}" ${selVal===u?'selected':''}>${esc(u)}</option>`).join('')}
+      <option value="Other" ${selVal==='Other'?'selected':''}>Other...</option>
+    </select>
+    <input id="${id}-other" value="${esc(isPreset ? '' : (currentValue||''))}" placeholder="unit" style="width:70px;display:${selVal==='Other'?'inline-block':'none'};margin-top:4px;"
+      ${assignExpr ? `oninput="${assign}"` : ''}>`;
+}
+window.toggleUnitOther = (id) => {
+  const other = document.getElementById(id + '-other');
+  if (other) other.style.display = val(id) === 'Other' ? 'inline-block' : 'none';
+};
+window.unitPickerValue = (id) => {
+  const sel = val(id);
+  return sel === 'Other' ? (val(id + '-other').trim() || 'Nos') : sel;
+};
 let PO_LINES = [];
 PAGES['purchase-orders'] = async (el) => {
   // All 7 of these are independent reads - fired together (rather than one
@@ -4991,7 +5021,7 @@ PAGES['purchase-orders'] = async (el) => {
   // Flat id->row lookup for the lazy Edit/Terms panels - rows only ever need
   // their own PO line's data, found by id, not the whole list.
   window.__PO_ORDERS_CACHE = orders;
-  PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
+  PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }];
   const poPanels = {
     'new-po': collapsiblePanel('new-purchase-order', 'New Purchase Order', `
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
@@ -5008,6 +5038,8 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>Payment Terms</label><select id="po-payment-terms"><option value="">-</option>${paymentTermsOptions.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
         <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
         <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
+        <div><label>Freight (₹)</label><input id="po-freight" type="number" value="0"></div>
+        <div><label>Freight GST (%)</label><input id="po-freight-gst" type="number" value="${(purchaseSettings && purchaseSettings.default_gst_rate) || 18}"></div>
       </div>
       <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       <div class="form-grid" style="margin-top:8px;">
@@ -5038,22 +5070,31 @@ PAGES['purchase-orders'] = async (el) => {
 function renderPOLines() {
   const el = document.getElementById('po-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item', 'Quantity', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
+  el.innerHTML = tableHTML(['Item', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
     <tr>
       <td><div style="display:flex;gap:6px;align-items:center;">
         <div style="flex:1;min-width:0;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
           (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
-          `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPOLines()"`)}</div>
+          `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';prefillPOLineUnit(${i});showVendorsForPOLines()"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button>
       </div></td>
       <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
+      <td>${unitPickerHTML(`po-unit-${i}`, l.unit, `PO_LINES[${i}].unit`)}</td>
       <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
+      <td><input type="number" value="${l.discount_percent||0}" min="0" max="100" onchange="PO_LINES[${i}].discount_percent=Number(this.value)" style="width:80px;"></td>
       <td><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
       <td><input type="number" value="${l.gst_rate}" onchange="PO_LINES[${i}].gst_rate=Number(this.value)" style="width:80px;"></td>
       <td>${PO_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PO_LINES.splice(${i},1);renderPOLines()">✕</button>` : ''}</td>
     </tr>`);
 }
-window.addPOLine = () => { PO_LINES.push({ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }); renderPOLines(); };
+// When an item is picked, default its line's Unit to that item's own Item
+// Master unit (still freely overridable afterward) - skipped if the item
+// has no unit on file, so it doesn't clobber a unit the user already typed.
+window.prefillPOLineUnit = (i) => {
+  const item = (window.__PO_ITEMS || []).find(it => it.id === PO_LINES[i].item_id);
+  if (item && item.unit) { PO_LINES[i].unit = item.unit; renderPOLines(); }
+};
+window.addPOLine = () => { PO_LINES.push({ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }); renderPOLines(); };
 // A multi-item PO is several purchase_orders rows sharing one po_no (see
 // routes/purchase.js's POST /orders); GET /orders returns them flat but
 // consecutive (inserted in one transaction, so their ids sort together
@@ -5152,7 +5193,9 @@ function poEditForm(o) {
     <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
     <div><label>Item</label>${itemPickerHTML(`po-edit-item-${o.id}`, items, o.item_id, (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join(''))}</div>
     <div><label>Quantity</label><input id="po-edit-qty-${o.id}" type="number" value="${o.quantity}"></div>
+    <div><label>Unit</label>${unitPickerHTML(`po-edit-unit-${o.id}`, o.unit)}</div>
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
+    <div><label>Discount %</label><input id="po-edit-discount-${o.id}" type="number" min="0" max="100" value="${o.discount_percent||0}"></div>
     <div><label>HSN Code</label><input id="po-edit-hsn-${o.id}" value="${esc(o.hsn_code||'')}"></div>
     <div><label>GST Rate (%)</label><input id="po-edit-gst-${o.id}" type="number" value="${o.gst_rate}"></div>
     <div><label>Bill-To Address</label><select id="po-edit-bill-address-${o.id}"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}" ${a.id===o.company_address_id?'selected':''}>${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
@@ -5182,6 +5225,7 @@ window.savePOEdit = async (id) => {
     await api(`/purchase/orders/${id}`, { method: 'PUT', body: JSON.stringify({
       vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`),
       quantity: val(`po-edit-qty-${id}`), rate: val(`po-edit-rate-${id}`),
+      unit: unitPickerValue(`po-edit-unit-${id}`), discount_percent: val(`po-edit-discount-${id}`),
       hsn_code: val(`po-edit-hsn-${id}`), gst_rate: val(`po-edit-gst-${id}`), terms: val(`po-edit-terms-${id}`),
       company_address_id: val(`po-edit-bill-address-${id}`) || null,
       company_ship_address_id: val(`po-edit-ship-address-${id}`) || null,
@@ -5355,8 +5399,8 @@ window.fillPOFromPR = async () => {
   detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
     Project: <b>${esc(r.project_code)||'-'}</b>`;
   PO_LINES = lines.length ? lines.map(l => ({
-    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: l.id,
-  })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, purchase_request_item_id: null }];
+    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: l.id,
+  })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }];
   renderPOLines();
   window.showVendorsForPOLines();
 };
@@ -5369,6 +5413,7 @@ window.addPO = async () => {
       company_address_id: val('po-bill-address') || null,
       company_ship_address_id: val('po-ship-address') || null,
       ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
+      freight: val('po-freight') || 0, freight_gst_rate: val('po-freight-gst') || 18,
     })});
     alert(`Purchase Order ${r.po_no} submitted for approval (Purchase HOD, then Management if above the value threshold) - it can't be sent to the vendor or received against until approved.`);
     navigate('purchase-orders');
@@ -5380,10 +5425,12 @@ function poTermsForm(o) {
     <div><label>Payment Terms</label><select id="po-terms-payment-${o.id}"><option value="">-</option>${(window.__PO_PAYMENT_TERMS||[]).map(t => `<option value="${esc(t)}" ${t===o.payment_terms?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
     <div><label>LD Rate (%)</label><input id="po-terms-ldpct-${o.id}" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
     <div><label>LD Cap (%)</label><input id="po-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+    <div><label>Freight (₹)</label><input id="po-terms-freight-${o.id}" type="number" value="${o.freight || 0}"></div>
+    <div><label>Freight GST (%)</label><input id="po-terms-freight-gst-${o.id}" type="number" value="${o.freight_gst_rate ?? 18}"></div>
   </div>
   <div><label>Trigger Conditions/Notes</label><textarea id="po-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
   <button class="btn small" type="button" onclick="savePOTerms(${o.id})">Save Terms</button>
-  <p class="muted" style="margin-top:6px;">These apply to the whole PO - every line item shares one delivery date, payment terms and LD clause.</p>`;
+  <p class="muted" style="margin-top:6px;">These apply to the whole PO - every line item shares one delivery date, payment terms, LD clause and freight.</p>`;
 }
 window.togglePOTerms = (id) => {
   const row = document.getElementById(`po-terms-row-${id}`);
@@ -5403,6 +5450,7 @@ window.savePOTerms = async (id) => {
       ld_percentage: val(`po-terms-ldpct-${id}`) || null,
       ld_cap_percentage: val(`po-terms-ldcap-${id}`) || null,
       ld_trigger_notes: val(`po-terms-ldnotes-${id}`) || null,
+      freight: val(`po-terms-freight-${id}`) || 0, freight_gst_rate: val(`po-terms-freight-gst-${id}`) || 18,
     })});
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }

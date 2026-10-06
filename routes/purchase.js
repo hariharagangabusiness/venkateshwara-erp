@@ -627,11 +627,20 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     purchase_request_id, vendor_id, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
     ld_percentage, ld_cap_percentage, ld_trigger_notes,
   } = req.body;
+  // Freight is one charge for the whole shipment, not per line - same
+  // header-level treatment as payment_terms/LD terms below (duplicated onto
+  // every line sharing this po_no, added once into the grand total, never
+  // multiplied per line). Its GST rate defaults to the company's own default
+  // rather than a hardcoded 18, matching how Proforma/Sales Invoice creation
+  // already picks a default GST rate elsewhere in this codebase.
+  const freight = Number(req.body.freight) || 0;
+  const freightGstRate = req.body.freight_gst_rate !== undefined && req.body.freight_gst_rate !== ''
+    ? Number(req.body.freight_gst_rate) : (getCompanySettings().default_gst_rate || 18);
   const lines = Array.isArray(req.body.lines) && req.body.lines.length
     ? req.body.lines
     : [{
         item_id: req.body.item_id, quantity: req.body.quantity, rate: req.body.rate,
-        hsn_code: req.body.hsn_code, gst_rate: req.body.gst_rate,
+        hsn_code: req.body.hsn_code, gst_rate: req.body.gst_rate, unit: req.body.unit, discount_percent: req.body.discount_percent,
         purchase_request_item_id: req.body.purchase_request_item_id,
       }];
   // Validate references before hitting the DB - an empty/missing vendor or
@@ -667,24 +676,36 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   // chain, bootstrapped in db/index.js.
   const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms, ld_percentage, ld_cap_percentage, ld_trigger_notes, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
+      hsn_code, gst_rate, gst_amount, unit, discount_percent, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
+      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
   `);
   const ids = [];
   let totalOrderValue = 0;
   db.transaction(() => {
     for (const l of lines) {
       const quantity = Number(l.quantity), rate = Number(l.rate);
-      const total = quantity * rate;
+      // Discount reduces the taxable value before GST is computed on it -
+      // clamped to [0,100] since this is free-typed (unlike GST rate, which
+      // is vendor-supplied/trusted) and a stray negative or >100 value would
+      // otherwise inflate the total or go negative.
+      const discountPercent = Math.min(100, Math.max(0, Number(l.discount_percent) || 0));
+      const total = quantity * rate * (1 - discountPercent / 100);
       totalOrderValue += total;
       const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : 18;
       const gstAmount = total * gstRate / 100;
+      const unit = String(l.unit || '').trim() || 'Nos';
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
-        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, terms || null, delivery_date || null,
-        company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null);
+        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, terms || null, delivery_date || null,
+        company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null,
+        ld_trigger_notes || null, freight, freightGstRate);
       ids.push(info.lastInsertRowid);
     }
   })();
+  // Freight (plus its own GST, since freight attracts GST here) is a single
+  // addition to the whole order's value, not per line - added once, not
+  // inside the per-line loop above.
+  totalOrderValue += freight + (freight * freightGstRate / 100);
   const approvalId = approvals.startApproval('PurchaseOrder', 'purchase_order', ids[0], totalOrderValue, req.user.id);
   db.prepare('UPDATE purchase_orders SET approval_id = ? WHERE po_no = ?').run(approvalId, poNo);
   if (purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(purchase_request_id);
@@ -700,16 +721,19 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
 router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.manage'), (req, res) => {
   const order = db.prepare('SELECT id, po_no FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes, payment_terms } = req.body;
+  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes, payment_terms, freight, freight_gst_rate } = req.body;
   db.prepare(`
-    UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?, payment_terms = COALESCE(?, payment_terms)
+    UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
+      payment_terms = COALESCE(?, payment_terms), freight = ?, freight_gst_rate = ?
     WHERE po_no = ?
-  `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, payment_terms || null, order.po_no);
+  `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, payment_terms || null,
+    Number(freight) || 0, freight_gst_rate !== undefined && freight_gst_rate !== '' ? Number(freight_gst_rate) : (getCompanySettings().default_gst_rate || 18),
+    order.po_no);
   res.json({ ok: true });
 });
 
-const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'terms', 'delivery_date', 'company_address_id', 'company_ship_address_id'];
-const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Bill-To address', company_ship_address_id: 'Ship-To address' };
+const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'unit', 'discount_percent', 'terms', 'delivery_date', 'company_address_id', 'company_ship_address_id'];
+const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', unit: 'Unit', discount_percent: 'Discount %', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Bill-To address', company_ship_address_id: 'Ship-To address' };
 function poAuditLog(userId, action, poId, details) {
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(userId, action, 'purchase_order', poId, details || null);
@@ -741,7 +765,10 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   if (!quantity || quantity <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
   if (!rate || rate <= 0) return res.status(400).json({ error: 'Enter a rate greater than 0.' });
   const gstRate = req.body.gst_rate !== undefined && req.body.gst_rate !== '' ? Number(req.body.gst_rate) : existing.gst_rate;
-  const total = quantity * rate;
+  const discountPercent = req.body.discount_percent !== undefined && req.body.discount_percent !== ''
+    ? Math.min(100, Math.max(0, Number(req.body.discount_percent))) : (existing.discount_percent || 0);
+  const unit = req.body.unit !== undefined ? (String(req.body.unit).trim() || 'Nos') : existing.unit;
+  const total = quantity * rate * (1 - discountPercent / 100);
   const gstAmount = total * (gstRate || 0) / 100;
 
   const changes = [];
@@ -753,14 +780,14 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   });
 
   db.prepare(`
-    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, terms=?, delivery_date=?, company_address_id=?, company_ship_address_id=?
+    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, unit=?, discount_percent=?, terms=?, delivery_date=?, company_address_id=?, company_ship_address_id=?
     WHERE id=?
   `).run(
     req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
     req.body.item_id !== undefined ? (req.body.item_id || null) : existing.item_id,
     quantity, rate, total,
     req.body.hsn_code !== undefined ? (req.body.hsn_code || null) : existing.hsn_code,
-    gstRate, gstAmount,
+    gstRate, gstAmount, unit, discountPercent,
     req.body.terms !== undefined ? (req.body.terms || null) : existing.terms,
     req.body.delivery_date !== undefined ? (req.body.delivery_date || null) : existing.delivery_date,
     req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
@@ -794,7 +821,8 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     if (existing.approval_id) {
       db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
     }
-    const groupTotal = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t FROM purchase_orders WHERE po_no = ?').get(existing.po_no).t;
+    const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(existing.po_no);
+    const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
     const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
     db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, existing.po_no);
     poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
@@ -849,11 +877,12 @@ router.get('/orders/:id/audit-log', (req, res) => {
 // received") so it behaves identically to a PO raised natively - GRN
 // receive, edit, cancel, PDF/Word/email all just work on it afterwards.
 const PO_IMPORT_STATUSES = ['Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled'];
-const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'delivery_date', 'terms', 'status', 'po_date', 'bill_address', 'ship_address'];
+const PO_IMPORT_COLUMNS = ['po_no', 'vendor_name', 'item_code_or_barcode', 'quantity', 'unit', 'rate', 'discount_percent', 'hsn_code', 'gst_rate', 'freight', 'freight_gst_rate', 'delivery_date', 'terms', 'status', 'po_date', 'bill_address', 'ship_address'];
 router.get('/orders/import-template', requirePermission('purchase_order.manage'), (req, res) => {
   const exampleRow = {
-    po_no: 'PO-LEGACY-1024', vendor_name: 'Acme Steel Traders', item_code_or_barcode: 'ITM-1001', quantity: 50, rate: 250,
-    hsn_code: '7208', gst_rate: 18, delivery_date: '2025-06-30', terms: 'Standard terms apply', status: 'Open', po_date: '2025-04-01',
+    po_no: 'PO-LEGACY-1024', vendor_name: 'Acme Steel Traders', item_code_or_barcode: 'ITM-1001', quantity: 50, unit: 'KGS', rate: 250,
+    discount_percent: 0, hsn_code: '7208', gst_rate: 18, freight: 0, freight_gst_rate: 18, delivery_date: '2025-06-30',
+    terms: 'Standard terms apply', status: 'Open', po_date: '2025-04-01',
     bill_address: 'Head Office', ship_address: 'Factory - Faridabad',
   };
   const wb = XLSX.utils.book_new();
@@ -866,6 +895,9 @@ router.get('/orders/import-template', requirePermission('purchase_order.manage')
     ['status is optional (defaults to Open) - one of: ' + PO_IMPORT_STATUSES.join(', ') + '.'],
     ['po_date is optional (defaults to today) - the order\'s original date, so imported history sorts correctly.'],
     ['bill_address and ship_address are both optional and independent - each matched by its Label in Company Settings > Bill-To/Ship-To Addresses (case-insensitive); leave either blank to import without it.'],
+    ['unit is optional (defaults to Nos) - any text is accepted (e.g. KGS, Nos, Meters, or a custom unit).'],
+    ['discount_percent is optional (defaults to 0) - a per-line percentage, applied to this row\'s taxable value before GST.'],
+    ['freight and freight_gst_rate are optional (both default to 0/18) - note each row here becomes its own independent Purchase Order (po_no must be unique across this file and the system), so freight applies to that one row\'s order only.'],
   ]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -887,8 +919,8 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
   const insertVendor = db.prepare(`INSERT INTO vendors (name, legal_name, status) VALUES (?, ?, 'Active')`);
   const insertPO = db.prepare(`
     INSERT INTO purchase_orders (po_no, vendor_id, item_id, quantity, rate, total_value, status, created_by,
-      hsn_code, gst_rate, gst_amount, terms, delivery_date, created_at, company_address_id, company_ship_address_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      hsn_code, gst_rate, gst_amount, unit, discount_percent, freight, freight_gst_rate, terms, delivery_date, created_at, company_address_id, company_ship_address_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   let inserted = 0; const errors = []; const warnings = [];
   rows.forEach((row, i) => {
@@ -927,15 +959,20 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
       else shipAddressId = addr.id;
     }
     const gstRate = row.gst_rate !== '' && row.gst_rate !== undefined ? Number(row.gst_rate) : 18;
-    const total = qty * rate;
+    const discountPercent = row.discount_percent !== '' && row.discount_percent !== undefined
+      ? Math.min(100, Math.max(0, Number(row.discount_percent))) : 0;
+    const total = qty * rate * (1 - discountPercent / 100);
     const gstAmount = total * (gstRate || 0) / 100;
+    const unit = String(row.unit || '').trim() || 'Nos';
+    const freight = Number(row.freight) || 0;
+    const freightGstRate = row.freight_gst_rate !== '' && row.freight_gst_rate !== undefined ? Number(row.freight_gst_rate) : 18;
     // Match SQLite's own CURRENT_TIMESTAMP format ('YYYY-MM-DD HH:MM:SS') so
     // an imported row sorts/compares consistently against natively-created
     // ones rather than mixing in ISO8601 with a 'T'/'Z'.
     const poDate = String(row.po_date || '').trim();
     const createdAt = poDate ? poDate + ' 00:00:00' : new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     insertPO.run(poNo, vendor.id, item.id, qty, rate, total, status, req.user.id,
-      String(row.hsn_code || '') || null, gstRate, gstAmount, String(row.terms || '') || null,
+      String(row.hsn_code || '') || null, gstRate, gstAmount, unit, discountPercent, freight, freightGstRate, String(row.terms || '') || null,
       String(row.delivery_date || '') || null, createdAt, billAddressId, shipAddressId);
     inserted++;
   });

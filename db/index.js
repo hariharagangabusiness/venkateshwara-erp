@@ -1237,6 +1237,18 @@ const MIGRATIONS = [
   // (sales_order_id, project_id, reason free text), this is the one new
   // link.
   `ALTER TABLE foc_requests ADD COLUMN source_mrn_id INTEGER REFERENCES sale_rejection_mrns(id)`,
+  // Purchase Order: Unit of Measurement, Discount %, and Freight (2026-10-06).
+  // unit/discount_percent are genuinely per-line (same granularity as
+  // hsn_code/gst_rate) - unit defaults 'Nos' to match items.unit's own
+  // default. freight/freight_gst_rate are header-level (one charge for the
+  // whole shipment, not per item) - duplicated onto every line sharing a
+  // po_no the same way payment_terms/LD terms already are (see POST /orders
+  // and PATCH /orders/:id/commercial-terms in routes/purchase.js), and added
+  // once - not per line - into the PDF/Word/drilldown grand total.
+  `ALTER TABLE purchase_orders ADD COLUMN unit TEXT DEFAULT 'Nos'`,
+  `ALTER TABLE purchase_orders ADD COLUMN discount_percent REAL DEFAULT 0`,
+  `ALTER TABLE purchase_orders ADD COLUMN freight REAL DEFAULT 0`,
+  `ALTER TABLE purchase_orders ADD COLUMN freight_gst_rate REAL DEFAULT 18`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
