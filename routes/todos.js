@@ -59,6 +59,21 @@ function canSeeTodo(user, t) {
     (t.hod_department_id != null && inOversightDept(db, user, t.hod_department_id));
 }
 
+// The row set behind "My To-Do List": everything a user is allowed to see -
+// assigned directly to them, or logged against their own department's HOD
+// (oversight-scoped), or literally everything for Admin/Management. Shared
+// by /mine and the Kanban board endpoints below so all three agree on
+// exactly the same visibility - the board is just this same data grouped by
+// department instead of a second, separately-scoped view.
+function visibleTodosWhere(user) {
+  if (isGlobal(user)) return { where: '1=1', params: [] };
+  const deptIds = scopedDepartmentIds(user);
+  return {
+    where: `(t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id IN (${deptIds.map(() => '?').join(',') || 'NULL'})))`,
+    params: [user.id, ...deptIds],
+  };
+}
+
 // People pickers for the "Log a New To-Do" form. A department-scoped
 // supervisor can only log against their own department's HOD (see POST /
 // below), so the HOD picker itself is narrowed to match - no point letting
@@ -92,24 +107,91 @@ router.get('/people', (req, res) => {
 // not from anything the client sends), so it can't be widened by request
 // params.
 router.get('/mine', (req, res) => {
-  const deptIds = scopedDepartmentIds(req.user);
-  const rows = isGlobal(req.user)
-    ? db.prepare(`
-        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
-        FROM todos t
-        LEFT JOIN users h ON h.id = t.hod_id
-        JOIN users a ON a.id = t.assigned_to
-        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-      `).all()
-    : db.prepare(`
-        SELECT t.*, h.full_name as hod_name, a.full_name as assigned_to_name
-        FROM todos t
-        LEFT JOIN users h ON h.id = t.hod_id
-        JOIN users a ON a.id = t.assigned_to
-        WHERE t.assigned_to = ? OR (h.department_id IS NOT NULL AND h.department_id IN (${deptIds.map(() => '?').join(',') || 'NULL'}))
-        ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
-      `).all(req.user.id, ...deptIds);
+  const { where, params } = visibleTodosWhere(req.user);
+  const rows = db.prepare(`
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    FROM todos t
+    LEFT JOIN users h ON h.id = t.hod_id
+    JOIN users a ON a.id = t.assigned_to
+    WHERE ${where}
+    ORDER BY CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END, t.target_date ASC
+  `).all(...params);
   res.json(rows.map(t => ({ ...t, is_mine: t.assigned_to === req.user.id })));
+});
+
+// Board summary for the department-column (Kanban) view of the To-Do List -
+// one row per department plus an "Unassigned / Direct" bucket for To-Dos
+// logged with no HOD, each carrying only its pending count and oldest
+// pending item's target date - never the full item list, so opening the
+// page is cheap. GET /board-items below fetches a single column's (or the
+// Closed section's) actual rows, and only when the user expands it - see
+// public/js/app.js's toggleTodoColumnBody()/toggleClosedTodos().
+router.get('/board-summary', (req, res) => {
+  const { where, params } = visibleTodosWhere(req.user);
+  const rows = db.prepare(`
+    SELECT t.id, t.status, t.target_date, t.brief_description,
+           h.department_id as hod_department_id, d.name as hod_department_name
+    FROM todos t
+    LEFT JOIN users h ON h.id = t.hod_id
+    LEFT JOIN departments d ON d.id = h.department_id
+    WHERE ${where}
+  `).all(...params);
+  const groups = new Map();
+  let totalClosed = 0;
+  for (const t of rows) {
+    if (t.status === 'Completed') { totalClosed++; continue; }
+    const key = t.hod_department_id == null ? 'unassigned' : String(t.hod_department_id);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        department_id: t.hod_department_id,
+        department_name: t.hod_department_id == null ? 'Unassigned / Direct' : t.hod_department_name,
+        pending_count: 0, oldest_pending: null,
+      });
+    }
+    const g = groups.get(key);
+    g.pending_count++;
+    if (!g.oldest_pending || (t.target_date || '9999') < (g.oldest_pending.target_date || '9999')) {
+      g.oldest_pending = { id: t.id, brief_description: t.brief_description, target_date: t.target_date };
+    }
+  }
+  const departments = Array.from(groups.values()).sort((a, b) => (a.department_name || '').localeCompare(b.department_name || ''));
+  res.json({ departments, total_closed: totalClosed });
+});
+
+// A single board column's (or the Closed section's) actual rows - only
+// fetched once the user expands that column, never on page load.
+// department_id=unassigned matches the no-HOD bucket above; closed=1 pulls
+// every Completed row across all departments instead (the "Closed" strip
+// isn't itself broken down by department - see CLAUDE.md's note that no
+// change to Completed/Closed semantics was wanted beyond relabeling it).
+router.get('/board-items', (req, res) => {
+  const { where, params } = visibleTodosWhere(req.user);
+  const closed = req.query.closed === '1';
+  let deptClause = '1=1'; const deptParams = [];
+  if (!closed && req.query.department_id === 'unassigned') {
+    deptClause = 'h.department_id IS NULL';
+  } else if (!closed && req.query.department_id) {
+    deptClause = 'h.department_id = ?';
+    deptParams.push(req.query.department_id);
+  }
+  const rows = db.prepare(`
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    FROM todos t
+    LEFT JOIN users h ON h.id = t.hod_id
+    JOIN users a ON a.id = t.assigned_to
+    WHERE ${where} AND ${deptClause} AND t.status ${closed ? '=' : '!='} 'Completed'
+    ORDER BY t.target_date ASC
+  `).all(...params, ...deptParams);
+  res.json(rows.map(t => ({ ...t, is_mine: t.assigned_to === req.user.id })));
+});
+
+// Sidebar nav badge - just the count of the signed-in user's own actionable
+// (non-Completed) items, fetched once at boot and periodically refreshed
+// (see loadBranding()-style boot wiring in app.js) rather than the whole
+// board, which stays lazy per the board-summary/board-items split above.
+router.get('/my-pending-count', (req, res) => {
+  const row = db.prepare(`SELECT COUNT(*) as n FROM todos WHERE assigned_to = ? AND status != 'Completed'`).get(req.user.id);
+  res.json({ count: row.n });
 });
 
 // Oversight view: every To-Do for Admin/Management, or a HOD/supervisor's
