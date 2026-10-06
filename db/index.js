@@ -1249,6 +1249,12 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_orders ADD COLUMN discount_percent REAL DEFAULT 0`,
   `ALTER TABLE purchase_orders ADD COLUMN freight REAL DEFAULT 0`,
   `ALTER TABLE purchase_orders ADD COLUMN freight_gst_rate REAL DEFAULT 18`,
+  // Offer Templates (2026-10-06) - a Standard Template is an offer not tied
+  // to any real customer, so it needs its own flag; client_id itself has to
+  // become nullable too, handled separately below by
+  // migrateOffersClientIdNullable() since SQLite can't ALTER a NOT NULL
+  // constraint away in place.
+  `ALTER TABLE offers ADD COLUMN is_template INTEGER DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1339,27 +1345,109 @@ migrateUserDashboardLayoutToPageLayout();
 // Placed after the MIGRATIONS loop above (not immediately after schema.sql)
 // because these triggers' bodies reference offers.locked, which the
 // migration just added - CREATE TRIGGER resolves that column reference at
-// creation time, so the column must already exist.
-for (const table of ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references']) {
-  raw.exec(`
-    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_update
-    BEFORE UPDATE ON ${table}
-    WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
-    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
-  `);
-  raw.exec(`
-    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_delete
-    BEFORE DELETE ON ${table}
-    WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
-    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
-  `);
-  raw.exec(`
-    CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_insert
-    BEFORE INSERT ON ${table}
-    WHEN (SELECT locked FROM offers WHERE id = NEW.offer_id) = 1
-    BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
-  `);
+// creation time, so the column must already exist. Pulled out into a named,
+// idempotent (CREATE TRIGGER IF NOT EXISTS) function - also called by
+// migrateOffersClientIdNullable() above, which has to drop every trigger
+// referencing `offers` before rebuilding that table and recreate them
+// afterward in the same transaction.
+const OFFER_CHILD_LOCK_TABLES = ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references'];
+function createOfferChildLockTriggers() {
+  for (const table of OFFER_CHILD_LOCK_TABLES) {
+    raw.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_update
+      BEFORE UPDATE ON ${table}
+      WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
+      BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+    `);
+    raw.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_delete
+      BEFORE DELETE ON ${table}
+      WHEN (SELECT locked FROM offers WHERE id = OLD.offer_id) = 1
+      BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+    `);
+    raw.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_locked_insert
+      BEFORE INSERT ON ${table}
+      WHEN (SELECT locked FROM offers WHERE id = NEW.offer_id) = 1
+      BEGIN SELECT RAISE(ABORT, 'OFFER_LOCKED: this offer is locked and cannot be modified'); END;
+    `);
+  }
 }
+createOfferChildLockTriggers();
+
+// offers.client_id was NOT NULL (every offer always belonged to a real
+// customer) - a Standard Template (2026-10-06, see is_template above) needs
+// a row that isn't tied to any customer, so this relaxes that constraint
+// the same way migratePurchaseOrdersDropPoNoUnique() above relaxed po_no's
+// UNIQUE constraint (SQLite has no ALTER TABLE DROP CONSTRAINT, so the
+// table has to be rebuilt). Built from the live table's own PRAGMA
+// table_info()/foreign_key_list() rather than a hand-transcribed column
+// list - offers has picked up roughly 20 ALTER TABLE ADD COLUMNs since the
+// base schema, and hand-copying them here would only need one typo to
+// silently drop a column - so this reads whatever columns/foreign keys the
+// table actually has right now and reproduces them exactly, just without
+// NOT NULL on client_id. Guarded so it only ever fires once, against a
+// database where client_id is still NOT NULL; schema.sql's own CREATE
+// TABLE already omits the constraint for a brand-new database. Placed after
+// createOfferChildLockTriggers() (not immediately after
+// migratePurchaseOrdersDropPoNoUnique(), its closest sibling) because it
+// needs that function and OFFER_CHILD_LOCK_TABLES to already exist - see
+// the trigger-drop/recreate comment inside this function for why.
+function migrateOffersClientIdNullable() {
+  const cols = raw.prepare(`PRAGMA table_info(offers)`).all();
+  const clientCol = cols.find(c => c.name === 'client_id');
+  if (!clientCol || !clientCol.notnull) return;
+  const fks = raw.prepare(`PRAGMA foreign_key_list(offers)`).all();
+  const fkTableByColumn = new Map(fks.map(fk => [fk.from, fk.table]));
+  const colDefs = cols.map(c => {
+    if (c.pk) return `${c.name} INTEGER PRIMARY KEY AUTOINCREMENT`;
+    let def = `${c.name} ${c.type}`;
+    if (c.name !== 'client_id' && c.notnull) def += ' NOT NULL';
+    if (fkTableByColumn.has(c.name)) def += ` REFERENCES ${fkTableByColumn.get(c.name)}(id)`;
+    if (c.dflt_value !== null && c.dflt_value !== undefined) def += ` DEFAULT ${c.dflt_value}`;
+    return def;
+  });
+  const colNames = cols.map(c => c.name).join(', ');
+  // The offer-immutability triggers (schema.sql's trg_offers_locked_* on
+  // offers itself, plus createOfferChildLockTriggers()'s per-child-table
+  // ones above) all reference `offers` in their trigger body - SQLite
+  // refuses to drop/rebuild a table another trigger still references, so
+  // every one of them has to be dropped first and recreated afterward, in
+  // the same transaction (schema.sql's own CREATE TRIGGER IF NOT EXISTS
+  // already ran once this boot before this function does, so re-running it
+  // here is a safe, cheap no-op for every other statement in it - it's pure
+  // DDL, no seed data).
+  const dropLockTriggers = ['trg_offers_locked_update', 'trg_offers_locked_delete',
+    ...OFFER_CHILD_LOCK_TABLES.flatMap(t => [`trg_${t}_locked_update`, `trg_${t}_locked_delete`, `trg_${t}_locked_insert`]),
+  ].map(name => `DROP TRIGGER IF EXISTS ${name};`).join('\n    ');
+  // offers has a self-referential FK (parent_offer_id REFERENCES offers(id))
+  // plus every child-lock table's offer_id FK pointing at it, so the rename
+  // step trips `PRAGMA foreign_keys=ON` (set globally at the top of this
+  // file) even though the data itself never actually violates any
+  // constraint - this is SQLite's own documented procedure for rebuilding a
+  // table with foreign keys: turn enforcement off for the rebuild, verify
+  // with foreign_key_check once it's back in its final shape, then turn it
+  // back on. Must sit outside the BEGIN/COMMIT - this pragma is a no-op
+  // inside a transaction.
+  raw.exec('PRAGMA foreign_keys = OFF');
+  raw.exec(`
+    BEGIN;
+    ${dropLockTriggers}
+    CREATE TABLE offers_new (${colDefs.join(',\n      ')});
+    INSERT INTO offers_new (${colNames}) SELECT ${colNames} FROM offers;
+    DROP TABLE offers;
+    ALTER TABLE offers_new RENAME TO offers;
+    COMMIT;
+  `);
+  const violations = raw.prepare(`PRAGMA foreign_key_check(offers)`).all();
+  if (violations.length) {
+    throw new Error('migrateOffersClientIdNullable: foreign_key_check failed after rebuild: ' + JSON.stringify(violations));
+  }
+  raw.exec('PRAGMA foreign_keys = ON');
+  raw.exec(schema);
+  createOfferChildLockTriggers();
+}
+migrateOffersClientIdNullable();
 
 // ---- Round 14: Duplicate-prevention UNIQUE indexes ----
 // SQLite has no "ALTER TABLE ... ADD UNIQUE" for an existing column, so these

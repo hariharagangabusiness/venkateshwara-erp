@@ -563,7 +563,8 @@ CREATE TABLE IF NOT EXISTS incoming_service_emails (
 CREATE TABLE IF NOT EXISTS offers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   offer_no TEXT,                      -- shared across an offer's versions - not unique; see version/parent_offer_id
-  client_id INTEGER NOT NULL REFERENCES clients(id),
+  client_id INTEGER REFERENCES clients(id),  -- NULL only for a Standard Template (is_template=1, see db/index.js) - every real offer still has one
+
   contact_person TEXT,
   contact_phone TEXT,
   contact_email TEXT,

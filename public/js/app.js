@@ -3089,11 +3089,19 @@ function renderOfferRows(rows) {
     <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
     ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`);
 }
-window.openCopyOfferPanel = (id) => {
-  const o = (window.__OFFERS_CACHE || []).find(x => x.id === id);
-  if (!o) return;
+// `labelOverride`, when given, skips the __OFFERS_CACHE lookup entirely -
+// used by "Create Offer from Template" (useTemplate() below), since a
+// Standard Template is deliberately excluded from GET /offers (and so
+// never appears in that cache) and has no client_name to show anyway.
+window.openCopyOfferPanel = (id, labelOverride) => {
+  let label = labelOverride;
+  if (!label) {
+    const o = (window.__OFFERS_CACHE || []).find(x => x.id === id);
+    if (!o) return;
+    label = `${o.offer_no} (${o.client_name})`;
+  }
   window.__COPY_SOURCE_OFFER_ID = id;
-  document.getElementById('ocp-source-label').textContent = `${o.offer_no} (${o.client_name})`;
+  document.getElementById('ocp-source-label').textContent = label;
   resetSearchPicker('ocp-client');
   document.getElementById('ocp-lead').value = '';
   document.getElementById('ocp-contact').value = '';
@@ -3115,6 +3123,33 @@ window.submitCopyOffer = async () => {
       contact_person: val('ocp-contact'), contact_phone: val('ocp-phone'), contact_email: val('ocp-email'),
     })});
     document.getElementById('offer-copy-panel').style.display = 'none';
+    await openOfferBuilder(r.id);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// "Create Offer from Template" (Offer Field Options page) - reuses the
+// existing Copy-to-another-customer flow unchanged (routes/offers.js's
+// POST /:id/copy never reads the source's client_id, only writes the new
+// one from the request body, so copying FROM a client-less template works
+// exactly like copying from any other offer) - it just lives on the main
+// Offers page's DOM, so this navigates there first.
+window.useTemplate = async (id, subject) => {
+  await navigate('offers');
+  openCopyOfferPanel(id, 'Standard Template: ' + subject);
+};
+window.deleteOfferTemplate = async (id) => {
+  if (!confirm('Permanently delete this Standard Template? This cannot be undone.')) return;
+  try {
+    await api('/offers/' + id, { method: 'DELETE' });
+    navigate('offer-options');
+  } catch (e) { alert(e.message); }
+};
+window.createOfferTemplate = async () => {
+  const errEl = document.getElementById('ot-err');
+  errEl.style.display = 'none';
+  const subject = val('ot-subject').trim();
+  if (!subject) { errEl.textContent = 'Give the template a name.'; errEl.style.display = 'block'; return; }
+  try {
+    const r = await api('/offers', { method: 'POST', body: JSON.stringify({ is_template: true, subject }) });
     await openOfferBuilder(r.id);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
@@ -3186,7 +3221,8 @@ async function renderOfferBuilder(panel) {
     ['attachments', 'Attachments (GA Drawing / CAD)'],
   ];
   panel.innerHTML = `
-    <h3>Offer Builder &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}</h3>
+    <h3>${o.is_template ? 'Standard Template' : 'Offer Builder'} &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}${o.is_template ? ' <span class="badge">TEMPLATE</span>' : ''}</h3>
+    ${o.is_template ? `<p class="muted" style="margin-top:-6px;">A Standard Template - not tied to any customer and never sent/confirmed. Build out its scope, specs, terms and pictures here; Sales uses "Create Offer from Template" on the Offer Field Options page to start a real customer offer from it.</p>` : ''}
     ${o.locked ? `<div class="msg err" style="margin-bottom:10px;">
       This offer was converted to a Sales Order and is locked against further edits.${o.locked_reason ? ' ' + esc(o.locked_reason) + '.' : ''}
       ${ME.role === 'Admin' ? '<button class="btn small outline" style="margin-left:10px;" onclick="unlockOffer()">Unlock (Admin)</button>' : ' Ask an Admin to unlock it if this offer genuinely needs a further revision.'}
@@ -3200,10 +3236,11 @@ async function renderOfferBuilder(panel) {
         <a href="#" onclick="downloadOfferVersionPdf(${v.id});return false;">PDF</a></td></tr>`)}
     </div>` : ''}
     <div class="form-grid">
-      <div><label>Subject / Machine</label><input id="ob-subject" value="${esc(o.subject)}"></div>
+      <div><label>${o.is_template ? 'Template Name' : 'Subject / Machine'}</label><input id="ob-subject" value="${esc(o.subject)}"></div>
+      ${o.is_template ? '' : `
       <div><label>Contact Person</label><input id="ob-contact" value="${esc(o.contact_person)}"></div>
       <div><label>Contact Phone</label><input id="ob-phone" value="${esc(o.contact_phone)}"></div>
-      <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>
+      <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>`}
       <div><label>Drawing No</label><input id="ob-drawing" value="${esc(o.drawing_no)}"></div>
       <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
@@ -3213,9 +3250,9 @@ async function renderOfferBuilder(panel) {
     <div id="offer-tab-content"></div>
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
-      ${o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
+      ${!o.is_template && o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
-      ${o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`}
+      ${o.is_template ? '' : (o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`)}
     </div>
   `;
   renderOfferTab(data);
@@ -3232,8 +3269,14 @@ window.saveOfferHeader = async () => {
     const data = await api('/offers/' + CURRENT_OFFER_ID);
     const reason = confirmOfferRevision(data.offer);
     if (reason === null) return;
+    // Contact fields don't exist in the builder for a Standard Template
+    // (see renderOfferBuilder) - guard rather than val()'s unconditional
+    // getElementById().value, which would throw on a missing element.
     const r = await api('/offers/' + CURRENT_OFFER_ID, { method: 'PUT', body: JSON.stringify({
-      subject: val('ob-subject'), contact_person: val('ob-contact'), contact_phone: val('ob-phone'), contact_email: val('ob-email'),
+      subject: val('ob-subject'),
+      contact_person: document.getElementById('ob-contact') ? val('ob-contact') : null,
+      contact_phone: document.getElementById('ob-phone') ? val('ob-phone') : null,
+      contact_email: document.getElementById('ob-email') ? val('ob-email') : null,
       drawing_no: val('ob-drawing'), application: val('ob-application'), type_of_system: val('ob-type'), material_of_construction: val('ob-material'),
       inclusions: data.offer.inclusions, exclusions: data.offer.exclusions, utilities_requirement: data.offer.utilities_requirement,
       instrument_air_supply: data.offer.instrument_air_supply, status: data.offer.status, revision_reason: reason || null,
@@ -7495,15 +7538,33 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, pdfTemplate, governance, clauses, suggestions] = await Promise.all([
+  const [rows, sectionTitles, pdfTemplate, governance, clauses, suggestions, offerTemplates] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
     api('/offers/governance').catch(() => null), // Admin-only - same
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
     isAdmin ? api('/offers/section-title-suggestions') : Promise.resolve([]), // Admin-only review queue
+    api('/offers/templates'), // everyone with offer access browses; only Admin gets Edit/Delete/New below
   ]);
   el.innerHTML = `
+    <div class="panel">
+      ${collapsiblePanel('offer-templates', `Offer Templates (${offerTemplates.length})`, `
+        <p class="muted">Standard, reusable offers not tied to any customer - Admin builds out a template's scope, specs, terms and pictures here; anyone with offer access can start a real customer offer from one via "Create Offer from Template", which copies its full content into a brand-new, fully independent, fully-editable offer.</p>
+        ${isAdmin ? `<div class="form-grid">
+          <div><label>New Template Name</label><input id="ot-subject" placeholder="e.g. Standard Electronic Weighing &amp; Bagging System"></div>
+        </div>
+        <button class="btn" onclick="createOfferTemplate()">New Template</button>
+        <div id="ot-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
+        <div style="margin-top:14px;">
+        ${tableHTML(['Name', 'Application', 'Type Of System', 'Updated', ''], offerTemplates, t => `
+          <tr><td>${esc(t.subject)||'-'}</td><td>${esc(t.application)||'-'}</td><td>${esc(t.type_of_system)||'-'}</td><td>${new Date(t.updated_at).toLocaleDateString()}</td>
+          <td><button class="btn small outline" onclick="useTemplate(${t.id}, '${esc(t.subject)}')">Create Offer from Template</button>
+          ${isAdmin ? `<button class="btn small outline" onclick="openOfferBuilder(${t.id})">Edit</button>
+          <button class="btn small red" onclick="deleteOfferTemplate(${t.id})">Delete</button>` : ''}</td></tr>`)}
+        </div>
+      `)}
+    </div>
     <div class="panel">
       <div class="tabs">${OFFER_OPTION_FIELDS.map(([id, label]) => `<div class="tab ${OFFER_OPTIONS_TAB === id ? 'active' : ''}" onclick="switchOfferOptionsTab('${id}')">${label}</div>`).join('')}</div>
       ${isAdmin ? `<div style="margin-top:14px;" class="form-grid">
