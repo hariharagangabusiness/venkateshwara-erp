@@ -177,6 +177,29 @@ window.submitChangePassword = async () => {
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
+// ===================== To-Do sidebar badge =====================
+// A small count badge on the "To-Do List" nav item - the signed-in user's
+// own actionable (non-Completed) items, same scope as "My To-Do List"
+// always was. Refreshed at boot, after every navigate() (so completing/
+// logging/deleting a To-Do updates it immediately without a full sidebar
+// re-render), and on a slow background poll so it still catches a new item
+// someone else assigns while the tab sits idle - a full notification system
+// was deliberately out of scope for this round, just this one count.
+let TODO_PENDING_COUNT = 0;
+async function refreshTodoPendingCount() {
+  try { TODO_PENDING_COUNT = (await api('/todos/my-pending-count')).count; }
+  catch (e) { return; }
+  const navEl = document.getElementById('nav-todos');
+  if (!navEl) return;
+  const badgeEl = navEl.querySelector('.nav-badge');
+  if (TODO_PENDING_COUNT > 0) {
+    if (badgeEl) badgeEl.textContent = TODO_PENDING_COUNT;
+    else navEl.insertAdjacentHTML('beforeend', ` <span class="nav-badge">${TODO_PENDING_COUNT}</span>`);
+  } else if (badgeEl) {
+    badgeEl.remove();
+  }
+}
+
 let ALLOWED_PAGES = null; // null = unrestricted; Set of page ids once an Admin has configured this role
 // Faint company branding watermark across the app shell - best-effort and
 // non-blocking, same idea as the one baked into every generated PDF
@@ -317,6 +340,8 @@ async function boot() {
     } catch (e) { /* pipeline-stages should always succeed; degrade quietly */ }
   }
   renderSidebar();
+  refreshTodoPendingCount();
+  if (!window.__TODO_BADGE_POLL) window.__TODO_BADGE_POLL = setInterval(refreshTodoPendingCount, 5 * 60 * 1000);
   const landing = (!ALLOWED_PAGES || ALLOWED_PAGES.has('dashboard')) ? 'dashboard' : (NAV.flatMap(g => g.items).find(it => ALLOWED_PAGES.has(it.id)) || { id: 'dashboard' }).id;
   navigate(landing);
 }
@@ -552,7 +577,8 @@ function renderSidebar() {
     itemsWrap.className = 'nav-items';
     items.forEach(it => {
       const a = document.createElement('a');
-      a.className = 'nav-item'; a.id = 'nav-' + it.id; a.textContent = it.label;
+      a.className = 'nav-item'; a.id = 'nav-' + it.id;
+      a.innerHTML = esc(it.label) + (it.id === 'todos' && TODO_PENDING_COUNT > 0 ? ` <span class="nav-badge">${TODO_PENDING_COUNT}</span>` : '');
       a.onclick = () => navigate(it.id);
       itemsWrap.appendChild(a);
     });
@@ -597,6 +623,7 @@ async function navigate(id) {
   } catch (e) {
     content.innerHTML = `<div class="msg err">${e.message}</div>`;
   }
+  refreshTodoPendingCount();
 }
 
 // ===================== Helpers =====================
@@ -10499,20 +10526,50 @@ window.saveDailyWorkLog = async () => {
 
 // ===================== To-Do List =====================
 // Logging a To-Do (handing an action item to someone, against a department
-// HOD) is restricted to HODs/Admin - see routes/todos.js `canLog()`. A
-// regular employee only gets the "My To-Do List" panel below, where they can
-// move their own items through Pending/InProgress/Completed/OnHold.
+// HOD) is restricted to HODs/Admin - see routes/todos.js `canLog()`. Below
+// that, "My To-Do List" and the old "All To-Dos Logged" oversight panel have
+// been merged into a single Kanban-style board, one column per department
+// (the HOD's department - see routes/todos.js's `visibleTodosWhere()`),
+// since both panels were already querying the exact same row set for every
+// non-Admin/Management user - there was nothing left to show separately.
+// Column bodies, and the Closed section at the bottom, are never fetched on
+// page load - only board-summary (counts + oldest-pending date, no item
+// rows) loads eagerly; see toggleTodoColumnBody()/toggleClosedTodos() below.
 const TODO_STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
+const TODO_BOARD_PAGE_KEY = 'todos-board';
+function todoDeptKey(d) { return d.department_id == null ? 'unassigned' : 'dept_' + d.department_id; }
+// Same "known entries kept in order, missing ones appended, unrecognized
+// ones dropped" rule as resolvePanelOrder() - extended with a leading '!' on
+// an entry to mean "hidden", since /dashboard/layout/:pageKey only stores an
+// opaque array of strings and a prefix is simplest way to carry that second
+// bit of per-user state through the exact same endpoint rather than adding a
+// new one.
+function resolveTodoColumnLayout(saved, allKeys) {
+  if (!Array.isArray(saved) || !saved.length) return { order: allKeys, hidden: new Set() };
+  const hidden = new Set(); const known = [];
+  saved.forEach(raw => {
+    const isHidden = typeof raw === 'string' && raw.startsWith('!');
+    const key = isHidden ? raw.slice(1) : raw;
+    if (!allKeys.includes(key) || known.includes(key)) return;
+    known.push(key);
+    if (isHidden) hidden.add(key);
+  });
+  const missing = allKeys.filter(k => !known.includes(k));
+  return { order: [...known, ...missing], hidden };
+}
 PAGES['todos'] = async (el) => {
-  const people = await api('/todos/people');
+  const [people, board, layout] = await Promise.all([
+    api('/todos/people'), api('/todos/board-summary'),
+    api('/dashboard/layout/' + TODO_BOARD_PAGE_KEY).catch(() => ({ panel_order: null })),
+  ]);
   const canLog = people.can_log;
-  const canView = people.can_view;
-  const [mine, all] = await Promise.all([api('/todos/mine'), canView ? api('/todos') : Promise.resolve([])]);
   const personLabel = p => `${esc(p.full_name)}${p.department ? ' (' + esc(p.department) + ')' : ''}`;
   const hodOptions = people.hods.map(h => `<option value="${h.id}">${personLabel(h)}</option>`).join('');
   const assigneeOptions = people.assignees.map(a => `<option value="${a.id}">${personLabel(a)}</option>`).join('');
-  const detailsRow = t => `${t.priority === 'High' ? '<span class="badge Rejected" style="margin-right:6px;">HIGH</span>' : ''}${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}`;
-  const updatesToggle = t => `<button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>`;
+  const allKeys = board.departments.map(todoDeptKey);
+  const { order, hidden } = resolveTodoColumnLayout(layout.panel_order, allKeys);
+  window.__TODO_BOARD = { departments: board.departments, order, hidden, canLog };
+
   el.innerHTML = `
     ${canLog ? `
     <div class="panel"><h3>Log a New To-Do</h3>
@@ -10529,36 +10586,156 @@ PAGES['todos'] = async (el) => {
       <div id="td-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>` : ''}
 
-    <div class="panel"><h3>My To-Do List</h3>
-      <p class="muted">Items handed to you directly, plus other action items logged against your own department's HOD so your whole team can track them.</p>
-      ${tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], mine, t => `
-        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}${t.is_mine ? '' : ' <span class="muted">(dept)</span>'}</td><td>${t.start_date || '-'}</td>
-        <td>${deliveryBadge(t.target_date)}</td>
-        <td>${(t.is_mine || canLog) ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
-          ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>` : badge(t.status)}</td><td>${updatesToggle(t)}</td></tr>
-        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`)}
+    <div class="panel">
+      <h3 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>To-Do Board</span>
+        <button class="btn small outline" type="button" onclick="toggleTodoColumnManager()">Customize Columns</button>
+      </h3>
+      <p class="muted">Grouped by the department it's logged against. Click a column's header to load its items.</p>
+      <div id="todo-col-manager" style="display:none;margin-bottom:14px;">${renderTodoColumnManager()}</div>
+      <div id="todo-board-wrap">${renderTodoBoardColumns()}</div>
     </div>
 
-    ${canView ? (() => {
-      const renderAllRows = (rows) => tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Start Date', 'Target Date', 'Status', ''], rows, t => `
-        <tr><td>${detailsRow(t)}</td><td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td>
-        <td>${t.start_date || '-'}</td><td>${deliveryBadge(t.target_date)}</td>
-        <td>${canLog ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
-          ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>` : badge(t.status)}</td>
-        <td>${updatesToggle(t)} ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}</td></tr>
-        <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="7"><div id="todo-updates-${t.id}"></div></td></tr>`);
-      return collapsiblePanel('all-todos', `<span id="todo-all-count">All To-Dos Logged (${all.length})</span>`, `
-        <p class="muted">${['Admin', 'Management'].includes(ME.role) ? 'Every To-Do across the whole company.' : "Every To-Do logged against your own department's HOD, plus anything assigned directly to you."}</p>
-        ${renderListSearch('all-todos', all, ['brief_description', 'details', 'hod_name', 'assigned_to_name', 'status'], (rows) => {
-          document.getElementById('todo-all-table').innerHTML = renderAllRows(rows);
-          document.getElementById('todo-all-count').textContent = 'All To-Dos Logged (' + rows.length + ')';
-        }, 'Search by description, HOD, assignee, status...')}
-        <div id="todo-all-table">${renderAllRows(all)}</div>
-      `);
-    })() : ''}`;
+    <div class="closed-section">${renderClosedStrip(board.total_closed)}</div>
+  `;
 };
+function renderTodoColumnManager() {
+  const { departments, order, hidden } = window.__TODO_BOARD;
+  return `
+    <div class="muted" style="margin-bottom:8px;">Drag by the handle to reorder, uncheck to hide a column, then Save.
+      <button class="btn small outline" type="button" onclick="saveTodoColumnLayout()" style="margin-left:8px;">Save</button>
+      <button class="btn small outline" type="button" onclick="resetTodoColumnLayout()">Reset to Default</button>
+    </div>
+    <div id="todo-col-manager-list">
+      ${order.map(key => {
+        const d = departments.find(x => todoDeptKey(x) === key);
+        if (!d) return '';
+        const isHidden = hidden.has(key);
+        return `<div class="reorder-panel" draggable="true" data-key="${key}"
+          ondragstart="panelDragStart(event)" ondragover="panelDragOver(event,'todo-col-manager-list')" ondragend="panelDragEnd(event)"
+          style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);">
+          <span style="cursor:move;color:var(--muted);">&#10021;</span>
+          <label style="flex:1;margin:0;display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleTodoColumnHidden('${key}', this.checked)"> ${esc(d.department_name)}
+          </label>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+window.toggleTodoColumnManager = () => {
+  const panel = document.getElementById('todo-col-manager');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+};
+window.toggleTodoColumnHidden = (key, checked) => {
+  if (checked) window.__TODO_BOARD.hidden.delete(key); else window.__TODO_BOARD.hidden.add(key);
+};
+window.saveTodoColumnLayout = async () => {
+  const keys = Array.from(document.querySelectorAll('#todo-col-manager-list .reorder-panel')).map(w => w.dataset.key);
+  const hidden = window.__TODO_BOARD.hidden;
+  const encoded = keys.map(k => hidden.has(k) ? '!' + k : k);
+  try {
+    await api('/dashboard/layout/' + TODO_BOARD_PAGE_KEY, { method: 'PUT', body: JSON.stringify({ panel_order: encoded }) });
+    navigate('todos');
+  } catch (e) { alert(e.message); }
+};
+window.resetTodoColumnLayout = async () => {
+  if (!confirm('Reset column order/visibility back to default?')) return;
+  try { await api('/dashboard/layout/' + TODO_BOARD_PAGE_KEY, { method: 'DELETE' }); navigate('todos'); }
+  catch (e) { alert(e.message); }
+};
+function todoSlaLine(oldest) {
+  if (!oldest) return '<div class="sla-line ok">No pending items</div>';
+  const days = Math.round((new Date(oldest.target_date) - new Date(today())) / 86400000);
+  let cls = 'ok', label = oldest.target_date;
+  if (days < 0) { cls = 'breach'; label = `${oldest.target_date} (overdue ${-days}d)`; }
+  else if (days <= 7) { cls = 'warn'; label = `${oldest.target_date} (due in ${days}d)`; }
+  return `<div class="sla-line ${cls}">Oldest pending: ${esc(label)}</div>`;
+}
+function renderTodoBoardColumns() {
+  const { departments, order, hidden } = window.__TODO_BOARD;
+  const visible = order.filter(k => !hidden.has(k));
+  if (!visible.length) return '<div class="empty">Every column is hidden - use Customize Columns to show one.</div>';
+  return `<div class="board">${visible.map(key => {
+    const d = departments.find(x => todoDeptKey(x) === key);
+    return d ? renderTodoColumn(key, d) : '';
+  }).join('')}</div>`;
+}
+function renderTodoColumn(key, d) {
+  return `
+    <div class="board-col" data-key="${key}">
+      <div class="board-col-head" onclick="toggleTodoColumnBody('${key}')">
+        <div class="dept-name">${esc(d.department_name)} <span class="chev">&#9654;</span></div>
+        <div class="stat-row"><span class="pending-count">${d.pending_count}</span><span class="pending-label">pending</span></div>
+        ${todoSlaLine(d.oldest_pending)}
+      </div>
+      <div class="board-col-body collapsed" id="todo-col-body-${key}"><div class="placeholder">Collapsed - click header to load items</div></div>
+    </div>`;
+}
+window.toggleTodoColumnBody = async (key) => {
+  const body = document.getElementById('todo-col-body-' + key);
+  const wasCollapsed = body.classList.contains('collapsed');
+  body.classList.toggle('collapsed');
+  const chev = body.previousElementSibling.querySelector('.chev');
+  if (chev) chev.innerHTML = wasCollapsed ? '&#9660;' : '&#9654;';
+  if (!wasCollapsed || body.dataset.built) return;
+  body.dataset.built = '1';
+  body.innerHTML = '<div class="muted" style="padding:10px;">Loading...</div>';
+  try {
+    const deptParam = key === 'unassigned' ? 'unassigned' : key.replace('dept_', '');
+    const items = await api('/todos/board-items?department_id=' + encodeURIComponent(deptParam));
+    body.innerHTML = renderTodoCards(items);
+  } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+};
+function renderTodoCards(items) {
+  const canLog = window.__TODO_BOARD.canLog;
+  if (!items.length) return '<div class="placeholder">No items.</div>';
+  return items.map(t => `
+    <div class="todo-card${t.priority === 'High' ? ' high' : ''}">
+      <div class="title">${t.priority === 'High' ? '<span class="badge Rejected" style="margin-right:4px;">HIGH</span>' : ''}${esc(t.brief_description)}</div>
+      ${t.details ? `<div class="muted" style="margin:4px 0 6px;">${esc(t.details)}</div>` : ''}
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">HOD: ${esc(t.hod_name) || '-'} &middot; ${esc(t.assigned_to_name)}${t.is_mine ? '' : ' (dept)'}</div>
+      <div class="meta">${deliveryBadge(t.target_date)}
+        ${(t.is_mine || canLog) ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
+          ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>` : badge(t.status)}
+      </div>
+      <div style="margin-top:8px;">
+        <button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>
+        ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}
+      </div>
+      <div id="todo-updates-row-${t.id}" style="display:none;margin-top:8px;"><div id="todo-updates-${t.id}"></div></div>
+    </div>`).join('');
+}
+function renderClosedStrip(totalClosed) {
+  return `
+    <div class="closed-head" onclick="toggleClosedTodos()">
+      <div><h3>Closed (${totalClosed})</h3><div class="closed-note">Completed To-Dos - not loaded until opened</div></div>
+      <span class="chev" id="todo-closed-chev">&#9654;</span>
+    </div>
+    <div class="board-col-body collapsed" id="todo-closed-body" style="margin-top:0;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;padding:4px 14px;max-height:none;"></div>`;
+}
+window.toggleClosedTodos = async () => {
+  const body = document.getElementById('todo-closed-body');
+  const chev = document.getElementById('todo-closed-chev');
+  const wasCollapsed = body.classList.contains('collapsed');
+  body.classList.toggle('collapsed');
+  chev.innerHTML = wasCollapsed ? '&#9660;' : '&#9654;';
+  if (!wasCollapsed || body.dataset.built) return;
+  body.dataset.built = '1';
+  body.innerHTML = '<div class="muted" style="padding:10px;">Loading...</div>';
+  try {
+    const items = await api('/todos/board-items?closed=1');
+    body.innerHTML = renderClosedTable(items);
+  } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+};
+function renderClosedTable(items) {
+  return tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Target Date', 'Status', ''], items, t => `
+    <tr><td>${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}</td>
+    <td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td><td>${t.target_date || '-'}</td>
+    <td>${badge(t.status)}</td>
+    <td><button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button></td></tr>
+    <tr id="todo-updates-row-${t.id}" style="display:none;"><td colspan="6"><div id="todo-updates-${t.id}"></div></td></tr>`);
+}
 window.toggleTodoUpdates = (id) => {
   const row = document.getElementById(`todo-updates-row-${id}`);
   const showing = row.style.display !== 'none';
