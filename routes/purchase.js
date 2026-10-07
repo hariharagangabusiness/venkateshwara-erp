@@ -495,17 +495,36 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   const existing = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const isOwner = existing.raised_by === req.user.id;
-  const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
-  if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can edit this.' });
+  // "Approver" (2026-10-07) = Admin, Management, or the Purchase department's
+  // own HOD - the same roles the PurchaseRequest chain itself routes to (see
+  // isPurchaseApprover() below). Broader than the old Admin/Management-only
+  // "isPrivileged" check this replaces, so a Purchase HOD can now also edit a
+  // subordinate's PR before approval, not just after - and, same as Purchase
+  // Orders, once the request has actually cleared approval (Approved/
+  // OrderPlaced) the original requester's own edit access is withdrawn and
+  // only an approver/Admin can still touch it.
+  const isApprover = isPurchaseApprover(req.user);
+  if (!isOwner && !isApprover) return res.status(403).json({ error: 'Only the requester or an approver (Purchase HOD/Management/Admin) can edit this.' });
   // A rejected request, or one a reviewer paused to ask for more info, stays
-  // editable for its own requester (not just Admin/Management) so they can
+  // editable for its own requester (not just an approver) so they can
   // fix/complete it and send it back, instead of having to raise a brand new
   // PR from scratch. A Draft is always editable by its owner too - that's
   // the whole point of the Draft stage (see POST /requests above).
-  if (!['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(existing.status) && !isPrivileged) {
-    return res.status(400).json({ error: 'This request has already been actioned - only Admin/Management can still edit it.' });
+  if (!['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(existing.status) && !isApprover) {
+    return res.status(400).json({ error: 'This request has already been approved - only an approver (Purchase HOD/Management/Admin) can still edit it.' });
   }
   const { project_id, items } = req.body;
+  // Line items (this route's `items` array doubles as "add a line" - there's
+  // no separate add-line endpoint for PRs the way POST /orders/:id/add-line
+  // exists for POs, since a PR's items are a real child table this route
+  // already replaces wholesale) stay frozen once the request has actually
+  // cleared approval, for the creator AND an approver alike - matches Purchase
+  // Orders' own add-line route, which likewise blocks adding a line past
+  // Open/PartiallyReceived regardless of who's asking. Other fields
+  // (project_id) stay approver-editable post-approval per the status gate above.
+  if (items !== undefined && ['Approved', 'OrderPlaced'].includes(existing.status)) {
+    return res.status(400).json({ error: 'Items can only be changed while this request is still Draft, pending approval, or rejected - once approved, raise a new Purchase Request for anything further.' });
+  }
   let resolved;
   if (items !== undefined) {
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Add at least one item line.' });
@@ -616,6 +635,29 @@ router.get('/requests/:id/approval-history', (req, res) => {
   `).all(req.params.id));
 });
 
+// Shared creator-vs-approver authorization (2026-10-07) - used by both the
+// PR and PO edit/add-line routes below. "Approver" means anyone who could
+// act on this entity's approval chain - Admin, Management, or the Purchase
+// department's own HOD (role Purchase + requires_supervisor) - the same
+// three roles both the PurchaseRequest and PurchaseOrder chains route to
+// (see db/seed.js / db/index.js's bootstrapPurchaseOrderApproval()). Kept
+// separate from "the creator" (raised_by/created_by) so that once a PR/PO
+// is approved and live, only an approver can still touch it - the original
+// requester's edit access is withdrawn at that point even though they still
+// hold the general purchase_request.create/purchase_order.manage permission.
+function isPurchaseApprover(user) {
+  return user.role_name === 'Admin' || user.role_name === 'Management' ||
+    (user.role_name === 'Purchase' && !!user.is_supervisor);
+}
+// Shared per-line taxable/GST computation - same formula used by POST
+// /orders' insert loop, PUT /orders/:id's single-line edit, and POST
+// /orders/:id/add-line below; pulled out once so all three can't drift.
+function poLineCalc(quantity, rate, discountPercent, gstRate) {
+  const total = quantity * rate * (1 - discountPercent / 100);
+  const gstAmount = total * (gstRate || 0) / 100;
+  return { total, gstAmount };
+}
+
 // ---- Purchase Orders ----
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
@@ -656,7 +698,7 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     : [{
         item_id: req.body.item_id, quantity: req.body.quantity, rate: req.body.rate,
         hsn_code: req.body.hsn_code, gst_rate: req.body.gst_rate, unit: req.body.unit, discount_percent: req.body.discount_percent,
-        purchase_request_item_id: req.body.purchase_request_item_id,
+        purchase_request_item_id: req.body.purchase_request_item_id, details: req.body.details,
       }];
   // Validate references before hitting the DB - an empty/missing vendor or
   // item (e.g. no vendors created yet, or a stale item id) otherwise surfaces
@@ -706,10 +748,9 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       // is vendor-supplied/trusted) and a stray negative or >100 value would
       // otherwise inflate the total or go negative.
       const discountPercent = Math.min(100, Math.max(0, Number(l.discount_percent) || 0));
-      const total = quantity * rate * (1 - discountPercent / 100);
-      totalOrderValue += total;
       const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : 18;
-      const gstAmount = total * gstRate / 100;
+      const { total, gstAmount } = poLineCalc(quantity, rate, discountPercent, gstRate);
+      totalOrderValue += total;
       const unit = String(l.unit || '').trim() || 'Nos';
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
         quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, l.details || null, terms || null, delivery_date || null,
@@ -765,11 +806,41 @@ function poAuditLog(userId, action, poId, details) {
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(userId, action, 'purchase_order', poId, details || null);
 }
+// Supersedes a po_no group's still-live approval (if any) and starts a fresh
+// one against its current grand total - shared by PUT /orders/:id's
+// edit-always-resubmits logic and POST /orders/:id/add-line below, so both
+// "editing a field" and "adding a line" count as the same kind of change
+// that voids a prior sign-off and sends the whole group back through
+// approval from scratch.
+function resubmitPoGroup(poNo, entityId, liveApprovalId, actingUserId) {
+  if (liveApprovalId) {
+    db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(liveApprovalId);
+  }
+  const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(poNo);
+  const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
+  const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', entityId, groupTotal, actingUserId);
+  db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, poNo);
+}
 router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  // Creator-vs-approver gating (2026-10-07): before approval, the creator
+  // (or an approver, or Admin) can edit freely, same as always. Once the
+  // group has cleared approval and gone live (Open/PartiallyReceived), the
+  // creator's own edit access is withdrawn - only an approver/Admin can
+  // still touch it, even though the creator still holds the general
+  // purchase_order.manage permission. Received/Cancelled stay locked for
+  // everyone, unchanged.
+  const isOwner = existing.created_by === req.user.id;
+  const isApprover = isPurchaseApprover(req.user);
+  if (!isOwner && !isApprover) {
+    return res.status(403).json({ error: 'Only the creator or an approver (Purchase HOD/Management/Admin) can edit this order.' });
+  }
   if (['Received', 'Cancelled'].includes(existing.status)) {
     return res.status(400).json({ error: `This order is already ${existing.status} and can no longer be edited.` });
+  }
+  if (['Open', 'PartiallyReceived'].includes(existing.status) && !isApprover) {
+    return res.status(403).json({ error: 'This order has already been approved and is live - only an approver (Purchase HOD/Management/Admin) can still edit it.' });
   }
   if (req.body.vendor_id) {
     const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(req.body.vendor_id);
@@ -852,17 +923,66 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     if (existing.status === 'Draft') {
       poAuditLog(req.user.id, 'po_edit_draft', existing.id, 'Edited while still Draft: ' + changes.join('; '));
     } else {
-      if (existing.approval_id) {
-        db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
-      }
-      const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(existing.po_no);
-      const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
-      const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
-      db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, existing.po_no);
+      resubmitPoGroup(existing.po_no, existing.id, existing.approval_id, req.user.id);
       poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
     }
   }
   res.json({ ok: true });
+});
+
+// Inserts a new line into an existing po_no group, cloning the shared
+// header fields (vendor, addresses, freight, payment/LD terms) from the
+// sibling row named by :id - the only way to add an item to a PO after
+// creation, since POST /orders only ever builds a new po_no from scratch.
+// Deliberately narrower than PUT /orders/:id's own edit gate: a line can
+// only be added while the group hasn't yet gone live (Draft/PendingApproval/
+// Rejected) - once Open/PartiallyReceived, not even an approver can add a
+// line here, since by then it isn't "finishing the order before it ships",
+// it's changing a live commitment, which this app treats as needing a new,
+// separate PO rather than reopening this one indefinitely.
+router.post('/orders/:id/add-line', requirePermission('purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const isOwner = existing.created_by === req.user.id;
+  const isApprover = isPurchaseApprover(req.user);
+  if (!isOwner && !isApprover) {
+    return res.status(403).json({ error: 'Only the creator or an approver (Purchase HOD/Management/Admin) can add items to this order.' });
+  }
+  if (!['Draft', 'PendingApproval', 'Rejected'].includes(existing.status)) {
+    return res.status(400).json({ error: 'Items can only be added while this order is still Draft, pending approval, or rejected - once approved, raise a new Purchase Order for anything further.' });
+  }
+  const { item_id, quantity, rate, hsn_code, gst_rate, unit, discount_percent, details } = req.body;
+  if (item_id) {
+    const item = db.prepare('SELECT id FROM items WHERE id = ?').get(item_id);
+    if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
+  }
+  const qty = Number(quantity);
+  const rt = Number(rate);
+  if (!qty || qty <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  if (!rt || rt <= 0) return res.status(400).json({ error: 'Enter a rate greater than 0.' });
+  const discountPercent = Math.min(100, Math.max(0, Number(discount_percent) || 0));
+  const gstRate = gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18;
+  const { total, gstAmount } = poLineCalc(qty, rt, discountPercent, gstRate);
+  const newUnit = String(unit || '').trim() || 'Nos';
+
+  const info = db.prepare(`
+    INSERT INTO purchase_orders (po_no, purchase_request_id, vendor_id, item_id, quantity, rate, total_value, created_by,
+      hsn_code, gst_rate, gst_amount, unit, discount_percent, details, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
+      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(existing.po_no, existing.purchase_request_id, existing.vendor_id, item_id || null, qty, rt, total, req.user.id,
+    hsn_code || null, gstRate, gstAmount, newUnit, discountPercent, details || null, existing.terms, existing.delivery_date,
+    existing.company_address_id, existing.company_ship_address_id, existing.payment_terms,
+    existing.ld_percentage, existing.ld_cap_percentage, existing.ld_trigger_notes, existing.freight, existing.freight_gst_rate,
+    existing.status);
+
+  if (existing.status === 'Draft') {
+    poAuditLog(req.user.id, 'po_add_line_draft', existing.id, `Added a line while still Draft: item_id=${item_id || '-'} qty=${qty} rate=${rt}`);
+  } else {
+    resubmitPoGroup(existing.po_no, existing.id, existing.approval_id, req.user.id);
+    poAuditLog(req.user.id, 'po_add_line_resubmit', existing.id, `Added a line - resubmitted for approval. item_id=${item_id || '-'} qty=${qty} rate=${rt}`);
+  }
+  res.json({ id: info.lastInsertRowid, ok: true });
 });
 
 router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (req, res) => {

@@ -15,6 +15,39 @@ async function api(path, opts = {}) {
 
 function has(...codes) { return ME && (ME.role === 'Admin' || codes.some(c => PERMS.has(c))); }
 
+// Mirrors routes/purchase.js's isPurchaseApprover() - "approver" = anyone
+// who could act on the PurchaseRequest/PurchaseOrder approval chains (Admin,
+// Management, or the Purchase department's own HOD), used to decide Edit/
+// Add Line Item button visibility the same way the backend decides whether
+// to actually allow the call (2026-10-07: creator-vs-approver edit gating).
+function isPurchaseApprover() { return !!ME && (ME.role === 'Admin' || ME.role === 'Management' || (ME.role === 'Purchase' && ME.is_supervisor)); }
+// Pre-approval: creator or an approver can edit/add lines. Post-approval
+// (live/Open): only an approver can still edit - the creator's own access is
+// withdrawn even though they still see the page. Terminal statuses are
+// never editable by anyone.
+function canEditPO(o) {
+  const isOwner = o.created_by === ME.id;
+  const approver = isPurchaseApprover();
+  if (['Draft', 'PendingApproval', 'Rejected'].includes(o.status)) return isOwner || approver;
+  if (['Open', 'PartiallyReceived'].includes(o.status)) return approver;
+  return false;
+}
+// Add Line Item is narrower than general Edit - unavailable once a PO has
+// gone live (Open/PartiallyReceived), not even for an approver; adding to a
+// shipped/receivable order means raising a new PO instead (see
+// POST /orders/:id/add-line's own comment in routes/purchase.js).
+function canAddPOLine(o) {
+  const isOwner = o.created_by === ME.id;
+  return ['Draft', 'PendingApproval', 'Rejected'].includes(o.status) && (isOwner || isPurchaseApprover());
+}
+function canEditPR(r) {
+  const isOwner = r.raised_by === ME.id;
+  const approver = isPurchaseApprover();
+  if (['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(r.status)) return isOwner || approver;
+  if (['Approved', 'OrderPlaced'].includes(r.status)) return approver;
+  return false;
+}
+
 // ===================== Branding (logo on the login screen + sidebar) =====================
 // Fetched once, before login - /auth/branding is unauthenticated by design
 // (the login screen has no token yet) - and cached here for renderSidebar()
@@ -747,16 +780,51 @@ window.filterList = (key, query) => {
 // counts as a match - the caller picks whichever fields make sense to
 // search (item name/code, project code/title, PO number/vendor/item, ...).
 const SEARCH_PICKER_STATE = {};
-function searchPickerHTML(pickerId, records, selectedValue, renderOptions, matchFn, selectAttrs, placeholder, containerStyle) {
+// `widthStorageKey`, when passed, makes this picker user-resizable (CSS
+// `resize:horizontal`, dragged from its bottom-right corner) instead of the
+// fixed `max-width` every picker used to be capped to - the width the user
+// drags it to is remembered in localStorage under that key (a per-viewer
+// convenience, same as any other browser-storage UI preference in this app)
+// and reapplied as the starting width on every future render, including
+// after the row it sits in gets rebuilt by an unrelated field's onchange.
+// Pickers that don't pass a key (project/client) keep the old width:100%
+// behavior untouched. See itemPickerHTML() below for the one caller that
+// opts in, and savePickerWidth()/the 2026-10-07 CLAUDE.md note on why every
+// expandable/dropdown field needs a verified-width check going forward.
+function searchPickerHTML(pickerId, records, selectedValue, renderOptions, matchFn, selectAttrs, placeholder, containerStyle, widthStorageKey) {
   SEARCH_PICKER_STATE[pickerId] = { records, renderOptions, matchFn };
+  let wrapperStyle;
+  if (widthStorageKey) {
+    let savedWidth = '260px';
+    try { savedWidth = localStorage.getItem(widthStorageKey) || '260px'; } catch (e) { /* ignore - private window / blocked storage */ }
+    wrapperStyle = `position:relative;width:${savedWidth};min-width:160px;max-width:640px;resize:horizontal;overflow:hidden;padding-bottom:3px;${containerStyle || ''}`;
+  } else {
+    wrapperStyle = `width:100%;position:relative;${containerStyle || ''}`;
+  }
   return `
-    <div style="width:100%;position:relative;${containerStyle || ''}">
+    <div style="${wrapperStyle}" ${widthStorageKey ? `data-resize-key="${widthStorageKey}"` : ''}>
     <input type="text" id="${pickerId}-search" placeholder="${esc(placeholder || 'Search...')}" oninput="filterSearchPicker('${pickerId}', this.value)"
       onblur="setTimeout(()=>{const s=document.getElementById('${pickerId}'); if(s && document.activeElement!==s) collapseSearchPicker(s);}, 150)"
       style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;">
     <select id="${pickerId}" style="width:100%;box-sizing:border-box;" ${selectAttrs || ''}>${renderOptions(selectedValue, records)}</select>
     </div>`;
 }
+// Captures the width the user just dragged a resizable picker to, on every
+// mouseup anywhere in the document rather than one bound to the wrapper
+// itself - CSS `resize` applies the new size as UA-internal drag state, and
+// a native resize gesture doesn't reliably bubble a 'mouseup' back to the
+// element being resized (its target/bubbling path isn't the normal DOM
+// click path), so an onmouseup attribute on the wrapper itself silently
+// never fires. A document-level listener checking every `[data-resize-key]`
+// element's current rendered size (cheap - there's only ever a couple
+// visible at once) sidesteps that entirely.
+document.addEventListener('mouseup', () => {
+  document.querySelectorAll('[data-resize-key]').forEach(el => {
+    const key = el.getAttribute('data-resize-key');
+    const w = Math.round(el.getBoundingClientRect().width) + 'px';
+    try { if (localStorage.getItem(key) !== w) localStorage.setItem(key, w); } catch (e) { /* ignore */ }
+  });
+});
 // A collapsed native <select> only ever displays its currently-SELECTED
 // option, never the first entry of a filtered list - so typing a search
 // query alone looks like "nothing happened" until the user opens the
@@ -827,7 +895,7 @@ function resetSearchPicker(pickerId) {
 function itemPickerHTML(selectId, items, selectedId, renderOptions, selectAttrs) {
   return searchPickerHTML(selectId, items, selectedId, renderOptions,
     (i, q) => (i.name || '').toLowerCase().includes(q) || (i.item_code || '').toLowerCase().includes(q),
-    selectAttrs, 'Search item...', 'max-width:260px;');
+    selectAttrs, 'Search item...', '', 'erp_item_picker_width');
 }
 window.filterItemPicker = window.filterSearchPicker;
 function resetItemPicker(selectId) { resetSearchPicker(selectId); }
@@ -4640,8 +4708,8 @@ function renderPRLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
-      <td><div style="display:flex;gap:6px;align-items:center;">
-        <div style="flex:1;min-width:0;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+      <td><div style="display:flex;gap:6px;align-items:flex-start;">
+        <div style="flex:0 0 auto;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
           `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
       </div></td>
@@ -4660,7 +4728,7 @@ function renderPRRows(rows) {
       <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
       <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
-        ${['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${canEditPR(r) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
@@ -4990,6 +5058,14 @@ window.addPR = async () => {
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 let EDIT_PR_LINES = [];
+// Once a PR has actually cleared approval (Approved/OrderPlaced), only an
+// approver can even open this form (see canEditPR()) - and even then, line
+// items stay frozen for everyone (PUT /requests/:id 400s on any `items`
+// payload in that state - see its own comment in routes/purchase.js), same
+// as a Purchase Order can't gain a new line past Open/PartiallyReceived.
+// This flag drives the read-only rendering below and tells saveEditPR() to
+// leave `items` out of the request entirely rather than send a doomed call.
+let EDIT_PR_ITEMS_LOCKED = false;
 window.openEditPR = async (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
   if (!r) return;
@@ -4998,12 +5074,14 @@ window.openEditPR = async (id) => {
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
   EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
     : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
+  EDIT_PR_ITEMS_LOCKED = ['Approved', 'OrderPlaced'].includes(r.status);
   document.getElementById('pr-edit-body').innerHTML = `
     <div class="form-grid">
       <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
     </div>
+    ${EDIT_PR_ITEMS_LOCKED ? `<p class="muted">This request has already been approved - line items are locked. Only the project assignment above can still be changed.</p>` : ''}
     <div id="pre-lines"></div>
-    <button class="btn small outline" type="button" onclick="addEditPRLine()">+ Add Line Item</button>
+    ${EDIT_PR_ITEMS_LOCKED ? '' : `<button class="btn small outline" type="button" onclick="addEditPRLine()">+ Add Line Item</button>`}
     <div style="margin-top:12px;">
       <button class="btn" onclick="saveEditPR(${id})">Save Changes</button>
       <button class="btn outline" type="button" onclick="document.getElementById('pr-edit-panel').style.display='none'">Cancel</button>
@@ -5018,15 +5096,16 @@ window.openEditPR = async (id) => {
 function renderEditPRLines() {
   const el = document.getElementById('pre-lines');
   if (!el) return;
+  const ro = EDIT_PR_ITEMS_LOCKED;
   el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
     <tr>
       <td>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()"`)}</td>
-      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" style="min-width:140px;"></td>
-      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
-      <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
-      <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;"></td>
-      <td>${EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</td>
+        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}</td>
+      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" style="min-width:140px;" ${ro ? 'disabled' : ''}></td>
+      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></td>
+      <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;" ${ro ? 'disabled' : ''}></td>
+      <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;" ${ro ? 'disabled' : ''}></td>
+      <td>${!ro && EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</td>
     </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="4" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(EDIT_PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
 }
 window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderEditPRLines(); };
@@ -5034,12 +5113,14 @@ window.saveEditPR = async (id) => {
   const errEl = document.getElementById('pre-err');
   errEl.style.display = 'none';
   try {
-    const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
-    if (!lines.length) throw new Error('Add at least one item line with a quantity.');
-    await api('/purchase/requests/' + id, { method: 'PUT', body: JSON.stringify({
-      project_id: val('pre-project') || null, items: lines
-    })});
+    const payload = { project_id: val('pre-project') || null };
+    if (!EDIT_PR_ITEMS_LOCKED) {
+      const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
+        .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
+      if (!lines.length) throw new Error('Add at least one item line with a quantity.');
+      payload.items = lines;
+    }
+    await api('/purchase/requests/' + id, { method: 'PUT', body: JSON.stringify(payload) });
     navigate('purchase-requests');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
@@ -5156,8 +5237,8 @@ function renderPOLines() {
   if (!el) return;
   el.innerHTML = tableHTML(['Item', 'Additional Details', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
     <tr>
-      <td><div style="display:flex;gap:6px;align-items:center;">
-        <div style="flex:1;min-width:0;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
+      <td><div style="display:flex;gap:6px;align-items:flex-start;">
+        <div style="flex:0 0 auto;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
           (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
           `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';prefillPOLineUnit(${i});showVendorsForPOLines()"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button>
@@ -5194,67 +5275,154 @@ function groupPORows(rows) {
   }
   return groups;
 }
+// Compact status summary for a group of PO lines - one badge per *distinct*
+// status with a ×count, rather than one badge per line (2026-10-07: a
+// 13-line PO that's just been submitted used to print "PendingApproval"
+// thirteen times in a row). A group where every line shares one status
+// (the common case) collapses to that single badge, same as it would read
+// for a single-line PO; a genuinely mixed group (some Open, some Cancelled,
+// ...) shows each status once with its own count.
+function summarizePOGroupStatus(lines) {
+  const counts = {};
+  lines.forEach(l => { counts[l.status] = (counts[l.status] || 0) + 1; });
+  const distinct = Object.keys(counts);
+  if (distinct.length === 1) return badge(distinct[0]);
+  return distinct.map(s => `${badge(s)} <span class="muted" style="font-size:11px;">×${counts[s]}</span>`).join(' ');
+}
+// Shared actions-cell wrapper (2026-10-07) - every button group in the PO
+// list used to be a bare run of inline <button>s with no layout container,
+// which wraps raggedly once it overflows a cell's width. flex-wrap keeps
+// every button a consistent size and lets the group wrap onto a clean new
+// line instead. Used for both the Documents cell and the action-buttons
+// cell, in both the single-line row and the multi-line group header.
+function poActionsCell(buttonsHtml) {
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${buttonsHtml}</div>`;
+}
+function poAddLineForm(poId) {
+  const items = window.__PO_ITEMS || [];
+  return `<div class="form-grid" style="margin-top:8px;">
+    <div><label>Item</label>${itemPickerHTML(`po-addline-item-${poId}`, items, '',
+      (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}</option>`).join(''))}</div>
+    <div><label>Additional Details</label><input id="po-addline-details-${poId}" placeholder="e.g. grade, size, drawing ref"></div>
+    <div><label>Quantity</label><input id="po-addline-qty-${poId}" type="number" value="1"></div>
+    <div><label>Unit</label>${unitPickerHTML(`po-addline-unit-${poId}`, 'Nos')}</div>
+    <div><label>Rate (₹)</label><input id="po-addline-rate-${poId}" type="number" value="0"></div>
+    <div><label>Discount %</label><input id="po-addline-discount-${poId}" type="number" min="0" max="100" value="0"></div>
+    <div><label>HSN Code</label><input id="po-addline-hsn-${poId}"></div>
+    <div><label>GST Rate (%)</label><input id="po-addline-gst-${poId}" type="number" value="18"></div>
+  </div>
+  <button class="btn small" type="button" onclick="savePOAddLine(${poId})">Add Item</button>
+  <div id="po-addline-err-${poId}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+}
+window.togglePOAddLine = (id) => {
+  const row = document.getElementById(`po-addline-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing && !row.dataset.built) {
+    document.getElementById(`po-addline-body-${id}`).innerHTML = poAddLineForm(id);
+    row.dataset.built = '1';
+  }
+};
+window.savePOAddLine = async (id) => {
+  const errEl = document.getElementById(`po-addline-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    await api(`/purchase/orders/${id}/add-line`, { method: 'POST', body: JSON.stringify({
+      item_id: val(`po-addline-item-${id}`) || null, details: val(`po-addline-details-${id}`),
+      quantity: val(`po-addline-qty-${id}`), rate: val(`po-addline-rate-${id}`),
+      unit: unitPickerValue(`po-addline-unit-${id}`), discount_percent: val(`po-addline-discount-${id}`),
+      hsn_code: val(`po-addline-hsn-${id}`), gst_rate: val(`po-addline-gst-${id}`),
+    })});
+    navigate('purchase-orders');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
 function renderSinglePORow(o) {
   return `
     <tr><td>${esc(o.po_no)}</td><td>${esc(o.vendor_name)}</td><td>${esc(o.item_name)}</td><td>${o.quantity}</td>
     <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
     <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
     <td>${deliveryBadge(o.delivery_date)}</td>
-    <td>
+    <td>${poActionsCell(`
       <button class="btn small outline" type="button" onclick="downloadPoPdf(${o.id}, '${esc(o.po_no)}')">PDF</button>
       <button class="btn small outline" type="button" onclick="downloadPoDocx(${o.id}, '${esc(o.po_no)}')">Word</button>
       <button class="btn small outline" type="button" onclick="emailPo(${o.id})">Email Vendor</button>
-    </td>
-    <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
+    `)}</td>
+    <td>${poActionsCell(`
+    <button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
     <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button>
     ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit for Approval</button>` : ''}
-    ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
-    <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
-    <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button></td></tr>
+    ${canAddPOLine(o) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${o.id})">+ Add Line Item</button>` : ''}
+    ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
+    ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+    <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
     <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>
+    <tr id="po-addline-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-addline-body-${o.id}"></div></td></tr>
     <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`;
 }
+// Multi-line groups (2026-10-07) default to collapsed - only the summary
+// header row shows at first; the per-line rows (class po-group-row-<id>)
+// are hidden until the "N items" toggle is clicked, same "collapsed by
+// default, click to expand" discipline already used for the sidebar nav,
+// specific list panels, and the To-Do board (see CLAUDE.md's standing rule
+// on this, added the same day) - a 13-line PO no longer dumps 13 rows onto
+// the page the moment the list loads.
+window.togglePOGroupLines = (id) => {
+  const rows = document.querySelectorAll(`.po-group-row-${id}`);
+  const chev = document.getElementById(`po-group-chev-${id}`);
+  const showing = rows.length && rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  // Collapsing also closes any line's Edit panel left open underneath it -
+  // expanding again deliberately leaves those alone (they stay whatever
+  // togglePOEdit last set, i.e. hidden by default) rather than force-opening
+  // every line's edit form just because the group itself got expanded.
+  if (showing) document.querySelectorAll(`.po-group-sub-${id}`).forEach(r => { r.style.display = 'none'; });
+  if (chev) chev.textContent = showing ? '▸' : '▾';
+};
 function renderMultiLinePOGroup(lines) {
   const first = lines[0];
   const totalValue = lines.reduce((s, l) => s + Number(l.total_value || 0), 0);
   const totalQty = lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
   const totalReceived = lines.reduce((s, l) => s + Number(l.received_qty || 0), 0);
-  const allCancelled = lines.every(l => l.status === 'Cancelled');
   const anyCancellable = lines.some(l => !['Received', 'Cancelled'].includes(l.status));
   const anyDraft = lines.some(l => l.status === 'Draft');
+  const groupId = first.id;
   const lineRows = lines.map(o => `
-    <tr>
+    <tr class="po-group-row-${groupId}" style="display:none;">
       <td colspan="2" class="muted" style="padding-left:20px;">↳</td>
       <td>${esc(o.item_name)}</td><td>${o.quantity}</td>
       <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
       <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
       <td></td><td></td>
-      <td>${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
-      ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
-      <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}</td>
+      <td>${poActionsCell(`
+      ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
+      ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
+      ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}`)}</td>
     </tr>
-    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>`).join('');
+    <tr class="po-group-sub-${groupId}" id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
-      <td><b>${esc(first.po_no)}</b></td><td>${esc(first.vendor_name)}</td>
-      <td>${lines.length} items</td><td>${fmt(totalQty)}</td>
+      <td><a href="#" onclick="togglePOGroupLines(${groupId});return false;" style="text-decoration:none;"><span id="po-group-chev-${groupId}">▸</span> <b>${esc(first.po_no)}</b></a></td><td>${esc(first.vendor_name)}</td>
+      <td><a href="#" onclick="togglePOGroupLines(${groupId});return false;">${lines.length} items</a></td><td>${fmt(totalQty)}</td>
       <td>${totalReceived > 0 ? `${fmt(totalReceived)} / ${fmt(totalQty)}` : '-'}</td>
-      <td>-</td><td>₹${fmt(totalValue)}</td><td>${allCancelled ? badge('Cancelled') : lines.map(l => badge(l.status)).join(' ')}</td>
+      <td>-</td><td>₹${fmt(totalValue)}</td><td>${summarizePOGroupStatus(lines)}</td>
       <td>${deliveryBadge(first.delivery_date)}</td>
-      <td>
+      <td>${poActionsCell(`
         <button class="btn small outline" type="button" onclick="downloadPoPdf(${first.id}, '${esc(first.po_no)}')">PDF</button>
         <button class="btn small outline" type="button" onclick="downloadPoDocx(${first.id}, '${esc(first.po_no)}')">Word</button>
         <button class="btn small outline" type="button" onclick="emailPo(${first.id})">Email Vendor</button>
-      </td>
-      <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
+      `)}</td>
+      <td>${poActionsCell(`
+      <button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
       <button class="btn small outline" type="button" onclick="togglePOTerms(${first.id})">Terms</button>
       ${anyDraft ? `<button class="btn small" type="button" onclick="submitPOForApproval(${first.id})">Submit Whole PO for Approval</button>` : ''}
+      ${canAddPOLine(first) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${first.id})">+ Add Line Item</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
-      <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button></td></tr>
+      <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
     <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${first.id}"></div></td></tr>
+    <tr id="po-addline-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-addline-body-${first.id}"></div></td></tr>
     <tr id="po-history-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-history-${first.id}"></div></td></tr>
     ${lineRows}`;
 }

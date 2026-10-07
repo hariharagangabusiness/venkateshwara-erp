@@ -1793,6 +1793,29 @@ function bootstrapPurchaseOrderApproval() {
   } catch (e) { console.error('[db] Purchase Order approval bootstrap failed:', e.message); }
 }
 
+// Creator-vs-approver PR/PO edit gating (2026-10-07, routes/purchase.js's
+// isPurchaseApprover()) lets Management keep editing a PO/PR once it's
+// approved, but that check only runs INSIDE the route handlers - which sit
+// behind requirePermission('purchase_order.manage')/('purchase_request.create',
+// ...) at the router level. Management was never granted either permission
+// (only the Purchase role was, in db/seed.js), so the route-level gate
+// rejected Management before the new in-route logic could even run -
+// the exact same "correct application-code check, unreachable because the
+// route-level permission gate stands in front of it" bug already hit and
+// fixed once for Accounts/bg.manage (bootstrapBgManageGrant()) and again for
+// Management/sales_order.manage (bootstrapSalesFulfillmentApprovals()).
+// Idempotent INSERT OR IGNORE, same pattern as both of those.
+function bootstrapPurchaseApproverGrants() {
+  try {
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    if (!managementRoleId) return;
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT ${managementRoleId}, id FROM permissions WHERE code IN ('purchase_order.manage', 'purchase_request.create')
+    `);
+  } catch (e) { console.error('[db] Purchase approver permission grant backfill failed:', e.message); }
+}
+
 // Accounts Payable: booking a Purchase Invoice (vendor bill) starts this
 // chain immediately, same shape as ExpenseVoucher - step 1 is the Accounts
 // department's own HOD (always required), step 2 is Management above a
@@ -1940,5 +1963,5 @@ function repairCorruptedEmployeeNumericFields() {
 module.exports = {
   db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
-  bootstrapSalesFulfillmentApprovals, repairCorruptedEmployeeNumericFields,
+  bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
 };
