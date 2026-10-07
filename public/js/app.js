@@ -771,12 +771,26 @@ function searchPickerHTML(pickerId, records, selectedValue, renderOptions, match
 function collapseSearchPicker(sel) {
   sel.removeAttribute('size');
   sel.style.position = ''; sel.style.zIndex = ''; sel.style.left = ''; sel.style.right = '';
-  sel.style.top = ''; sel.style.background = ''; sel.style.boxShadow = ''; sel.style.border = '';
+  sel.style.top = ''; sel.style.width = ''; sel.style.background = ''; sel.style.boxShadow = ''; sel.style.border = '';
 }
+// Fixed (not absolute) positioning, computed from the input's own live
+// bounding rect - a picker used inside a PR/PO line-items table sits inside
+// tableHTML()'s own `overflow-x:auto` wrapper, which (per the CSS spec)
+// implicitly clips the Y axis too once X is non-visible; an absolutely-
+// positioned overlay relative to an ancestor inside that wrapper gets cut
+// off at its bottom edge, which in practice landed right behind the
+// "+ Add Line Item" button just past the table, masking the lower options.
+// `position:fixed` escapes that clipping entirely (it isn't contained by
+// any scrolling ancestor, only the viewport) - the one tradeoff is the
+// overlay doesn't track the page if it's scrolled while still open, which
+// collapseSearchPicker()'s on-blur/on-select close already limits to a
+// narrow, rarely-hit window.
 function expandSearchPicker(sel, optionCount) {
+  const rect = sel.getBoundingClientRect();
   sel.setAttribute('size', Math.min(optionCount + 1, 6));
-  sel.style.position = 'absolute'; sel.style.zIndex = '50'; sel.style.left = '0'; sel.style.right = '0';
-  sel.style.top = '100%'; sel.style.background = '#fff'; sel.style.boxShadow = '0 4px 12px rgba(0,0,0,.18)';
+  sel.style.position = 'fixed'; sel.style.zIndex = '9999';
+  sel.style.left = rect.left + 'px'; sel.style.width = rect.width + 'px'; sel.style.right = 'auto';
+  sel.style.top = rect.bottom + 'px'; sel.style.background = '#fff'; sel.style.boxShadow = '0 4px 12px rgba(0,0,0,.18)';
   sel.style.border = '1px solid var(--border)';
 }
 window.filterSearchPicker = (pickerId, query) => {
@@ -1617,8 +1631,8 @@ async function renderApprovalDrilldown(key) {
         api(`/purchase/requests/${r.entity_id}/items`),
         api(`/purchase/requests/${r.entity_id}/approval-history`),
       ]);
-      extraHtml = `<h5 style="margin:8px 0 4px;">Line Items</h5>${tableHTML(['Item', 'Qty', 'Est. Value'], lines, l => `
-        <tr><td>${esc(l.item_name)||esc(l.item_text)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.estimated_value)}</td></tr>`)}`;
+      extraHtml = `<h5 style="margin:8px 0 4px;">Line Items</h5>${tableHTML(['Item', 'Additional Details', 'Qty', 'Est. Value'], lines, l => `
+        <tr><td>${esc(l.item_name)||esc(l.item_text)||'-'}</td><td>${esc(l.details)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.estimated_value)}</td></tr>`)}`;
       history = hist;
       attachType = 'purchase_request';
     } else if (r.entity_type === 'expense_voucher') {
@@ -1701,7 +1715,7 @@ async function renderApprovalDrilldown(key) {
           </p>
           <h5 style="margin:8px 0 4px;">Line Items</h5>
           ${tableHTML(['Item', 'Qty', 'Unit', 'Rate (₹)', 'Disc %', 'HSN', 'GST %', 'Total (₹)', 'Status', ''], lines, l => `
-            <tr><td>${esc(l.item_name)||'-'}</td><td>${l.quantity}</td><td>${esc(l.unit)||'Nos'}</td><td>₹${fmt(l.rate)}</td><td>${Number(l.discount_percent)||0}%</td><td>${esc(l.hsn_code)||'-'}</td><td>${l.gst_rate||0}%</td><td>₹${fmt(l.total_value)}</td><td>${badge(l.status)}</td>
+            <tr><td>${esc(l.item_name)||'-'}${l.details ? `<br><span class="muted" style="font-size:11px;">${esc(l.details)}</span>` : ''}</td><td>${l.quantity}</td><td>${esc(l.unit)||'Nos'}</td><td>₹${fmt(l.rate)}</td><td>${Number(l.discount_percent)||0}%</td><td>${esc(l.hsn_code)||'-'}</td><td>${l.gst_rate||0}%</td><td>₹${fmt(l.total_value)}</td><td>${badge(l.status)}</td>
             <td>${l.item_id ? `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${l.item_id})">Price History</button>` : ''}</td></tr>`)}
           <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Taxable:</b> ₹${fmt(taxable)} &nbsp; <b>GST:</b> ₹${fmt(gstAmt)}
             ${freight ? ` &nbsp; <b>Freight:</b> ₹${fmt(freight)} &nbsp; <b>Freight GST (${freightGstRate}%):</b> ₹${fmt(freightGst)}` : ''}
@@ -4537,15 +4551,15 @@ PAGES['purchase-requests'] = async (el) => {
       <div id="pr-lines"></div>
       <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
       <div id="pr-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <div style="margin-top:12px;"><button class="btn" onclick="addPR()">Submit Request</button></div>
+      <div style="margin-top:12px;"><button class="btn" onclick="addPR()">Save as Draft</button></div>
       <div id="pr-err" class="msg err" style="display:none;margin-top:10px;"></div>
       <div class="muted" style="margin-top:8px;">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
-      Every request goes to the Purchase HOD/Supervisor for approval first; above the configured threshold it then also needs Management sign-off (see Admin → Approval Matrix).<br>
-      Requests with a combined value of ₹${fmt(threshold)} or above need at least 2 vendor quotes on file before they can be submitted for approval.</div>
+      This saves the request as a <b>Draft</b> below, not submitted yet — review or edit it there, then click <b>Submit for Approval</b> when it's ready. It then goes to the Purchase HOD/Supervisor first; above the configured threshold it also needs Management sign-off (see Admin → Approval Matrix).<br>
+      Requests with a combined value of ₹${fmt(threshold)} or above will need at least 2 vendor quotes on file before they can be submitted for approval.</div>
     `),
     'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
-      <p class="muted">Pending requests can be edited before they're approved — click Edit to review/change the items, project, quantities or values.</p>
+      <p class="muted">A new request starts as a <b>Draft</b> — click Edit to review/change the items, project, quantities or values, then <b>Submit for Approval</b> when ready. A Pending request can still be edited up to the point it's approved.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
@@ -4624,20 +4638,21 @@ function prItemOptions(selectedId, itemsOverride) {
 function renderPRLines() {
   const el = document.getElementById('pr-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
+  el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
     <tr>
       <td><div style="display:flex;gap:6px;align-items:center;">
         <div style="flex:1;min-width:0;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
           `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
       </div></td>
+      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value" style="min-width:140px;"></td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
       <td>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</td>
-    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="3" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="4" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
 }
-window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }); renderPRLines(); };
+window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderPRLines(); };
 function renderPRRows(rows) {
   return tableHTML(['PR No', 'Item(s)', 'Project', 'Lines', 'Total Est. Value', 'Status', 'Action'], rows, r => `
     <tr id="pr-row-${r.id}">
@@ -4645,10 +4660,11 @@ function renderPRRows(rows) {
       <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
       <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
       <td>
-        ${['Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(r.status) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
+        ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
-        ${['Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id})">Withdraw</button>` : ''}
+        ${['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id}, ${r.status === 'Draft'})">${r.status === 'Draft' ? 'Delete' : 'Withdraw'}</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
         ${['Approved', 'OrderPlaced'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>` : ''}
       </td>
@@ -4675,11 +4691,13 @@ window.resubmitPR = async (id) => {
 // more rejections, when trying again isn't worth it. Only available before
 // a purchase order exists against it; once Approved/OrderPlaced, unwinding
 // goes through Cancel PO instead (routes/purchase.js already reverses the PR
-// back to Approved there if its only PO is cancelled).
-window.cancelPR = async (id) => {
-  const reason = prompt('Reason for withdrawing this request (optional):');
-  if (reason === null) return;
-  if (!confirm('Withdraw this Purchase Request? This cannot be undone.')) return;
+// back to Approved there if its only PO is cancelled). A still-Draft PR was
+// never actually submitted, so the prompts read "Delete" rather than
+// "Withdraw" - same backend route either way (it just flips to Cancelled).
+window.cancelPR = async (id, isDraft) => {
+  const reason = isDraft ? null : prompt('Reason for withdrawing this request (optional):');
+  if (reason === null && !isDraft) return;
+  if (!confirm(isDraft ? 'Delete this Draft Purchase Request? This cannot be undone.' : 'Withdraw this Purchase Request? This cannot be undone.')) return;
   try {
     await api(`/purchase/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
     navigate('purchase-requests');
@@ -4697,8 +4715,8 @@ window.repeatPR = async (id) => {
   try {
     const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
     PR_LINES = lines.length
-      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0 }))
-      : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0 }];
+      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+      : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
     renderPRLines();
     const projectSel = document.getElementById('pr-project');
     if (projectSel) projectSel.value = r.project_id || '';
@@ -4952,15 +4970,18 @@ window.deletePRQuote = async (prId, quoteId) => {
   catch (e) { alert(e.message); }
 };
 window.submitPRForApproval = async (prId) => {
-  try { await api(`/purchase/requests/${prId}/submit-for-approval`, { method: 'POST' }); navigate('purchase-requests'); }
-  catch (e) { alert(e.message); }
+  try {
+    const r = await api(`/purchase/requests/${prId}/submit-for-approval`, { method: 'POST' });
+    if (r.quotes_required) alert('This request needs at least 2 vendor quotes before it can go to approval - add them via the Quotes / RFQ button, then Submit for Approval again.');
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
 };
 window.addPR = async () => {
   const errEl = document.getElementById('pr-err');
   errEl.style.display = 'none';
   try {
     const lines = PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0 }));
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
     if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests', { method: 'POST', body: JSON.stringify({
       project_id: val('pr-project') || null, items: lines
@@ -4975,8 +4996,8 @@ window.openEditPR = async (id) => {
   const projects = window.__PR_PROJECTS || [];
   const panel = document.getElementById('pr-edit-panel');
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
-  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0 }))
-    : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0 }];
+  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+    : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
   document.getElementById('pr-edit-body').innerHTML = `
     <div class="form-grid">
       <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
@@ -4997,23 +5018,24 @@ window.openEditPR = async (id) => {
 function renderEditPRLines() {
   const el = document.getElementById('pre-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item (pick from master)', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
+  el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
     <tr>
       <td>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
         `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()"`)}</td>
+      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" style="min-width:140px;"></td>
       <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
       <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
       <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;"></td>
       <td>${EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</td>
-    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="3" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(EDIT_PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="4" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(EDIT_PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
 }
-window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }); renderEditPRLines(); };
+window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderEditPRLines(); };
 window.saveEditPR = async (id) => {
   const errEl = document.getElementById('pre-err');
   errEl.style.display = 'none';
   try {
     const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0 }));
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
     if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests/' + id, { method: 'PUT', body: JSON.stringify({
       project_id: val('pre-project') || null, items: lines
@@ -5082,7 +5104,7 @@ PAGES['purchase-orders'] = async (el) => {
   // Flat id->row lookup for the lazy Edit/Terms panels - rows only ever need
   // their own PO line's data, found by id, not the whole list.
   window.__PO_ORDERS_CACHE = orders;
-  PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }];
+  PO_LINES = [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null, details: '' }];
   const poPanels = {
     'new-po': collapsiblePanel('new-purchase-order', 'New Purchase Order', `
       ${!vendors.length ? `<div class="msg err">No vendors yet - add one under <a href="#" onclick="navigate('vendors');return false;">Vendor Master</a> before creating a PO.</div>` : ''}
@@ -5107,7 +5129,8 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>Bill-To Address</label><select id="po-bill-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}">${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
         <div><label>Ship-To Address</label><select id="po-ship-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}">${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
       </div>
-      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Create PO</button>
+      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Save as Draft</button>
+      <p class="muted" style="margin-top:6px;">Saves this as a Draft below - nothing is submitted for approval yet. Review it (Download PDF/Word for a preview, or Edit to change anything), then click Submit for Approval when it's ready.</p>
     `),
     'bulk-import': collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
       <p class="muted">Bring in orders already open with a vendor before this system was used - each row becomes a real PO you can then receive, edit, cancel, or print, same as one created here. Vendor names not on file are added automatically; items are matched by Item Code or barcode.</p>
@@ -5131,7 +5154,7 @@ PAGES['purchase-orders'] = async (el) => {
 function renderPOLines() {
   const el = document.getElementById('po-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
+  el.innerHTML = tableHTML(['Item', 'Additional Details', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
     <tr>
       <td><div style="display:flex;gap:6px;align-items:center;">
         <div style="flex:1;min-width:0;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
@@ -5139,6 +5162,7 @@ function renderPOLines() {
           `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';prefillPOLineUnit(${i});showVendorsForPOLines()"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button>
       </div></td>
+      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PO_LINES[${i}].details=this.value" style="min-width:140px;"></td>
       <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
       <td>${unitPickerHTML(`po-unit-${i}`, l.unit, `PO_LINES[${i}].unit`)}</td>
       <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
@@ -5155,7 +5179,7 @@ window.prefillPOLineUnit = (i) => {
   const item = (window.__PO_ITEMS || []).find(it => it.id === PO_LINES[i].item_id);
   if (item && item.unit) { PO_LINES[i].unit = item.unit; renderPOLines(); }
 };
-window.addPOLine = () => { PO_LINES.push({ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }); renderPOLines(); };
+window.addPOLine = () => { PO_LINES.push({ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null, details: '' }); renderPOLines(); };
 // A multi-item PO is several purchase_orders rows sharing one po_no (see
 // routes/purchase.js's POST /orders); GET /orders returns them flat but
 // consecutive (inserted in one transaction, so their ids sort together
@@ -5183,6 +5207,7 @@ function renderSinglePORow(o) {
     </td>
     <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${o.id})">Attachments</button>
     <button class="btn small outline" type="button" onclick="togglePOTerms(${o.id})">Terms</button>
+    ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit for Approval</button>` : ''}
     ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
     <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button></td></tr>
@@ -5198,6 +5223,7 @@ function renderMultiLinePOGroup(lines) {
   const totalReceived = lines.reduce((s, l) => s + Number(l.received_qty || 0), 0);
   const allCancelled = lines.every(l => l.status === 'Cancelled');
   const anyCancellable = lines.some(l => !['Received', 'Cancelled'].includes(l.status));
+  const anyDraft = lines.some(l => l.status === 'Draft');
   const lineRows = lines.map(o => `
     <tr>
       <td colspan="2" class="muted" style="padding-left:20px;">↳</td>
@@ -5205,7 +5231,8 @@ function renderMultiLinePOGroup(lines) {
       <td>${o.received_qty > 0 ? `${o.received_qty} / ${o.quantity}` : '-'}</td>
       <td>₹${fmt(o.rate)}</td><td>₹${fmt(o.total_value)}</td><td>${badge(o.status)}</td>
       <td></td><td></td>
-      <td>${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
+      <td>${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
+      ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>
       <button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}</td>
     </tr>
     <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>`).join('');
@@ -5223,6 +5250,7 @@ function renderMultiLinePOGroup(lines) {
       </td>
       <td><button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
       <button class="btn small outline" type="button" onclick="togglePOTerms(${first.id})">Terms</button>
+      ${anyDraft ? `<button class="btn small" type="button" onclick="submitPOForApproval(${first.id})">Submit Whole PO for Approval</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button></td></tr>
     <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
@@ -5236,6 +5264,17 @@ function renderPORows(rows) {
   const body = groups.map(g => g.lines.length > 1 ? renderMultiLinePOGroup(g.lines) : renderSinglePORow(g.lines[0])).join('');
   return `<div style="overflow-x:auto;"><table><thead><tr>${['PO No', 'Vendor', 'Item', 'Qty', 'Received', 'Rate', 'Total', 'Status', 'Promised Delivery', 'Documents', ''].map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+// Starts approval for a Draft PO - the backend route acts on the whole
+// po_no group from any one line's id, so this is the same call whether
+// called from a single-line row's own button or the multi-line group's
+// "Submit Whole PO" one.
+window.submitPOForApproval = async (id) => {
+  if (!confirm('Submit this Purchase Order for approval? Review it with Edit (or download a PDF/Word preview) first if anything needs changing.')) return;
+  try {
+    await api(`/purchase/orders/${id}/submit-for-approval`, { method: 'POST' });
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
 window.cancelWholePO = async (poNo) => {
   const reason = prompt('Reason for cancelling this whole PO (optional):');
   if (reason === null) return;
@@ -5253,6 +5292,7 @@ function poEditForm(o) {
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Vendor</label><select id="po-edit-vendor-${o.id}">${vendors.map(v => `<option value="${v.id}" ${v.id===o.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
     <div><label>Item</label>${itemPickerHTML(`po-edit-item-${o.id}`, items, o.item_id, (selectedId, its) => its.map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join(''))}</div>
+    <div><label>Additional Details</label><input id="po-edit-details-${o.id}" value="${esc(o.details||'')}" placeholder="e.g. grade, size, drawing ref"></div>
     <div><label>Quantity</label><input id="po-edit-qty-${o.id}" type="number" value="${o.quantity}"></div>
     <div><label>Unit</label>${unitPickerHTML(`po-edit-unit-${o.id}`, o.unit)}</div>
     <div><label>Rate (₹)</label><input id="po-edit-rate-${o.id}" type="number" value="${o.rate}"></div>
@@ -5284,7 +5324,7 @@ window.savePOEdit = async (id) => {
   errEl.style.display = 'none';
   try {
     await api(`/purchase/orders/${id}`, { method: 'PUT', body: JSON.stringify({
-      vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`),
+      vendor_id: val(`po-edit-vendor-${id}`), item_id: val(`po-edit-item-${id}`), details: val(`po-edit-details-${id}`),
       quantity: val(`po-edit-qty-${id}`), rate: val(`po-edit-rate-${id}`),
       unit: unitPickerValue(`po-edit-unit-${id}`), discount_percent: val(`po-edit-discount-${id}`),
       hsn_code: val(`po-edit-hsn-${id}`), gst_rate: val(`po-edit-gst-${id}`), terms: val(`po-edit-terms-${id}`),
@@ -5460,8 +5500,8 @@ window.fillPOFromPR = async () => {
   detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
     Project: <b>${esc(r.project_code)||'-'}</b>`;
   PO_LINES = lines.length ? lines.map(l => ({
-    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: l.id,
-  })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null }];
+    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',
+  })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null, details: '' }];
   renderPOLines();
   window.showVendorsForPOLines();
 };
@@ -5476,7 +5516,7 @@ window.addPO = async () => {
       ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
       freight: val('po-freight') || 0, freight_gst_rate: val('po-freight-gst') || 18,
     })});
-    alert(`Purchase Order ${r.po_no} submitted for approval (Purchase HOD, then Management if above the value threshold) - it can't be sent to the vendor or received against until approved.`);
+    alert(`Purchase Order ${r.po_no} saved as a Draft - review it below (Download PDF/Word for a preview, or Edit to make changes), then click Submit for Approval when it's ready. It can't be sent to the vendor or received against until approved.`);
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };

@@ -86,6 +86,13 @@ function resolvePRLineItem(line, userId) {
   return { itemId: info.lastInsertRowid, wasAdhoc: true };
 }
 
+// Draft-first submission (2026-10-07) - a PR is created here purely as a
+// Draft, fully editable, with no approval chain started and no quote
+// threshold evaluated yet - the requester reviews/edits it in the list
+// (same Edit panel every other editable-status PR already uses) and only
+// POST /requests/:id/submit-for-approval below actually commits it, which
+// is also where the quote-threshold check now happens (moved out of here,
+// since a Draft's total can still change before it's submitted).
 router.post('/requests', requirePermission('purchase_request.create', 'job_card.manage'), (req, res) => {
   const { project_id, items } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Add at least one item line.' });
@@ -95,49 +102,32 @@ router.post('/requests', requirePermission('purchase_request.create', 'job_card.
       const qty = Number(line.quantity);
       if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
       const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
-      return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null };
+      return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null };
     });
   } catch (e) { return res.status(400).json({ error: e.message }); }
 
   const prNo = 'PR-' + Date.now();
   const totalValue = resolved.reduce((sum, l) => sum + l.estimatedValue, 0);
-  // Round 13: a high-value request (>= the configurable quote threshold)
-  // must collect at least 2 vendor quotes before it can enter the normal
-  // approval chain - it's created here but held at status 'PendingQuotes'
-  // instead of calling approvals.startApproval() immediately. Below the
-  // threshold, behavior is unchanged - approval starts right away. The
-  // threshold now applies to the whole request's total value across lines.
-  const threshold = getPurchaseSettings().quote_threshold;
-  const quotesRequired = totalValue >= threshold;
   const first = resolved[0];
 
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO purchase_requests (pr_no, project_id, raised_by, item_id, item_text, quantity, estimated_value, status, quotes_required)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(prNo, project_id || null, req.user.id, first.itemId, first.itemText, first.quantity, totalValue,
-      quotesRequired ? 'PendingQuotes' : 'Pending', quotesRequired ? 1 : 0);
+      VALUES (?,?,?,?,?,?,?,'Draft',0)
+    `).run(prNo, project_id || null, req.user.id, first.itemId, first.itemText, first.quantity, totalValue);
     const prId = info.lastInsertRowid;
     const insertLine = db.prepare(`
-      INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, sort_order)
-      VALUES (?,?,?,?,?,?)
+      INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order)
+      VALUES (?,?,?,?,?,?,?)
     `);
     resolved.forEach((l, i) => {
-      insertLine.run(prId, l.itemId, l.itemText, l.quantity, l.estimatedValue, i);
+      insertLine.run(prId, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i);
       if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(prId, l.itemId);
     });
-    if (!quotesRequired) {
-      // Every purchase request goes to the Purchase HOD/Supervisor first,
-      // regardless of value - the approval chain's step 1 always qualifies
-      // (min_amount 0), and step 2 (Management) kicks in only above whatever
-      // threshold is set on the Approval Matrix page.
-      const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', prId, totalValue, req.user.id);
-      db.prepare('UPDATE purchase_requests SET approval_id = ? WHERE id = ?').run(approvalId, prId);
-    }
     return prId;
   });
   const prId = tx();
-  res.json({ id: prId, pr_no: prNo, quotes_required: quotesRequired });
+  res.json({ id: prId, pr_no: prNo, status: 'Draft' });
 });
 
 // ---- Vendor discovery for a selected item (Round 13) ----
@@ -463,18 +453,42 @@ router.post('/rfq-inbox/scan', requirePermission('purchase_request.create', 'pur
   res.json(result);
 });
 
-// ---- Submit a high-value (quotes-required) PR into the normal approval chain ----
+// ---- Submit a Draft (or a high-value PR already past quote-collection) into the normal approval chain ----
+// Draft -> here is where the quote-threshold check now happens (moved out
+// of POST /requests, since a Draft's total can still change before it's
+// submitted) - below threshold goes straight into the approval chain;
+// at/above it stops at PendingQuotes so the requester can collect quotes,
+// then calls this same route again once they have (the PendingQuotes
+// branch below, unchanged from before Draft existed).
 router.post('/requests/:id/submit-for-approval', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
   const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
   if (!pr) return res.status(404).json({ error: 'Not found' });
-  if (!pr.quotes_required) return res.status(400).json({ error: 'This request does not require vendor quotes.' });
-  if (pr.status !== 'PendingQuotes') return res.status(400).json({ error: 'This request has already been submitted for approval.' });
-  const quoteCount = db.prepare('SELECT COUNT(*) as c FROM purchase_request_quotes WHERE purchase_request_id = ?').get(pr.id).c;
-  if (quoteCount < 2) return res.status(400).json({ error: `At least 2 vendor quotes are required before submitting for approval - only ${quoteCount} on file.` });
-  const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
-  const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, totalValue, req.user.id);
-  db.prepare(`UPDATE purchase_requests SET approval_id = ?, status = 'Pending' WHERE id = ?`).run(approvalId, pr.id);
-  res.json({ ok: true });
+  const isOwner = pr.raised_by === req.user.id;
+  const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
+  if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can submit this.' });
+
+  if (pr.status === 'Draft') {
+    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
+    const threshold = getPurchaseSettings().quote_threshold;
+    if (totalValue >= threshold) {
+      db.prepare(`UPDATE purchase_requests SET status = 'PendingQuotes', quotes_required = 1, estimated_value = ? WHERE id = ?`).run(totalValue, pr.id);
+      return res.json({ ok: true, quotes_required: true });
+    }
+    const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, totalValue, req.user.id);
+    db.prepare(`UPDATE purchase_requests SET status = 'Pending', quotes_required = 0, estimated_value = ?, approval_id = ? WHERE id = ?`).run(totalValue, approvalId, pr.id);
+    return res.json({ ok: true, quotes_required: false });
+  }
+
+  if (pr.status === 'PendingQuotes') {
+    const quoteCount = db.prepare('SELECT COUNT(*) as c FROM purchase_request_quotes WHERE purchase_request_id = ?').get(pr.id).c;
+    if (quoteCount < 2) return res.status(400).json({ error: `At least 2 vendor quotes are required before submitting for approval - only ${quoteCount} on file.` });
+    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
+    const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, totalValue, req.user.id);
+    db.prepare(`UPDATE purchase_requests SET approval_id = ?, status = 'Pending' WHERE id = ?`).run(approvalId, pr.id);
+    return res.json({ ok: true, quotes_required: false });
+  }
+
+  return res.status(400).json({ error: 'This request has already been submitted for approval.' });
 });
 
 router.put('/requests/:id', requirePermission('purchase_request.create', 'job_card.manage', 'purchase_order.manage'), (req, res) => {
@@ -486,8 +500,9 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   // A rejected request, or one a reviewer paused to ask for more info, stays
   // editable for its own requester (not just Admin/Management) so they can
   // fix/complete it and send it back, instead of having to raise a brand new
-  // PR from scratch.
-  if (!['Pending', 'Rejected', 'InfoRequested'].includes(existing.status) && !isPrivileged) {
+  // PR from scratch. A Draft is always editable by its owner too - that's
+  // the whole point of the Draft stage (see POST /requests above).
+  if (!['Draft', 'Pending', 'Rejected', 'InfoRequested'].includes(existing.status) && !isPrivileged) {
     return res.status(400).json({ error: 'This request has already been actioned - only Admin/Management can still edit it.' });
   }
   const { project_id, items } = req.body;
@@ -499,7 +514,7 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
         const qty = Number(line.quantity);
         if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
         const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
-        return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null };
+        return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null };
       });
     } catch (e) { return res.status(400).json({ error: e.message }); }
   }
@@ -507,11 +522,11 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
     if (resolved) {
       db.prepare('DELETE FROM purchase_request_items WHERE purchase_request_id = ?').run(existing.id);
       const insertLine = db.prepare(`
-        INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, sort_order)
-        VALUES (?,?,?,?,?,?)
+        INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order)
+        VALUES (?,?,?,?,?,?,?)
       `);
       resolved.forEach((l, i) => {
-        insertLine.run(existing.id, l.itemId, l.itemText, l.quantity, l.estimatedValue, i);
+        insertLine.run(existing.id, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i);
         if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(existing.id, l.itemId);
       });
       const first = resolved[0];
@@ -571,7 +586,7 @@ router.post('/requests/:id/cancel', requirePermission('purchase_request.create',
   const isOwner = existing.raised_by === req.user.id;
   const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
   if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can withdraw this.' });
-  if (!['Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(existing.status)) {
+  if (!['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(existing.status)) {
     return res.status(400).json({ error: 'This request has already moved past review and can no longer be withdrawn - if a purchase order was raised against it, cancel the PO instead.' });
   }
   const reason = (req.body && req.body.reason) || null;
@@ -669,16 +684,17 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
   }
   const poNo = 'PO-' + Date.now();
-  // Every PO now starts PendingApproval rather than live/Open - the
-  // approval chain below (Purchase HOD, then Management above a
-  // value threshold) has to actually clear before it can be received
-  // against or sent to the vendor. See lib/approvals.js/PurchaseOrder
-  // chain, bootstrapped in db/index.js.
+  // Draft-first submission (2026-10-07) - a PO is created here purely as a
+  // Draft, fully editable (PUT /orders/:id below leaves it as Draft rather
+  // than resubmitting for approval), with no approval chain started and the
+  // source PR (if any) not yet flipped to OrderPlaced - both of those now
+  // happen in POST /orders/:id/submit-for-approval instead, once the buyer
+  // has actually reviewed/confirmed the order.
   const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
-      hsn_code, gst_rate, gst_amount, unit, discount_percent, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
+      hsn_code, gst_rate, gst_amount, unit, discount_percent, details, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
       ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PendingApproval')
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Draft')
   `);
   const ids = [];
   let totalOrderValue = 0;
@@ -696,20 +712,31 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       const gstAmount = total * gstRate / 100;
       const unit = String(l.unit || '').trim() || 'Nos';
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
-        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, terms || null, delivery_date || null,
+        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, l.details || null, terms || null, delivery_date || null,
         company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null,
         ld_trigger_notes || null, freight, freightGstRate);
       ids.push(info.lastInsertRowid);
     }
   })();
-  // Freight (plus its own GST, since freight attracts GST here) is a single
-  // addition to the whole order's value, not per line - added once, not
-  // inside the per-line loop above.
-  totalOrderValue += freight + (freight * freightGstRate / 100);
-  const approvalId = approvals.startApproval('PurchaseOrder', 'purchase_order', ids[0], totalOrderValue, req.user.id);
-  db.prepare('UPDATE purchase_orders SET approval_id = ? WHERE po_no = ?').run(approvalId, poNo);
-  if (purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(purchase_request_id);
-  res.json({ id: ids[0], ids, po_no: poNo, status: 'PendingApproval' });
+  res.json({ id: ids[0], ids, po_no: poNo, status: 'Draft' });
+});
+
+// Starts the approval chain for a Draft PO - acts on the whole po_no group
+// (a multi-line PO is several rows sharing one po_no), same grand-total
+// computation PUT /orders/:id's own resubmit-on-edit path already uses.
+// Only a Draft can be submitted this way; once PendingApproval, an edit
+// resubmits it automatically instead (see PUT /orders/:id below).
+router.post('/orders/:id/submit-for-approval', requirePermission('purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Draft') return res.status(400).json({ error: 'This order has already been submitted for approval.' });
+  const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(existing.po_no);
+  const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
+  const approvalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
+  db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(approvalId, existing.po_no);
+  if (existing.purchase_request_id) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(existing.purchase_request_id);
+  poAuditLog(req.user.id, 'po_submit_for_approval', existing.id, null);
+  res.json({ ok: true });
 });
 
 // Commercial terms (Round 16): LD clause (delivery_date already exists on
@@ -732,8 +759,8 @@ router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.m
   res.json({ ok: true });
 });
 
-const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'unit', 'discount_percent', 'terms', 'delivery_date', 'company_address_id', 'company_ship_address_id'];
-const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', unit: 'Unit', discount_percent: 'Discount %', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Bill-To address', company_ship_address_id: 'Ship-To address' };
+const PO_EDIT_FIELDS = ['vendor_id', 'item_id', 'quantity', 'rate', 'hsn_code', 'gst_rate', 'unit', 'discount_percent', 'details', 'terms', 'delivery_date', 'company_address_id', 'company_ship_address_id'];
+const PO_EDIT_LABELS = { vendor_id: 'Vendor', item_id: 'Item', quantity: 'Qty', rate: 'Rate', hsn_code: 'HSN', gst_rate: 'GST %', unit: 'Unit', discount_percent: 'Discount %', details: 'Additional Details', terms: 'Terms', delivery_date: 'Delivery date', company_address_id: 'Bill-To address', company_ship_address_id: 'Ship-To address' };
 function poAuditLog(userId, action, poId, details) {
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(userId, action, 'purchase_order', poId, details || null);
@@ -780,7 +807,7 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   });
 
   db.prepare(`
-    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, unit=?, discount_percent=?, terms=?, delivery_date=?, company_address_id=?, company_ship_address_id=?
+    UPDATE purchase_orders SET vendor_id=?, item_id=?, quantity=?, rate=?, total_value=?, hsn_code=?, gst_rate=?, gst_amount=?, unit=?, discount_percent=?, details=?, terms=?, delivery_date=?, company_address_id=?, company_ship_address_id=?
     WHERE id=?
   `).run(
     req.body.vendor_id !== undefined ? req.body.vendor_id : existing.vendor_id,
@@ -788,6 +815,7 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     quantity, rate, total,
     req.body.hsn_code !== undefined ? (req.body.hsn_code || null) : existing.hsn_code,
     gstRate, gstAmount, unit, discountPercent,
+    req.body.details !== undefined ? (req.body.details || null) : existing.details,
     req.body.terms !== undefined ? (req.body.terms || null) : existing.terms,
     req.body.delivery_date !== undefined ? (req.body.delivery_date || null) : existing.delivery_date,
     req.body.company_address_id !== undefined ? (req.body.company_address_id || null) : existing.company_address_id,
@@ -817,15 +845,22 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
   // approval row is marked out of lib/approvals.js's pendingForUser() (which
   // only ever surfaces status='Pending') so it can't double up with the new
   // cycle in anyone's approval queue.
+  // A still-Draft PO is the one exception - it was never submitted in the
+  // first place, so an edit here just saves the change and leaves it Draft;
+  // POST /orders/:id/submit-for-approval is what actually starts the chain.
   if (changes.length) {
-    if (existing.approval_id) {
-      db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
+    if (existing.status === 'Draft') {
+      poAuditLog(req.user.id, 'po_edit_draft', existing.id, 'Edited while still Draft: ' + changes.join('; '));
+    } else {
+      if (existing.approval_id) {
+        db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(existing.approval_id);
+      }
+      const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(existing.po_no);
+      const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
+      const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
+      db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, existing.po_no);
+      poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
     }
-    const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(existing.po_no);
-    const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
-    const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', existing.id, groupTotal, req.user.id);
-    db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, existing.po_no);
-    poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
   }
   res.json({ ok: true });
 });
@@ -999,8 +1034,8 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   if (po_id) {
     po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(po_id);
     if (!po) return res.status(400).json({ error: 'That Purchase Order no longer exists - refresh the page and try again.' });
-    if (['PendingApproval', 'Rejected'].includes(po.status)) {
-      return res.status(400).json({ error: `This Purchase Order is still ${po.status === 'PendingApproval' ? 'pending approval' : 'Rejected'} and cannot receive stock until it is approved.` });
+    if (['Draft', 'PendingApproval', 'Rejected'].includes(po.status)) {
+      return res.status(400).json({ error: `This Purchase Order is still ${po.status === 'Draft' ? 'a Draft, not yet submitted for approval,' : po.status === 'PendingApproval' ? 'pending approval' : 'Rejected'} and cannot receive stock until it is approved.` });
     }
     if (['Received', 'Cancelled', 'Closed'].includes(po.status)) {
       return res.status(400).json({ error: `This Purchase Order is already ${po.status} and can no longer receive stock against it.` });
@@ -1175,7 +1210,7 @@ router.post('/store/movements/bulk-upload', requirePermission('store.manage'), u
         } else {
           po = findPoByNoAndItem.get(poNo, item.id);
           if (!po) { warnings.push(`Row ${rowNum}: no Purchase Order matches "${poNo}" for item "${item.name}" - imported without linking to a PO.`); }
-          else if (['PendingApproval', 'Rejected', 'Received', 'Cancelled', 'Closed'].includes(po.status)) {
+          else if (['Draft', 'PendingApproval', 'Rejected', 'Received', 'Cancelled', 'Closed'].includes(po.status)) {
             warnings.push(`Row ${rowNum}: PO "${poNo}" is ${po.status} - imported without linking to it.`);
             po = null;
           } else {
@@ -1347,16 +1382,24 @@ function loadPoBundle(id) {
 // lib/poPdf.js/lib/poDocx.js both check `po.status` themselves and add a
 // visible "Pending Approval" banner whenever this override is the reason
 // the document was generated at all, so it never reads as authorized.
-function poSendBlocked(po) {
-  if (!['PendingApproval', 'Rejected'].includes(po.status)) return null;
+// A Draft is a separate case: `allowDraft` lets PDF/Word download through
+// (lib/poPdf.js/poDocx.js render a "DRAFT" banner instead, same mechanism) -
+// this is the submitter's actual "preview before submission" ask, so it's
+// deliberately NOT gated behind the pending-email override. Email never
+// gets this carve-out - a Draft is never sent to a vendor, no override.
+function poSendBlocked(po, { allowDraft } = {}) {
+  if (po.status === 'Draft' && allowDraft) return null;
+  if (!['Draft', 'PendingApproval', 'Rejected'].includes(po.status)) return null;
   if (po.status === 'PendingApproval' && getPurchaseSettings().allow_pending_po_email) return null;
-  return `This Purchase Order is ${po.status === 'PendingApproval' ? 'still pending approval' : 'Rejected'} and cannot be sent to the vendor yet.`;
+  const reason = po.status === 'Draft' ? 'still a Draft and has not yet been submitted for approval'
+    : po.status === 'PendingApproval' ? 'still pending approval' : 'Rejected';
+  return `This Purchase Order is ${reason} and cannot be sent to the vendor yet.`;
 }
 
 router.get('/orders/:id/pdf', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
-  const blocked = poSendBlocked(bundle.po);
+  const blocked = poSendBlocked(bundle.po, { allowDraft: true });
   if (blocked) return res.status(400).json({ error: blocked });
   try {
     const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
@@ -1379,7 +1422,7 @@ router.get('/orders/:id/pdf', async (req, res) => {
 router.get('/orders/:id/docx', async (req, res) => {
   const bundle = loadPoBundle(req.params.id);
   if (!bundle) return res.status(404).json({ error: 'Not found' });
-  const blocked = poSendBlocked(bundle.po);
+  const blocked = poSendBlocked(bundle.po, { allowDraft: true });
   if (blocked) return res.status(400).json({ error: blocked });
   try {
     const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
