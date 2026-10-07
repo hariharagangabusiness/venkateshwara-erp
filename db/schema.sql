@@ -452,7 +452,7 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   item_id INTEGER REFERENCES items(id),
   quantity REAL NOT NULL,
   estimated_value REAL,
-  status TEXT DEFAULT 'Pending',      -- Pending, Approved, OrderPlaced, Received, Rejected
+  status TEXT DEFAULT 'Pending',      -- Draft, PendingQuotes, Pending, Approved, OrderPlaced, Received, Rejected, Cancelled
   approval_id INTEGER REFERENCES approvals(id),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -470,7 +470,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   quantity REAL NOT NULL,
   rate REAL NOT NULL,
   total_value REAL,
-  status TEXT DEFAULT 'Open',         -- Open, PartiallyReceived, Received, Closed, Cancelled
+  status TEXT DEFAULT 'Open',         -- Draft, PendingApproval, Open, PartiallyReceived, Received, Closed, Rejected, Cancelled
   created_by INTEGER REFERENCES users(id),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

@@ -1255,6 +1255,14 @@ const MIGRATIONS = [
   // migrateOffersClientIdNullable() since SQLite can't ALTER a NOT NULL
   // constraint away in place.
   `ALTER TABLE offers ADD COLUMN is_template INTEGER DEFAULT 0`,
+  // Purchase Request/Order "Draft before submit" + per-line Additional
+  // Details (2026-10-07) - a free-text note next to the item picker, for
+  // specification info (grade, size, drawing ref, ...) that doesn't fit any
+  // existing column; purely optional, never validated. The Draft lifecycle
+  // stage itself needs no schema change - both status columns are plain
+  // TEXT with no CHECK constraint, see routes/purchase.js.
+  `ALTER TABLE purchase_request_items ADD COLUMN details TEXT`,
+  `ALTER TABLE purchase_orders ADD COLUMN details TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
