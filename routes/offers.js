@@ -592,14 +592,13 @@ function duplicateOfferImage(imagePath) {
 //
 // Can copy from an offer in any status, including locked/Won ones -
 // copying never writes to the source, so its lock is irrelevant here.
-router.post('/:id/copy', offerPerm(), (req, res) => {
-  const source = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
-  if (!source) return res.status(404).json({ error: 'Not found' });
-  const { client_id, lead_id, contact_person, contact_phone, contact_email } = req.body;
-  if (!client_id) return res.status(400).json({ error: 'Pick a customer to copy this offer to.' });
-  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
-  if (!client) return res.status(400).json({ error: 'That customer no longer exists - refresh and try again.' });
-
+// Shared by POST /:id/copy (below) and POST /:id/save-as-template - both
+// are "duplicate this offer's full content into a brand-new, independent
+// offer row" with just different target defaults (a picked customer vs. no
+// customer + is_template). `opts`: client_id/lead_id/contact_person/
+// contact_phone/contact_email (all default null), subject (defaults to the
+// source's own), is_template (defaults falsy/0), created_by (required).
+function cloneOfferContent(source, opts) {
   const items = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
   const techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
   const boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY sort_order, id').all(source.id);
@@ -616,16 +615,16 @@ router.post('/:id/copy', offerPerm(), (req, res) => {
         promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
         abg_required, abg_percentage, abg_amount, abg_validity_days,
         pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
-        created_by)
-      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?)
-    `).run(offerNo, client_id, lead_id || null, contact_person || null, contact_phone || null, contact_email || null, source.subject,
+        is_template, created_by)
+      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?)
+    `).run(offerNo, opts.client_id || null, opts.lead_id || null, opts.contact_person || null, opts.contact_phone || null, opts.contact_email || null, opts.subject || source.subject,
       source.drawing_no, source.application, source.type_of_system, source.material_of_construction,
       source.inclusions, source.exclusions, source.utilities_requirement, source.instrument_air_supply,
       source.show_tech_specs, source.show_bought_out, source.show_inclusions_exclusions,
       source.promised_delivery_date, source.ld_percentage, source.ld_cap_percentage, source.ld_trigger_notes,
       source.abg_required, source.abg_percentage, source.abg_amount, source.abg_validity_days,
       source.pbg_required, source.pbg_percentage, source.pbg_amount, source.pbg_validity_days, source.bg_terms_notes,
-      req.user.id);
+      opts.is_template ? 1 : 0, opts.created_by);
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
@@ -650,7 +649,39 @@ router.post('/:id/copy', offerPerm(), (req, res) => {
     return newId;
   });
   const newId = tx();
-  res.json({ id: newId, offer_no: offerNo });
+  return { id: newId, offer_no: offerNo };
+}
+
+router.post('/:id/copy', offerPerm(), (req, res) => {
+  const source = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!source) return res.status(404).json({ error: 'Not found' });
+  const { client_id, lead_id, contact_person, contact_phone, contact_email } = req.body;
+  if (!client_id) return res.status(400).json({ error: 'Pick a customer to copy this offer to.' });
+  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+  if (!client) return res.status(400).json({ error: 'That customer no longer exists - refresh and try again.' });
+  res.json(cloneOfferContent(source, { client_id, lead_id, contact_person, contact_phone, contact_email, created_by: req.user.id }));
+});
+
+// "Save as Template" (2026-10-07) - Admin-only: spins off a brand-new,
+// independent Standard Template from an existing real offer's content,
+// without touching the source offer at all (same non-destructive reasoning
+// as POST /:id/copy above - copying never writes to the source, so its
+// status/lock is irrelevant; a Won, Sent, or locked offer can still be
+// saved as a template). Strips every customer-identifying field (client_id/
+// lead_id/contact person/phone/email) the same way POST / already does for
+// an is_template=1 offer created from scratch - this exists purely to skip
+// hand-rebuilding the scope/specs/terms/pictures of a template that closely
+// matches a real offer already on file. Only ever exposed on the Offer
+// Builder page (Admin-only button there) - the Admin reviews the actual
+// content first, since not everything on a real customer offer belongs in
+// a reusable template.
+router.post('/:id/save-as-template', requireRole('Admin'), (req, res) => {
+  const source = db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.id);
+  if (!source) return res.status(404).json({ error: 'Not found' });
+  if (source.is_template) return res.status(400).json({ error: 'This offer is already a Standard Template.' });
+  const subject = (req.body.subject || '').trim();
+  if (!subject) return res.status(400).json({ error: 'Give the template a name.' });
+  res.json(cloneOfferContent(source, { subject, is_template: true, created_by: req.user.id }));
 });
 
 // ===================== Update header / narrative fields =====================
