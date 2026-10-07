@@ -9,6 +9,7 @@ const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
+const { offerVisibilityWhere, canSeeOffer } = require('../lib/offerVisibility');
 const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
 const { compressImage, compressUploadedImageFile } = require('../lib/imageCompress');
 
@@ -399,10 +400,11 @@ router.get('/governance', requireRole('Admin'), (req, res) => {
   res.json(getOfferGovernanceSettings());
 });
 router.put('/governance', requireRole('Admin'), (req, res) => {
-  const { lock_on_so_conversion, require_library_clauses } = req.body;
+  const { lock_on_so_conversion, require_library_clauses, restrict_offers_to_creator } = req.body;
   const update = {};
   if (lock_on_so_conversion !== undefined) update.lock_on_so_conversion = !!lock_on_so_conversion;
   if (require_library_clauses !== undefined) update.require_library_clauses = !!require_library_clauses;
+  if (restrict_offers_to_creator !== undefined) update.restrict_offers_to_creator = !!restrict_offers_to_creator;
   setOfferGovernanceSettings(update);
   res.json(getOfferGovernanceSettings());
 });
@@ -415,11 +417,16 @@ router.get('/', (req, res) => {
   // they're excluded from this list by default - see GET /templates below,
   // the library view every offer-permission user (not just Admin) can
   // browse to pick one to copy from.
+  // Offers visibility restriction (2026-10-07, Admin-editable governance
+  // flag, off by default) - see lib/offerVisibility.js for the rule.
+  const vis = offerVisibilityWhere(req.user);
   let q = `
     SELECT o.*, c.name as client_name, l.enquiry_details as lead_enquiry_details
-    FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id WHERE o.is_template = 0
+    FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id
+    ${vis.join}
+    WHERE o.is_template = 0 AND (${vis.where})
   `;
-  const params = [];
+  const params = [...vis.params];
   if (client_id) { q += ' AND o.client_id = ?'; params.push(client_id); }
   if (lead_id) { q += ' AND o.lead_id = ?'; params.push(lead_id); }
   q += ' ORDER BY o.id DESC';
@@ -458,6 +465,11 @@ function getFullOffer(id) {
 router.get('/:id', (req, res) => {
   const full = getFullOffer(req.params.id);
   if (!full) return res.status(404).json({ error: 'Not found' });
+  // Offers visibility restriction (2026-10-07) - see lib/offerVisibility.js.
+  // Detail-only: every mutating route below stays gated purely by the
+  // existing offerPerm()/is_template checks, not this - it's about who can
+  // see an offer, not who can act on one they already know the id of.
+  if (!canSeeOffer(req.user, full.offer)) return res.status(403).json({ error: 'Access denied' });
   res.json(full);
 });
 

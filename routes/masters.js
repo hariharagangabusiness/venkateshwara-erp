@@ -6,6 +6,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { generateItemBarcode } = require('../lib/barcode');
 const { generateTempPassword } = require('../lib/passwordReset');
 const { sendMail } = require('../lib/mailer');
+const { canSeeOffer } = require('../lib/offerVisibility');
 const router = express.Router();
 router.use(authRequired);
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -43,7 +44,12 @@ router.get('/clients/:id/360', (req, res) => {
     SELECT l.*, u.full_name as owner_name FROM leads l LEFT JOIN users u ON u.id = l.owner_id
     WHERE l.client_id = ? ORDER BY l.id DESC
   `).all(client.id);
-  const offers = db.prepare('SELECT * FROM offers WHERE client_id = ? ORDER BY id DESC').all(client.id);
+  // Offers visibility restriction (2026-10-07) - same rule GET /offers
+  // itself applies, see lib/offerVisibility.js. Filtered in JS rather than
+  // SQL since a single client's offer history is a small, already-fetched
+  // list, not worth a second query-building path for.
+  const offers = db.prepare('SELECT * FROM offers WHERE client_id = ? ORDER BY id DESC').all(client.id)
+    .filter(o => canSeeOffer(req.user, o));
   const orders = db.prepare('SELECT * FROM sales_orders WHERE client_id = ? ORDER BY id DESC').all(client.id);
   const totalBusinessValue = orders.reduce((a, o) => a + Number(o.order_value || 0), 0);
   res.json({ client, leads, offers, orders, totalBusinessValue });

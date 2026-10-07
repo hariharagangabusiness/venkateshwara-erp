@@ -7660,6 +7660,8 @@ PAGES['offer-options'] = async (el) => {
         Lock an offer against further edits once it's converted to a Sales Order (Admin can still unlock a specific offer from its builder page if needed)</label>
       <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-require-library" ${governance.require_library_clauses ? 'checked' : ''}>
         Require Sales to pick Terms/Inclusions/Exclusions from the clause library below rather than typing their own</label>
+      <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-restrict-creator" ${governance.restrict_offers_to_creator ? 'checked' : ''}>
+        Restrict who can see an Offer - a Sales person sees only their own; a department HOD/supervisor also sees their own department's (Admin/Management always see everything)</label>
       <div style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
       <div id="gov-err" class="msg err" style="display:none;margin-top:10px;"></div>
     `) : ''}
@@ -7672,6 +7674,7 @@ window.saveOfferGovernance = async () => {
     await api('/offers/governance', { method: 'PUT', body: JSON.stringify({
       lock_on_so_conversion: document.getElementById('gov-lock-on-so').checked,
       require_library_clauses: document.getElementById('gov-require-library').checked,
+      restrict_offers_to_creator: document.getElementById('gov-restrict-creator').checked,
     })});
     navigate('offer-options');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
