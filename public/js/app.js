@@ -3153,6 +3153,23 @@ window.createOfferTemplate = async () => {
     await openOfferBuilder(r.id);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
+// "Save as Template" (Admin-only, Offer Builder page) - spins off a new
+// Standard Template from this real offer's full content (scope/specs/terms/
+// pictures) without touching this offer at all, skipping the hand-rebuild
+// createOfferTemplate() above requires for a template that closely matches
+// one already on file. routes/offers.js's POST /:id/save-as-template clears
+// every customer-identifying field server-side; this just asks for the new
+// template's name (defaulting to this offer's own subject) before calling it.
+window.saveOfferAsTemplate = async () => {
+  const subject = prompt('Name for the new template:', CURRENT_OFFER ? CURRENT_OFFER.subject || '' : '');
+  if (subject === null) return;
+  const trimmed = subject.trim();
+  if (!trimmed) { alert('Give the template a name.'); return; }
+  try {
+    const r = await api('/offers/' + CURRENT_OFFER_ID + '/save-as-template', { method: 'POST', body: JSON.stringify({ subject: trimmed }) });
+    await openOfferBuilder(r.id);
+  } catch (e) { alert(e.message); }
+};
 window.deleteOfferRow = async (id) => {
   if (!confirm('Permanently delete this offer? This cannot be undone.')) return;
   try {
@@ -3253,6 +3270,7 @@ async function renderOfferBuilder(panel) {
       ${!o.is_template && o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
       ${o.is_template ? '' : (o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`)}
+      ${!o.is_template && ME.role === 'Admin' ? `<button class="btn outline" onclick="saveOfferAsTemplate()">Save as Template</button>` : ''}
     </div>
   `;
   renderOfferTab(data);
