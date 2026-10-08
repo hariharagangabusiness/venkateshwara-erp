@@ -791,8 +791,8 @@ const SEARCH_PICKER_STATE = {};
 // behavior untouched. See itemPickerHTML() below for the one caller that
 // opts in, and savePickerWidth()/the 2026-10-07 CLAUDE.md note on why every
 // expandable/dropdown field needs a verified-width check going forward.
-function searchPickerHTML(pickerId, records, selectedValue, renderOptions, matchFn, selectAttrs, placeholder, containerStyle, widthStorageKey) {
-  SEARCH_PICKER_STATE[pickerId] = { records, renderOptions, matchFn };
+function searchPickerHTML(pickerId, records, selectedValue, renderOptions, matchFn, selectAttrs, placeholder, containerStyle, widthStorageKey, noMatchMessage) {
+  SEARCH_PICKER_STATE[pickerId] = { records, renderOptions, matchFn, noMatchMessage: noMatchMessage || 'No matches found.' };
   let wrapperStyle;
   if (widthStorageKey) {
     let savedWidth = '260px';
@@ -807,6 +807,7 @@ function searchPickerHTML(pickerId, records, selectedValue, renderOptions, match
       onblur="setTimeout(()=>{const s=document.getElementById('${pickerId}'); if(s && document.activeElement!==s) collapseSearchPicker(s);}, 150)"
       style="width:100%;margin-bottom:3px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;">
     <select id="${pickerId}" style="width:100%;box-sizing:border-box;" ${selectAttrs || ''}>${renderOptions(selectedValue, records)}</select>
+    <div id="${pickerId}-nomatch" class="muted" style="display:none;font-size:11px;margin-top:3px;">${esc(noMatchMessage || 'No matches found.')}</div>
     </div>`;
 }
 // Captures the width the user just dragged a resizable picker to, on every
@@ -872,6 +873,10 @@ window.filterSearchPicker = (pickerId, query) => {
   if (currentValue && filtered.some(r => String(r.id) === String(currentValue))) sel.value = currentValue;
   if (q && filtered.length) expandSearchPicker(sel, filtered.length);
   else collapseSearchPicker(sel);
+  // A zero-match search used to silently collapse to a blank one-row select,
+  // indistinguishable from "search did nothing" - show an explicit note instead.
+  const noMatchEl = document.getElementById(`${pickerId}-nomatch`);
+  if (noMatchEl) noMatchEl.style.display = (q && !filtered.length) ? 'block' : 'none';
 };
 document.addEventListener('change', (e) => {
   if (e.target && e.target.tagName === 'SELECT' && SEARCH_PICKER_STATE[e.target.id]) collapseSearchPicker(e.target);
@@ -936,7 +941,8 @@ function employeePickerHTML(pickerId, employees, selectedId, placeholder) {
   return searchPickerHTML(pickerId, employees, selectedId,
     (sel, list) => employeeOptions(sel, list, placeholder),
     (e, q) => (e.full_name || '').toLowerCase().includes(q) || (e.employee_code || '').toLowerCase().includes(q),
-    '', 'Search employee by name or code...');
+    '', 'Search employee by name or code...', '', '',
+    'No unlinked employees match - they may already be linked to another login, or check the spelling.');
 }
 
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
