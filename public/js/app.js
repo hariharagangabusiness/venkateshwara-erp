@@ -924,6 +924,20 @@ function clientPickerHTML(pickerId, clients, selectedId, placeholder) {
     (c, q) => (c.name || '').toLowerCase().includes(q),
     '', 'Search customer by name...');
 }
+// Employee picker for Users & Roles' Link/Change Link action (2026-10-08) -
+// replaces a native prompt() that listed every employee without a login as
+// plain numbered text, which Chrome doesn't let you scroll past a certain
+// height, making anyone past the first ~20 entries unreachable.
+function employeeOptions(selectedId, employees, placeholder) {
+  return `<option value="">${esc(placeholder || '- No linked employee -')}</option>` +
+    employees.map(e => `<option value="${e.id}" ${selectedId && Number(selectedId) === e.id ? 'selected' : ''}>${esc(e.employee_code || '')} - ${esc(e.full_name)}</option>`).join('');
+}
+function employeePickerHTML(pickerId, employees, selectedId, placeholder) {
+  return searchPickerHTML(pickerId, employees, selectedId,
+    (sel, list) => employeeOptions(sel, list, placeholder),
+    (e, q) => (e.full_name || '').toLowerCase().includes(q) || (e.employee_code || '').toLowerCase().includes(q),
+    '', 'Search employee by name or code...');
+}
 
 async function loadSelectOptions(selectEl, apiPath, valueKey, labelKey, placeholder) {
   const items = await api(apiPath);
@@ -9099,18 +9113,50 @@ window.toggleUser = async (id) => {
   await api(`/masters/users/${id}/toggle`, { method: 'PATCH' });
   navigate('users');
 };
+// Opens the shared Edit-panel area with a searchable employee picker instead
+// of the old native prompt() numbered list (2026-10-08) - that list was every
+// active employee without a login, which in a real install runs into the
+// hundreds; Chrome's prompt() dialog has no scrollbar once its text exceeds
+// a fixed height, so anything past roughly the first 20 entries was simply
+// unreachable, with no error or indication more existed beyond the "..." cutoff.
 window.linkUserEmployee = async (id) => {
+  const u = (window.__USER_CACHE || []).find(x => x.id === id);
+  if (!u) return;
   const freeEmployees = window.__FREE_EMPLOYEES || await api('/masters/employees-without-login');
-  if (!freeEmployees.length) { alert('Every active employee already has a login. To relink this user, first unlink the employee from their current login.'); return; }
-  const options = freeEmployees.map((e, i) => `${i + 1}. ${e.employee_code || ''} - ${e.full_name}`).join('\n');
-  const pick = prompt(`Pick an employee to link (enter number), or 0 to unlink:\n\n0. - No linked employee -\n${options}`);
-  if (pick === null) return;
-  const idx = parseInt(pick, 10);
-  if (isNaN(idx)) { alert('Enter a number.'); return; }
-  const employee_id = idx === 0 ? null : (freeEmployees[idx - 1] ? freeEmployees[idx - 1].id : null);
-  if (idx !== 0 && !employee_id) { alert('Invalid selection.'); return; }
+  // employees-without-login deliberately excludes every already-linked
+  // employee, including this user's own current one - re-add it here so
+  // "Change Link" shows (and defaults to) what's actually linked today,
+  // not an empty/blank picker that looks like nothing is set.
+  const options = u.employee_id && !freeEmployees.some(e => e.id === u.employee_id)
+    ? [{ id: u.employee_id, employee_code: u.employee_code, full_name: u.employee_name }, ...freeEmployees]
+    : freeEmployees;
+  const panel = document.getElementById('user-edit-panel');
+  document.getElementById('user-edit-body').innerHTML = `
+    <h3 style="margin-top:0;">${u.employee_id ? 'Change' : 'Link'} Employee - ${esc(u.full_name)}</h3>
+    <div class="form-grid">
+      <div><label>Employee</label>${employeePickerHTML('lue-employee', options, u.employee_id)}</div>
+    </div>
+    <button class="btn" type="button" onclick="saveLinkUserEmployee(${id})">Save</button>
+    <button class="btn outline" type="button" onclick="document.getElementById('user-edit-panel').style.display='none'">Cancel</button>
+    ${u.employee_id ? `<button class="btn outline" type="button" style="margin-left:6px;" onclick="unlinkUserEmployee(${id})">Unlink</button>` : ''}
+    <div id="lue-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+window.saveLinkUserEmployee = async (id) => {
+  const errEl = document.getElementById('lue-err');
+  errEl.style.display = 'none';
+  const employee_id = val('lue-employee');
+  if (!employee_id) { errEl.textContent = 'Pick an employee, or use Unlink to remove the current link.'; errEl.style.display = 'block'; return; }
   try {
-    await api(`/masters/users/${id}/link-employee`, { method: 'PATCH', body: JSON.stringify({ employee_id }) });
+    await api(`/masters/users/${id}/link-employee`, { method: 'PATCH', body: JSON.stringify({ employee_id: Number(employee_id) }) });
+    navigate('users');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.unlinkUserEmployee = async (id) => {
+  if (!confirm('Unlink this employee from the login?')) return;
+  try {
+    await api(`/masters/users/${id}/link-employee`, { method: 'PATCH', body: JSON.stringify({ employee_id: null }) });
     navigate('users');
   } catch (e) { alert(e.message); }
 };
@@ -9155,13 +9201,22 @@ PAGES.access = async (el) => {
         <span class="chev">&#9660;</span>
       </h4>
       <div class="access-grid" id="access-role-${r.id}">
-        ${catalogForRoles.map(g => `
+        ${catalogForRoles.map(g => {
+          const groupIds = g.items.map(it => it.id);
+          const checkedCount = groupIds.filter(id => !r.configured || (r.allowedPages||[]).includes(id)).length;
+          return `
           <div class="access-group">
-            <div class="access-group-title">${esc(g.group)}</div>
+            <div class="access-group-title">
+              <label style="margin:0;cursor:pointer;font-weight:inherit;">
+                <input type="checkbox" class="ar-group-toggle" data-role="${r.id}" data-group="${esc(g.group)}" ${checkedCount === groupIds.length ? 'checked' : ''} onchange="toggleArGroup(this)">
+                ${esc(g.group)}
+              </label>
+            </div>
             ${g.items.map(it => `
-              <label class="access-item"><input type="checkbox" value="${it.id}" ${(!r.configured || (r.allowedPages||[]).includes(it.id)) ? 'checked' : ''}> ${esc(it.label)}</label>
+              <label class="access-item"><input type="checkbox" class="ar-page" data-role="${r.id}" data-group="${esc(g.group)}" value="${it.id}" ${(!r.configured || (r.allowedPages||[]).includes(it.id)) ? 'checked' : ''}> ${esc(it.label)}</label>
             `).join('')}
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>
       <div class="access-role-actions" style="margin-top:10px;">
         <button class="btn small" onclick="saveAccess(${r.id})">Save Access for ${esc(r.name)}</button>
@@ -9172,6 +9227,19 @@ PAGES.access = async (el) => {
 window.toggleAccessRolePanel = (roleId) => {
   const panel = document.getElementById(`access-panel-${roleId}`);
   if (panel) panel.classList.toggle('collapsed');
+};
+// Module/group-level "select all" header (2026-10-08) - ticking the group
+// checkbox grants or revokes every page in that module for this role at
+// once, instead of clicking each page individually; mirrors the per-user
+// screen's own au-group-toggle above, just scoped by role too since every
+// role's panel renders on this same page simultaneously (the per-user
+// screen only ever shows one user's panel at a time, so it didn't need the
+// extra scoping).
+window.toggleArGroup = (checkbox) => {
+  const role = checkbox.dataset.role, group = checkbox.dataset.group;
+  document.querySelectorAll('.ar-page').forEach(cb => {
+    if (cb.dataset.role === role && cb.dataset.group === group) cb.checked = checkbox.checked;
+  });
 };
 // "User Access" and "Approval Matrix" are always Admin-only client-side
 // (see NAV's hardcoded filter above) no matter what any role/user access
@@ -9323,7 +9391,10 @@ window.removeRoleOversight = async (id) => {
   navigate('access');
 };
 window.saveAccess = async (roleId) => {
-  const boxes = document.querySelectorAll(`#access-role-${roleId} input[type=checkbox]`);
+  // Only the per-page checkboxes carry a real page id as their value - the
+  // group-level "select all" checkboxes added above have none, and would
+  // otherwise leak a bogus empty/"on" entry into pageIds if selected here too.
+  const boxes = document.querySelectorAll(`#access-role-${roleId} input.ar-page`);
   const pageIds = Array.from(boxes).filter(b => b.checked).map(b => b.value);
   try {
     await api(`/admin/access/${roleId}`, { method: 'PUT', body: JSON.stringify({ page_ids: pageIds }) });
