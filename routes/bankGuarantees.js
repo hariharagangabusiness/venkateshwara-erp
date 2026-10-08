@@ -234,12 +234,26 @@ router.delete('/:id', canManage, (req, res) => {
   res.json({ ok: true, applied: false, message: 'Delete request submitted for approval.' });
 });
 
+// Returns the BG's full current row (bg.*) alongside proposed_fields, so the
+// review UI can show a before/after comparison, not just the terse "field:
+// value" list of what changed. c.id is aliased to change_id - bare c.*
+// followed by bg.* would let bg.id silently overwrite the pending-change id.
 router.get('/pending-changes', canManage, (req, res) => {
-  res.json(db.prepare(`
-    SELECT c.*, bg.bg_no, bg.bg_type, bg.value, u.full_name as requested_by_name
-    FROM bg_pending_changes c JOIN bank_guarantees bg ON bg.id = c.bg_id LEFT JOIN users u ON u.id = c.requested_by
+  const rows = db.prepare(`
+    SELECT c.id as change_id, c.change_type, c.proposed_fields, c.requested_by, c.requested_at, c.bg_id,
+      bg.*, p.project_code, p.title as project_title, u.full_name as requested_by_name
+    FROM bg_pending_changes c JOIN bank_guarantees bg ON bg.id = c.bg_id
+    LEFT JOIN projects p ON p.id = bg.project_id LEFT JOIN users u ON u.id = c.requested_by
     WHERE c.status = 'Pending' ORDER BY c.id DESC
-  `).all());
+  `).all();
+  // Same order-context lookup GET / already uses for its own list, so the
+  // approver sees which real order this BG is against without having to
+  // leave the review queue and cross-reference the main BG list by bg_no.
+  rows.forEach(r => {
+    const ctx = resolveOrderContext(r.order_type, r.order_id);
+    r.order_label = ctx ? ctx.partyName : (r.order_type === 'LEGACY' ? (r.legacy_ref || r.beneficiary || 'Legacy / manual record') : null);
+  });
+  res.json(rows);
 });
 router.post('/pending-changes/:id/approve', requireRole('Admin'), (req, res) => {
   const change = db.prepare('SELECT * FROM bg_pending_changes WHERE id = ?').get(req.params.id);
