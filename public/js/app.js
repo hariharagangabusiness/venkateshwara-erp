@@ -8383,13 +8383,8 @@ PAGES['bg-dashboard'] = async (el) => {
     `)}` : ''}
 
     ${pendingChanges.length ? `<div class="panel"><h3>Pending BG Changes (${pendingChanges.length})</h3>
-      <p class="muted">An edit or delete requested by a non-Admin doesn't take effect until an Admin approves it here, so nothing changes underneath a reminder or claim-filing workflow already in flight.</p>
-      ${tableHTML(['BG No', 'Change', 'Details', 'Requested By', ''], pendingChanges, c => `
-        <tr><td>${esc(c.bg_no || '#' + c.bg_id)}</td><td>${badge(c.change_type)}</td>
-        <td>${c.change_type === 'Edit' ? esc(Object.entries(JSON.parse(c.proposed_fields||'{}')).map(([k,v]) => `${k}: ${v}`).join(', ')) : '<span class="muted">Delete this Bank Guarantee</span>'}</td>
-        <td>${esc(c.requested_by_name)||'-'}</td>
-        <td>${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveBGChange(${c.id})">Approve</button>
-          <button class="btn small outline" type="button" onclick="rejectBGChange(${c.id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
+      <p class="muted">An edit or delete requested by a non-Admin doesn't take effect until an Admin approves it here, so nothing changes underneath a reminder or claim-filing workflow already in flight. Every field is shown current vs. proposed - changed ones are bolded - plus the BG's own order/status context, so there's no need to leave this queue to judge the request.</p>
+      ${pendingChanges.map(c => renderBGPendingChangeCard(c)).join('')}
     </div>` : ''}
 
     <div class="panel"><h3>Add Bank Guarantee</h3>
@@ -8616,6 +8611,45 @@ window.rejectBGChange = async (id) => {
   const review_note = prompt('Reason for rejecting (optional):') || '';
   try { await api('/bg/pending-changes/' + id + '/reject', { method: 'POST', body: JSON.stringify({ review_note }) }); navigate('bg-dashboard'); }
   catch (e) { alert(e.message); }
+};
+// Current-vs-proposed table (changed fields bolded) + order/project context,
+// replacing a one-line "field: value, ..." dump of every editable field
+// regardless of whether it actually changed.
+const BG_FIELD_LABELS = { bg_no: 'BG No', issuing_bank: 'Issuing Bank', value: 'Value (₹)', issue_date: 'Issue Date', validity_expiry: 'Validity Expiry', claim_expiry: 'Claim Expiry', milestone_link: 'Release Condition / Milestone Link' };
+function renderBGPendingChangeCard(c) {
+  const proposed = c.change_type === 'Edit' ? JSON.parse(c.proposed_fields || '{}') : {};
+  const compareRows = Object.keys(proposed).map(k => {
+    const oldVal = c[k] ?? '-';
+    const newVal = proposed[k] ?? '-';
+    const changed = String(c[k] ?? '') !== String(proposed[k] ?? '');
+    return `<tr><td>${esc(BG_FIELD_LABELS[k] || k)}</td><td>${esc(oldVal)}</td><td>${changed ? `<b>${esc(newVal)}</b>` : esc(newVal)}</td></tr>`;
+  }).join('');
+  return `<div class="panel" style="margin-bottom:10px;background:#fafbfc;">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+      <div><b>${esc(c.bg_no || '#' + c.bg_id)}</b> ${badge(c.change_type)} <span class="muted">(currently ${esc(c.status)})</span></div>
+      <div class="muted">Requested by ${esc(c.requested_by_name) || '-'}${c.requested_at ? ' on ' + new Date(c.requested_at).toLocaleString() : ''}</div>
+    </div>
+    <div class="muted" style="margin-top:4px;font-size:12px;">
+      ${c.order_label ? `Order: ${esc(c.order_label)}${c.order_type && c.order_type !== 'LEGACY' ? ` (${esc(c.order_type)}-${c.order_id})` : ''} &middot; ` : ''}
+      ${c.project_code ? `Project: ${esc(c.project_code)} &middot; ` : ''}
+      Type: ${esc(c.bg_type)} &middot; Value on file: ₹${fmt(c.value)}
+    </div>
+    ${c.change_type === 'Edit' ? `
+      <table style="width:100%;font-size:13px;margin-top:8px;"><thead><tr><th style="text-align:left;">Field</th><th style="text-align:left;">Current</th><th style="text-align:left;">Proposed</th></tr></thead><tbody>${compareRows}</tbody></table>
+    ` : `<p class="msg err" style="margin-top:8px;">Requesting to delete this Bank Guarantee entirely - this cannot be undone once approved.</p>`}
+    <div style="margin-top:8px;">
+      <button class="btn small outline" type="button" onclick="togglePendingBGAttachments(${c.change_id}, ${c.bg_id})">Scanned Copy</button>
+      ${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveBGChange(${c.change_id})">Approve</button>
+        <button class="btn small outline" type="button" onclick="rejectBGChange(${c.change_id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}
+    </div>
+    <div id="bg-pc-att-row-${c.change_id}" style="display:none;margin-top:8px;"><div id="bg-pc-attachments-${c.change_id}"></div></div>
+  </div>`;
+}
+window.togglePendingBGAttachments = (changeId, bgId) => {
+  const row = document.getElementById(`bg-pc-att-row-${changeId}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (!showing) renderAttachmentsWidget('bank_guarantee', bgId, document.getElementById(`bg-pc-attachments-${changeId}`));
 };
 window.verifyBGReminder = async (id) => {
   try {

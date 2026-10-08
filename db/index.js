@@ -1756,6 +1756,11 @@ function bootstrapForeignPayments() {
 // its own isNew-gated seed step.
 function bootstrapBgManageGrant() {
   try {
+    // 2026-10-08: on a database whose `permissions` table predates 'bg.manage'
+    // (db/seed.js only ever creates permission codes once, on a brand-new DB),
+    // the grant below's WHERE clause silently evaluated to false forever -
+    // backfill the code row itself first, same as bootstrapForeignPayments().
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('bg.manage')`);
     raw.exec(`
       INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
       SELECT (SELECT id FROM roles WHERE name = 'Accounts'), (SELECT id FROM permissions WHERE code = 'bg.manage')
