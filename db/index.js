@@ -566,6 +566,8 @@ const MIGRATIONS = [
     approved_at TEXT,
     rejection_reason TEXT,
     locked INTEGER DEFAULT 0,
+    unlocked_by INTEGER REFERENCES users(id),   -- Admin who reopened an Approved review for revision (2026-10-09) - approved_by/approved_at stay untouched as the original approval's own record
+    unlocked_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -1263,6 +1265,12 @@ const MIGRATIONS = [
   // TEXT with no CHECK constraint, see routes/purchase.js.
   `ALTER TABLE purchase_request_items ADD COLUMN details TEXT`,
   `ALTER TABLE purchase_orders ADD COLUMN details TEXT`,
+  // Admin-only "Unlock for Revision" on an Approved+locked annexure review
+  // (2026-10-09) - reject() only ever worked from PendingApproval, so an
+  // already-Approved review had no way back; see lib/reviewWorkflow.js's
+  // unlock().
+  `ALTER TABLE annexure_reviews ADD COLUMN unlocked_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE annexure_reviews ADD COLUMN unlocked_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
