@@ -2,6 +2,7 @@ const express = require('express');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { PAGE_CATALOG, ALL_PAGE_IDS } = require('../lib/pageCatalog');
+const { PERMISSION_CATALOG, ALL_PERMISSION_CODES } = require('../lib/permissionCatalog');
 const router = express.Router();
 router.use(authRequired);
 
@@ -220,6 +221,46 @@ router.put('/approval-matrix/:chainId', requireRole('Admin'), (req, res) => {
       INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor) VALUES (?,?,?,?,?)
     `);
     steps.forEach((s, i) => insert.run(chainId, i + 1, s.approver_role_id, s.min_amount || 0, s.requires_supervisor ? 1 : 0));
+  });
+  tx();
+  res.json({ ok: true });
+});
+
+// ---- Role Permissions (2026-10-09): grant/revoke an action-level
+// permission code (role_permissions) for a role via UI, rather than only
+// through a boot-time bootstrap*() backfill in db/index.js - those re-grant
+// on every restart, which makes a permission effectively impossible for an
+// Admin to revoke (prompted by Purchase's HOD needing item.manage, which
+// this app had never exposed a way to grant through the UI at all). Mirrors
+// GET/PUT /access's own role-matrix shape, just over role_permissions
+// instead of role_page_access.
+router.get('/permissions', requireRole('Admin'), (req, res) => {
+  const roles = db.prepare("SELECT id, name FROM roles WHERE name != 'Admin' ORDER BY name").all();
+  const rows = db.prepare(`
+    SELECT rp.role_id, p.code FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
+  `).all();
+  const byRole = {};
+  rows.forEach(r => { (byRole[r.role_id] = byRole[r.role_id] || []).push(r.code); });
+  res.json({
+    permissionCatalog: PERMISSION_CATALOG,
+    roles: roles.map(r => ({ id: r.id, name: r.name, grantedCodes: byRole[r.id] || [] })),
+  });
+});
+
+// Replace one role's entire permission set with exactly the codes given.
+router.put('/permissions/:roleId', requireRole('Admin'), (req, res) => {
+  const roleId = Number(req.params.roleId);
+  const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(roleId);
+  if (!role) return res.status(404).json({ error: 'Role not found' });
+  if (role.name === 'Admin') return res.status(400).json({ error: "Admin already has every permission - nothing to configure." });
+  const codes = Array.isArray(req.body.codes) ? req.body.codes : [];
+  const validCodes = new Set(ALL_PERMISSION_CODES);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(roleId);
+    const insert = db.prepare(`
+      INSERT INTO role_permissions (role_id, permission_id) VALUES (?, (SELECT id FROM permissions WHERE code = ?))
+    `);
+    codes.filter(c => validCodes.has(c)).forEach(c => insert.run(roleId, c));
   });
   tx();
   res.json({ ok: true });

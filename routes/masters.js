@@ -129,7 +129,7 @@ const VENDOR_FIELDS = [
   'address', // legacy free-text address, kept for backward compat / display
 ];
 
-router.get('/vendors', (req, res) => res.json(db.prepare('SELECT * FROM vendors ORDER BY id DESC').all()));
+router.get('/vendors', (req, res) => res.json(db.prepare('SELECT * FROM vendors ORDER BY name COLLATE NOCASE ASC').all()));
 // Must be registered before GET /vendors/:id below - Express matches routes
 // in registration order, and :id matches ANY single path segment including
 // the literal string "template", so this was previously unreachable: a

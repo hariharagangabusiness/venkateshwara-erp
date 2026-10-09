@@ -726,6 +726,10 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
   }
   const poNo = 'PO-' + Date.now();
+  // Pre-fill from the Admin-configured Purchase Settings default when the
+  // caller doesn't supply its own terms text (2026-10-09) - still freely
+  // overridable per PO, same as every other per-PO field.
+  const effectiveTerms = terms || getPurchaseSettings().default_po_terms || null;
   // Draft-first submission (2026-10-07) - a PO is created here purely as a
   // Draft, fully editable (PUT /orders/:id below leaves it as Draft rather
   // than resubmitting for approval), with no approval chain started and the
@@ -753,7 +757,7 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       totalOrderValue += total;
       const unit = String(l.unit || '').trim() || 'Nos';
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
-        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, l.details || null, terms || null, delivery_date || null,
+        quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, l.details || null, effectiveTerms, delivery_date || null,
         company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null,
         ld_trigger_notes || null, freight, freightGstRate);
       ids.push(info.lastInsertRowid);
@@ -1522,7 +1526,7 @@ router.get('/orders/:id/pdf', async (req, res) => {
   const blocked = poSendBlocked(bundle.po, { allowDraft: true });
   if (blocked) return res.status(400).json({ error: blocked });
   try {
-    const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
+    const gen = await generatePoPdf(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress, getPurchaseSettings());
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1545,7 +1549,7 @@ router.get('/orders/:id/docx', async (req, res) => {
   const blocked = poSendBlocked(bundle.po, { allowDraft: true });
   if (blocked) return res.status(400).json({ error: blocked });
   try {
-    const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress);
+    const gen = await generatePoDocx(bundle.po, bundle.lines, bundle.vendor || {}, getCompanySettings(), bundle.companyAddress, bundle.companyShipAddress, getPurchaseSettings());
     const filename = buildDownloadFilename({
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
@@ -1573,7 +1577,7 @@ router.post('/orders/:id/email', requirePermission('purchase_order.manage'), asy
   if (!toAddress) return res.status(400).json({ error: 'This vendor has no PO/document delivery email on file - add one under Vendor Master.' });
   let gen;
   try {
-    gen = await generatePoPdf(po, lines, vendor, getCompanySettings(), companyAddress, companyShipAddress);
+    gen = await generatePoPdf(po, lines, vendor, getCompanySettings(), companyAddress, companyShipAddress, getPurchaseSettings());
     const pdfBuffer = fs.readFileSync(gen.outPath);
     const attachmentName = buildDownloadFilename({
       docType: 'Purchase_Order',
