@@ -27,7 +27,43 @@ router.put('/departments/:id', requireRole('Admin'), (req, res) => {
 });
 router.get('/roles', (req, res) => res.json(db.prepare('SELECT * FROM roles ORDER BY name').all()));
 router.get('/leave-types', (req, res) => res.json(db.prepare('SELECT * FROM leave_types').all()));
-router.get('/expense-categories', (req, res) => res.json(db.prepare('SELECT * FROM expense_categories').all()));
+// Admin-manageable category list for the New Expense Voucher form
+// (2026-10-09) - previously a fixed, seed-only list with no way to add,
+// rename, or retire a category short of direct DB access. Same "add/rename/
+// deactivate, never hard-delete" convention as operating_expense_categories
+// (routes/finance.js) - expense_vouchers.category_id is a real FK, so a hard
+// delete would orphan any voucher already recorded against it; deactivating
+// just drops it from the New Expense Voucher dropdown going forward while
+// existing vouchers keep showing their original category.
+router.get('/expense-categories', (req, res) => res.json(db.prepare('SELECT * FROM expense_categories ORDER BY sort_order, name').all()));
+router.post('/expense-categories', requireRole('Admin'), (req, res) => {
+  const { name, sort_order } = req.body;
+  if (!String(name || '').trim()) return res.status(400).json({ error: 'Enter a category name.' });
+  try {
+    const info = db.prepare(`INSERT INTO expense_categories (name, sort_order) VALUES (?,?)`)
+      .run(name.trim(), Number(sort_order) || 0);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: 'A category with that name already exists.' });
+  }
+});
+router.put('/expense-categories/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM expense_categories WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { name, sort_order, active } = req.body;
+  if (name !== undefined && !String(name || '').trim()) return res.status(400).json({ error: 'Enter a category name.' });
+  try {
+    db.prepare(`UPDATE expense_categories SET name=?, sort_order=?, active=? WHERE id=?`).run(
+      name !== undefined ? name.trim() : existing.name,
+      sort_order !== undefined ? Number(sort_order) : existing.sort_order,
+      active !== undefined ? (active ? 1 : 0) : existing.active,
+      existing.id
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: 'A category with that name already exists.' });
+  }
+});
 
 router.get('/clients', (req, res) => res.json(db.prepare('SELECT * FROM clients ORDER BY id DESC').all()));
 router.get('/clients/:id', (req, res) => {
