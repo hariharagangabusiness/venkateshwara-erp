@@ -726,10 +726,16 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
   }
   const poNo = 'PO-' + Date.now();
-  // Pre-fill from the Admin-configured Purchase Settings default when the
-  // caller doesn't supply its own terms text (2026-10-09) - still freely
-  // overridable per PO, same as every other per-PO field.
-  const effectiveTerms = terms || getPurchaseSettings().default_po_terms || null;
+  // Deliberately NOT pre-filled from the Purchase Settings default here
+  // (reverted 2026-10-09, same day it was added) - lib/poPdf.js/lib/poDocx.js
+  // already fall back to the live default_po_terms whenever a PO's own
+  // `terms` is blank, which (a) always reflects the Admin's *current*
+  // default rather than freezing whatever it was at creation time, and (b)
+  // is the only way default_po_terms's rich-text formatting (bold/italic/
+  // underline/lists, see lib/richText.js) actually renders - copying the
+  // raw markup into `terms` at creation time silently defeated it, since
+  // `terms` itself is a plain per-PO field with no formatting support.
+  const effectiveTerms = terms || null;
   // Draft-first submission (2026-10-07) - a PO is created here purely as a
   // Draft, fully editable (PUT /orders/:id below leaves it as Draft rather
   // than resubmitting for approval), with no approval chain started and the
