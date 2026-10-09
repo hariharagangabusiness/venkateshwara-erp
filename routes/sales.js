@@ -32,8 +32,13 @@ function ensureProjectForOrder(salesOrder, userId) {
 }
 
 // Generates (or regenerates) the annexure for a sales order and stores its
-// path. Looks up a linked offer for technical content if one exists;
-// otherwise produces the header-only annexure (see lib/annexureDocx.js).
+// path. Looks up a linked offer for technical content if one exists - Project
+// Data Sheet and Make Of Bought Out Items only ever come from an offer, so an
+// order with none never gets those sections (there's no data for them). For
+// the Scope Of Supply line items specifically, an offer-less order still has
+// its own sales_order_items (the line-items grid on the New Sales Order form,
+// entered without a price) - generateAnnexureDocx() renders that table off of
+// whichever source is present, so an offer-less order isn't left with nothing.
 async function ensureAnnexureForOrder(salesOrder) {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(salesOrder.client_id);
   const offer = db.prepare('SELECT * FROM offers WHERE sales_order_id = ?').get(salesOrder.id);
@@ -42,6 +47,12 @@ async function ensureAnnexureForOrder(salesOrder) {
     items = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY id').all(offer.id);
     techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY id').all(offer.id);
     boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY id').all(offer.id);
+  } else {
+    items = db.prepare(`
+      SELECT soi.description, soi.quantity as qty, soi.unit, i.item_code
+      FROM sales_order_items soi LEFT JOIN items i ON i.id = soi.item_id
+      WHERE soi.sales_order_id = ? ORDER BY soi.sort_order, soi.id
+    `).all(salesOrder.id);
   }
   const annex = await generateAnnexureDocx({ salesOrder, client, offer, items, techSpecs, boughtOut });
   db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, salesOrder.id);

@@ -2779,7 +2779,7 @@ async function renderOrderConfirmationModal(orderId) {
     <textarea id="ar-notes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.review_notes)}</textarea>
     <div style="margin-top:6px;">
       ${!ar.locked ? `<button class="btn small" onclick="saveAnnexureNotes(${orderId})">Save Notes</button>
-      <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId})">Regenerate from Offer</button>
+      <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId})">Regenerate Annexure</button>
       <input type="file" id="ar-file-${orderId}" style="display:inline-block;width:auto;">
       <button class="btn small outline" onclick="uploadAnnexureFile(${orderId})">Upload Revised File</button>
       ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}` : ''}
