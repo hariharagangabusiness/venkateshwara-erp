@@ -9826,12 +9826,14 @@ PAGES['company-settings'] = async (el) => {
       <p class="muted">Controls every Purchase Order PDF/Word document generated from now on - not a per-order setting.</p>
       <label>Default Terms &amp; Conditions <span class="muted">(pre-fills a new PO's Terms field when left blank; also what the document falls back to if a specific PO's own Terms is blank)</span></label>
       <textarea id="ps-default-po-terms" rows="4" style="width:100%;">${esc(purchaseSettings.default_po_terms)}</textarea>
+      <label style="margin-top:10px;">Delivery Guidelines <span class="muted">(a standing instruction - packaging, labeling, delivery-slip requirements etc. - printed identically on every PO, right after Terms & Conditions; not editable per-order)</span></label>
+      <textarea id="ps-delivery-guidelines" rows="4" style="width:100%;">${esc(purchaseSettings.delivery_guidelines)}</textarea>
       <label style="margin-top:10px;display:block;">Fields visible on the PO document</label>
       <div class="form-grid">
         ${[
           ['delivery_date', 'Delivery Date'], ['payment_terms', 'Payment Terms'], ['ld_terms', 'LD Terms'],
           ['freight', 'Freight / Freight GST'], ['status', 'Status'], ['vendor_contact', 'Vendor Contact (address/phone)'],
-          ['terms', 'Terms & Conditions'],
+          ['terms', 'Terms & Conditions'], ['delivery_guidelines', 'Delivery Guidelines'],
         ].map(([key, label]) => `<div><label><input type="checkbox" class="ps-po-vis" data-key="${key}" ${(purchaseSettings.po_visible_fields||{})[key] !== false ? 'checked' : ''}> ${esc(label)}</label></div>`).join('')}
       </div>
       <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
@@ -9956,7 +9958,7 @@ window.savePurchaseSettings = async () => {
     await api('/settings/purchase', { method: 'PUT', body: JSON.stringify({
       quote_threshold: val('ps-quote-threshold'), payment_terms_options: paymentTerms,
       allow_pending_po_email: document.getElementById('ps-allow-pending-email').checked,
-      default_po_terms: val('ps-default-po-terms'), po_visible_fields: poVisibleFields,
+      default_po_terms: val('ps-default-po-terms'), delivery_guidelines: val('ps-delivery-guidelines'), po_visible_fields: poVisibleFields,
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
