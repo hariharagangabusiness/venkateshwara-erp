@@ -1271,6 +1271,13 @@ const MIGRATIONS = [
   // unlock().
   `ALTER TABLE annexure_reviews ADD COLUMN unlocked_by INTEGER REFERENCES users(id)`,
   `ALTER TABLE annexure_reviews ADD COLUMN unlocked_at TEXT`,
+  // Admin-manageable Expense Voucher category list (2026-10-09) - mirrors
+  // operating_expense_categories' own sort_order/active columns, which the
+  // New Expense Voucher form's category list never had; previously the only
+  // 8 values that existed were whatever db/seed.js inserted once, with no
+  // way to add, rename, or retire one short of direct DB access.
+  `ALTER TABLE expense_categories ADD COLUMN sort_order INTEGER DEFAULT 0`,
+  `ALTER TABLE expense_categories ADD COLUMN active INTEGER DEFAULT 1`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

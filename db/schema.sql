@@ -138,7 +138,9 @@ CREATE TABLE IF NOT EXISTS payroll_vouchers (
 
 CREATE TABLE IF NOT EXISTS expense_categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT UNIQUE NOT NULL           -- Travel, Freight, Office, Utilities, Raw Material, Repairs, Misc...
+  name TEXT UNIQUE NOT NULL,          -- Travel, Freight, Office, Utilities, Raw Material, Repairs, Misc...
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS expense_vouchers (

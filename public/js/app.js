@@ -7553,11 +7553,13 @@ PAGES.expenses = async (el) => {
   const vouchers = await api('/finance/expense-vouchers?month=' + listMonth);
   const depts = await api('/masters/departments');
   const cats = await api('/masters/expense-categories');
+  const activeCats = cats.filter(c => c.active);
+  const isAdmin = ME && ME.role === 'Admin';
   el.innerHTML = `
     <div class="panel"><h3>New Expense Voucher (Operation Expense)</h3>
       <div class="form-grid">
         <div><label>Department</label><select id="ex-dept">${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
-        <div><label>Category</label><select id="ex-cat">${cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div><label>Category</label><select id="ex-cat">${activeCats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
         <div><label>Amount (₹)</label><input id="ex-amount" type="number"></div>
         <div><label>Payment Mode</label><select id="ex-mode"><option>Cash</option><option>Bank</option></select></div>
         <div><label>Accounted Status</label><select id="ex-acc"><option>Accounted</option><option>Cash(Unaccounted)</option></select></div>
@@ -7565,6 +7567,7 @@ PAGES.expenses = async (el) => {
         <div><label>Bill / Receipt Attachment</label><input id="ex-file" type="file"></div>
       </div>
       <button class="btn" onclick="addExpense()">Submit Voucher</button>
+      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openExCategoryManager()" style="margin-left:8px;">Manage Categories</button>` : ''}
       <div class="muted" style="margin-top:8px;">Approval chain: Accounts, plus Admin for vouchers ≥ ₹25,000.</div>
     </div>
     ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
@@ -7596,6 +7599,42 @@ window.addExpense = async () => {
 window.payExpense = async (id) => {
   await api(`/finance/expense-vouchers/${id}/mark-paid`, { method: 'POST' });
   navigate('expenses');
+};
+
+// ---- Admin: manage the New Expense Voucher category dropdown list ----
+// Same add/rename/deactivate pattern as openOeCategoryManager() (Operating
+// Expenses) - own element ids (ec-) since both managers can be open in
+// different pages in the same session.
+window.openExCategoryManager = async () => {
+  const categories = await api('/masters/expense-categories');
+  const body = `
+    <div class="form-grid">
+      <div><label>New Category Name</label><input id="ec-name"></div>
+      <div><label>Sort Order</label><input id="ec-sort" type="number" value="${categories.length}"></div>
+    </div>
+    <button class="btn small" type="button" onclick="addExCategory()">Add Category</button>
+    <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    <div id="ec-list-wrap" style="margin-top:12px;">${exCategoryListHTML(categories)}</div>`;
+  openMiniModal('Manage Expense Voucher Categories', body, true);
+};
+function exCategoryListHTML(categories) {
+  return tableHTML(['Name', 'Sort', 'Active', ''], categories, c => `
+    <tr><td>${esc(c.name)}</td><td>${c.sort_order}</td><td>${c.active ? 'Yes' : 'No'}</td>
+    <td><button class="btn small outline" type="button" onclick="toggleExCategory(${c.id}, ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button></td></tr>`);
+}
+window.addExCategory = async () => {
+  const errEl = document.getElementById('ec-err'); errEl.style.display = 'none';
+  try {
+    await api('/masters/expense-categories', { method: 'POST', body: JSON.stringify({ name: val('ec-name'), sort_order: val('ec-sort') }) });
+    const categories = await api('/masters/expense-categories');
+    document.getElementById('ec-list-wrap').innerHTML = exCategoryListHTML(categories);
+    document.getElementById('ec-name').value = '';
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.toggleExCategory = async (id, active) => {
+  await api('/masters/expense-categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
+  const categories = await api('/masters/expense-categories');
+  document.getElementById('ec-list-wrap').innerHTML = exCategoryListHTML(categories);
 };
 
 // ---- Monthly Expense Tracker (replaces the team's tracking Excel) ----
