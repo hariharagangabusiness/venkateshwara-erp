@@ -9825,9 +9825,13 @@ PAGES['company-settings'] = async (el) => {
       <h4 style="margin-top:18px;">PO Document Template</h4>
       <p class="muted">Controls every Purchase Order PDF/Word document generated from now on - not a per-order setting.</p>
       <label>Default Terms &amp; Conditions <span class="muted">(pre-fills a new PO's Terms field when left blank; also what the document falls back to if a specific PO's own Terms is blank)</span></label>
+      ${richTextToolbarHTML('ps-default-po-terms')}
       <textarea id="ps-default-po-terms" rows="4" style="width:100%;">${esc(purchaseSettings.default_po_terms)}</textarea>
+      ${richTextLegendHTML()}
       <label style="margin-top:10px;">Delivery Guidelines <span class="muted">(a standing instruction - packaging, labeling, delivery-slip requirements etc. - printed identically on every PO, right after Terms & Conditions; not editable per-order)</span></label>
+      ${richTextToolbarHTML('ps-delivery-guidelines')}
       <textarea id="ps-delivery-guidelines" rows="4" style="width:100%;">${esc(purchaseSettings.delivery_guidelines)}</textarea>
+      ${richTextLegendHTML()}
       <label style="margin-top:10px;display:block;">Fields visible on the PO document</label>
       <div class="form-grid">
         ${[
@@ -9945,6 +9949,56 @@ window.sendTestEmail = async () => {
     resultEl.className = 'msg err';
     resultEl.textContent = e.message;
   }
+};
+// Lightweight formatting toolbar for the two PO Document Template textareas
+// (2026-10-09) - deliberately NOT a contenteditable/WYSIWYG editor (this app
+// has no rich-text editor anywhere else to reuse, and browser-generated
+// contenteditable HTML is inconsistent across browsers to parse reliably).
+// Instead the buttons wrap/prefix the textarea's own plain-text selection
+// with a small fixed token vocabulary (**bold**, *italic*, ++underline++, a
+// leading "- "/"1. " for lists) that lib/richText.js (both lib/poPdf.js and
+// lib/poDocx.js) parses the exact same way server-side. Storage stays a
+// plain string - a value saved before this existed has no tokens in it, so
+// it renders identically to before, no migration needed.
+function richTextToolbarHTML(textareaId) {
+  return `<div style="display:flex;gap:4px;margin-bottom:4px;">
+    <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','**','**')" title="Bold"><b>B</b></button>
+    <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','*','*')" title="Italic"><i>I</i></button>
+    <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','++','++')" title="Underline"><u>U</u></button>
+    <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','bullet')" title="Bullet list">&bull; List</button>
+    <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','number')" title="Numbered list">1. List</button>
+    <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','none')" title="Remove list formatting">Clear List</button>
+  </div>`;
+}
+function richTextLegendHTML() {
+  return `<p class="muted" style="margin:2px 0 0;font-size:11px;">Formatting: <b>**bold**</b>, <i>*italic*</i>, <u>++underline++</u>, a line starting with "- " for a bullet, "1. " for a numbered list - or just use the buttons above.</p>`;
+}
+window.rtWrapSelection = (textareaId, before, after) => {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const selected = ta.value.slice(start, end) || 'text';
+  ta.value = ta.value.slice(0, start) + before + selected + after + ta.value.slice(end);
+  ta.focus();
+  ta.setSelectionRange(start + before.length, start + before.length + selected.length);
+};
+window.rtPrefixLines = (textareaId, mode) => {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const value = ta.value;
+  const lineStart = value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  let lineEnd = value.indexOf('\n', ta.selectionEnd);
+  if (lineEnd === -1) lineEnd = value.length;
+  let n = 1;
+  const newBlock = value.slice(lineStart, lineEnd).split('\n').map(line => {
+    const stripped = line.replace(/^(-\s+|\d+\.\s+)/, '');
+    if (mode === 'bullet') return '- ' + stripped;
+    if (mode === 'number') return (n++) + '. ' + stripped;
+    return stripped;
+  }).join('\n');
+  ta.value = value.slice(0, lineStart) + newBlock + value.slice(lineEnd);
+  ta.focus();
+  ta.setSelectionRange(lineStart, lineStart + newBlock.length);
 };
 window.savePurchaseSettings = async () => {
   const errEl = document.getElementById('ps-err'); errEl.style.display = 'none';
