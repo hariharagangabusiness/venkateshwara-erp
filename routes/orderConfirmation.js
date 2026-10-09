@@ -3,8 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
-const { submit, approve, reject } = require('../lib/reviewWorkflow');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
+const { submit, approve, reject, unlock } = require('../lib/reviewWorkflow');
 const { generateOrderConfirmationPdf } = require('../lib/orderConfirmationPdf');
 const { getCompanySettings } = require('../lib/settings');
 const { getUploadsSubdir } = require('../lib/paths');
@@ -176,6 +176,16 @@ router.post('/annexure-reviews/:soId/reject', requirePermission('annexure.approv
   try {
     const row = ensureAnnexureReview(req.params.soId);
     reject('annexure_reviews', row.id, req.user.id, req.body.reason);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Admin-only - reject() can't reach an already-Approved review (it only acts
+// on PendingApproval), so this is the only way back to an editable state for
+// one that genuinely needs revision after sign-off. See lib/reviewWorkflow.js.
+router.post('/annexure-reviews/:soId/unlock', requireRole('Admin'), (req, res) => {
+  try {
+    const row = ensureAnnexureReview(req.params.soId);
+    unlock('annexure_reviews', row.id, req.user.id, req.body.reason);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

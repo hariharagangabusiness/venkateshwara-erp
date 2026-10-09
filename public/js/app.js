@@ -2782,7 +2782,8 @@ async function renderOrderConfirmationModal(orderId) {
       <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId})">Regenerate Annexure</button>
       <input type="file" id="ar-file-${orderId}" style="display:inline-block;width:auto;">
       <button class="btn small outline" onclick="uploadAnnexureFile(${orderId})">Upload Revised File</button>
-      ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}` : ''}
+      ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}`
+        : (ar.status === 'Approved' && ME.role === 'Admin' ? `<button class="btn small outline red" onclick="unlockAnnexure(${orderId})">Unlock for Revision</button>` : '')}
       <a href="#" onclick="downloadAnnexure(event, ${orderId});return false;">Download Annexure</a>
     </div>
   `;
@@ -2844,6 +2845,14 @@ window.approveAnnexure = async (orderId) => {
 window.rejectAnnexure = async (orderId) => {
   const reason = prompt('Reason for rejection (optional):');
   try { await api(`/order-confirmation/annexure-reviews/${orderId}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
+// Admin-only - the only way back to an editable state for an annexure
+// already Approved/locked, since Reject only ever acts on PendingApproval.
+window.unlockAnnexure = async (orderId) => {
+  const reason = prompt('Why does this approved annexure need to be unlocked for revision? (required)');
+  if (reason === null) return;
+  try { await api(`/order-confirmation/annexure-reviews/${orderId}/unlock`, { method: 'POST', body: JSON.stringify({ reason }) }); await renderOrderConfirmationModal(orderId); }
   catch (e) { alert(e.message); }
 };
 
