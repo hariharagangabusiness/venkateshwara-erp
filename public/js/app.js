@@ -9955,23 +9955,35 @@ window.sendTestEmail = async () => {
 // has no rich-text editor anywhere else to reuse, and browser-generated
 // contenteditable HTML is inconsistent across browsers to parse reliably).
 // Instead the buttons wrap/prefix the textarea's own plain-text selection
-// with a small fixed token vocabulary (**bold**, *italic*, ++underline++, a
-// leading "- "/"1. " for lists) that lib/richText.js (both lib/poPdf.js and
-// lib/poDocx.js) parses the exact same way server-side. Storage stays a
-// plain string - a value saved before this existed has no tokens in it, so
-// it renders identically to before, no migration needed.
+// with a small fixed token vocabulary (**bold**, *italic*, ++underline++,
+// [color=NAME]/[size=NAME], a leading "- "/"1. " for lists) that
+// lib/richText.js (both lib/poPdf.js and lib/poDocx.js) parses the exact
+// same way server-side. Storage stays a plain string - a value saved before
+// this existed has no tokens in it, so it renders identically to before, no
+// migration needed. Color/size buttons just wrap the current selection like
+// bold/italic/underline do, so they freely nest/combine with each other and
+// with bold/italic/underline (e.g. bold a selection, then re-select the same
+// now-**wrapped** text and apply a color) - a deliberately small closed
+// palette/size set (not a free color picker/arbitrary pt size) so the
+// printed PO can't end up looking like an accidental mix of colors/sizes;
+// must match lib/richText.js's own COLOR_HEX/SIZE_PX keys exactly.
+const RT_COLORS = [['red', '#C0392B'], ['blue', '#2563EB'], ['green', '#15803D'], ['orange', '#D97706']];
 function richTextToolbarHTML(textareaId) {
-  return `<div style="display:flex;gap:4px;margin-bottom:4px;">
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;align-items:center;">
     <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','**','**')" title="Bold"><b>B</b></button>
     <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','*','*')" title="Italic"><i>I</i></button>
     <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','++','++')" title="Underline"><u>U</u></button>
     <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','bullet')" title="Bullet list">&bull; List</button>
     <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','number')" title="Numbered list">1. List</button>
     <button type="button" class="btn small outline" onclick="rtPrefixLines('${textareaId}','none')" title="Remove list formatting">Clear List</button>
+    <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 2px;"></span>
+    ${RT_COLORS.map(([name, hex]) => `<button type="button" class="btn small outline" style="padding:2px 8px;" onclick="rtWrapSelection('${textareaId}','[color=${name}]','[/color]')" title="${esc(name[0].toUpperCase()+name.slice(1))} text"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${hex};vertical-align:middle;"></span></button>`).join('')}
+    <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','[size=small]','[/size]')" title="Small text">A<sub>-</sub></button>
+    <button type="button" class="btn small outline" onclick="rtWrapSelection('${textareaId}','[size=large]','[/size]')" title="Large text">A<sup>+</sup></button>
   </div>`;
 }
 function richTextLegendHTML() {
-  return `<p class="muted" style="margin:2px 0 0;font-size:11px;">Formatting: <b>**bold**</b>, <i>*italic*</i>, <u>++underline++</u>, a line starting with "- " for a bullet, "1. " for a numbered list - or just use the buttons above.</p>`;
+  return `<p class="muted" style="margin:2px 0 0;font-size:11px;">Formatting: <b>**bold**</b>, <i>*italic*</i>, <u>++underline++</u>, [color=red/blue/green/orange]...[/color], [size=small/large]...[/size], a line starting with "- " for a bullet, "1. " for a numbered list - or just use the buttons above (color/size buttons apply to whatever text is currently selected).</p>`;
 }
 window.rtWrapSelection = (textareaId, before, after) => {
   const ta = document.getElementById(textareaId);
