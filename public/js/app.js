@@ -9233,10 +9233,15 @@ PAGES.access = async (el) => {
     ${collapsiblePanel('access-by-role', 'User Access by Role', `
       <p class="muted">Tick the pages a role is allowed to see in the sidebar. A role with nothing configured (marked "Unrestricted") sees every page, same as today - saving any selection for a role switches it to that fixed list. Admin can always see everything and can't be restricted.</p>
       <div id="access-body"></div>
+    `)}
+    ${collapsiblePanel('role-permissions', 'Role Permissions', `
+      <p class="muted">Tick the actions a role is allowed to perform (separate from page visibility above - a role can see a page and still be blocked from acting on it if it's missing the permission that page's actions check). Unlike page visibility, there's no "unrestricted by default" here - a role's own starting set is whatever was granted when the app was built; use this to add or remove from it, e.g. letting a non-Store role manage Item Master.</p>
+      <div id="role-perm-body"></div>
     `)}`;
   await renderUserAccessPanel(data.pageCatalog);
   await renderExtraAccessPanel(data.pageCatalog);
   await renderRoleOversightPanel();
+  await renderRolePermissionsPanel();
   const body = document.getElementById('access-body');
   // "User Access" and "Approval Matrix" are always Admin-only regardless of
   // any role's configured pages (see NAV's hardcoded filter), so offering
@@ -9299,6 +9304,62 @@ function filterAccessCatalog(pageCatalog) {
     .map(g => ({ group: g.group, items: g.items.filter(it => it.id !== 'access' && it.id !== 'approval-matrix') }))
     .filter(g => g.items.length);
 }
+// Role Permissions (2026-10-09) - grant/revoke an action-level permission
+// code per role, admin-UI-driven and freely revocable (unlike a boot-time
+// bootstrap*() grant in db/index.js, which re-applies on every restart and
+// so can never actually be taken away through the app). Same accordion/
+// group-toggle/checkbox shape as the User Access by Role matrix above, just
+// over lib/permissionCatalog.js's PERMISSION_CATALOG instead of pages.
+async function renderRolePermissionsPanel() {
+  const data = await api('/admin/permissions');
+  window.__PERMISSION_CATALOG = data.permissionCatalog;
+  const body = document.getElementById('role-perm-body');
+  body.innerHTML = data.roles.map(r => `
+    <div class="panel access-role-panel collapsed" style="margin-bottom:12px;" id="rp-panel-${r.id}">
+      <h4 class="access-role-head" onclick="toggleRolePermPanel(${r.id})">
+        <span>${esc(r.name)} <span class="muted">(${r.grantedCodes.length} permission${r.grantedCodes.length === 1 ? '' : 's'} granted)</span></span>
+        <span class="chev">&#9660;</span>
+      </h4>
+      <div class="access-grid" id="rp-role-${r.id}">
+        ${data.permissionCatalog.map(g => {
+          const groupCodes = g.items.map(it => it.code);
+          const checkedCount = groupCodes.filter(c => r.grantedCodes.includes(c)).length;
+          return `
+          <div class="access-group">
+            <div class="access-group-title">
+              <label style="margin:0;cursor:pointer;font-weight:inherit;">
+                <input type="checkbox" class="rp-group-toggle" data-role="${r.id}" data-group="${esc(g.group)}" ${checkedCount === groupCodes.length ? 'checked' : ''} onchange="toggleRpGroup(this)">
+                ${esc(g.group)}
+              </label>
+            </div>
+            ${g.items.map(it => `
+              <label class="access-item"><input type="checkbox" class="rp-code" data-role="${r.id}" data-group="${esc(g.group)}" value="${esc(it.code)}" ${r.grantedCodes.includes(it.code) ? 'checked' : ''}> ${esc(it.label)}</label>
+            `).join('')}
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="access-role-actions" style="margin-top:10px;">
+        <button class="btn small" onclick="saveRolePermissions(${r.id})">Save Permissions for ${esc(r.name)}</button>
+      </div>
+    </div>`).join('');
+}
+window.toggleRolePermPanel = (roleId) => {
+  const panel = document.getElementById(`rp-panel-${roleId}`);
+  if (panel) panel.classList.toggle('collapsed');
+};
+window.toggleRpGroup = (checkbox) => {
+  const role = checkbox.dataset.role, group = checkbox.dataset.group;
+  document.querySelectorAll('.rp-code').forEach(cb => {
+    if (cb.dataset.role === role && cb.dataset.group === group) cb.checked = checkbox.checked;
+  });
+};
+window.saveRolePermissions = async (roleId) => {
+  const codes = Array.from(document.querySelectorAll(`.rp-code[data-role="${roleId}"]:checked`)).map(cb => cb.value);
+  try {
+    await api(`/admin/permissions/${roleId}`, { method: 'PUT', body: JSON.stringify({ codes }) });
+    await renderRolePermissionsPanel();
+  } catch (e) { alert(e.message); }
+};
 async function renderUserAccessPanel(pageCatalog) {
   const users = await api('/masters/users');
   const selectEl = document.getElementById('au-user-select');
@@ -9665,9 +9726,13 @@ PAGES['company-settings'] = async (el) => {
         <div><label>Branch</label><input id="cs-bank-branch" value="${esc(company.bank_branch)}"></div>
       </div>
       <h4>Authorized Signatory</h4>
+      <p class="muted">Every signed document prints "Authorized Signatory" as line 1; the designation below prints as line 2, per document type (e.g. "Head of Purchase", "Head of Sales").</p>
       <div class="form-grid">
-        <div><label>Name</label><input id="cs-sig-name" value="${esc(company.authorized_signatory_name)}"></div>
-        <div><label>Designation</label><input id="cs-sig-desg" value="${esc(company.authorized_signatory_designation)}"></div>
+        <div><label>Purchase Order</label><input id="cs-sig-po" value="${esc(company.po_signatory_designation)}" placeholder="e.g. Head of Purchase"></div>
+        <div><label>Sales Invoice</label><input id="cs-sig-sinv" value="${esc(company.sales_invoice_signatory_designation)}" placeholder="e.g. Head of Sales"></div>
+        <div><label>Proforma Invoice</label><input id="cs-sig-proforma" value="${esc(company.proforma_signatory_designation)}" placeholder="e.g. Head of Sales"></div>
+        <div><label>Order Confirmation</label><input id="cs-sig-oc" value="${esc(company.order_confirmation_signatory_designation)}" placeholder="e.g. Head of Sales"></div>
+        <div><label>Foreign Payment</label><input id="cs-sig-fp" value="${esc(company.foreign_payment_signatory_designation)}" placeholder="e.g. Head of Accounts"></div>
       </div>
       <h4>Logo</h4>
       ${company.logo_path ? `<img src="${esc(company.logo_path)}" style="max-height:60px;display:block;margin-bottom:8px;">` : ''}
@@ -9757,6 +9822,18 @@ PAGES['company-settings'] = async (el) => {
         <label><input type="checkbox" id="ps-allow-pending-email" ${purchaseSettings.allow_pending_po_email ? 'checked' : ''}>
           Allow emailing/downloading a Purchase Order that's still pending approval <span class="muted">(shows a "Pending Approval" banner on the document - off by default, since a PO can't be sent to a vendor until Purchase HOD/Management sign off)</span></label>
       </div>
+      <h4 style="margin-top:18px;">PO Document Template</h4>
+      <p class="muted">Controls every Purchase Order PDF/Word document generated from now on - not a per-order setting.</p>
+      <label>Default Terms &amp; Conditions <span class="muted">(pre-fills a new PO's Terms field when left blank; also what the document falls back to if a specific PO's own Terms is blank)</span></label>
+      <textarea id="ps-default-po-terms" rows="4" style="width:100%;">${esc(purchaseSettings.default_po_terms)}</textarea>
+      <label style="margin-top:10px;display:block;">Fields visible on the PO document</label>
+      <div class="form-grid">
+        ${[
+          ['delivery_date', 'Delivery Date'], ['payment_terms', 'Payment Terms'], ['ld_terms', 'LD Terms'],
+          ['freight', 'Freight / Freight GST'], ['status', 'Status'], ['vendor_contact', 'Vendor Contact (address/phone)'],
+          ['terms', 'Terms & Conditions'],
+        ].map(([key, label]) => `<div><label><input type="checkbox" class="ps-po-vis" data-key="${key}" ${(purchaseSettings.po_visible_fields||{})[key] !== false ? 'checked' : ''}> ${esc(label)}</label></div>`).join('')}
+      </div>
       <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
       <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
@@ -9828,7 +9905,9 @@ window.saveCompanySettings = async () => {
       state: val('cs-state'), state_code: val('cs-state-code'), default_place_of_supply: val('cs-pos'), default_gst_rate: val('cs-gst-rate'),
       registered_address: val('cs-reg-addr'), factory_address: val('cs-factory-addr'),
       bank_name: val('cs-bank-name'), bank_account_number: val('cs-bank-acc'), bank_ifsc: val('cs-bank-ifsc'), bank_branch: val('cs-bank-branch'),
-      authorized_signatory_name: val('cs-sig-name'), authorized_signatory_designation: val('cs-sig-desg'),
+      po_signatory_designation: val('cs-sig-po'), sales_invoice_signatory_designation: val('cs-sig-sinv'),
+      proforma_signatory_designation: val('cs-sig-proforma'), order_confirmation_signatory_designation: val('cs-sig-oc'),
+      foreign_payment_signatory_designation: val('cs-sig-fp'),
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
@@ -9869,9 +9948,15 @@ window.savePurchaseSettings = async () => {
   const errEl = document.getElementById('ps-err'); errEl.style.display = 'none';
   try {
     const paymentTerms = document.getElementById('ps-payment-terms').value.split('\n').map(s => s.trim()).filter(Boolean);
+    // po_visible_fields is a nested object stored via a shallow Object.assign
+    // merge server-side (lib/settings.js) - always send every key, never a
+    // partial diff, or an untouched key would be silently dropped.
+    const poVisibleFields = {};
+    document.querySelectorAll('.ps-po-vis').forEach(cb => { poVisibleFields[cb.dataset.key] = cb.checked; });
     await api('/settings/purchase', { method: 'PUT', body: JSON.stringify({
       quote_threshold: val('ps-quote-threshold'), payment_terms_options: paymentTerms,
       allow_pending_po_email: document.getElementById('ps-allow-pending-email').checked,
+      default_po_terms: val('ps-default-po-terms'), po_visible_fields: poVisibleFields,
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
