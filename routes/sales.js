@@ -473,7 +473,28 @@ router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.mana
 // trace back to the confirmed offer) with no gate in effect, rather than
 // leaving po_terms_status permanently unresolved. Received logs the PO's own
 // stated terms and diffs them against the fields above - see lib/poTerms.js.
-router.put('/orders/:id/po', requirePermission('sales_order.manage'), (req, res) => {
+// The annexure's header prints the customer's PO No/Date (see
+// lib/annexureDocx.js) straight off the sales_orders row, but the file
+// itself is only ever (re)built by an explicit call to
+// ensureAnnexureForOrder() - recording or clearing the PO here otherwise
+// left whatever annexure was already on disk (typically generated at order-
+// creation time, before any PO existed) silently stale forever, with no
+// prompt to regenerate it. Same guard the manual "Regenerate Annexure"
+// button already enforces: skip quietly (never fail the PO save over it)
+// once the annexure review is Approved/locked or still PendingApproval -
+// an unlock-for-revision or a reject is how to get a fresh one in that case.
+async function regenerateAnnexureIfUnlocked(salesOrderId) {
+  const review = db.prepare('SELECT locked, status FROM annexure_reviews WHERE sales_order_id = ?').get(salesOrderId);
+  if (review && (review.locked || review.status === 'PendingApproval')) return;
+  try {
+    const salesOrder = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(salesOrderId);
+    await ensureAnnexureForOrder(salesOrder);
+  } catch (e) {
+    console.error('Annexure auto-regeneration after PO update failed:', e);
+  }
+}
+
+router.put('/orders/:id/po', requirePermission('sales_order.manage'), async (req, res) => {
   const order = db.prepare('SELECT id FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   const { po_status } = req.body;
@@ -489,6 +510,7 @@ router.put('/orders/:id/po', requirePermission('sales_order.manage'), (req, res)
       WHERE id = ?
     `).run(order.id);
     const result = recomputePoTermsStatus(db, order.id);
+    await regenerateAnnexureIfUnlocked(order.id);
     return res.json({ ok: true, ...result });
   }
   const {
@@ -508,6 +530,7 @@ router.put('/orders/:id/po', requirePermission('sales_order.manage'), (req, res)
     po_pbg_required ? 1 : 0, po_pbg_percentage || null, po_pbg_amount || null, po_pbg_validity_days || null,
     order.id);
   const result = recomputePoTermsStatus(db, order.id);
+  await regenerateAnnexureIfUnlocked(order.id);
   res.json({ ok: true, ...result });
 });
 
