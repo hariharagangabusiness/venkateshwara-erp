@@ -146,14 +146,20 @@ router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
 // of only being visible inside that department's own Job Cards workbench.
 router.get('/:id/job-cards', (req, res) => {
   const cards = db.prepare(`
-    SELECT jc.*, u.full_name as assigned_to_name,
+    SELECT jc.*, u.full_name as assigned_to_name, c.name as client_name,
       (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
+    LEFT JOIN projects p ON p.id = jc.project_id
+    LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE jc.project_id = ? AND jc.parent_job_card_id IS NULL ORDER BY COALESCE(jc.sequence, jc.id)
   `).all(req.params.id);
   const children = db.prepare(`
-    SELECT jc.*, u.full_name as assigned_to_name
+    SELECT jc.*, u.full_name as assigned_to_name, c.name as client_name
     FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
+    LEFT JOIN projects p ON p.id = jc.project_id
+    LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE jc.project_id = ? AND jc.parent_job_card_id IS NOT NULL ORDER BY COALESCE(jc.sequence, jc.id)
   `).all(req.params.id);
   const byParent = {};
@@ -177,9 +183,11 @@ router.get('/job-cards/mine', (req, res) => {
     .concat(oversightRoleNames(db, req.user.id).flatMap(combinedStagesForRole));
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
-    SELECT jc.*, p.project_code, p.title as project_title,
+    SELECT jc.*, p.project_code, p.title as project_title, c.name as client_name,
       (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
+    LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE (jc.stage IN (${placeholders}) OR jc.assigned_to = ?) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages, req.user.id);
@@ -195,9 +203,11 @@ router.get('/job-cards/by-stage/:stage', requirePermission('project.manage'), (r
   const stages = combinedStagesForRole(req.params.stage);
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
-    SELECT jc.*, p.project_code, p.title as project_title,
+    SELECT jc.*, p.project_code, p.title as project_title, c.name as client_name,
       (SELECT COUNT(*) FROM job_cards child WHERE child.parent_job_card_id = jc.id AND child.status != 'NotApplicable') as child_count
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
+    LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE jc.stage IN (${placeholders}) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages);
@@ -210,11 +220,12 @@ router.get('/job-cards/by-stage/:stage', requirePermission('project.manage'), (r
 // Full detail for one job card: parent info, children, attachments, comments.
 router.get('/job-cards/:id/detail', (req, res) => {
   const jc = db.prepare(`
-    SELECT jc.*, u.full_name as assigned_to_name,
+    SELECT jc.*, u.full_name as assigned_to_name, c.name as client_name,
       so.id as so_id, so.annexure_path as so_annexure_path, so.order_no as so_order_no
     FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
     LEFT JOIN projects p ON p.id = jc.project_id
     LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE jc.id = ?
   `).get(req.params.id);
   if (!jc) return res.status(404).json({ error: 'Not found' });
