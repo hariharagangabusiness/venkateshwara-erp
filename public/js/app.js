@@ -9,7 +9,11 @@ async function api(path, opts = {}) {
   const res = await fetch('/api' + path, Object.assign({}, opts, { headers }));
   let data;
   try { data = await res.json(); } catch (e) { data = {}; }
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed');
+    err.data = data; // lets a caller read structured fields beyond .message (e.g. a soft-warning's conflict list)
+    throw err;
+  }
   return data;
 }
 
@@ -405,6 +409,7 @@ const NAV = [
   { group: 'Projects Management', items: [
     { id: 'projects', label: 'Projects' },
     { id: 'targets', label: 'Targets' },
+    { id: 'dept-capacity', label: 'Department Capacity' },
     { id: 'jobcards', label: 'My Job Cards' },
     { id: 'time-motion-report', label: 'Time & Motion Report' },
   ]},
@@ -3938,14 +3943,42 @@ window.viewProjectCards = async (id, code) => {
 };
 
 // ---- Targets sheet (PM department-level planning, editable anytime) ----
+// Download/Generate link for a project's Sales Order Annexure - same
+// conditional pattern already used on the Sales Orders list and the Job
+// Card detail panel (reuses the same downloadAnnexure() global), so the PM
+// can review scope right from wherever they're assigning targets instead
+// of needing a GET /annexure directly.
+function annexureLinkHTML(p) {
+  if (!p.sales_order_id) return '<span class="muted">No sales order</span>';
+  return p.annexure_path
+    ? `<a href="/api/sales/orders/${p.sales_order_id}/annexure" onclick="return downloadAnnexure(event, ${p.sales_order_id})">Annexure</a>`
+    : `<a href="#" onclick="return generateAnnexureForTargets(event, ${p.sales_order_id})">Generate</a>`;
+}
+// Same link, worded as a prominent line right above the plan editor's own
+// stage table - this is where the PM actually benefits from reviewing scope
+// before assigning target dates, not just a column on the project list.
+function annexureLinkBannerHTML(p) {
+  if (!p.sales_order_id) return '<span class="muted">No sales order linked to this project - no annexure to review.</span>';
+  return `<b>Sales Order Annexure</b> (scope of supply - review before setting targets): ${annexureLinkHTML(p)}`;
+}
+window.generateAnnexureForTargets = async (ev, orderId) => {
+  ev.preventDefault();
+  try {
+    await api(`/sales/orders/${orderId}/regenerate-annexure`, { method: 'POST' });
+    navigate('targets');
+  } catch (e) { alert(e.message); }
+  return false;
+};
+
 PAGES.targets = async (el) => {
   const projects = await api('/projects');
   const canPlan = has('project.manage');
   el.innerHTML = `
     ${collapsiblePanel('targets-by-project', `Targets by Project (${projects.length})`, `
-      ${tableHTML(['Code', 'Title', 'Client', 'Status', 'Target Completion'], projects, p => `
+      ${tableHTML(['Code', 'Title', 'Client', 'Status', 'Target Completion', 'Annexure'], projects, p => `
         <tr data-project-row="${p.id}"><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${badge(p.status)}</td>
-        <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td></tr>`)}
+        <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td>
+        <td>${annexureLinkHTML(p)}</td></tr>`)}
     `)}
     <div class="panel">
       <h3>Plan / Edit Department Targets</h3>
@@ -3978,6 +4011,7 @@ window.loadProjectPlan = async () => {
   const activeCards = cards.filter(c => c.status !== 'NotApplicable');
   const excludedCards = cards.filter(c => c.status === 'NotApplicable');
   body.innerHTML = `
+    <p>${targetProject ? annexureLinkBannerHTML(targetProject) : ''}</p>
     <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence. By default each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. Tick "Run in parallel" on a row to have it start on the same day as the row above it instead — the next non-parallel row waits for whichever of that group finishes last. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench. Doesn't need a department for this project at all? Exclude it below — it can be brought back any time.</p>
     <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Run in parallel<br>with row above</th><th>Planned Start</th><th>Planned End</th><th>Status</th><th></th></tr></thead>
     <tbody id="pl-rows">
@@ -3997,7 +4031,9 @@ window.loadProjectPlan = async () => {
         </tr>`).join('')}
     </tbody></table>
     <button class="btn" onclick="saveProjectPlan(${projectId})">Recalculate &amp; Save Plan</button>
+    <button type="button" class="btn small outline" onclick="checkPlanCapacity(${projectId})">Check Department Availability</button>
     <span id="pl-target" class="muted" style="margin-left:10px;">${targetProject && targetProject.target_date ? `Overall target completion: <b>${targetProject.target_date}</b>` : ''}</span>
+    <div id="pl-capacity" style="margin-top:12px;"></div>
     ${excludedCards.length ? `
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
         <b>Excluded from this project's flow</b>
@@ -4095,19 +4131,57 @@ function refreshParallelCheckboxRowZero(tbody) {
     else { cb.disabled = false; cb.title = ''; }
   });
 }
-window.saveProjectPlan = async (projectId) => {
-  const errEl = document.getElementById('pl-err');
-  errEl.style.display = 'none';
+function planFormStages() {
   const startDate = val('pl-start');
-  if (!startDate) { errEl.textContent = 'Pick a plan start date first.'; errEl.style.display = 'block'; return; }
   const rows = Array.from(document.querySelectorAll('#pl-rows tr'));
   const stages = rows.map(tr => ({
     id: Number(tr.dataset.jc),
     duration_days: Number(tr.querySelector('.pl-duration').value) || 1,
     parallel_with_previous: tr.querySelector('.pl-parallel').checked,
   }));
+  return { startDate, stages };
+}
+// Color scheme fixed by the owner: 0-1 projects on a department on a given
+// day = green (room for at least one more without hitting the cap of 2),
+// exactly 2 = blue (at cap), 3+ = red (over cap - the thing this feature
+// exists to catch before it happens).
+function capacityLevelColor(level) { return level === 'red' ? '#e74c3c' : level === 'blue' ? '#3b82f6' : '#2ecc71'; }
+function capacityDayTitle(d) {
+  return d.count ? `${d.count} project${d.count > 1 ? 's' : ''}: ${d.projects.map(p => p.project_code).join(', ')}` : 'Available - no projects scheduled';
+}
+// A compact horizontal strip of colored day-squares for one department's
+// own proposed (or existing) date window - used by the plan editor's
+// capacity preview, where the window is usually days to a few weeks, not a
+// full calendar grid.
+function capacityDayStripHTML(days) {
+  return `<div style="display:flex;flex-wrap:wrap;gap:3px;">
+    ${days.map(d => `<div title="${esc(d.date)}: ${esc(capacityDayTitle(d))}" style="width:20px;height:20px;border-radius:3px;background:${capacityLevelColor(d.level)};display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;">${Number(d.date.slice(8, 10))}</div>`).join('')}
+  </div>`;
+}
+window.checkPlanCapacity = async (projectId) => {
+  const target = document.getElementById('pl-capacity');
+  const { startDate, stages } = planFormStages();
+  if (!startDate || !stages.length) { target.innerHTML = '<p class="msg err">Pick a plan start date first.</p>'; return; }
+  target.innerHTML = '<span class="muted">Checking...</span>';
   try {
-    const r = await api(`/projects/${projectId}/plan`, { method: 'PUT', body: JSON.stringify({ start_date: startDate, stages }) });
+    const r = await api(`/projects/${projectId}/plan/preview`, { method: 'POST', body: JSON.stringify({ start_date: startDate, stages }) });
+    target.innerHTML = `<p class="muted" style="margin-bottom:6px;">Each department's existing load (from every OTHER project) over the window this plan would give it - <span style="color:#2ecc71;">green</span> = available, <span style="color:#3b82f6;">blue</span> = already at the 2-project cap, <span style="color:#e74c3c;">red</span> = already over it. Hover a day for the project list.</p>
+      ${r.departments.map(d => `
+        <div style="margin-bottom:10px;">
+          <b>${esc(d.stageLabel)}</b> <span class="muted">(${esc(d.planned_start)} to ${esc(d.planned_end)})</span>
+          ${capacityDayStripHTML(d.days)}
+        </div>`).join('')}`;
+  } catch (e) { target.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
+window.saveProjectPlan = async (projectId, confirmed) => {
+  const errEl = document.getElementById('pl-err');
+  errEl.style.display = 'none';
+  const { startDate, stages } = planFormStages();
+  if (!startDate) { errEl.textContent = 'Pick a plan start date first.'; errEl.style.display = 'block'; return; }
+  try {
+    const body = { start_date: startDate, stages };
+    if (confirmed) body.confirm = true;
+    const r = await api(`/projects/${projectId}/plan`, { method: 'PUT', body: JSON.stringify(body) });
     r.jobCards.forEach(c => {
       const tr = document.querySelector(`#pl-rows tr[data-jc="${c.id}"]`);
       if (tr) { tr.querySelector('.pl-start').textContent = c.planned_start; tr.querySelector('.pl-end').textContent = c.planned_end; }
@@ -4117,9 +4191,72 @@ window.saveProjectPlan = async (projectId) => {
     const projRow = document.querySelector(`tr[data-project-row="${projectId}"] .pr-target`);
     if (projRow) projRow.innerHTML = `<b>${new Date(r.targetDate).toLocaleDateString()}</b>`;
   } catch (e) {
+    // A capacity conflict (soft warning, never a hard block) comes back as
+    // a 409 carrying structured conflict data rather than a plain message -
+    // offer to proceed anyway instead of just showing an error.
+    if (e.data && e.data.conflict) {
+      const lines = e.data.conflicts.map(c => `${c.stageLabel}: would reach ${Math.max(...c.dates.map(d => d.existingCount)) + 1} projects on ${c.dates.length} day(s) (e.g. ${c.dates[0].date})`);
+      if (confirm(`This plan would push the following department(s) over the 2-project cap:\n\n${lines.join('\n')}\n\nSave anyway?`)) {
+        saveProjectPlan(projectId, true);
+      }
+      return;
+    }
     errEl.textContent = e.message;
     errEl.style.display = 'block';
   }
+};
+
+// ---- Department Capacity (standalone, every department at a glance) ----
+// A compact month calendar per department, colored the same green/blue/red
+// as the plan editor's own preview - lets a PM eyeball overall org load for
+// a month without needing to be mid-way through planning a specific
+// project. Collapsed by default per this file's own standing rule for any
+// repeating/grouped list UI - 10 departments' worth of calendars at once is
+// exactly that.
+let DC_MONTH = null; // {year, month} - month is 0-indexed; lazily set to the current month on first visit
+function monthRange(year, month) {
+  const from = new Date(year, month, 1);
+  const to = new Date(year, month + 1, 0);
+  const fmt = d => d.toISOString().slice(0, 10);
+  return { from: fmt(from), to: fmt(to), startWeekday: from.getDay() };
+}
+function capacityMonthGridHTML(days, startWeekday) {
+  const blanks = Array.from({ length: startWeekday }, () => '<div></div>');
+  const cells = days.map(d => `<div title="${esc(d.date)}: ${esc(capacityDayTitle(d))}" style="aspect-ratio:1;border-radius:4px;background:${capacityLevelColor(d.level)};display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;">${Number(d.date.slice(8, 10))}</div>`);
+  return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;max-width:320px;">
+    ${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => `<div style="text-align:center;font-size:10px;color:var(--muted);font-weight:600;">${d}</div>`).join('')}
+    ${blanks.join('')}${cells.join('')}
+  </div>`;
+}
+PAGES['dept-capacity'] = async (el) => {
+  if (!has('project.manage')) { el.innerHTML = '<p class="msg err">Only a Project Manager or Admin can view department capacity.</p>'; return; }
+  if (!DC_MONTH) { const now = new Date(); DC_MONTH = { year: now.getFullYear(), month: now.getMonth() }; }
+  await renderDeptCapacity(el);
+};
+async function renderDeptCapacity(el) {
+  const { year, month } = DC_MONTH;
+  const { from, to, startWeekday } = monthRange(year, month);
+  const [stages, calendar] = await Promise.all([
+    api('/projects/pipeline-stages'),
+    api(`/projects/capacity-calendar?from=${from}&to=${to}`),
+  ]);
+  const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  el.innerHTML = `
+    <div class="panel" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <button class="btn small outline" onclick="changeDeptCapacityMonth(-1)">&larr; Prev</button>
+      <b>${esc(monthLabel)}</b>
+      <button class="btn small outline" onclick="changeDeptCapacityMonth(1)">Next &rarr;</button>
+      <span class="muted" style="margin-left:14px;"><span style="color:#2ecc71;">&#9632;</span> Available &nbsp; <span style="color:#3b82f6;">&#9632;</span> 2 projects loaded &nbsp; <span style="color:#e74c3c;">&#9632;</span> 3+ projects loaded (over the cap)</span>
+    </div>
+    ${stages.map(s => collapsiblePanel(`dept-cap-${s}`, esc(STAGE_LABELS[s] || s), capacityMonthGridHTML(calendar[s] || [], startWeekday))).join('')}
+  `;
+}
+window.changeDeptCapacityMonth = (delta) => {
+  let { year, month } = DC_MONTH;
+  month += delta;
+  if (month < 0) { month = 11; year--; } else if (month > 11) { month = 0; year++; }
+  DC_MONTH = { year, month };
+  renderDeptCapacity(document.getElementById('content'));
 };
 
 // ---- My Job Cards (department / HOD workbench) ----

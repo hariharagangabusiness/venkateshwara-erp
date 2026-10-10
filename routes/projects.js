@@ -7,6 +7,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const {
   PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole,
   NOT_APPLICABLE, excludeJobCard, includeJobCard, advanceProjectStatus, releaseDependents,
+  departmentCapacityByRange, planCapacityConflicts,
 } = require('../lib/pipeline');
 const { oversightRoleNames } = require('../lib/roleOversight');
 const router = express.Router();
@@ -46,7 +47,7 @@ router.get('/pipeline-stages', (req, res) => res.json(PIPELINE_STAGES));
 
 router.get('/', (req, res) => {
   res.json(db.prepare(`
-    SELECT p.*, so.order_no, c.name as client_name, u.full_name as pm_name
+    SELECT p.*, so.order_no, so.annexure_path, c.name as client_name, u.full_name as pm_name
     FROM projects p
     LEFT JOIN sales_orders so ON so.id = p.sales_order_id
     LEFT JOIN clients c ON c.id = so.client_id
@@ -76,7 +77,7 @@ router.patch('/:id/status', requirePermission('project.manage'), (req, res) => {
 // ===================== Targets sheet (PM top-level planning) =====================
 router.get('/by-sales-order/:soId', (req, res) => {
   const project = db.prepare(`
-    SELECT p.*, so.order_no, c.name as client_name
+    SELECT p.*, so.order_no, so.annexure_path, c.name as client_name
     FROM projects p
     JOIN sales_orders so ON so.id = p.sales_order_id
     LEFT JOIN clients c ON c.id = so.client_id
@@ -90,53 +91,127 @@ router.get('/by-sales-order/:soId', (req, res) => {
   res.json({ project, jobCards });
 });
 
+// Pure date-cascade math, pulled out of PUT /:id/plan's transaction so the
+// capacity-conflict check below can see each stage's proposed window before
+// anything is written. stages: [{id, duration_days, parallel_with_previous}]
+// in the order the user wants them to run. A stage with
+// parallel_with_previous=true starts on the same day as the stage
+// immediately above it (instead of waiting for it to finish) - the two run
+// as one "group"; the next stage that is NOT marked parallel starts the day
+// after the latest of that group's end dates, whichever ran longest. The
+// first stage can never be parallel (there's nothing above it to run
+// alongside).
+function cascadePlanDates(startDate, stages) {
+  let groupStart = new Date(startDate + 'T00:00:00'); // start date of the current parallel group
+  let groupEnd = null;                                 // latest end date reached within that group
+  const computed = stages.map((s, i) => {
+    const days = Math.max(1, Number(s.duration_days) || 1);
+    const isParallel = !!s.parallel_with_previous && i > 0;
+    if (!isParallel) {
+      if (groupEnd) {
+        groupStart = new Date(groupEnd);
+        groupStart.setDate(groupStart.getDate() + 1);
+      }
+      groupEnd = null; // starting a fresh group
+    }
+    const plannedStart = groupStart.toISOString().slice(0, 10);
+    const end = new Date(groupStart);
+    end.setDate(end.getDate() + days - 1);
+    const plannedEnd = end.toISOString().slice(0, 10);
+    if (!groupEnd || end > groupEnd) groupEnd = end;
+    return { id: s.id, duration_days: days, parallel_with_previous: isParallel, planned_start: plannedStart, planned_end: plannedEnd, sequence: i + 1 };
+  });
+  return { computed, targetDate: groupEnd.toISOString().slice(0, 10) };
+}
+
 router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
-  // stages: [{id, duration_days, parallel_with_previous}], in the order the
-  // user wants them to run. A stage with parallel_with_previous=true starts
-  // on the same day as the stage immediately above it (instead of waiting
-  // for it to finish) - the two run as one "group"; the next stage that is
-  // NOT marked parallel starts the day after the latest of that group's end
-  // dates, whichever ran longest. The first stage can never be parallel
-  // (there's nothing above it to run alongside).
-  const { start_date, stages } = req.body;
+  const { start_date, stages, confirm } = req.body;
   if (!start_date || !Array.isArray(stages) || !stages.length) {
     return res.status(400).json({ error: 'start_date and a non-empty stages array are required' });
   }
   const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
+  const { computed, targetDate } = cascadePlanDates(start_date, stages);
+
+  // Soft capacity warning (never a hard block): if any stage's proposed
+  // window would bring its department to 3+ overlapping projects, let the
+  // PM confirm before actually saving rather than silently overloading a
+  // department. `confirm: true` on the request is what a resubmit-after-
+  // the-warning looks like.
+  if (!confirm) {
+    const stageById = {};
+    db.prepare('SELECT id, stage FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL').all(project.id)
+      .forEach(r => { stageById[r.id] = r.stage; });
+    const stagePlans = computed.map(c => ({ stage: stageById[c.id], planned_start: c.planned_start, planned_end: c.planned_end }));
+    const conflicts = planCapacityConflicts(db, project.id, stagePlans);
+    if (conflicts.length) {
+      const byStage = {};
+      conflicts.forEach(c => {
+        (byStage[c.stage] = byStage[c.stage] || { stage: c.stage, stageLabel: STAGE_LABELS_SERVER[c.stage] || c.stage, dates: [] })
+          .dates.push({ date: c.date, existingCount: c.existingCount, existingProjects: c.existingProjects });
+      });
+      return res.status(409).json({ conflict: true, conflicts: Object.values(byStage) });
+    }
+  }
+
   const tx = db.transaction(() => {
-    let groupStart = new Date(start_date + 'T00:00:00'); // start date of the current parallel group
-    let groupEnd = null;                                  // latest end date reached within that group
-    stages.forEach((s, i) => {
-      const days = Math.max(1, Number(s.duration_days) || 1);
-      const isParallel = !!s.parallel_with_previous && i > 0;
-      if (!isParallel) {
-        if (groupEnd) {
-          groupStart = new Date(groupEnd);
-          groupStart.setDate(groupStart.getDate() + 1);
-        }
-        groupEnd = null; // starting a fresh group
-      }
-      const plannedStart = groupStart.toISOString().slice(0, 10);
-      const end = new Date(groupStart);
-      end.setDate(end.getDate() + days - 1);
-      const plannedEnd = end.toISOString().slice(0, 10);
-      if (!groupEnd || end > groupEnd) groupEnd = end;
+    computed.forEach(c => {
       db.prepare(`UPDATE job_cards SET duration_days = ?, planned_start = ?, planned_end = ?, sequence = ?, parallel_with_previous = ? WHERE id = ? AND project_id = ? AND parent_job_card_id IS NULL`)
-        .run(days, plannedStart, plannedEnd, i + 1, isParallel ? 1 : 0, s.id, project.id);
+        .run(c.duration_days, c.planned_start, c.planned_end, c.sequence, c.parallel_with_previous ? 1 : 0, c.id, project.id);
     });
-    const targetDateStr = groupEnd.toISOString().slice(0, 10);
-    db.prepare('UPDATE projects SET target_date = ? WHERE id = ?').run(targetDateStr, project.id);
-    return targetDateStr;
+    db.prepare('UPDATE projects SET target_date = ? WHERE id = ?').run(targetDate, project.id);
   });
-  const targetDate = tx();
+  tx();
 
   const jobCards = db.prepare(`
     SELECT jc.*, u.full_name as assigned_to_name FROM job_cards jc LEFT JOIN users u ON u.id = jc.assigned_to
     WHERE jc.project_id = ? AND jc.parent_job_card_id IS NULL ORDER BY COALESCE(jc.sequence, jc.id)
   `).all(project.id);
   res.json({ ok: true, targetDate, jobCards });
+});
+
+// Department capacity calendar - how many projects a department has
+// scheduled on each date over [from, to]. Backs both the Targets sheet's
+// plan editor (one department/date-range at a time, derived from the plan
+// currently being drafted) and the standalone Department Capacity page
+// (every department, a chosen month). Gated the same as planning itself -
+// this exists for Project Management, same as the Targets sheet it serves.
+router.get('/capacity-calendar', requirePermission('project.manage'), (req, res) => {
+  const { from, to, stage } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to query params are required' });
+  const stages = stage ? [stage] : PIPELINE_STAGES;
+  const result = {};
+  stages.forEach(s => { result[s] = departmentCapacityByRange(db, s, from, to); });
+  res.json(result);
+});
+
+// Dry-run of PUT /:id/plan's own date cascade (writes nothing) - lets the
+// plan editor show each department's real availability over the exact
+// window this draft plan would actually produce, before the PM commits to
+// it. Same request shape as the save ({start_date, stages}).
+router.post('/:id/plan/preview', requirePermission('project.manage'), (req, res) => {
+  const { start_date, stages } = req.body;
+  if (!start_date || !Array.isArray(stages) || !stages.length) {
+    return res.status(400).json({ error: 'start_date and a non-empty stages array are required' });
+  }
+  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const { computed, targetDate } = cascadePlanDates(start_date, stages);
+  const stageById = {};
+  db.prepare('SELECT id, stage FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL').all(project.id)
+    .forEach(r => { stageById[r.id] = r.stage; });
+
+  const departments = computed.map(c => {
+    const stage = stageById[c.id];
+    return {
+      stage, stageLabel: STAGE_LABELS_SERVER[stage] || stage,
+      planned_start: c.planned_start, planned_end: c.planned_end,
+      days: departmentCapacityByRange(db, stage, c.planned_start, c.planned_end, project.id),
+    };
+  });
+  res.json({ targetDate, departments });
 });
 
 // ---- Job cards (per-department work items) ----
