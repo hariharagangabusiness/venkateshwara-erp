@@ -1445,8 +1445,8 @@ PAGES['dept-report'] = async (el) => {
     el.innerHTML = stagePicker + `<div class="msg err">${esc(e.message)}</div>`;
     return;
   }
-  const jcCols = ['Project', 'Item', 'Status', 'Days in Stage', 'Delayed'];
-  const jcRow = c => `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}</td><td>${badge(c.status)}</td><td>${c.days_in_stage}</td><td>${c.delayed?'⚠️ Yes':'-'}</td></tr>`;
+  const jcCols = ['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Days in Stage', 'Delayed'];
+  const jcRow = c => `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${c.days_in_stage}</td><td>${c.delayed?'⚠️ Yes':'-'}</td></tr>`;
   const byStatus = s => data.active.filter(c => c.status === s);
   window.__STAT_DETAIL_BUILDERS = {
     dr_Pending: async () => `<h3>Pending (${byStatus('Pending').length})</h3>${tableHTML(jcCols, byStatus('Pending'), jcRow)}`,
@@ -3917,6 +3917,7 @@ function jobCardRowHTML(c, indent) {
   const fmtTs = t => t ? new Date(t).toLocaleString() : '-';
   return `<tr${indent ? ' class="jc-child-row"' : ''}>
     <td${indent ? ' style="padding-left:28px;"' : ''}>${indent ? '<span class="muted">↳</span> ' : ''}${title}</td>
+    <td>${esc(c.client_name)||'-'}</td><td>${c.planned_end || '-'}</td>
     <td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
     <td>${fmtTs(c.allocated_at)}</td><td>${fmtTs(c.started_at)}</td><td>${fmtTs(c.completed_at)}</td>
     <td>${esc(c.notes)||''}</td></tr>`;
@@ -3931,8 +3932,8 @@ window.viewProjectCards = async (id, code) => {
   const rows = cards.filter(c => c.status !== 'NotApplicable')
     .map(c => jobCardRowHTML(c, false) + (c.children || []).filter(ch => ch.status !== 'NotApplicable').map(ch => jobCardRowHTML(ch, true)).join('')).join('');
   document.getElementById('pj-cards').innerHTML = `<table><thead><tr>
-    <th>Stage / Sub-Assembly</th><th>Status</th><th>Assigned To</th><th>Allocated</th><th>Started</th><th>Completed</th><th>Notes</th>
-  </tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No job cards yet.</td></tr>'}</tbody></table>`;
+    <th>Stage / Sub-Assembly</th><th>Customer</th><th>Target Completion</th><th>Status</th><th>Assigned To</th><th>Allocated</th><th>Started</th><th>Completed</th><th>Notes</th>
+  </tr></thead><tbody>${rows || '<tr><td colspan="9" class="muted">No job cards yet.</td></tr>'}</tbody></table>`;
   document.getElementById('pj-cards-panel').scrollIntoView({ behavior: 'smooth' });
 };
 
@@ -4130,9 +4131,7 @@ window.saveProjectPlan = async (projectId) => {
 // the department, plus allocation, sub-assemblies, attachments and routing.
 PAGES.jobcards = async (el) => {
   const cards = await api('/projects/job-cards/mine');
-  const cardRow = c => `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
-      <td>${jobCardActions(c)}</td></tr>`;
-  el.innerHTML = renderJobCardSection('mine', `Job Cards for ${ME.role}`, cards, cardRow) +
+  el.innerHTML = renderJobCardSection('mine', `Job Cards for ${ME.role}`, cards, jobCardBoardRowHTML) +
   `<div class="panel" id="sp-panel" style="display:none;"><h3 id="sp-title"></h3><div id="sp-body"></div></div>
   <div class="panel" id="jc-panel" style="display:none;"><h3 id="jc-title"></h3><div id="jc-body"></div></div>`;
 };
@@ -4151,36 +4150,41 @@ const DEPT_SUB_STAGES = { Manufacturing: ['Fitting', 'Tacking', 'Welding', 'Buff
 // Collapsed-by-default (like every other growing list panel in the app),
 // with client-side search since project/item are named entities - one
 // dept's job-card queue only grows over the life of the company.
+// Shared row renderer for every department job-card board ("My Job Cards"
+// and each Admin/PM per-department tab) - one place to add/change a column
+// so the two boards can never drift out of sync with each other again.
+function jobCardBoardRowHTML(c) {
+  return `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
+      <td>${jobCardActions(c)}</td></tr>`;
+}
 function renderJobCardSection(key, title, rows, cardRow) {
   const tableWrapId = 'jc-tw-' + key;
   const countId = 'jc-count-' + key;
-  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Item', 'Status', 'Assigned', 'Action'], rs, cardRow) : '<p class="muted">No job cards in this section.</p>';
+  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], rs, cardRow) : '<p class="muted">No job cards in this section.</p>';
   return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${rows.length})</span>`, `
-    ${renderListSearch('jc-' + key, rows, ['project_code', 'project_title', 'title', 'assigned_to_name', 'status'], (filtered) => {
+    ${renderListSearch('jc-' + key, rows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name', 'status'], (filtered) => {
       document.getElementById(tableWrapId).innerHTML = renderRows(filtered);
       document.getElementById(countId).textContent = title + ' (' + filtered.length + ')';
-    }, 'Search by project, item, status, assignee...')}
+    }, 'Search by project, customer, item, status, assignee...')}
     <div id="${tableWrapId}">${renderRows(rows)}</div>
   `);
 }
 async function renderDeptJobCards(el, stage, label, onlyStage) {
   const cards = await api('/projects/job-cards/by-stage/' + encodeURIComponent(stage));
   const subStages = DEPT_SUB_STAGES[stage];
-  const cardRow = c => `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
-      <td>${jobCardActions(c)}</td></tr>`;
   let body;
   if (onlyStage) {
     // A single sub-process's own sidebar tab (e.g. Manufacturing > Fitting) -
     // same combined-queue data, filtered down to just this one section.
     const rows = cards.filter(c => c.stage === onlyStage);
-    body = renderJobCardSection('only-' + onlyStage, label, rows, cardRow);
+    body = renderJobCardSection('only-' + onlyStage, label, rows, jobCardBoardRowHTML);
   } else if (subStages) {
     const own = cards.filter(c => c.stage === stage);
     const sections = [{ key: stage, title: label + ' (overall)', rows: own }]
       .concat(subStages.map(s => ({ key: s, title: STAGE_LABELS[s] || s, rows: cards.filter(c => c.stage === s) })));
-    body = sections.map(sec => renderJobCardSection(sec.key, sec.title, sec.rows, cardRow)).join('');
+    body = sections.map(sec => renderJobCardSection(sec.key, sec.title, sec.rows, jobCardBoardRowHTML)).join('');
   } else {
-    body = renderJobCardSection(stage, label, cards, cardRow);
+    body = renderJobCardSection(stage, label, cards, jobCardBoardRowHTML);
   }
   el.innerHTML = body +
     `<div class="panel" id="sp-panel" style="display:none;"><h3 id="sp-title"></h3><div id="sp-body"></div></div>
@@ -4302,7 +4306,7 @@ window.openJobCardDetail = async (id) => {
   ` : '';
 
   body.innerHTML = `
-    <p>Status: ${badge(c.status)} &nbsp; Assigned to: <b>${esc(c.assigned_to_name)||'Unassigned'}</b> &nbsp; ${c.planned_start ? `Window: <b>${c.planned_start} to ${c.planned_end||'-'}</b>` : ''}</p>
+    <p>Customer: <b>${esc(c.client_name)||'-'}</b> &nbsp; Status: ${badge(c.status)} &nbsp; Assigned to: <b>${esc(c.assigned_to_name)||'Unassigned'}</b> &nbsp; ${c.planned_start ? `Window: <b>${c.planned_start} to ${c.planned_end||'-'}</b>` : ''}</p>
     <p class="muted" style="font-size:12px;">
       Allocated: <b>${c.allocated_at ? new Date(c.allocated_at).toLocaleString() : '-'}</b> &nbsp;&middot;&nbsp;
       Started: <b>${c.started_at ? new Date(c.started_at).toLocaleString() : '-'}</b> &nbsp;&middot;&nbsp;

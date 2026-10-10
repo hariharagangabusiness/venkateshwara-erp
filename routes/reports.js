@@ -35,8 +35,10 @@ router.get('/department/:stage', (req, res) => {
   const stages = combinedStagesForRole(stage);
   const placeholders = stages.map(() => '?').join(',');
   const cards = db.prepare(`
-    SELECT jc.*, p.project_code, p.title as project_title
+    SELECT jc.*, p.project_code, p.title as project_title, c.name as client_name
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
+    LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     WHERE jc.stage IN (${placeholders}) AND jc.status != 'NotApplicable'
   `).all(...stages);
 
