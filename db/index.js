@@ -1321,6 +1321,14 @@ const MIGRATIONS = [
   // to what was asked. Defaults 'Standard' so every existing offer renders
   // exactly as before.
   `ALTER TABLE offers ADD COLUMN offer_format TEXT DEFAULT 'Standard'`,
+  // Service inbound-mail follow-up (2026-10-12): an auto-created SR's
+  // issue_description was always just the email subject (see
+  // lib/inboundMail.js's autoCreateServiceRequest()) - often not enough for
+  // an approver/HOD to judge what's actually wrong. email_excerpt holds the
+  // first few lines of the email body separately, so the subject stays what
+  // it's always meant (a short label) while this gives real content without
+  // needing to go find the original email. NULL for a manually-logged SR.
+  `ALTER TABLE service_requests ADD COLUMN email_excerpt TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
