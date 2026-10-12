@@ -454,6 +454,7 @@ const NAV = [
   ]},
   { group: 'Finance', items: [
     { id: 'expenses', label: 'Expense Vouchers' },
+    { id: 'expenses-mine', label: 'My Expense Vouchers' },
     { id: 'expense-report', label: 'Cash vs Accounted Report' },
     { id: 'foc', label: 'FOC Material Issue' },
     { id: 'finance-ledger', label: 'Finance Ledger' },
@@ -7929,18 +7930,66 @@ PAGES.expenses = async (el) => {
       </div>
       <button class="btn" onclick="addExpense()">Submit Voucher</button>
       ${isAdmin ? `<button class="btn small outline" type="button" onclick="openExCategoryManager()" style="margin-left:8px;">Manage Categories</button>` : ''}
-      <div class="muted" style="margin-top:8px;">Approval chain: Accounts, plus Admin for vouchers ≥ ₹25,000.</div>
+      <div class="muted" style="margin-top:8px;">Approval chain: Management, then Accounts (both required, any amount). <a href="#" onclick="navigate('expenses-mine');return false;">My Expense Vouchers</a> shows your own submissions' stage-by-stage status.</div>
     </div>
+    ${isAdmin ? collapsiblePanel('expense-oe-map', 'Operating Expense Category Mapping', `
+      <div class="muted" style="margin-bottom:8px;">Marking a voucher Paid auto-creates a matching Operating Expense entry - pick which Operating Expense category each Expense Voucher category should land in. A category left unmapped blocks Mark Paid until it's set here.</div>
+      <div id="ev-oe-map-wrap">${await exOeMapHTML()}</div>
+    `) : ''}
     ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
       <div class="form-grid" style="margin-bottom:10px;">
         <div><label>Month</label><input type="month" id="ex-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="EV_LIST_MONTH=this.value;navigate('expenses')"></div>
         <div style="align-self:end;"><button class="btn small outline" type="button" onclick="EV_LIST_MONTH='all';navigate('expenses')">Show All</button></div>
       </div>
-      ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Bill', 'Status', 'Action'], vouchers, v => `
-        <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td>
+      ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Raised By', 'Bill', 'Status', 'Action'], vouchers, v => `
+        <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td><td>${esc(v.raised_by_name)}</td>
         <td>${v.attachment_path ? `<a href="${v.attachment_path}" target="_blank">View</a>` : '-'}</td><td>${badge(v.status)}</td>
-        <td>${v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : '-'}</td></tr>`)}
+        <td>
+          ${v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
+          <button class="btn small outline" type="button" onclick="showExpenseVoucherHistory(${v.approval_id || 'null'}, 'Approval History - ${esc(v.voucher_no)}')">History</button>
+        </td></tr>`)}
     `)}`;
+};
+// Admin-only Expense Voucher category -> Operating Expense category mapping
+// table (2026-10-12) - every expense category gets a row with a dropdown
+// defaulting to its currently-mapped Operating Expense category (or blank if
+// never mapped), saved individually per row.
+async function exOeMapHTML() {
+  const [map, oeCats] = await Promise.all([
+    api('/finance/expense-vouchers/category-oe-map'),
+    api('/finance/operating-expense-categories'),
+  ]);
+  return tableHTML(['Expense Voucher Category', 'Mapped Operating Expense Category', ''], map, m => `
+    <tr><td>${esc(m.expense_category_name)}</td>
+    <td><select id="ev-oe-map-${m.expense_category_id}">
+      <option value="">- not mapped -</option>
+      ${oeCats.map(oc => `<option value="${oc.id}" ${oc.id === m.operating_expense_category_id ? 'selected' : ''}>${esc(oc.name)}</option>`).join('')}
+    </select></td>
+    <td><button class="btn small" type="button" onclick="saveExOeMap(${m.expense_category_id})">Save</button></td></tr>`);
+}
+window.saveExOeMap = async (expenseCategoryId) => {
+  try {
+    const operating_expense_category_id = val(`ev-oe-map-${expenseCategoryId}`);
+    await api(`/finance/expense-vouchers/category-oe-map/${expenseCategoryId}`, { method: 'PUT', body: JSON.stringify({ operating_expense_category_id }) });
+    document.getElementById('ev-oe-map-wrap').innerHTML = await exOeMapHTML();
+  } catch (e) { alert(e.message); }
+};
+// Stage-history popup, shared between the Admin Expense Vouchers list and
+// "My Expense Vouchers" - step_order 1/2 map to the current ExpenseVoucher
+// chain's two fixed stages (Management, then Accounts; see db/index.js's
+// one-time chain migration). A voucher with no approval_id at all (shouldn't
+// happen in practice - every voucher starts an approval at creation - but
+// guarded defensively) shows a plain message instead of erroring.
+window.showExpenseVoucherHistory = async (approvalId, title) => {
+  if (!approvalId) { openAppModal(title || 'Approval History', '<div class="muted">No approval history on file for this voucher.</div>'); return; }
+  const actions = await api(`/approvals/${approvalId}/history`);
+  const stepLabel = (s) => s === 1 ? 'Management' : s === 2 ? 'Accounts' : `Step ${s}`;
+  const body = actions.length
+    ? tableHTML(['Stage', 'Action', 'By', 'When', 'Comment'], actions, a => `
+        <tr><td>${esc(stepLabel(a.step_order))}</td><td>${badge(a.action)}</td><td>${esc(a.actor_name || '-')}</td>
+        <td>${a.acted_at ? esc(a.acted_at) : '-'}</td><td>${esc(a.comment || '-')}</td></tr>`)
+    : '<div class="muted">No action recorded yet - still awaiting the first approver (Management).</div>';
+  openAppModal(title || 'Approval History', body);
 };
 window.addExpense = async () => {
   try {
@@ -7958,8 +8007,41 @@ window.addExpense = async () => {
   } catch (e) { alert(e.message); }
 };
 window.payExpense = async (id) => {
-  await api(`/finance/expense-vouchers/${id}/mark-paid`, { method: 'POST' });
-  navigate('expenses');
+  const payment_reference = prompt('Payment reference (UTR / cheque no. / transaction id):');
+  if (payment_reference === null) return;
+  if (!payment_reference.trim()) { alert('A payment reference is required to mark this voucher Paid.'); return; }
+  try {
+    await api(`/finance/expense-vouchers/${id}/mark-paid`, { method: 'POST', body: JSON.stringify({ payment_reference }) });
+    navigate(CURRENT_PAGE === 'expenses-mine' ? 'expenses-mine' : 'expenses');
+  } catch (e) { alert(e.message); }
+};
+
+// ---- My Expense Vouchers (2026-10-12, requested directly by the owner) ----
+// Submitter-facing status view: a logged-in user's own vouchers with full
+// per-stage approval history, plus - if they're a supervisor - a second,
+// collapsed-by-default section showing every voucher raised against their
+// own department (or any department they hold oversight of), per
+// GET /finance/expense-vouchers/mine's {own, department} shape.
+PAGES['expenses-mine'] = async (el) => {
+  const { own, department } = await api('/finance/expense-vouchers/mine');
+  const canMarkPaid = has('expense_voucher.approve');
+  const rowHTML = (v) => `
+    <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td>
+    <td>${esc(v.raised_by_name)}</td><td>${badge(v.status)}</td>
+    <td>${v.status === 'Paid' ? `${esc(v.payment_reference || '-')}${v.paid_at ? ' (' + esc(v.paid_at) + ')' : ''}` : '-'}</td>
+    <td>
+      ${canMarkPaid && v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
+      <button class="btn small outline" type="button" onclick="showExpenseVoucherHistory(${v.approval_id || 'null'}, 'Approval History - ${esc(v.voucher_no)}')">History</button>
+    </td></tr>`;
+  el.innerHTML = `
+    <div class="panel"><h3>My Expense Vouchers (${own.length})</h3>
+      <div class="muted" style="margin-bottom:8px;">Status at each stage of your own submitted vouchers - Management approval, then Accounts approval, then Mark Paid with a payment reference.</div>
+      ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Raised By', 'Status', 'Paid Ref / Date', 'Action'], own, rowHTML)}
+    </div>
+    ${ME && ME.is_supervisor ? collapsiblePanel('expenses-mine-department', `My Department's Expense Vouchers (${department.length})`, `
+      <div class="muted" style="margin-bottom:8px;">Every voucher raised against your own department (or any department you've been granted oversight of), submitted by anyone.</div>
+      ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Raised By', 'Status', 'Paid Ref / Date', 'Action'], department, rowHTML)}
+    `) : ''}`;
 };
 
 // ---- Admin: manage the New Expense Voucher category dropdown list ----

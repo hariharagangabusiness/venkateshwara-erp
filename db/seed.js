@@ -130,9 +130,13 @@ const upsertStep = db.prepare(`
     requires_supervisor = excluded.requires_supervisor
 `);
 
-// Expense voucher: Accounts approves any amount; above 25000 also needs Admin
-upsertStep.run(chainId('ExpenseVoucher'), 1, roleId('Accounts'), 0, 0);
-upsertStep.run(chainId('ExpenseVoucher'), 2, roleId('Admin'), 25000, 0);
+// Expense voucher: Management approves first, then Accounts - both required
+// regardless of amount (2026-10-12; a carried-forward database that was
+// seeded under the old Accounts -> Admin shape picks this up via the
+// one-time migration in db/index.js instead, since re-seeding here never
+// runs again once a database already exists).
+upsertStep.run(chainId('ExpenseVoucher'), 1, roleId('Management'), 0, 0);
+upsertStep.run(chainId('ExpenseVoucher'), 2, roleId('Accounts'), 0, 0);
 
 // Leave: HR approves
 upsertStep.run(chainId('Leave'), 1, roleId('HR'), 0, 0);
