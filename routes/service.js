@@ -295,6 +295,21 @@ router.post('/:id/reopen', requirePermission('service_request.manage'), (req, re
   res.json({ ok: true });
 });
 
+// The original inbound email that auto-created this SR (if any) - lets the
+// Queue table and the My Approvals drilldown link straight to the full
+// sender/subject/body instead of making whoever's looking separately hunt
+// through the Incoming Requests panel for the matching row. Only the
+// 'AutoCreated' row is the SR's actual origin - a later thread-matched
+// follow-up also carries this SR's linked_sr_id, but isn't what created it.
+router.get('/:id/source-email', requirePermission('service_request.manage'), (req, res) => {
+  const row = db.prepare(`
+    SELECT from_address, from_name, subject, body_text, received_at
+    FROM incoming_service_emails WHERE linked_sr_id = ? AND status = 'AutoCreated'
+    ORDER BY id ASC LIMIT 1
+  `).get(req.params.id);
+  res.json({ found: !!row, email: row || null });
+});
+
 // ===================== Activity log (free-form updates, part E) =====================
 // Independent of the formal status/job-status machines above - lets
 // support/ops record "called customer, waiting on part" or similar without

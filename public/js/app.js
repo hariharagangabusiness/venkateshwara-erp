@@ -1905,9 +1905,14 @@ async function renderApprovalDrilldown(key) {
           <b>SR No:</b> ${esc(sr.sr_no)} &nbsp; <b>Customer:</b> ${esc(sr.client_master_name || sr.customer_name)||'-'}<br>
           <b>Contact:</b> ${esc(sr.contact_person)||'-'}${sr.contact_phone ? ' / ' + esc(sr.contact_phone) : ''}<br>
           <b>Issue:</b> ${esc(sr.issue_description)||'-'}
+          ${sr.email_excerpt ? `<br><b>Email excerpt:</b> ${esc(sr.email_excerpt)}` : ''}
           ${sr.spare_parts_needed ? `<br><b>Spare Parts Needed:</b> ${esc(sr.spare_parts_needed)}` : ''}
         </p>
         <p class="muted" style="font-size:12px;">Auto-created from an inbound email to the Service mailbox - review the details above (correcting the customer/contact if the auto-match guessed wrong is done via the Service page's Edit action) before approving.</p>
+        ${sr.source === 'Email' ? `
+          <a href="#" style="font-size:12px;" onclick="toggleSrApprovalEmail('${key}',${sr.id});return false;">View Original Email</a>
+          <div id="appr-drill-email-${key}" style="display:none;margin-top:6px;"></div>
+        ` : ''}
       ` : '<p class="muted">Service request not found.</p>';
     } else if (r.entity_type === 'sale_rejection_mrn') {
       const [bundle, hist] = await Promise.all([api(`/sales/mrns/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
@@ -6490,19 +6495,25 @@ PAGES.service = async (el) => {
       </div>
       <button class="btn" onclick="addSR()">Log Request</button>
     </div>
-    ${collapsiblePanel('service-request-queue', `Service Request Queue (${reqs.length})`, `
-      <p class="muted">Newly logged requests appear here first. The Service HOD/Supervisor opens one and schedules it (assigns an employee + date) - only then does it move to In Progress.</p>
-      ${tableHTML(['SR No', 'Customer', 'Contact', 'Scheduled', 'Assigned', 'Issue', 'Status', 'Prev. Report', 'Action'], reqs, r => `
-        <tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name || r.customer_name)}</td>
-        <td>${esc(r.contact_person)||'-'}${r.contact_phone ? ' / ' + esc(r.contact_phone) : ''}</td>
-        <td>${r.scheduled_date||'-'}</td><td>${esc(r.employee_name)||'-'}</td>
-        <td>${esc(r.issue_description)}</td><td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
-        <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
-        <td>${srActions(r)} <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`)}
-    `)}
+    ${(() => {
+      // Closed/Rejected is the one bucket that only ever grows (completed
+      // history) - same "collapsed-by-default, everything else stays open"
+      // split the Site Visits page already uses for its own Closed bucket.
+      const CLOSED_STATUSES = ['Closed', 'Rejected'];
+      const activeReqs = reqs.filter(r => !CLOSED_STATUSES.includes(r.status));
+      const closedReqs = reqs.filter(r => CLOSED_STATUSES.includes(r.status));
+      const cols = ['SR No', 'Customer', 'Contact', 'Scheduled', 'Assigned', 'Issue', 'Status', 'Prev. Report', 'Action'];
+      return `
+      <div class="panel"><h3>Service Request Queue (${activeReqs.length})</h3>
+        <p class="muted">Newly logged requests appear here first. The Service HOD/Supervisor opens one and schedules it (assigns an employee + date) - only then does it move to In Progress. Closed/Rejected requests move to the Closed section below.</p>
+        ${tableHTML(cols, activeReqs, srRowHTML)}
+      </div>
+      ${collapsiblePanel('service-request-queue-closed', `Closed (${closedReqs.length})`, tableHTML(cols, closedReqs, srRowHTML))}`;
+    })()}
     <div class="panel" id="sr-schedule-panel" style="display:none;"><h3>Schedule Service Request</h3><div id="sr-schedule-body"></div></div>
     <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
-    <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>`;
+    <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>
+    <div class="panel" id="sr-email-panel" style="display:none;"><h3 id="sr-email-title">Original Email</h3><div id="sr-email-body"></div></div>`;
   if (isServiceHOD()) renderServiceAckTemplate();
 };
 async function renderServiceAckTemplate() {
@@ -6527,6 +6538,58 @@ window.saveServiceAckTemplate = async () => {
     savedEl.style.display = 'inline';
     setTimeout(() => savedEl.style.display = 'none', 2000);
   } catch (e) { alert(e.message); }
+};
+// Shared row renderer for both the active and Closed Service Request Queue
+// tables - the Issue cell now also shows the auto-captured email excerpt
+// (lib/inboundMail.js's emailExcerpt()) and, for an email-sourced SR, a
+// "View Original Email" link straight to the source message, so "why was
+// this SR created" never requires leaving the Queue to hunt through the
+// Incoming Requests panel.
+function srRowHTML(r) {
+  return `
+    <tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name || r.customer_name)}</td>
+    <td>${esc(r.contact_person)||'-'}${r.contact_phone ? ' / ' + esc(r.contact_phone) : ''}</td>
+    <td>${r.scheduled_date||'-'}</td><td>${esc(r.employee_name)||'-'}</td>
+    <td>${esc(r.issue_description)}
+      ${r.email_excerpt ? `<br><span class="muted" style="font-size:11px;">${esc(r.email_excerpt)}</span>` : ''}
+      ${r.source === 'Email' ? `<br><a href="#" style="font-size:11px;" onclick="viewSrSourceEmail(${r.id},'${esc(r.sr_no)}');return false;">View Original Email</a>` : ''}
+    </td>
+    <td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
+    <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
+    <td>${srActions(r)} <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`;
+}
+// Same source-email fetch as viewSrSourceEmail() below, but toggles inline
+// inside the My Approvals drilldown card instead of the Service page's
+// shared panel (that panel doesn't exist on this page).
+window.toggleSrApprovalEmail = async (key, srId) => {
+  const el = document.getElementById(`appr-drill-email-${key}`);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  if (el.dataset.loaded) return;
+  el.innerHTML = '<p class="muted">Loading...</p>';
+  const { found, email } = await api(`/service/${srId}/source-email`).catch(() => ({ found: false }));
+  el.innerHTML = found ? `
+    <div style="padding:10px;background:#f9f9f9;border-radius:6px;font-size:13px;">
+      <p style="margin:0 0 4px;"><b>${esc(email.from_name)||esc(email.from_address)}</b> &lt;${esc(email.from_address)}&gt; &middot; <span class="muted">${email.received_at ? new Date(email.received_at).toLocaleString() : '-'}</span></p>
+      <p style="margin:0 0 6px;"><b>Subject:</b> ${esc(email.subject)||'-'}</p>
+      <pre style="white-space:pre-wrap;font-family:inherit;margin:0;">${esc(email.body_text)||'-'}</pre>
+    </div>` : '<p class="muted">No original email on file for this SR.</p>';
+  el.dataset.loaded = '1';
+};
+window.viewSrSourceEmail = async (srId, srNo) => {
+  const panel = document.getElementById('sr-email-panel');
+  const body = document.getElementById('sr-email-body');
+  document.getElementById('sr-email-title').textContent = `Original Email - ${srNo}`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth' });
+  body.innerHTML = '<p class="muted">Loading...</p>';
+  const { found, email } = await api(`/service/${srId}/source-email`).catch(() => ({ found: false }));
+  if (!found) { body.innerHTML = '<p class="muted">No original email on file for this SR.</p>'; return; }
+  body.innerHTML = `
+    <p style="margin:0 0 4px;"><b>${esc(email.from_name)||esc(email.from_address)}</b> &lt;${esc(email.from_address)}&gt; &middot; <span class="muted">${email.received_at ? new Date(email.received_at).toLocaleString() : '-'}</span></p>
+    <p style="margin:0 0 8px;"><b>Subject:</b> ${esc(email.subject)||'-'}</p>
+    <pre style="white-space:pre-wrap;font-family:inherit;margin:0;border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;">${esc(email.body_text)||'-'}</pre>`;
 };
 function srActions(r) {
   const parts = [];
@@ -6668,8 +6731,11 @@ window.scanIncomingMailNow = async () => {
   try {
     const r = await api('/service/inbox/scan', { method: 'POST' });
     if (!r.ran) { resultEl.textContent = r.reason || 'Scan did not run.'; return; }
-    resultEl.textContent = `Done: ${r.stored} new, ${r.skipped} already seen, ${r.failed} failed.`;
-    if (r.stored) navigate('service');
+    resultEl.textContent = `Done: ${r.created} new SR${r.created===1?'':'s'}, ${r.threadLinked} thread-linked, ${r.quarantined} quarantined, ${r.skipped} already seen, ${r.failed} failed.`;
+    // Only mail still unread in the mailbox is ever picked up - anything
+    // already processed on a prior poll is flagged \Seen and won't resurface
+    // here, by design (otherwise a repeat scan would create duplicate SRs).
+    if (r.created || r.threadLinked || r.quarantined) navigate('service');
   } catch (e) { resultEl.textContent = e.message; }
 };
 window.updateSR = async (id, status) => {
