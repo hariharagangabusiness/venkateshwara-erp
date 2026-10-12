@@ -13,6 +13,7 @@ const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { poReceivedQty } = require('../lib/purchaseOrders');
+const { oversightDepartmentIds } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
 
@@ -58,6 +59,75 @@ router.get('/expense-vouchers', (req, res) => {
   res.json(db.prepare(q).all(...params));
 });
 
+// Submitter-facing view (2026-10-12, requested directly by the owner) -
+// every employee can see their own vouchers and full status regardless of
+// whether they hold expense_voucher.view_all, which the plain list above
+// has never required either (deliberately - Finance needed everyone to be
+// able to raise one, and the unscoped GET above was already reachable by
+// anyone logged in; this just adds the filtered "mine" shape on top rather
+// than opening up anything new). A supervisor (any department, not just
+// Accounts) additionally gets `department`: every voucher raised against
+// their own department or one they've been granted oversight of (same
+// lib/roleOversight.js model Todos/Salary Report already use) - scoped by
+// the voucher's own department_id, not the raiser's personal department,
+// since that's the field actually captured on the form. Registered ahead
+// of the :id route below (this app's own recurring route-shadowing bug
+// class) so "mine" is never swallowed by it.
+router.get('/expense-vouchers/mine', (req, res) => {
+  const own = db.prepare(`
+    SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
+    FROM expense_vouchers ev
+    LEFT JOIN departments d ON d.id = ev.department_id
+    LEFT JOIN expense_categories c ON c.id = ev.category_id
+    LEFT JOIN users u ON u.id = ev.raised_by
+    WHERE ev.raised_by = ?
+    ORDER BY ev.id DESC
+  `).all(req.user.id);
+  let department = [];
+  if (req.user.is_supervisor) {
+    const deptIds = Array.from(new Set([req.user.department_id, ...oversightDepartmentIds(db, req.user.id)].filter(Boolean)));
+    if (deptIds.length) {
+      const placeholders = deptIds.map(() => '?').join(',');
+      department = db.prepare(`
+        SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
+        FROM expense_vouchers ev
+        LEFT JOIN departments d ON d.id = ev.department_id
+        LEFT JOIN expense_categories c ON c.id = ev.category_id
+        LEFT JOIN users u ON u.id = ev.raised_by
+        WHERE ev.department_id IN (${placeholders})
+        ORDER BY ev.id DESC
+      `).all(...deptIds);
+    }
+  }
+  res.json({ own, department });
+});
+
+// Admin-maintained Expense Voucher category -> Operating Expense category
+// mapping, used by Mark Paid below to know which Operating Expense category
+// an auto-created entry should land in. Registered ahead of the :id route
+// below for the same route-shadowing reason as /mine above.
+router.get('/expense-vouchers/category-oe-map', requireRole('Admin'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT ec.id as expense_category_id, ec.name as expense_category_name,
+      m.operating_expense_category_id, oc.name as operating_expense_category_name
+    FROM expense_categories ec
+    LEFT JOIN expense_category_oe_map m ON m.expense_category_id = ec.id
+    LEFT JOIN operating_expense_categories oc ON oc.id = m.operating_expense_category_id
+    ORDER BY ec.sort_order, ec.name
+  `).all());
+});
+router.put('/expense-vouchers/category-oe-map/:expenseCategoryId', requireRole('Admin'), (req, res) => {
+  const { operating_expense_category_id } = req.body;
+  if (!operating_expense_category_id) return res.status(400).json({ error: 'Pick an Operating Expense category.' });
+  const oeCat = db.prepare('SELECT id FROM operating_expense_categories WHERE id = ?').get(operating_expense_category_id);
+  if (!oeCat) return res.status(400).json({ error: 'Operating Expense category not found.' });
+  db.prepare(`
+    INSERT INTO expense_category_oe_map (expense_category_id, operating_expense_category_id) VALUES (?, ?)
+    ON CONFLICT(expense_category_id) DO UPDATE SET operating_expense_category_id = excluded.operating_expense_category_id
+  `).run(req.params.expenseCategoryId, operating_expense_category_id);
+  res.json({ ok: true });
+});
+
 // Single-record lookup for drill-downs (e.g. an approval-history detail
 // view) that need one specific voucher regardless of which month it falls
 // in - the plain list above is month-scoped by default, so it can't be
@@ -88,17 +158,49 @@ router.post('/expense-vouchers', requirePermission('expense_voucher.create'), up
   res.json({ id: info.lastInsertRowid, voucher_no: voucherNo, approval_id: approvalId });
 });
 
+// Marking Paid now (2026-10-12, requested directly by the owner) requires a
+// payment reference (UTR/cheque no./transaction id - whatever the actual
+// settlement is identified by) and auto-creates the matching Operating
+// Expense entry, via the Admin-maintained category mapping above - these
+// are two previously-separate, parallel features (see this file's own
+// GET /operating-expenses route) that had no linkage at all; this is the
+// one place they now connect. The voucher's own direct 'Expense'
+// finance_ledger entry is deliberately dropped in favor of the Operating
+// Expense's 'OperatingExpense' entry (inserted just below) - keeping both
+// would double-count this payment in every Finance Ledger / cash-outflow
+// report, since the auto-created Operating Expense row is now the single
+// authoritative record of the actual spend.
 router.post('/expense-vouchers/:id/mark-paid', requirePermission('expense_voucher.approve'), (req, res) => {
   const row = db.prepare('SELECT * FROM expense_vouchers WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   if (row.status !== 'Approved') return res.status(400).json({ error: 'Must be Approved first' });
-  db.prepare(`UPDATE expense_vouchers SET status = 'Paid' WHERE id = ?`).run(row.id);
-  try {
+  const paymentReference = String((req.body && req.body.payment_reference) || '').trim();
+  if (!paymentReference) return res.status(400).json({ error: 'Enter a payment reference (UTR / cheque no. / transaction id).' });
+  const mapRow = row.category_id ? db.prepare(`
+    SELECT oc.id, oc.name FROM expense_category_oe_map m
+    JOIN operating_expense_categories oc ON oc.id = m.operating_expense_category_id
+    WHERE m.expense_category_id = ?
+  `).get(row.category_id) : null;
+  if (!mapRow) {
+    const catName = row.category_id ? (db.prepare('SELECT name FROM expense_categories WHERE id = ?').get(row.category_id) || {}).name : null;
+    return res.status(400).json({ error: `No Operating Expense category mapped for "${catName || 'this voucher\'s category'}" yet - an Admin needs to map it under Expense Vouchers > Operating Expense Category Mapping first.` });
+  }
+  const deptName = row.department_id ? (db.prepare('SELECT name FROM departments WHERE id = ?').get(row.department_id) || {}).name : null;
+  const oeDescription = `${row.voucher_no}${deptName ? ' (' + deptName + ')' : ''}${row.description ? ' - ' + row.description : ''}`;
+  const tx = db.transaction(() => {
+    const oeInfo = db.prepare(`
+      INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
+      VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+    `).run(mapRow.name, oeDescription, row.amount, row.payment_mode, req.user.id);
+    db.prepare(`
+      UPDATE expense_vouchers SET status = 'Paid', payment_reference = ?, paid_at = CURRENT_TIMESTAMP, operating_expense_id = ? WHERE id = ?
+    `).run(paymentReference, oeInfo.lastInsertRowid, row.id);
     db.prepare(`
       INSERT INTO finance_ledger (type, reference_table, reference_id, department_id, amount, direction, description, created_by)
-      VALUES ('Expense', 'expense_vouchers', ?, ?, ?, 'Outflow', ?, ?)
-    `).run(row.id, row.department_id, row.amount, row.description || row.voucher_no, req.user.id);
-  } catch (e) { /* best-effort ledger hook */ }
+      VALUES ('OperatingExpense', 'operating_expenses', ?, ?, ?, 'Outflow', ?, ?)
+    `).run(oeInfo.lastInsertRowid, row.department_id, row.amount, oeDescription, req.user.id);
+  });
+  try { tx(); } catch (e) { return res.status(500).json({ error: 'Failed to mark paid: ' + e.message }); }
   res.json({ ok: true });
 });
 

@@ -1329,6 +1329,25 @@ const MIGRATIONS = [
   // it's always meant (a short label) while this gives real content without
   // needing to go find the original email. NULL for a manually-logged SR.
   `ALTER TABLE service_requests ADD COLUMN email_excerpt TEXT`,
+  // Expense Voucher follow-up (2026-10-12): Mark Paid previously took no
+  // input at all and had no linkage to Operating Expenses - see the
+  // one-time approval-chain migration below (Management -> Accounts) and
+  // routes/finance.js's rewritten Mark Paid route for how these three
+  // fields get used together.
+  `ALTER TABLE expense_vouchers ADD COLUMN payment_reference TEXT`,
+  `ALTER TABLE expense_vouchers ADD COLUMN paid_at TEXT`,
+  `ALTER TABLE expense_vouchers ADD COLUMN operating_expense_id INTEGER REFERENCES operating_expenses(id)`,
+  // Admin-maintained mapping from an Expense Voucher category to an
+  // Operating Expense category, since the two category lists are
+  // independent (different tables, different values) - Mark Paid uses this
+  // to know which Operating Expense category the auto-created entry should
+  // land in. One row per Expense Voucher category (PRIMARY KEY), so mapping
+  // it again just overwrites the previous choice rather than accumulating
+  // duplicates.
+  `CREATE TABLE IF NOT EXISTS expense_category_oe_map (
+    expense_category_id INTEGER PRIMARY KEY REFERENCES expense_categories(id),
+    operating_expense_category_id INTEGER NOT NULL REFERENCES operating_expense_categories(id)
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1732,6 +1751,35 @@ try {
     if (entries.length) console.log(`[db] Migrated ${entries.length} Monthly Expense Tracker entries into Operating Expenses.`);
   }
 } catch (e) { console.error('[db] Expense Tracker -> Operating Expenses migration failed:', e.message); }
+
+// Expense Voucher approval chain: one-time change from Accounts (any amount)
+// -> Admin (>=Rs 25,000) to Management -> Accounts, both unconditional
+// (2026-10-12, requested directly by the owner). This is a ONE-TIME data
+// migration, not a boot-time bootstrap - the chain's two steps already
+// exist (seeded long ago), and an Admin can retune them afterward from the
+// Approval Matrix page, so this must never re-run and silently stomp a
+// later admin customization. Guarded by the same settings-flag pattern as
+// the Expense Tracker migration just above, so it fires exactly once ever,
+// however many times the server boots afterward.
+try {
+  const EV_CHAIN_MIGRATION_FLAG = 'expense_voucher_chain_management_accounts_v1';
+  const alreadyMigrated = raw.prepare(`SELECT value FROM settings WHERE key = ?`).get(EV_CHAIN_MIGRATION_FLAG);
+  if (!alreadyMigrated) {
+    const chainRow = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'ExpenseVoucher'`).get();
+    const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const accountsRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Accounts'`).get()?.id;
+    if (chainRow && managementRoleId && accountsRoleId) {
+      const updateStep = raw.prepare(`
+        UPDATE approval_chain_steps SET approver_role_id = ?, min_amount = 0, requires_supervisor = 0
+        WHERE chain_id = ? AND step_order = ?
+      `);
+      updateStep.run(managementRoleId, chainRow.id, 1);
+      updateStep.run(accountsRoleId, chainRow.id, 2);
+      console.log('[db] Expense Voucher approval chain updated: Management -> Accounts.');
+    }
+    raw.prepare(`INSERT INTO settings (key, value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'`).run(EV_CHAIN_MIGRATION_FLAG);
+  }
+} catch (e) { console.error('[db] Expense Voucher approval chain migration failed:', e.message); }
 
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
