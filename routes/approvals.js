@@ -175,6 +175,16 @@ function describeEntity(entityType, entityId) {
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
+    case 'service_request': {
+      const r = db.prepare(`
+        SELECT sr.sr_no as ref, sr.customer_name, sr.issue_description, c.name as client_name
+        FROM service_requests sr LEFT JOIN clients c ON c.id = sr.client_id WHERE sr.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: r.ref, summary: `${r.client_name || r.customer_name || 'Customer'} - ${r.issue_description || 'Service request'}`,
+        department_id: null, department_name: null, raised_by_name: 'Inbound email',
+      };
+    }
     case 'sale_rejection_mrn': {
       const r = db.prepare(`
         SELECT m.mrn_no as ref, fd.dispatch_no, m.disposition, u.full_name as raised_by_name, u.department_id as department_id, d.name as department_name,
@@ -392,6 +402,15 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE fg_dispatches SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // Single-row, same shape as purchase_invoice. Rejected stays a visible,
+  // numbered record (never deleted) - same "honest audit trail" convention
+  // every other approval-gated entity in this app follows.
+  if (entityType === 'service_request') {
+    const statusByResult = { Approved: 'Open', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE service_requests SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   // Single-row, same shape as purchase_invoice - 'Pending' maps back to
   // 'PendingApproval' (the entity's own pre-approval status word).
   if (entityType === 'sale_rejection_mrn') {
@@ -432,6 +451,7 @@ const ENTITY_LABELS = {
   salary_hike_cycle: 'Salary Hike Cycle',
   fg_dispatch: 'FG Dispatch',
   sale_rejection_mrn: 'Sale Rejection MRN',
+  service_request: 'Service Request (Inbound Email)',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -498,14 +518,14 @@ router.post('/:id/provide-info', (req, res) => {
 const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
-  referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3,
+  referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3, service_request: 1,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
   salary_advance: 'salary_advances', salary_schedule: 'salary_schedule', foreign_payment: 'foreign_payment_requests',
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
   referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
-  fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns',
+  fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns', service_request: 'service_requests',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

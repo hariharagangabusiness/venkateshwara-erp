@@ -1278,6 +1278,24 @@ const MIGRATIONS = [
   // way to add, rename, or retire one short of direct DB access.
   `ALTER TABLE expense_categories ADD COLUMN sort_order INTEGER DEFAULT 0`,
   `ALTER TABLE expense_categories ADD COLUMN active INTEGER DEFAULT 1`,
+  // Inbound Service mail: automatic SR creation + approval, thread
+  // stitching, and quarantine (2026-10-11). An inbound email no longer sits
+  // in incoming_service_emails waiting for a human Confirm - it either
+  // starts a brand new SR (status='PendingApproval', source='Email',
+  // routed through the new single-step ServiceRequest approval chain below)
+  // or, if it's a reply/follow-up in a thread that already has one, gets
+  // linked to that existing SR instead (no new SR, no new approval) via
+  // linked_sr_id/thread_root_message_id - see lib/inboundMail.js.
+  // source distinguishes an email-originated SR from one logged by hand via
+  // POST /service (which still goes straight to 'Open', no approval gate -
+  // this round's gate is scoped to the inbound-mail path only).
+  `ALTER TABLE service_requests ADD COLUMN source TEXT DEFAULT 'Manual'`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN in_reply_to TEXT`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN references_text TEXT`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN thread_root_message_id TEXT`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN linked_sr_id INTEGER REFERENCES service_requests(id)`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN quarantine_reason TEXT`,
+  `ALTER TABLE incoming_service_emails ADD COLUMN ack_sent_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -1956,6 +1974,26 @@ function bootstrapSalesFulfillmentApprovals() {
   } catch (e) { console.error('[db] Sales fulfillment approval bootstrap failed:', e.message); }
 }
 
+// Inbound-email Service Requests (2026-10-11) - single step, the Service
+// department's own HOD/Supervisor (role 'Service' + requires_supervisor),
+// same shape as SaleRejectionMRN above. A manually-logged SR (POST
+// /service) is untouched by this - only an SR auto-created from an inbound
+// email (lib/inboundMail.js's autoCreateServiceRequest()) starts this
+// chain.
+function bootstrapServiceRequestApproval() {
+  try {
+    const serviceRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Service'`).get()?.id;
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('ServiceRequest', 'Inbound-email service request approval (Service HOD/Supervisor)')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'ServiceRequest'`).get().id;
+    if (serviceRoleId) upsertStep.run(chainId, 1, serviceRoleId, 0, 1);
+  } catch (e) { console.error('[db] Service request approval bootstrap failed:', e.message); }
+}
+
 // One-time (but safe to re-run every boot) data repair: PUT /employees/:id
 // used to write `monthly_salary`/`referral_incentive_amount` straight
 // through from the request body without the same `|| 0` fallback
@@ -1984,4 +2022,5 @@ module.exports = {
   db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
+  bootstrapServiceRequestApproval,
 };

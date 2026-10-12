@@ -25,6 +25,9 @@ function has(...codes) { return ME && (ME.role === 'Admin' || codes.some(c => PE
 // Add Line Item button visibility the same way the backend decides whether
 // to actually allow the call (2026-10-07: creator-vs-approver edit gating).
 function isPurchaseApprover() { return !!ME && (ME.role === 'Admin' || ME.role === 'Management' || (ME.role === 'Purchase' && ME.is_supervisor)); }
+// Mirrors routes/service.js's isServiceHOD() - who may edit the inbound-
+// mail acknowledgement template (business content, not IMAP credentials).
+function isServiceHOD() { return !!ME && (ME.role === 'Admin' || (ME.role === 'Service' && ME.is_supervisor)); }
 // Pre-approval: creator or an approver can edit/add lines. Post-approval
 // (live/Open): only an approver can still edit - the creator's own access is
 // withdrawn even though they still see the page. Terminal statuses are
@@ -860,7 +863,15 @@ function collapseSearchPicker(sel) {
 // collapseSearchPicker()'s on-blur/on-select close already limits to a
 // narrow, rarely-hit window.
 function expandSearchPicker(sel, optionCount) {
-  const rect = sel.getBoundingClientRect();
+  // Anchor off the search <input> above this <select>, never the select
+  // itself. Once expanded, the select is already position:fixed with a
+  // multi-row `size` - re-measuring ITS OWN getBoundingClientRect() on the
+  // next keystroke returns the bottom of the already-expanded dropdown, not
+  // the original input's position, so using that as the next `top` walks
+  // the dropdown further down the page with every character typed. The
+  // input is never repositioned, so it's a stable anchor across keystrokes.
+  const input = document.getElementById(sel.id + '-search');
+  const rect = (input || sel).getBoundingClientRect();
   sel.setAttribute('size', Math.min(optionCount + 1, 6));
   sel.style.position = 'fixed'; sel.style.zIndex = '9999';
   sel.style.left = rect.left + 'px'; sel.style.width = rect.width + 'px'; sel.style.right = 'auto';
@@ -1884,6 +1895,20 @@ async function renderApprovalDrilldown(key) {
         ${tableHTML(['Description', 'Qty', 'Unit', 'HSN', 'Rate (₹)'], items, it => `
           <tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${esc(it.hsn_code)||'-'}</td><td>₹${fmt(it.rate)}</td></tr>`)}
       `;
+    } else if (r.entity_type === 'service_request') {
+      const [rows, hist] = await Promise.all([api('/service'), api(`/approvals/${r.id}/history`)]);
+      const sr = rows.find(x => x.id === r.entity_id);
+      history = hist;
+      extraHtml = sr ? `
+        <h5 style="margin:8px 0 4px;">Service Request Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>SR No:</b> ${esc(sr.sr_no)} &nbsp; <b>Customer:</b> ${esc(sr.client_master_name || sr.customer_name)||'-'}<br>
+          <b>Contact:</b> ${esc(sr.contact_person)||'-'}${sr.contact_phone ? ' / ' + esc(sr.contact_phone) : ''}<br>
+          <b>Issue:</b> ${esc(sr.issue_description)||'-'}
+          ${sr.spare_parts_needed ? `<br><b>Spare Parts Needed:</b> ${esc(sr.spare_parts_needed)}` : ''}
+        </p>
+        <p class="muted" style="font-size:12px;">Auto-created from an inbound email to the Service mailbox - review the details above (correcting the customer/contact if the auto-match guessed wrong is done via the Service page's Edit action) before approving.</p>
+      ` : '<p class="muted">Service request not found.</p>';
     } else if (r.entity_type === 'sale_rejection_mrn') {
       const [bundle, hist] = await Promise.all([api(`/sales/mrns/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
       const { mrn, items } = bundle;
@@ -6402,24 +6427,46 @@ window.printChallan = async (id) => {
 // schedule yet) and it lands in the Service Request Queue below. Step 2:
 // only the Service HOD/Supervisor (or Admin) opens a queued request and
 // schedules it - assigns a service employee (from Employees) and a date.
+const INBOX_STATUS_NOTE = {
+  AutoCreated: 'A new Service Request was created automatically and is waiting on HOD/Supervisor approval under My Approvals.',
+  ThreadLinked: 'Recognized as a follow-up in an existing conversation - appended to that SR\'s Activity Log instead of creating a new request.',
+  Quarantined: 'Could not be processed automatically - review below and either Confirm it into a real SR by hand, or Dismiss it.',
+  Pending: 'Awaiting manual review.',
+  Confirmed: 'Manually confirmed into a Service Request.',
+  Dismissed: 'Dismissed - no Service Request was created.',
+};
+function inboxItemCard(i) {
+  const needsAction = ['Pending', 'Quarantined'].includes(i.status);
+  return `
+    <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
+      <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span> &middot; ${badge(i.status)}</p>
+      <p style="margin:0 0 4px;"><b>Subject:</b> ${esc(i.subject)||'-'}</p>
+      ${i.linked_sr_no ? `<p style="margin:0 0 4px;"><b>Service Request:</b> ${esc(i.linked_sr_no)} ${badge(i.linked_sr_status)}</p>` : ''}
+      ${!i.linked_sr_no ? `<p style="margin:0 0 4px;"><b>${i.matched_client_name ? 'Matched Client' : 'Guessed Customer'}:</b> ${esc(i.matched_client_name || i.guessed_customer_name)||'-'}${i.guessed_contact_phone ? ' &middot; ' + esc(i.guessed_contact_phone) : ''}</p>` : ''}
+      ${i.quarantine_reason ? `<p style="margin:0 0 4px;" class="msg err" style="display:block;">${esc(i.quarantine_reason)}</p>` : ''}
+      <p class="muted" style="margin:0 0 4px;font-size:12px;">${esc(INBOX_STATUS_NOTE[i.status] || '')}</p>
+      <details style="margin:6px 0;"><summary class="muted" style="cursor:pointer;">Full email text</summary><pre style="white-space:pre-wrap;font-family:inherit;margin:6px 0 0;">${esc(i.body_text)||'-'}</pre></details>
+      ${needsAction ? (i.can_confirm
+        ? `<div style="margin-top:8px;"><button class="btn small" onclick="openConfirmIncoming(${i.id})">Confirm as Service Request</button> <button class="btn small outline" onclick="dismissIncoming(${i.id})">Dismiss</button></div>`
+        : '<p class="muted">Only the Service HOD/Supervisor (or Admin) can confirm or dismiss.</p>') : ''}
+      <div id="incoming-confirm-${i.id}"></div>
+    </div>`;
+}
 PAGES.service = async (el) => {
   const [reqs, clients, inbox] = await Promise.all([api('/service'), api('/masters/clients'), api('/service/inbox').catch(() => [])]);
   window.__SERVICE_INBOX = inbox;
   window.__SERVICE_CLIENTS = clients;
+  const needsReview = inbox.filter(i => ['Pending', 'Quarantined'].includes(i.status));
   el.innerHTML = `
-    ${collapsiblePanel('service-incoming-requests', `Incoming Requests (Email) (${inbox.length})`, `
-      <p class="muted">Parsed from the Service inbox - nothing here is a real service request yet. Review the details below and either confirm it into a real SR (editable first) or dismiss it. Only mail still unread in the mailbox at the time of a poll is picked up - opening it in a mail client first means it will be missed.</p>
+    ${collapsiblePanel('service-incoming-requests', `Incoming Requests (Email) (${inbox.length}${needsReview.length ? `, ${needsReview.length} need review` : ''})`, `
+      <p class="muted">Every inbound email to the Service mailbox is logged here. A genuinely new request automatically becomes a Service Request awaiting HOD/Supervisor approval (My Approvals) - a follow-up in an existing conversation is appended to that request's Activity Log instead, and a message that couldn't be processed automatically (quarantined) needs manual review below. Only mail still unread in the mailbox at the time of a poll is picked up - opening it in a mail client first means it will be missed.</p>
       ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="scanIncomingMailNow()">Scan Mailbox Now</button> <span id="incoming-scan-result" class="muted" style="margin-left:8px;"></span>` : ''}
-      ${inbox.length ? inbox.map(i => `
-        <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
-          <p style="margin:0 0 4px;"><b>${esc(i.from_name)||esc(i.from_address)}</b> &lt;${esc(i.from_address)}&gt; &middot; <span class="muted">${i.received_at ? new Date(i.received_at).toLocaleString() : '-'}</span></p>
-          <p style="margin:0 0 4px;"><b>Subject:</b> ${esc(i.subject)||'-'}</p>
-          <p style="margin:0 0 4px;"><b>${i.matched_client_name ? 'Matched Client' : 'Guessed Customer'}:</b> ${esc(i.matched_client_name || i.guessed_customer_name)||'-'}${i.guessed_contact_phone ? ' &middot; ' + esc(i.guessed_contact_phone) : ''}</p>
-          <details style="margin:6px 0;"><summary class="muted" style="cursor:pointer;">Full email text</summary><pre style="white-space:pre-wrap;font-family:inherit;margin:6px 0 0;">${esc(i.body_text)||'-'}</pre></details>
-          ${i.can_confirm ? `<div style="margin-top:8px;"><button class="btn small" onclick="openConfirmIncoming(${i.id})">Confirm as Service Request</button> <button class="btn small outline" onclick="dismissIncoming(${i.id})">Dismiss</button></div>` : '<p class="muted">Only the Service HOD/Supervisor (or Admin) can confirm or dismiss.</p>'}
-          <div id="incoming-confirm-${i.id}"></div>
-        </div>`).join('') : '<div class="empty">No pending incoming emails.</div>'}
+      ${inbox.length ? inbox.map(inboxItemCard).join('') : '<div class="empty">No incoming emails recorded yet.</div>'}
     `)}
+    ${isServiceHOD() ? collapsiblePanel('service-ack-template', 'Customer Acknowledgement Email', `
+      <p class="muted">Sent automatically to the customer the moment their email creates a new Service Request (first contact only - never resent on a follow-up). Merge fields: <code>{{sr_no}}</code>, <code>{{customer_name}}</code>, <code>{{subject}}</code>.</p>
+      <div id="svc-ack-body"><p class="muted">Loading...</p></div>
+    `) : ''}
     <div class="panel"><h3>Log Service Request</h3>
       <div class="form-grid">
         <div><label>Customer (from Clients)</label><select id="sr-client" onchange="document.getElementById('sr-manual-wrap').style.display = this.value ? 'none' : 'grid'">
@@ -6451,11 +6498,38 @@ PAGES.service = async (el) => {
     <div class="panel" id="sr-schedule-panel" style="display:none;"><h3>Schedule Service Request</h3><div id="sr-schedule-body"></div></div>
     <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
     <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>`;
+  if (isServiceHOD()) renderServiceAckTemplate();
+};
+async function renderServiceAckTemplate() {
+  const body = document.getElementById('svc-ack-body');
+  if (!body) return;
+  const cfg = await api('/service/ack-template').catch(() => null);
+  if (!cfg) { body.innerHTML = '<p class="muted">Could not load.</p>'; return; }
+  body.innerHTML = `
+    <label><input type="checkbox" id="svc-ack-enabled" ${cfg.enabled ? 'checked' : ''}> Send acknowledgement email on a new auto-created Service Request</label>
+    <div style="margin-top:8px;"><label>Subject</label><input id="svc-ack-subject" style="width:100%;" value="${esc(cfg.subject)}"></div>
+    <div style="margin-top:8px;"><label>Body</label><textarea id="svc-ack-body-text" rows="8" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(cfg.body)}</textarea></div>
+    <button class="btn small" style="margin-top:8px;" onclick="saveServiceAckTemplate()">Save</button>
+    <span id="svc-ack-saved" class="muted" style="margin-left:8px;display:none;">Saved.</span>`;
+}
+window.saveServiceAckTemplate = async () => {
+  try {
+    await api('/service/ack-template', { method: 'PUT', body: JSON.stringify({
+      enabled: document.getElementById('svc-ack-enabled').checked,
+      subject: val('svc-ack-subject'), body: val('svc-ack-body-text'),
+    })});
+    const savedEl = document.getElementById('svc-ack-saved');
+    savedEl.style.display = 'inline';
+    setTimeout(() => savedEl.style.display = 'none', 2000);
+  } catch (e) { alert(e.message); }
 };
 function srActions(r) {
   const parts = [];
+  if (r.status === 'PendingApproval') {
+    return '<span class="muted" style="font-size:11px;">Awaiting HOD/Supervisor approval (My Approvals)</span>';
+  }
   if (r.can_schedule) parts.push(`<button class="btn small outline" onclick="openScheduleSR(${r.id})">${r.scheduled_date ? 'Reschedule' : 'Open & Schedule'}</button>`);
-  if (r.status !== 'Closed') {
+  if (r.status !== 'Closed' && r.status !== 'Rejected') {
     parts.push(`<select onchange="updateSR(${r.id}, this.value)"><option value="">Update status...</option>${['Open','Scheduled','InProgress','PartsOrdered','Resolved','Closed'].filter(s=>s!==r.status).map(s=>`<option value="${s}">${s}</option>`).join('')}</select>`);
   }
   if (r.status === 'Closed' && r.can_reopen) {
@@ -9949,7 +10023,7 @@ PAGES['company-settings'] = async (el) => {
         </div>
       `) : ''}
       ${inboundMail ? collapsibleSubsection('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
-        <p class="muted">Reads a dedicated mailbox over IMAP and drops each email into the Service team's Incoming Requests queue (see the Service Requests page) for a HOD/Supervisor to confirm into a real service request. Nothing is auto-created from an email without a human confirming it.</p>
+        <p class="muted">Reads a dedicated mailbox over IMAP. A genuinely new request automatically creates a Service Request and routes it to the Service HOD/Supervisor for approval (My Approvals) - a follow-up in an existing conversation is appended to that request instead of creating a new one, and a message that can't be processed automatically is quarantined for manual review. See the Service Requests page's Incoming Requests panel for the acknowledgement-email template and the review queue.</p>
         <div class="form-grid">
           <div><label>Enabled</label><select id="im-enabled"><option value="false" ${!inboundMail.enabled ? 'selected' : ''}>No</option><option value="true" ${inboundMail.enabled ? 'selected' : ''}>Yes</option></select></div>
           <div><label>IMAP Host</label><input id="im-host" value="${esc(inboundMail.imap_host)}"></div>
@@ -9959,7 +10033,9 @@ PAGES['company-settings'] = async (el) => {
           <div><label>Mailbox Password</label><input id="im-pass" type="password" value="${esc(inboundMail.imap_pass)}"></div>
           <div><label>Folder</label><input id="im-mailbox" value="${esc(inboundMail.mailbox)}"></div>
           <div><label>Poll Every (minutes)</label><input id="im-poll" type="number" value="${esc(inboundMail.poll_minutes)}"></div>
+          <div><label>Scan Window (days)</label><input id="im-scan-window" type="number" value="${esc(inboundMail.scan_window_days)}"></div>
         </div>
+        <p class="muted" style="font-size:12px;">Scan Window bounds how far back each poll looks for unread mail - turning this on for the first time (or after an extended outage) won't flood the approval queue with a mailbox's entire unread backlog.</p>
         <button class="btn" onclick="saveInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
         <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
         <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
@@ -10215,7 +10291,7 @@ window.saveInboundMailSettings = async () => {
     await api('/settings/inbound-mail', { method: 'PUT', body: JSON.stringify({
       enabled: val('im-enabled') === 'true', imap_host: val('im-host'), imap_port: val('im-port'),
       imap_secure: val('im-secure') === 'true', imap_user: val('im-user'), imap_pass: val('im-pass'),
-      mailbox: val('im-mailbox'), poll_minutes: val('im-poll'),
+      mailbox: val('im-mailbox'), poll_minutes: val('im-poll'), scan_window_days: val('im-scan-window'),
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }

@@ -5,7 +5,7 @@ const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
-const { getCompanySettings, getServiceSettings } = require('../lib/settings');
+const { getCompanySettings, getServiceSettings, getServiceAckMailSettings, setServiceAckMailSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundMailScan } = require('../lib/inboundMail');
 const router = express.Router();
@@ -79,17 +79,22 @@ router.post('/', requirePermission('service_request.manage'), (req, res) => {
 
 // ===================== Inbound mail review queue =====================
 // Mail read from the Service inbox (lib/inboundMail.js, polled from
-// server.js) lands here first, never straight into service_requests - see
-// that file's header comment for why. The HOD/Supervisor confirms each item
-// into a real SR (pre-filled from the parsed email, editable before saving)
-// or dismisses it.
+// server.js) is recorded here for every message, whatever the pipeline
+// decided to do with it (2026-10-11): 'AutoCreated' (started a new SR,
+// linked_sr_id points at it), 'ThreadLinked' (a follow-up appended to an
+// existing SR's activity log, linked_sr_id points at that SR), or
+// 'Quarantined' (couldn't be trusted to act on automatically - see
+// lib/inboundMail.js's quarantineReason()). This is now primarily an audit
+// trail, not a mandatory human gate - but a Quarantined item can still be
+// manually recovered via the same Confirm/Dismiss actions below (legacy
+// 'Pending' rows, from before this round, work the same way).
 router.get('/inbox', requirePermission('service_request.manage'), (req, res) => {
   const rows = db.prepare(`
-    SELECT ise.*, c.name as matched_client_name
+    SELECT ise.*, c.name as matched_client_name, sr.sr_no as linked_sr_no, sr.status as linked_sr_status
     FROM incoming_service_emails ise
     LEFT JOIN clients c ON c.id = ise.matched_client_id
-    WHERE ise.status = 'Pending'
-    ORDER BY ise.received_at DESC
+    LEFT JOIN service_requests sr ON sr.id = ise.linked_sr_id
+    ORDER BY ise.received_at DESC LIMIT 300
   `).all();
   res.json(rows.map(r => ({ ...r, can_confirm: isServiceHOD(req.user) })));
 });
@@ -100,7 +105,7 @@ router.post('/inbox/:id/confirm', requirePermission('service_request.manage'), (
   }
   const item = db.prepare(`SELECT * FROM incoming_service_emails WHERE id = ?`).get(req.params.id);
   if (!item) return res.status(404).json({ error: 'Not found' });
-  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+  if (!['Pending', 'Quarantined'].includes(item.status)) return res.status(400).json({ error: `Already ${item.status}.` });
 
   const { client_id, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed } = req.body;
   const finalCustomerName = customer_name !== undefined ? customer_name : item.guessed_customer_name;
@@ -135,7 +140,7 @@ router.post('/inbox/:id/dismiss', requirePermission('service_request.manage'), (
   }
   const item = db.prepare(`SELECT * FROM incoming_service_emails WHERE id = ?`).get(req.params.id);
   if (!item) return res.status(404).json({ error: 'Not found' });
-  if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
+  if (!['Pending', 'Quarantined'].includes(item.status)) return res.status(400).json({ error: `Already ${item.status}.` });
   db.prepare(`
     UPDATE incoming_service_emails SET status = 'Dismissed', dismissed_by = ?, dismissed_at = CURRENT_TIMESTAMP, dismiss_reason = ? WHERE id = ?
   `).run(req.user.id, req.body && req.body.reason || null, item.id);
@@ -150,14 +155,35 @@ router.post('/inbox/scan', requirePermission('service_request.manage'), async (r
   res.json(result);
 });
 
+// The acknowledgement email sent to a customer the moment their inbound
+// email auto-creates a new SR (lib/inboundMail.js's sendAcknowledgement()).
+// Editable by Admin or the Service HOD/Supervisor - unlike the IMAP
+// connection settings (Settings > Inbound Mail, Admin-only, since those are
+// credentials), this is business content the Service HOD should be able to
+// tune without going through an Admin.
+router.get('/ack-template', requirePermission('service_request.manage'), (req, res) => {
+  if (!isServiceHOD(req.user)) return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can view the acknowledgement template.' });
+  res.json(getServiceAckMailSettings());
+});
+router.put('/ack-template', requirePermission('service_request.manage'), (req, res) => {
+  if (!isServiceHOD(req.user)) return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can edit the acknowledgement template.' });
+  const { enabled, subject, body } = req.body;
+  setServiceAckMailSettings({ enabled: !!enabled, subject: subject || '', body: body || '' });
+  res.json(getServiceAckMailSettings());
+});
+
 // Step 2: the Service HOD/Supervisor opens a logged request and schedules
 // it - assigns a service employee (from the Employees table) and a date.
+// An email-originated SR still sitting in PendingApproval can't be
+// scheduled yet - it hasn't cleared the ServiceRequest approval chain (see
+// lib/inboundMail.js's autoCreateServiceRequest()).
 router.patch('/:id/schedule', requirePermission('service_request.manage'), (req, res) => {
   if (!isServiceHOD(req.user)) {
     return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can schedule a request.' });
   }
   const existing = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status === 'PendingApproval') return res.status(400).json({ error: 'This request is still pending approval - it needs to be approved under My Approvals before it can be scheduled.' });
   const { employee_id, scheduled_date } = req.body;
   if (!employee_id || !scheduled_date) return res.status(400).json({ error: 'Pick both an employee and a date.' });
   db.prepare(`
@@ -176,6 +202,15 @@ router.patch('/:id', requirePermission('service_request.manage'), (req, res) => 
   } = req.body;
   if ((employee_id !== undefined || scheduled_date !== undefined) && !isServiceHOD(req.user)) {
     return res.status(403).json({ error: 'Only the Service HOD/Supervisor (or Admin) can change the schedule.' });
+  }
+  // An email-originated SR still in PendingApproval can't have its status
+  // hand-set around the ServiceRequest approval chain - that would let
+  // anyone with service_request.manage bypass the HOD/Supervisor sign-off
+  // this round introduced. The chain's own Approve/Reject action (routes/
+  // approvals.js's syncEntityStatus) is the only thing allowed to move it
+  // out of PendingApproval.
+  if (status !== undefined && existing.status === 'PendingApproval') {
+    return res.status(400).json({ error: 'This request is still pending approval - it needs to be approved or rejected under My Approvals first.' });
   }
   const fields = { status, assigned_to, employee_id, scheduled_date, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed };
   const updates = [], params = [];
