@@ -555,6 +555,29 @@ function collapsiblePanel(key, headHtml, bodyHtml) {
     <div class="panel-body">${bodyHtml}</div>
   </div>`;
 }
+// Generic popup/modal - the first one in this app. `title` can include
+// context (e.g. an SR number/customer) right in the heading, so unlike the
+// older pattern of filling a panel elsewhere on the page and scrolling to
+// it, there's no ambiguity about which row an open modal belongs to.
+// Re-entrant: calling it again while one's already open just replaces the
+// content rather than stacking a second backdrop.
+window.openAppModal = (title, bodyHtml) => {
+  closeAppModal();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'app-modal-backdrop';
+  backdrop.id = 'app-modal-backdrop';
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeAppModal(); };
+  backdrop.innerHTML = `<div class="app-modal-box">
+    <button type="button" class="app-modal-close" onclick="closeAppModal()">&times;</button>
+    <h3>${title}</h3>
+    <div id="app-modal-body">${bodyHtml}</div>
+  </div>`;
+  document.body.appendChild(backdrop);
+};
+window.closeAppModal = () => {
+  const el = document.getElementById('app-modal-backdrop');
+  if (el) el.remove();
+};
 window.toggleCollapsiblePanel = (key) => {
   const el = document.getElementById('cp-' + key);
   if (!el) return;
@@ -6466,6 +6489,7 @@ PAGES.service = async (el) => {
   const [reqs, clients, inbox] = await Promise.all([api('/service'), api('/masters/clients'), api('/service/inbox').catch(() => [])]);
   window.__SERVICE_INBOX = inbox;
   window.__SERVICE_CLIENTS = clients;
+  window.__SERVICE_REQS = reqs;
   const needsReview = inbox.filter(i => ['Pending', 'Quarantined'].includes(i.status));
   el.innerHTML = `
     ${collapsiblePanel('service-incoming-requests', `Incoming Requests (Email) (${inbox.length}${needsReview.length ? `, ${needsReview.length} need review` : ''})`, `
@@ -6510,7 +6534,6 @@ PAGES.service = async (el) => {
       </div>
       ${collapsiblePanel('service-request-queue-closed', `Closed (${closedReqs.length})`, tableHTML(cols, closedReqs, srRowHTML))}`;
     })()}
-    <div class="panel" id="sr-schedule-panel" style="display:none;"><h3>Schedule Service Request</h3><div id="sr-schedule-body"></div></div>
     <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
     <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>
     <div class="panel" id="sr-email-panel" style="display:none;"><h3 id="sr-email-title">Original Email</h3><div id="sr-email-body"></div></div>`;
@@ -6556,7 +6579,7 @@ function srRowHTML(r) {
     </td>
     <td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
     <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
-    <td>${srActions(r)} <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`;
+    <td>${srActions(r)} <button class="btn small outline" type="button" onclick="openEditSR(${r.id})">Edit</button> <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`;
 }
 // Same source-email fetch as viewSrSourceEmail() below, but toggles inline
 // inside the My Approvals drilldown card instead of the Service page's
@@ -6743,24 +6766,76 @@ window.updateSR = async (id, status) => {
   await api(`/service/${id}`, { method: 'PATCH', body: JSON.stringify({ status })});
   navigate('service');
 };
+// Schedule and Edit (below) both open as a popup rather than filling a
+// panel elsewhere on the page - the previous pattern left no indication of
+// which SR a scroll-to-the-bottom panel actually belonged to (reported
+// directly by the owner). The modal's own title carries the SR No and
+// customer, so that's never ambiguous.
+function srModalTitle(r, action) {
+  return `${action} &mdash; ${esc(r.sr_no)} <span class="muted" style="font-size:13px;font-weight:normal;">(${esc(r.client_master_name || r.customer_name) || 'no customer on file'})</span>`;
+}
 window.openScheduleSR = async (id) => {
+  const r = (window.__SERVICE_REQS || []).find(x => x.id === id);
   const employees = await api('/hr/employees');
-  const panel = document.getElementById('sr-schedule-panel');
-  const body = document.getElementById('sr-schedule-body');
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth' });
-  body.innerHTML = `
+  openAppModal(r ? srModalTitle(r, 'Schedule') : 'Schedule Service Request', `
     <div class="form-grid">
       <div><label>Assign Service Employee</label><select id="sr-sch-emp">${employees.map(e => `<option value="${e.id}">${esc(e.full_name)} (${esc(e.department_name)})</option>`).join('')}</select></div>
       <div><label>Scheduled Date</label><input id="sr-sch-date" type="date" value="${today()}"></div>
     </div>
     <button class="btn" onclick="saveScheduleSR(${id})">Save Schedule</button>
-    <div id="sr-sch-err" class="msg err" style="display:none;margin-top:10px;"></div>`;
+    <div id="sr-sch-err" class="msg err" style="display:none;margin-top:10px;"></div>`);
 };
 window.saveScheduleSR = async (id) => {
   const errEl = document.getElementById('sr-sch-err');
   try {
     await api(`/service/${id}/schedule`, { method: 'PATCH', body: JSON.stringify({ employee_id: val('sr-sch-emp'), scheduled_date: val('sr-sch-date') }) });
+    closeAppModal();
+    navigate('service');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// Edit option (reported missing by the owner) - corrects an auto-created
+// SR's guessed/wrong customer match, contact, issue description or spare
+// parts needed. Open to anyone with service_request.manage, same as the
+// rest of the Queue's actions (status dropdown, activity log) - not
+// specially restricted to HOD/Admin. Same dual client-vs-manual-name
+// picker the "Log Service Request" form above already uses.
+window.openEditSR = (id) => {
+  const r = (window.__SERVICE_REQS || []).find(x => x.id === id);
+  if (!r) { alert('Service Request not found - refresh the page.'); return; }
+  const clients = window.__SERVICE_CLIENTS || [];
+  openAppModal(srModalTitle(r, 'Edit'), `
+    <div class="form-grid">
+      <div><label>Customer (from Clients)</label><select id="sr-edit-client" onchange="document.getElementById('sr-edit-manual-wrap').style.display = this.value ? 'none' : 'grid'">
+        <option value="">-- Enter customer manually instead --</option>
+        ${clients.map(c => `<option value="${c.id}" ${r.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select></div>
+      <div><label>Customer Contact Person</label><input id="sr-edit-contact-person" value="${esc(r.contact_person)}"></div>
+      <div><label>Customer Contact Number</label><input id="sr-edit-contact-phone" value="${esc(r.contact_phone)}"></div>
+    </div>
+    <div class="form-grid" id="sr-edit-manual-wrap" style="display:${r.client_id ? 'none' : 'grid'};">
+      <div><label>Customer Name (manual)</label><input id="sr-edit-cust-name" value="${esc(r.customer_name)}"></div>
+    </div>
+    <div class="form-grid">
+      <div style="grid-column:1/-1;"><label>Issue Description</label><textarea id="sr-edit-desc" rows="2" style="width:100%;">${esc(r.issue_description)}</textarea></div>
+      <div><label>Spare Parts Needed</label><input id="sr-edit-parts" value="${esc(r.spare_parts_needed)}"></div>
+    </div>
+    <button class="btn" onclick="saveEditSR(${id})">Save Changes</button>
+    <div id="sr-edit-err" class="msg err" style="display:none;margin-top:10px;"></div>`);
+};
+window.saveEditSR = async (id) => {
+  const errEl = document.getElementById('sr-edit-err');
+  errEl.style.display = 'none';
+  const clientId = val('sr-edit-client');
+  try {
+    await api(`/service/${id}`, { method: 'PATCH', body: JSON.stringify({
+      client_id: clientId || null,
+      customer_name: clientId ? null : val('sr-edit-cust-name'),
+      contact_person: val('sr-edit-contact-person'),
+      contact_phone: val('sr-edit-contact-phone'),
+      issue_description: val('sr-edit-desc'),
+      spare_parts_needed: val('sr-edit-parts'),
+    })});
+    closeAppModal();
     navigate('service');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };

@@ -197,7 +197,7 @@ router.patch('/:id', requirePermission('service_request.manage'), (req, res) => 
   const existing = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const {
-    status, assigned_to, employee_id, scheduled_date,
+    status, assigned_to, employee_id, scheduled_date, client_id,
     customer_name, contact_person, contact_phone, issue_description, spare_parts_needed,
   } = req.body;
   if ((employee_id !== undefined || scheduled_date !== undefined) && !isServiceHOD(req.user)) {
@@ -212,7 +212,11 @@ router.patch('/:id', requirePermission('service_request.manage'), (req, res) => 
   if (status !== undefined && existing.status === 'PendingApproval') {
     return res.status(400).json({ error: 'This request is still pending approval - it needs to be approved or rejected under My Approvals first.' });
   }
-  const fields = { status, assigned_to, employee_id, scheduled_date, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed };
+  if (client_id) {
+    const clientRow = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+    if (!clientRow) return res.status(400).json({ error: 'Selected customer not found.' });
+  }
+  const fields = { status, assigned_to, employee_id, scheduled_date, client_id, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed };
   const updates = [], params = [];
   Object.entries(fields).forEach(([k, v]) => { if (v !== undefined) { updates.push(`${k} = ?`); params.push(v === '' ? null : v); } });
   if (status === 'Closed' && existing.status !== 'Closed') { updates.push('closed_at = ?'); params.push(new Date().toISOString()); }
