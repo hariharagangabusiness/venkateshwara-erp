@@ -1311,6 +1311,16 @@ const MIGRATIONS = [
   `ALTER TABLE departments ADD COLUMN smtp_user TEXT`,
   `ALTER TABLE departments ADD COLUMN smtp_pass TEXT`,
   `ALTER TABLE departments ADD COLUMN smtp_secure INTEGER`,
+  // Offer Format: Standard vs Spares (2026-10-12) - a Spares/quick-quote
+  // offer skips the sales-pitch pages (Cover Page, Company Profile,
+  // Project Data Sheet, Equipment Description) that make sense for a full
+  // machinery offer but not for a short spares quote - see lib/offerPdf.js's
+  // bodyHtml(). Scope Of Supply and Terms & Conditions always render either
+  // way (the actual quote + its terms); the pre-existing show_bought_out/
+  // show_inclusions_exclusions toggles stay independent of this, unrelated
+  // to what was asked. Defaults 'Standard' so every existing offer renders
+  // exactly as before.
+  `ALTER TABLE offers ADD COLUMN offer_format TEXT DEFAULT 'Standard'`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

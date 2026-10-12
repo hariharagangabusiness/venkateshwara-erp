@@ -3403,6 +3403,10 @@ async function renderOfferBuilder(panel) {
       <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
       <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
+      <div><label>Offer Format</label><select id="ob-format">
+        <option value="Standard" ${o.offer_format !== 'Spares' ? 'selected' : ''}>Standard (full offer)</option>
+        <option value="Spares" ${o.offer_format === 'Spares' ? 'selected' : ''}>Spares / Quick Quote (no cover page, company profile, project data sheet or equipment photos)</option>
+      </select></div>
     </div>
     <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" data-tab-id="${id}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
@@ -3442,6 +3446,7 @@ window.saveOfferHeader = async () => {
       show_tech_specs: offerShowFlag('ob-show-tech', data.offer.show_tech_specs),
       show_bought_out: offerShowFlag('ob-show-boughtout', data.offer.show_bought_out),
       show_inclusions_exclusions: offerShowFlag('ob-show-inclexcl', data.offer.show_inclusions_exclusions),
+      offer_format: val('ob-format'),
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Header saved');
   } catch (e) { alert(e.message); }

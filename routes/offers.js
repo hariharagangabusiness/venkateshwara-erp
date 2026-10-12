@@ -522,7 +522,7 @@ router.get('/:id/versions', (req, res) => {
 // ===================== Create =====================
 
 router.post('/', offerPerm(), (req, res) => {
-  const { client_id, lead_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no, is_template } = req.body;
+  const { client_id, lead_id, subject, contact_person, contact_phone, contact_email, application, type_of_system, material_of_construction, drawing_no, is_template, offer_format } = req.body;
   // A Standard Template (Offer Templates library, 2026-10-06) isn't tied to
   // any real customer - Admin-only to create (and, via
   // ensureEditableVersion's own guard, to edit afterward); everyone else
@@ -538,11 +538,12 @@ router.post('/', offerPerm(), (req, res) => {
     const info = db.prepare(`
       INSERT INTO offers (offer_no, client_id, lead_id, contact_person, contact_phone, contact_email, subject,
         application, type_of_system, material_of_construction, drawing_no,
-        inclusions, exclusions, utilities_requirement, instrument_air_supply, is_template, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        inclusions, exclusions, utilities_requirement, instrument_air_supply, is_template, offer_format, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(offerNo, is_template ? null : client_id, is_template ? null : (lead_id || null), contact_person, contact_phone, contact_email, subject,
       application, type_of_system, material_of_construction, drawing_no,
-      defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, is_template ? 1 : 0, req.user.id);
+      defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, is_template ? 1 : 0,
+      offer_format === 'Spares' ? 'Spares' : 'Standard', req.user.id);
     const offerId = info.lastInsertRowid;
 
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
@@ -615,8 +616,8 @@ function cloneOfferContent(source, opts) {
         promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
         abg_required, abg_percentage, abg_amount, abg_validity_days,
         pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
-        is_template, created_by)
-      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?)
+        is_template, offer_format, created_by)
+      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?,?)
     `).run(offerNo, opts.client_id || null, opts.lead_id || null, opts.contact_person || null, opts.contact_phone || null, opts.contact_email || null, opts.subject || source.subject,
       source.drawing_no, source.application, source.type_of_system, source.material_of_construction,
       source.inclusions, source.exclusions, source.utilities_requirement, source.instrument_air_supply,
@@ -624,7 +625,7 @@ function cloneOfferContent(source, opts) {
       source.promised_delivery_date, source.ld_percentage, source.ld_cap_percentage, source.ld_trigger_notes,
       source.abg_required, source.abg_percentage, source.abg_amount, source.abg_validity_days,
       source.pbg_required, source.pbg_percentage, source.pbg_amount, source.pbg_validity_days, source.bg_terms_notes,
-      opts.is_template ? 1 : 0, opts.created_by);
+      opts.is_template ? 1 : 0, source.offer_format || 'Standard', opts.created_by);
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
@@ -720,7 +721,7 @@ router.put('/:id', offerPerm(), (req, res) => {
     UPDATE offers SET subject=?, contact_person=?, contact_phone=?, contact_email=?,
       application=?, type_of_system=?, material_of_construction=?, drawing_no=?,
       inclusions=?, exclusions=?, utilities_requirement=?, instrument_air_supply=?,
-      show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?,
+      show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?, offer_format=?,
       status=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=?
   `).run(f.subject, f.contact_person, f.contact_phone, f.contact_email,
@@ -729,6 +730,7 @@ router.put('/:id', offerPerm(), (req, res) => {
     f.show_tech_specs !== undefined ? (f.show_tech_specs ? 1 : 0) : existing.show_tech_specs,
     f.show_bought_out !== undefined ? (f.show_bought_out ? 1 : 0) : existing.show_bought_out,
     f.show_inclusions_exclusions !== undefined ? (f.show_inclusions_exclusions ? 1 : 0) : existing.show_inclusions_exclusions,
+    f.offer_format !== undefined ? (f.offer_format === 'Spares' ? 'Spares' : 'Standard') : existing.offer_format,
     forked ? 'Draft' : (f.status || existing.status || 'Draft'), targetId);
   res.json({ ok: true, newVersion: forked, id: targetId });
 });
