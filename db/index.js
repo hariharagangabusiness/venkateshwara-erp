@@ -1296,6 +1296,21 @@ const MIGRATIONS = [
   `ALTER TABLE incoming_service_emails ADD COLUMN linked_sr_id INTEGER REFERENCES service_requests(id)`,
   `ALTER TABLE incoming_service_emails ADD COLUMN quarantine_reason TEXT`,
   `ALTER TABLE incoming_service_emails ADD COLUMN ack_sent_at TEXT`,
+  // Per-department SMTP credentials (2026-10-12) - a genuine separate
+  // authenticated mailbox per department, not just a "From" display name
+  // riding on the one shared Email Settings account (which is what
+  // email_from_name/email_from_address above actually are, and which is
+  // exactly why a department whose mail provider hadn't granted the shared
+  // account Send-As rights for that address got "550 5.7.1 Sender is not
+  // allowed to relay emails"). NULL/blank smtp_host or smtp_user means "not
+  // configured" and falls back to the global Email Settings account, same
+  // opt-in-per-department shape as the From-only fields - see
+  // lib/departmentEmail.js's getDepartmentEmailIdentity().
+  `ALTER TABLE departments ADD COLUMN smtp_host TEXT`,
+  `ALTER TABLE departments ADD COLUMN smtp_port INTEGER`,
+  `ALTER TABLE departments ADD COLUMN smtp_user TEXT`,
+  `ALTER TABLE departments ADD COLUMN smtp_pass TEXT`,
+  `ALTER TABLE departments ADD COLUMN smtp_secure INTEGER`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

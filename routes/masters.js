@@ -6,24 +6,65 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { generateItemBarcode } = require('../lib/barcode');
 const { generateTempPassword } = require('../lib/passwordReset');
 const { sendMail } = require('../lib/mailer');
+const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { canSeeOffer } = require('../lib/offerVisibility');
 const router = express.Router();
 router.use(authRequired);
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Simple read-only + admin-managed master lists
-router.get('/departments', (req, res) => res.json(db.prepare('SELECT * FROM departments ORDER BY name').all()));
+// Simple read-only + admin-managed master lists. This route has no
+// role/permission gate (department rows feed ordinary dropdowns all over
+// the app) - smtp_pass is masked below rather than ever sent to the
+// browser in the clear, same convention GET /settings/email already uses
+// for the global SMTP password.
+router.get('/departments', (req, res) => {
+  const rows = db.prepare('SELECT * FROM departments ORDER BY name').all();
+  res.json(rows.map(d => Object.assign({}, d, { smtp_pass: d.smtp_pass ? '••••••••' : '' })));
+});
 // A department's own outgoing-email identity (see lib/departmentEmail.js) -
 // Admin-only, since it changes what recipients see as the "From" on PO/
-// invoice/BG/SOA emails. Both fields are optional; clearing email_from_address
-// reverts that department to the global Email Settings identity.
+// invoice/BG/SOA emails, and since 2026-10-12 can also give the department
+// its own genuinely separate SMTP account (not just a "From" display name
+// riding on the shared one) - all fields optional; clearing email_from_address
+// reverts the From identity to the global Email Settings one, clearing
+// smtp_host/smtp_user reverts the actual send-as account to the global one too.
 router.put('/departments/:id', requireRole('Admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const { email_from_name, email_from_address } = req.body;
-  db.prepare(`UPDATE departments SET email_from_name = ?, email_from_address = ? WHERE id = ?`)
-    .run(email_from_name || null, email_from_address || null, existing.id);
+  const { email_from_name, email_from_address, smtp_host, smtp_port, smtp_user, smtp_secure } = req.body;
+  let { smtp_pass } = req.body;
+  // Don't overwrite a real password with the masked placeholder if the form
+  // was submitted unchanged - same guard PUT /settings/email already uses.
+  if (smtp_pass === '••••••••') smtp_pass = undefined;
+  db.prepare(`
+    UPDATE departments SET email_from_name = ?, email_from_address = ?,
+      smtp_host = ?, smtp_port = ?, smtp_user = ?,
+      smtp_pass = COALESCE(?, smtp_pass), smtp_secure = ?
+    WHERE id = ?
+  `).run(
+    email_from_name || null, email_from_address || null,
+    smtp_host || null, smtp_port || null, smtp_user || null,
+    smtp_pass === undefined ? null : (smtp_pass || null), smtp_secure === undefined ? null : (smtp_secure ? 1 : 0),
+    existing.id,
+  );
   res.json({ ok: true });
+});
+// Fires a one-off email using this department's own SMTP override (falling
+// back to the global Email Settings account if the department hasn't
+// configured one) - lets an Admin confirm a department's mailbox actually
+// authenticates/relays before relying on it for real PO/RFQ/invoice mail.
+router.post('/departments/:id/test-email', requireRole('Admin'), async (req, res) => {
+  const dept = db.prepare('SELECT name FROM departments WHERE id = ?').get(req.params.id);
+  if (!dept) return res.status(404).json({ error: 'Not found' });
+  const to = String((req.body && req.body.to) || '').trim();
+  if (!to) return res.status(400).json({ error: 'Enter an email address to send the test to.' });
+  const result = await sendMail({
+    to,
+    subject: `Venkateshwara ERP - Test Email (${dept.name})`,
+    text: `This is a test email sent using ${dept.name}'s own mail settings (or the global Email Settings account, if ${dept.name} hasn't configured its own), confirming delivery works.\n\nSent by: ${req.user.full_name || req.user.username}\nSent at: ${new Date().toLocaleString()}`,
+    ...getDepartmentEmailIdentity(dept.name),
+  });
+  res.json(result);
 });
 router.get('/roles', (req, res) => res.json(db.prepare('SELECT * FROM roles ORDER BY name').all()));
 router.get('/leave-types', (req, res) => res.json(db.prepare('SELECT * FROM leave_types').all()));

@@ -9945,11 +9945,6 @@ window.focAction = async (id, action) => {
 };
 
 // ===================== Round 5: Company Settings =====================
-// Departments with no real external-communication role (shop-floor/internal
-// production stages, or ones already covered elsewhere) - kept out of the
-// Department Email Identities list below so it only shows departments that
-// plausibly send PO/invoice/SOA-type mail to a vendor or client.
-const DEPT_EMAIL_HIDDEN = ['Admin', 'Assembling', 'Installation', 'Laser & Bending Processing', 'Management', 'Manufacturing', 'Project Management', 'Store'];
 PAGES['company-settings'] = async (el) => {
   const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
@@ -10059,13 +10054,26 @@ PAGES['company-settings'] = async (el) => {
         <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
       `) : ''}
       ${email ? collapsibleSubsection('department-email-identities', 'Department Email Identities', `
-        <p class="muted">Optional per-department "From" name/address for outgoing mail (Purchase's PO/RFQ emails, Sales' Invoice/Proforma emails, Accounts / HR's SOA/BG reminder emails) - mail still relays through the one SMTP account above, so the address here has to actually be an alias/mailbox your mail provider recognizes for that account, or delivery can fail or get rewritten. Leave blank to keep using the global From Name/Address.</p>
-        ${tableHTML(['Department', 'From Name', 'From Address', ''], departments.filter(d => !DEPT_EMAIL_HIDDEN.includes(d.name)), d => `
-          <tr><td>${esc(d.name)}</td>
-          <td><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></td>
-          <td><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></td>
-        <td><button class="btn small outline" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button></td></tr>`)}
-        <div id="dept-email-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <p class="muted">Each department can have its own genuinely separate SMTP mailbox - not just a "From" display name riding on the one shared account above - so a department's own emails actually authenticate as that department's own mailbox instead of risking a "Sender is not allowed to relay" rejection when the From address doesn't match the account that logged in. Leave a department's SMTP fields blank and it keeps relaying through the global Email Settings account above, with just its From Name/Address (also optional) shown on the mail. Expand a department to configure either.</p>
+        ${departments.map(d => collapsiblePanel('dept-email-' + d.id, `${esc(d.name)}${d.smtp_host ? ' <span class="badge active" style="font-size:10px;">Own SMTP</span>' : (d.email_from_address ? ' <span class="muted" style="font-size:11px;">(From override only)</span>' : '')}`, `
+          <div class="form-grid">
+            <div><label>From Name</label><input id="dept-from-name-${d.id}" value="${esc(d.email_from_name)}" placeholder="${esc(email ? email.from_name : '')}"></div>
+            <div><label>From Address</label><input id="dept-from-addr-${d.id}" value="${esc(d.email_from_address)}" placeholder="${esc(email ? email.from_address : '')}"></div>
+          </div>
+          <h5 style="margin:12px 0 4px;">Separate SMTP Account <span class="muted" style="font-weight:normal;">(optional - leave blank to keep relaying through the global account above)</span></h5>
+          <div class="form-grid">
+            <div><label>SMTP Host</label><input id="dept-smtp-host-${d.id}" value="${esc(d.smtp_host)}"></div>
+            <div><label>SMTP Port</label><input id="dept-smtp-port-${d.id}" type="number" value="${esc(d.smtp_port)}"></div>
+            <div><label>Use TLS/SSL (secure)</label><select id="dept-smtp-secure-${d.id}"><option value="" ${d.smtp_secure === null || d.smtp_secure === undefined ? 'selected' : ''}>- Use global default -</option><option value="false" ${d.smtp_secure === 0 ? 'selected' : ''}>No</option><option value="true" ${d.smtp_secure === 1 ? 'selected' : ''}>Yes</option></select></div>
+            <div><label>Mailbox Username</label><input id="dept-smtp-user-${d.id}" value="${esc(d.smtp_user)}"></div>
+            <div><label>Mailbox Password</label><input id="dept-smtp-pass-${d.id}" type="password" value="${esc(d.smtp_pass)}"></div>
+          </div>
+          <div style="margin-top:8px;">
+            <button class="btn small" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button>
+            <button class="btn small outline" type="button" onclick="testDepartmentEmail(${d.id}, '${esc(d.name).replace(/'/g, "\\'")}')">Send Test Email</button>
+          </div>
+          <div id="dept-email-err-${d.id}" class="msg err" style="display:none;margin-top:8px;"></div>
+        `)).join('')}
       `) : ''}
     `)}
     ${purchaseSettings ? collapsiblePanel('purchase-settings', 'Purchase Settings', `
@@ -10103,13 +10111,27 @@ PAGES['company-settings'] = async (el) => {
   renderCompanyAddressesPanel();
 };
 window.saveDepartmentEmailIdentity = async (id) => {
-  const errEl = document.getElementById('dept-email-err');
+  const errEl = document.getElementById(`dept-email-err-${id}`);
   errEl.style.display = 'none';
+  const secureVal = val(`dept-smtp-secure-${id}`);
   try {
     await api(`/masters/departments/${id}`, { method: 'PUT', body: JSON.stringify({
       email_from_name: val(`dept-from-name-${id}`), email_from_address: val(`dept-from-addr-${id}`),
+      smtp_host: val(`dept-smtp-host-${id}`), smtp_port: val(`dept-smtp-port-${id}`),
+      smtp_user: val(`dept-smtp-user-${id}`), smtp_pass: val(`dept-smtp-pass-${id}`),
+      smtp_secure: secureVal === '' ? undefined : secureVal === 'true',
     })});
     navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.testDepartmentEmail = async (id, deptName) => {
+  const to = prompt(`Send a test email using ${deptName}'s mail settings to:`);
+  if (!to) return;
+  const errEl = document.getElementById(`dept-email-err-${id}`);
+  errEl.style.display = 'none';
+  try {
+    const r = await api(`/masters/departments/${id}/test-email`, { method: 'POST', body: JSON.stringify({ to }) });
+    alert(r.sent ? `Sent successfully to ${to}. Check that inbox to confirm.` : (r.reason || 'Failed to send.'));
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 async function renderCompanyAddressesPanel() {
