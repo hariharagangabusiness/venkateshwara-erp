@@ -5,7 +5,7 @@ const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
-const { getCompanySettings, getServiceSettings, getServiceAckMailSettings, setServiceAckMailSettings } = require('../lib/settings');
+const { getCompanySettings, getServiceSettings, getServiceAckMailSettings, setServiceAckMailSettings, getInboundMailSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundMailScan } = require('../lib/inboundMail');
 const router = express.Router();
@@ -88,14 +88,25 @@ router.post('/', requirePermission('service_request.manage'), (req, res) => {
 // trail, not a mandatory human gate - but a Quarantined item can still be
 // manually recovered via the same Confirm/Dismiss actions below (legacy
 // 'Pending' rows, from before this round, work the same way).
+// Rolling window, matching the scan's own scan_window_days (default 14) -
+// this list previously showed every row ever recorded, forever, so an old
+// entry (e.g. from before the mailbox was pointed at the right address)
+// sat here indefinitely regardless of status, cluttering the view with
+// nothing left to act on. Rows themselves are never deleted (a Service
+// Request's "View Original Email" still resolves one past this window via
+// GET /:id/source-email, which has no date filter) - only what this list
+// returns is bounded, so it "refreshes" to track the mailbox's own
+// recent-mail window rather than accumulating forever.
 router.get('/inbox', requirePermission('service_request.manage'), (req, res) => {
+  const windowDays = Number(getInboundMailSettings().scan_window_days || 14);
   const rows = db.prepare(`
     SELECT ise.*, c.name as matched_client_name, sr.sr_no as linked_sr_no, sr.status as linked_sr_status
     FROM incoming_service_emails ise
     LEFT JOIN clients c ON c.id = ise.matched_client_id
     LEFT JOIN service_requests sr ON sr.id = ise.linked_sr_id
+    WHERE datetime(ise.received_at) >= datetime('now', '-' || ? || ' days')
     ORDER BY ise.received_at DESC LIMIT 300
-  `).all();
+  `).all(windowDays);
   res.json(rows.map(r => ({ ...r, can_confirm: isServiceHOD(req.user) })));
 });
 
