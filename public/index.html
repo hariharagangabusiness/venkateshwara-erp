@@ -198,6 +198,17 @@
   .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:40;}
   .sidebar-overlay.open{display:block;}
 
+  /* Generic popup/modal (2026-10-12) - first one in this app; used for
+     actions like Service Request Edit/Schedule where the previous pattern
+     (fill a panel at the bottom of the page, scroll to it) left no clue
+     which row you'd clicked. Backdrop closes on click like .sidebar-overlay
+     above; z-index set above it since a modal can be opened from a page
+     that also has the mobile drawer open. */
+  .app-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 16px;}
+  .app-modal-box{background:#fff;border-radius:8px;width:min(560px,100%);padding:18px 20px;box-shadow:0 8px 30px rgba(0,0,0,.25);}
+  .app-modal-box h3{margin:0 0 4px;}
+  .app-modal-close{float:right;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted,#888);line-height:1;}
+
   /* Fluid, viewport-based sizing for the app shell so nothing forces a
      fixed pixel width; percentages/vw/vh + flex handle the rest. */
   html{-webkit-text-size-adjust:100%;text-size-adjust:100%;}
