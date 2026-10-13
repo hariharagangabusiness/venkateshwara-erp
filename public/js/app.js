@@ -5469,7 +5469,7 @@ PAGES['purchase-orders'] = async (el) => {
     api('/purchase/requests'),
     api('/settings/company-addresses').catch(() => []),
     api('/settings/purchase').catch(() => null),
-    fetchPanelOrder('purchase-orders', ['new-po', 'bulk-import', 'list']),
+    fetchPanelOrder('purchase-orders', ['new-po', 'bulk-import', 'list', 'archive']),
   ]);
   // Only Active vendors are offered when creating a new PO - Inactive/
   // Blacklisted ones stay visible/editable in Vendor Master (and on POs that
@@ -5477,6 +5477,17 @@ PAGES['purchase-orders'] = async (el) => {
   const vendors = vendorsRaw.filter(v => (v.status || 'Active') === 'Active');
   const prs = prsRaw.filter(r => r.status === 'Approved');
   const paymentTermsOptions = (purchaseSettings || {}).payment_terms_options || [];
+  // Archive split (2026-10-13) - see the 'archive' panel below for the full
+  // reasoning. groupPORows() is the same consecutive-by-po_no grouping
+  // renderPORows() already uses (safe here since GET /orders' ORDER BY id
+  // DESC keeps every po_no's sibling rows adjacent, same assumption that
+  // function already relies on).
+  const TERMINAL_PO_STATUSES = ['Received', 'Cancelled', 'Closed'];
+  const archivedPoNos = new Set(
+    groupPORows(orders).filter(g => g.lines.every(l => TERMINAL_PO_STATUSES.includes(l.status))).map(g => g.po_no)
+  );
+  const activeOrders = orders.filter(o => !archivedPoNos.has(o.po_no));
+  const archivedOrders = orders.filter(o => archivedPoNos.has(o.po_no));
   // Set before building the HTML below, not after - renderPOLines() (called
   // as part of that build) and the lazily-built per-row Edit/Terms panels
   // (poEditForm()/poTermsForm(), built on first toggle - see togglePOEdit/
@@ -5525,15 +5536,31 @@ PAGES['purchase-orders'] = async (el) => {
       <button class="btn" onclick="uploadPOImportTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="po-upload-result" style="margin-top:10px;"></div>
     `),
-    'list': collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${orders.length})</span>`, `
-      ${renderListSearch('purchase-orders', orders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
+    'list': collapsiblePanel('po-list', `<span id="po-count">Purchase Orders (${activeOrders.length})</span>`, `
+      ${renderListSearch('purchase-orders', activeOrders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
         document.getElementById('po-table-wrap').innerHTML = renderPORows(rows);
         document.getElementById('po-count').textContent = 'Purchase Orders (' + rows.length + ')';
       }, 'Search by PO no, vendor, item, status...')}
-      <div id="po-table-wrap">${renderPORows(orders)}</div>
+      <div id="po-table-wrap">${renderPORows(activeOrders)}</div>
+    `),
+    // Archive (2026-10-13) - a PO (or, for a multi-line one, every line
+    // sharing its po_no) that's Received/Cancelled/Closed has nothing left
+    // to act on, but the active list above kept growing with them forever.
+    // A group only archives once EVERY line is terminal - one still-active
+    // line (Open/PartiallyReceived/Draft/...) keeps the whole group in the
+    // active list above, so nothing actionable ever disappears from view.
+    // Collapsed by default, same "the one bucket that only ever grows gets
+    // its own collapsiblePanel" precedent as the Service Request Queue's
+    // Closed bucket and Site Visits' Closed bucket.
+    'archive': collapsiblePanel('po-archive', `<span id="po-archive-count">Archive - Received / Cancelled / Closed (${archivedOrders.length})</span>`, `
+      ${renderListSearch('purchase-orders-archive', archivedOrders, ['po_no', 'vendor_name', 'item_name', 'status'], (rows) => {
+        document.getElementById('po-archive-table-wrap').innerHTML = renderPORows(rows);
+        document.getElementById('po-archive-count').textContent = 'Archive - Received / Cancelled / Closed (' + rows.length + ')';
+      }, 'Search by PO no, vendor, item, status...')}
+      <div id="po-archive-table-wrap">${renderPORows(archivedOrders)}</div>
     `),
   };
-  const poLabels = { 'new-po': 'New Purchase Order', 'bulk-import': 'Bulk Import Open POs', 'list': 'Purchase Orders List' };
+  const poLabels = { 'new-po': 'New Purchase Order', 'bulk-import': 'Bulk Import Open POs', 'list': 'Purchase Orders List', 'archive': 'Archive' };
   el.innerHTML = reorderablePanelsHTML('purchase-orders', poPanels, poOrder, poLabels);
   renderPOLines();
 };
