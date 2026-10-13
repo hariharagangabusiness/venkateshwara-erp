@@ -709,6 +709,17 @@ async function navigate(id) {
 
 // ===================== Helpers =====================
 function esc(s) { return (s === null || s === undefined) ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Generic row-action button grid (2026-10-13, widened from the Purchase
+// Orders list's own poActionsCell() to every list page whose Action column
+// shows a different subset of buttons per row - a row's button count/label
+// length varies by status (Edit/Delete vs Submit for Approval vs nothing),
+// so plain flex-wrap packs them inconsistently row to row. The actual grid
+// rules live on the .row-actions CSS class in public/index.html; this just
+// applies it. Use for any <td> content that's more than 1-2 same-length
+// buttons - a single button needs no wrapper.
+function actionButtonsCell(buttonsHtml) {
+  return `<div class="row-actions">${buttonsHtml}</div>`;
+}
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -1667,8 +1678,7 @@ PAGES.approvals = async (el) => {
           ${tableHTML(['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'], byDept[dept], r => `
             <tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
             <td>${new Date(r.created_at).toLocaleString()}</td>
-            <td>${approvalActionCell(r)}
-            <button class="btn small outline" type="button" onclick="toggleApprovalDrilldown('${r.source}-${r.id}')">Details</button></td></tr>
+            <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + r.source + '-' + r.id + '\')">Details</button>')}</td></tr>
             ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
             <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>
           `)}
@@ -2010,8 +2020,8 @@ let EDITING_CLIENT_ID = null;
 function renderClientRows(rows) {
   return tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
     <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
-    <td><button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
-    <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button></td></tr>`);
+    <td>${actionButtonsCell(`<button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
+    <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button>`)}</td></tr>`);
 }
 PAGES.clients = async (el) => {
   const clients = await api('/masters/clients');
@@ -4427,14 +4437,14 @@ async function renderDeptJobCards(el, stage, label, onlyStage) {
 }
 
 function jobCardActions(c) {
-  const subBtn = c.child_count ? `<button class="btn small outline" onclick="openSubPlan(${c.id}, '${esc(STAGE_LABELS[c.stage] || c.stage)}')">Plan Sub-Processes (${c.child_count})</button> ` : '';
-  const openBtn = `<button class="btn small outline" onclick="openJobCardDetail(${c.id})">Open</button> `;
-  if (c.status === 'Completed') return openBtn + (subBtn || '');
-  if (!c.can_act) return openBtn + '<span class="muted">Not assigned to you</span>';
+  const subBtn = c.child_count ? `<button class="btn small outline" onclick="openSubPlan(${c.id}, '${esc(STAGE_LABELS[c.stage] || c.stage)}')">Plan Sub-Processes (${c.child_count})</button>` : '';
+  const openBtn = `<button class="btn small outline" onclick="openJobCardDetail(${c.id})">Open</button>`;
+  if (c.status === 'Completed') return actionButtonsCell(openBtn + subBtn);
+  if (!c.can_act) return actionButtonsCell(openBtn) + ' <span class="muted">Not assigned to you</span>';
   const next = c.status === 'Pending' ? 'InProgress' : 'Completed';
   const label = next === 'InProgress' ? 'Start Work' : 'Complete Work';
-  return `${openBtn}${subBtn}<button class="btn small green" onclick="advanceJobCard(${c.id}, '${next}')">${label}</button>
-    <button class="btn small outline" onclick="holdJobCard(${c.id})">Hold</button>`;
+  return actionButtonsCell(`${openBtn}${subBtn}<button class="btn small green" onclick="advanceJobCard(${c.id}, '${next}')">${label}</button>
+    <button class="btn small outline" onclick="holdJobCard(${c.id})">Hold</button>`);
 }
 window.advanceJobCard = async (id, status) => {
   try {
@@ -5032,7 +5042,7 @@ function renderPRRows(rows) {
       <td>${esc(r.pr_no)}</td>
       <td>${esc(r.item_summary)||esc(r.item_name)||'-'}${r.pending_item_count > 0 ? ' <span class="badge Pending" title="Not yet in the approved Item Master">Item pending review</span>' : ''}</td>
       <td>${r.project_code ? esc(r.project_code) : '<span class="muted">General</span>'}</td><td>${r.line_count || 1}</td><td>₹${fmt(r.items_total_value != null ? r.items_total_value : r.estimated_value)}</td><td>${badge(r.status)}</td>
-      <td>
+      <td>${actionButtonsCell(`
         ${canEditPR(r) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
@@ -5040,7 +5050,7 @@ function renderPRRows(rows) {
         ${['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id}, ${r.status === 'Draft'})">${r.status === 'Draft' ? 'Delete' : 'Withdraw'}</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
         ${['Approved', 'OrderPlaced'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>` : ''}
-      </td>
+      `)}</td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
@@ -6132,11 +6142,11 @@ async function renderItemMasterSheet(el) {
           <td>${i.current_stock}${i.current_stock <= i.reorder_level ? ' ⚠️' : ''}</td><td>${i.reorder_level}</td>
           <td><span class="mono" style="letter-spacing:1px;">${esc(i.barcode)||'-'}</span></td>
           <td>${i.status === 'Discontinued' ? badge('Discontinued') : ''}</td>
-          <td>${i.status === 'Discontinued'
+          <td>${actionButtonsCell((i.status === 'Discontinued'
             ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
             : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
-               <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`}
-               <button class="btn small outline" type="button" onclick="showItemPriceHistory(${i.id})">Price History</button></td></tr>`)}
+               <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`)
+               + `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${i.id})">Price History</button>`)}</td></tr>`)}
     `),
   };
   const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
@@ -9130,11 +9140,11 @@ function bgTableHTML(bgs) {
   return tableHTML(headers, bgs, bg => `
     <tr>${cols.map(c => `<td>${c.render(bg)}</td>`).join('')}
     <td><button class="btn small outline" type="button" onclick="toggleBGAttachments(${bg.id})">Scanned Copy</button></td>
-    <td>
+    <td>${actionButtonsCell(`
       ${bg.status !== 'Released' ? `<button class="btn small outline" onclick="releaseBG(${bg.id})">Mark Released</button>` : ''}
       ${bg.status !== 'Released' ? `<button class="btn small outline" onclick="openEditBG(${bg.id})">Edit</button>` : ''}
       <button class="btn small outline" onclick="deleteBG(${bg.id})">Delete</button>
-    </td></tr>
+    `)}</td></tr>
     <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="${headers.length}"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
 }
 window.openBGColumnPicker = () => {
@@ -9728,11 +9738,11 @@ PAGES.users = async (el) => {
         <td>${u.is_supervisor ? badge('active') : '-'}</td>
         <td>${u.employee_id ? esc(u.employee_code || '') + ' - ' + esc(u.employee_name) : '<span class="muted">Not linked</span>'}</td>
         <td>${badge(u.is_active ? 'active' : 'Rejected')}${u.must_change_password ? ' <span class="badge Pending" title="Must set their own password at next login">Pending activation</span>' : ''}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" onclick="openEditUser(${u.id})">Edit</button>
           <button class="btn small outline" onclick="toggleUser(${u.id})">${u.is_active ? 'Deactivate' : 'Activate'}</button>
           <button class="btn small outline" onclick="linkUserEmployee(${u.id})">${u.employee_id ? 'Change Link' : 'Link Employee'}</button>
-        </td></tr>`)}
+        `)}</td></tr>`)}
     `)}
     <div class="panel" id="user-edit-panel" style="display:none;"><h3>Edit User</h3><div id="user-edit-body"></div></div>`;
 };
@@ -10843,12 +10853,12 @@ PAGES['sales-invoices'] = async (el) => {
       ${tableHTML(['Invoice No', 'Client', 'Date', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total', 'Status', ''], invoices, i => `
         <tr><td>${esc(i.invoice_no)}</td><td>${esc(i.client_name)}</td><td>${new Date(i.invoice_date).toLocaleDateString()}</td>
         <td>₹${fmt(i.taxable_value)}</td><td>₹${fmt(i.cgst)}</td><td>₹${fmt(i.sgst)}</td><td>₹${fmt(i.igst)}</td><td>₹${fmt(i.total_value)}</td><td>${badge(i.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/invoices/${i.id}/pdf', '${esc(i.invoice_no).replace(/\//g,'-')}.pdf')">PDF</button>
           <button class="btn small outline" type="button" onclick="emailInvoice(${i.id})">Email to Client</button>
           ${i.status !== 'Paid' ? `<button class="btn small" type="button" onclick="markInvoicePaid(${i.id})">Mark Paid</button>` : ''}
           ${i.status === 'Draft' ? `<button class="btn small outline" type="button" onclick="cancelInvoice(${i.id})">Cancel</button>` : ''}
-        </td></tr>`)}
+        `)}</td></tr>`)}
     `)}
     <div class="panel"><h3>Generate Proforma Invoice (Advance / Pre-Dispatch)</h3>
       <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
@@ -12226,10 +12236,10 @@ async function renderBackupHistory() {
       <td>${fmtBytes(r.total_size_bytes)}</td>
       <td>${r.emailed ? '✓' : (r.email_error ? `<span class="muted" title="${esc(r.email_error)}">No</span>` : '-')}</td>
       <td>${r.zoho_uploaded ? '✓' : (r.zoho_error ? `<span class="muted" title="${esc(r.zoho_error)}">No</span>` : '-')}</td>
-      <td>
+      <td>${actionButtonsCell(`
         ${r.status === 'Success' && r.is_archive ? `<button class="btn small outline" type="button" onclick="downloadBackup(${r.id})">Download</button>` : ''}
         <button class="btn small outline" type="button" onclick="deleteBackup(${r.id})">Delete</button>
-      </td>
+      `)}</td>
     </tr>
     ${r.status === 'Failed' && r.error_message ? `<tr><td></td><td colspan="10" style="padding-top:0;"><span class="muted" style="font-size:12px;">${esc(r.error_message)}</span></td></tr>` : ''}
     ${r.skipped_files ? (() => { const skipped = JSON.parse(r.skipped_files); return `<tr><td></td><td colspan="10" style="padding-top:0;">
