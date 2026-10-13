@@ -7511,8 +7511,7 @@ PAGES.employees = async (el) => {
     ${collapsiblePanel('employees-list', `Employees (${emps.length})`, `
       ${emps.some(e => !e.full_name || !e.full_name.trim()) ? '<div class="msg err">One or more employees below have a blank name (created before this was required) - click Edit on the highlighted row(s) and fill in Full Name.</div>' : ''}
       <div id="emp-table-container">${sortableTableHTML('employees', EMP_LIST_COLUMNS, emps, employeeRowHTML, html => { document.getElementById('emp-table-container').innerHTML = html; })}</div>
-    `)}
-    <div class="panel" id="emp-edit-panel" style="display:none;"><h3>Edit Employee</h3><div id="emp-edit-body"></div></div>`;
+    `)}`;
   window.__EMP_CACHE = emps; window.__EMP_DEPTS = depts;
 };
 window.addEmployee = async () => {
@@ -7535,12 +7534,13 @@ window.addEmployee = async () => {
 window.downloadEmployeeTemplate = () => downloadTemplateFile('/hr/employees/template', 'employee_upload_template.xlsx');
 window.uploadEmployeeTemplate = () => uploadTemplateFile('/hr/employees/bulk-upload', 'em-upload-file', 'em-upload-result', () => navigate('employees'));
 
+// Edit Employee (2026-10-13: converted from a bottom-of-page scroll-to
+// panel to the generic popup - see openEditVendor's own comment for why).
 window.openEditEmployee = (id) => {
   const e = (window.__EMP_CACHE || []).find(x => x.id === id);
   if (!e) return;
   const depts = window.__EMP_DEPTS || [];
-  const panel = document.getElementById('emp-edit-panel');
-  document.getElementById('emp-edit-body').innerHTML = `
+  openAppModal('Edit Employee — ' + esc(e.full_name || e.employee_code || ''), `
     <div class="form-grid">
       <div><label>Employee Code</label><input id="eme-code" value="${esc(e.employee_code)||''}"></div>
       <div><label>Full Name</label><input id="eme-name" value="${esc(e.full_name)}"></div>
@@ -7580,13 +7580,12 @@ window.openEditEmployee = (id) => {
       <div><label>Visa Availability</label><input id="eme-visa" value="${esc(e.visa_availability)||''}"></div>
       <div><label>Driving License Number</label><input id="eme-dl" value="${esc(e.driving_license_number)||''}"></div>
     </div>
-    <button class="btn" onclick="saveEditEmployee(${id})">Save Changes</button>
-    <button class="btn outline" type="button" onclick="document.getElementById('emp-edit-panel').style.display='none'">Cancel</button>`;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    <button class="btn" id="eme-save-btn-${id}" onclick="saveEditEmployee(${id})">Save Changes</button>
+    <div id="eme-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
 };
 window.saveEditEmployee = async (id) => {
-  if (!val('eme-name').trim()) { alert('Full Name is required.'); return; }
+  const errEl = document.getElementById('eme-err');
+  if (!val('eme-name').trim()) { errEl.textContent = 'Full Name is required.'; errEl.style.display = 'block'; return; }
   try {
     await api('/hr/employees/' + id, { method: 'PUT', body: JSON.stringify({
       employee_code: val('eme-code'), full_name: val('eme-name'), department_id: val('eme-dept'), designation: val('eme-desig'),
@@ -7601,8 +7600,8 @@ window.saveEditEmployee = async (id) => {
       referred_by_employee_id: val('eme-referred-by') || null, referral_incentive_amount: val('eme-referral-amount') || 0,
       probation_end_date: val('eme-probation-end') || null,
     })});
-    navigate('employees');
-  } catch (e) { alert(e.message); }
+    confirmSavedThenClose(`eme-save-btn-${id}`, 'employees');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ---- Referral Incentives ----
