@@ -595,6 +595,18 @@ window.closeAppModal = () => {
   const el = document.getElementById('app-modal-backdrop');
   if (el) el.remove();
 };
+// Shared "saved" confirmation for Edit popups (2026-10-13) - every Edit
+// flow converted from an inline/scroll-to panel to this modal needed some
+// visible proof a save actually took effect before the popup disappears,
+// rather than either a silent navigate() or a blocking alert() stacked on
+// top of the now-closing modal. Disables the clicked Save button and shows
+// "Saved ✓" on it briefly, then closes the modal and refreshes the
+// underlying list.
+function confirmSavedThenClose(buttonId, pageKey, delayMs) {
+  const btn = document.getElementById(buttonId);
+  if (btn) { btn.disabled = true; btn.textContent = 'Saved ✓'; }
+  setTimeout(() => { closeAppModal(); navigate(pageKey); }, delayMs || 700);
+}
 window.toggleCollapsiblePanel = (key) => {
   const el = document.getElementById('cp-' + key);
   if (!el) return;
@@ -2016,7 +2028,6 @@ async function renderApprovalDrilldown(key) {
 }
 
 // ---- Clients ----
-let EDITING_CLIENT_ID = null;
 function renderClientRows(rows) {
   return tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
     <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
@@ -2040,7 +2051,6 @@ PAGES.clients = async (el) => {
       <textarea id="cl-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
       <div style="margin-top:10px;">
         <button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button>
-        <button class="btn outline" id="cl-cancel-btn" onclick="cancelClientEdit()" style="display:none;">Cancel</button>
       </div>
     </div>
     <div id="cl-addresses-panel"></div>
@@ -2053,34 +2063,48 @@ PAGES.clients = async (el) => {
       <div id="cl-table-wrap">${renderClientRows(clients)}</div>
     `)}`;
 };
+// Edit Client (2026-10-13: converted from repurposing the "Add Client" form
+// at the top of the page - scroll-to-it, swap its title/button text - into
+// the generic popup, see openEditVendor's own comment for why). A separate
+// form from Add Client's own (cle- prefixed ids, not cl-) so Add stays
+// completely untouched rather than needing an edit-mode branch inside it.
+// Bill-to/Ship-to Addresses management still populates in the background
+// (the same #cl-addresses-panel on the page, below Add Client) exactly as
+// before - not part of what was asked to change here.
 window.editClient = (c) => {
-  EDITING_CLIENT_ID = c.id;
-  document.getElementById('cl-form-title').textContent = `Edit Client — ${c.name} (${c.client_code || '#' + c.id})`;
-  document.getElementById('cl-name').value = c.name || '';
-  document.getElementById('cl-contact').value = c.contact_person || '';
-  document.getElementById('cl-phone').value = c.phone || '';
-  document.getElementById('cl-email').value = c.email || '';
-  document.getElementById('cl-gstin').value = c.gstin || '';
-  document.getElementById('cl-source').value = c.source || '';
-  document.getElementById('cl-address').value = c.address || '';
-  document.getElementById('cl-save-btn').textContent = 'Save Changes';
-  document.getElementById('cl-cancel-btn').style.display = 'inline-block';
-  document.getElementById('cl-form-title').scrollIntoView({ behavior: 'smooth' });
+  openAppModal('Edit Client — ' + esc(c.name) + (c.client_code ? ' (' + esc(c.client_code) + ')' : ''), `
+    <div class="form-grid">
+      <div><label>Name</label><input id="cle-name" value="${esc(c.name)}"></div>
+      <div><label>Contact Person</label><input id="cle-contact" value="${esc(c.contact_person)}"></div>
+      <div><label>Phone</label><input id="cle-phone" value="${esc(c.phone)}"></div>
+      <div><label>Email</label><input id="cle-email" value="${esc(c.email)}"></div>
+      <div><label>GSTIN</label><input id="cle-gstin" value="${esc(c.gstin)}"></div>
+      <div><label>Source</label><input id="cle-source" value="${esc(c.source)}" placeholder="Referral / Website / Exhibition"></div>
+    </div>
+    <label>Address</label>
+    <textarea id="cle-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(c.address)}</textarea>
+    <button class="btn" id="cle-save-btn" onclick="saveClientEdit(${c.id})" style="margin-top:10px;">Save Changes</button>
+    <div id="cle-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
   renderClientAddressesPanel(c.id);
 };
-window.cancelClientEdit = () => navigate('clients');
+window.saveClientEdit = async (id) => {
+  const errEl = document.getElementById('cle-err');
+  const payload = {
+    name: val('cle-name'), contact_person: val('cle-contact'), phone: val('cle-phone'),
+    email: val('cle-email'), gstin: val('cle-gstin'), source: val('cle-source'), address: val('cle-address'),
+  };
+  try {
+    await api('/masters/clients/' + id, { method: 'PUT', body: JSON.stringify(payload) });
+    confirmSavedThenClose('cle-save-btn', 'clients');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
 window.saveClient = async () => {
   const payload = {
     name: val('cl-name'), contact_person: val('cl-contact'), phone: val('cl-phone'),
     email: val('cl-email'), gstin: val('cl-gstin'), source: val('cl-source'), address: val('cl-address')
   };
   try {
-    if (EDITING_CLIENT_ID) {
-      await api('/masters/clients/' + EDITING_CLIENT_ID, { method: 'PUT', body: JSON.stringify(payload) });
-      EDITING_CLIENT_ID = null;
-    } else {
-      await api('/masters/clients', { method: 'POST', body: JSON.stringify(payload) });
-    }
+    await api('/masters/clients', { method: 'POST', body: JSON.stringify(payload) });
     navigate('clients');
   } catch (e) { alert(e.message); }
 };
@@ -4769,9 +4793,7 @@ PAGES.vendors = async (el) => {
     `);
   const vendorLabels = { 'add-vendor': 'Add Vendor', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Vendors List' };
   const vendorOrder = await fetchPanelOrder('vendors', Object.keys(vendorPanels));
-  el.innerHTML = `
-    ${reorderablePanelsHTML('vendors', vendorPanels, vendorOrder, vendorLabels)}
-    <div class="panel" id="ve-edit-panel" style="display:none;"><h3>Edit Vendor</h3><div id="ve-edit-body"></div></div>`;
+  el.innerHTML = reorderablePanelsHTML('vendors', vendorPanels, vendorOrder, vendorLabels);
   window.__VENDOR_CACHE = vendors;
 };
 function renderVendorRows(rows) {
@@ -4819,11 +4841,15 @@ window.loadVendorLedgerInto = async (vendorId, vendorName, from, to) => {
     `;
   } catch (e) { body.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
 };
+// Edit Vendor (2026-10-13: converted from a bottom-of-page scroll-to panel
+// to the generic popup) - openAppModal() centers the form right where the
+// click happened instead of relocating attention elsewhere on the page,
+// and confirmSavedThenClose() shows a visible "Saved" state on the button
+// before the modal closes and the list refreshes.
 window.openEditVendor = (id) => {
   const v = (window.__VENDOR_CACHE || []).find(x => x.id === id);
   if (!v) return;
-  const panel = document.getElementById('ve-edit-panel');
-  document.getElementById('ve-edit-body').innerHTML = `
+  openAppModal('Edit Vendor — ' + esc(v.legal_name || v.name), `
     <div class="form-grid">
       <div><label>Legal / Trade Name *</label><input id="ve-name" value="${esc(v.legal_name || v.name)}"></div>
       <div><label>Vendor Type</label><select id="ve-type"><option value="">-</option>${['Manufacturer','Trader','Service Provider','Distributor','Other'].map(t => `<option ${v.vendor_type===t?'selected':''}>${t}</option>`).join('')}</select></div>
@@ -4844,11 +4870,8 @@ window.openEditVendor = (id) => {
       <div><label>Payment Terms</label><input id="ve-terms" value="${esc(v.payment_terms)}"></div>
       <div><label>Payment Terms (Days)</label><input id="ve-terms-days" type="number" value="${v.payment_terms_days||0}"></div>
     </div>
-    <button class="btn" onclick="saveEditVendor(${id})">Save Changes</button>
-    <button class="btn outline" type="button" onclick="document.getElementById('ve-edit-panel').style.display='none'">Cancel</button>
-    <div id="ve-edit-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    <button class="btn" id="ve-edit-save-btn" onclick="saveEditVendor(${id})">Save Changes</button>
+    <div id="ve-edit-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
 };
 window.saveEditVendor = async (id) => {
   const errEl = document.getElementById('ve-edit-err');
@@ -4861,7 +4884,7 @@ window.saveEditVendor = async (id) => {
       contact_person: val('ve-contact'), phone: val('ve-phone'), email: val('ve-email'), po_email: val('ve-po-email'),
       payment_terms: val('ve-terms'), payment_terms_days: val('ve-terms-days'),
     })});
-    navigate('vendors');
+    confirmSavedThenClose('ve-edit-save-btn', 'vendors');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.deleteVendor = async (id) => {
@@ -5701,7 +5724,6 @@ function renderSinglePORow(o) {
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
-    <tr id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>
     <tr id="po-addline-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-addline-body-${o.id}"></div></td></tr>
     <tr id="po-history-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-history-${o.id}"></div></td></tr>`;
 }
@@ -5717,11 +5739,6 @@ window.togglePOGroupLines = (id) => {
   const chev = document.getElementById(`po-group-chev-${id}`);
   const showing = rows.length && rows[0].style.display !== 'none';
   rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
-  // Collapsing also closes any line's Edit panel left open underneath it -
-  // expanding again deliberately leaves those alone (they stay whatever
-  // togglePOEdit last set, i.e. hidden by default) rather than force-opening
-  // every line's edit form just because the group itself got expanded.
-  if (showing) document.querySelectorAll(`.po-group-sub-${id}`).forEach(r => { r.style.display = 'none'; });
   if (chev) chev.textContent = showing ? '▸' : '▾';
 };
 function renderMultiLinePOGroup(lines) {
@@ -5743,8 +5760,7 @@ function renderMultiLinePOGroup(lines) {
       ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
       ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
       ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}`)}</td>
-    </tr>
-    <tr class="po-group-sub-${groupId}" id="po-edit-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-edit-body-${o.id}"></div></td></tr>`).join('');
+    </tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
       <td><a href="#" onclick="togglePOGroupLines(${groupId});return false;" style="text-decoration:none;"><span id="po-group-chev-${groupId}">▸</span> <b>${esc(first.po_no)}</b></a></td><td>${esc(first.vendor_name)}</td>
@@ -5761,7 +5777,7 @@ function renderMultiLinePOGroup(lines) {
       <button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
       <button class="btn small outline" type="button" onclick="togglePOTerms(${first.id})">Terms</button>
       ${anyDraft ? `<button class="btn small" type="button" onclick="submitPOForApproval(${first.id})">Submit Whole PO for Approval</button>` : ''}
-      ${canEditPO(first) ? `<button class="btn small outline" type="button" onclick="togglePOGroupEditFirst(${groupId})">Edit</button>` : ''}
+      ${canEditPO(first) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${first.id})">Edit</button>` : ''}
       ${canAddPOLine(first) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${first.id})">+ Add Line Item</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button>`)}</td></tr>
@@ -5816,37 +5832,20 @@ function poEditForm(o) {
     <div><label>Ship-To Address</label><select id="po-edit-ship-address-${o.id}"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}" ${a.id===o.company_ship_address_id?'selected':''}>${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
   </div>
   <div><label>Terms</label><textarea id="po-edit-terms-${o.id}" rows="2" style="width:100%;">${esc(o.terms||'')}</textarea></div>
-  <button class="btn small" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
+  <button class="btn small" id="po-edit-save-${o.id}" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
   <div id="po-edit-err-${o.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
 }
-// Group-header "Edit" button for a multi-line PO (2026-10-13) - previously
-// Edit only existed per-line, hidden behind the collapsed "N items" toggle,
-// so a multi-line Draft/PendingApproval PO had no obvious way to edit it at
-// all without first expanding. groupId is always the group's first line's
-// own id (see renderMultiLinePOGroup), so editing it also edits every
-// shared header field (vendor/addresses/freight/terms) - PUT /orders/:id
-// already propagates those onto every sibling line, same as editing any
-// other line would. Expands the group first if it's still collapsed, so the
-// opened edit form has visible context, then opens that line's own edit
-// panel via the existing togglePOEdit().
-window.togglePOGroupEditFirst = (groupId) => {
-  const rows = document.querySelectorAll(`.po-group-row-${groupId}`);
-  const collapsed = !rows.length || rows[0].style.display === 'none';
-  if (collapsed) window.togglePOGroupLines(groupId);
-  window.togglePOEdit(groupId);
-};
+// Edit PO (2026-10-13: converted from an inline table row to the generic
+// popup - see openEditVendor's own comment for why). id is always a
+// specific PO line's own id - for a multi-line group's header Edit button,
+// the caller passes the group's first line's id (see renderMultiLinePOGroup),
+// since editing any one line already propagates shared header fields
+// (vendor/addresses/freight/terms) onto every sibling line via PUT
+// /orders/:id, same as editing any other line would.
 window.togglePOEdit = (id) => {
-  const row = document.getElementById(`po-edit-row-${id}`);
-  const showing = row.style.display !== 'none';
-  row.style.display = showing ? 'none' : '';
-  // Built once, on first open, rather than for every row up front - this
-  // form embeds the full vendor list and the full searchable item picker,
-  // which gets expensive multiplied across every PO row on page load.
-  if (!showing && !row.dataset.built) {
-    const o = (window.__PO_ORDERS_CACHE || []).find(x => x.id === id);
-    if (o) document.getElementById(`po-edit-body-${id}`).innerHTML = poEditForm(o);
-    row.dataset.built = '1';
-  }
+  const o = (window.__PO_ORDERS_CACHE || []).find(x => x.id === id);
+  if (!o) return;
+  openAppModal('Edit PO — ' + esc(o.po_no), poEditForm(o));
 };
 window.savePOEdit = async (id) => {
   const errEl = document.getElementById(`po-edit-err-${id}`);
@@ -5860,7 +5859,7 @@ window.savePOEdit = async (id) => {
       company_address_id: val(`po-edit-bill-address-${id}`) || null,
       company_ship_address_id: val(`po-edit-ship-address-${id}`) || null,
     })});
-    navigate('purchase-orders');
+    confirmSavedThenClose(`po-edit-save-${id}`, 'purchase-orders');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.cancelPO = async (id) => {
@@ -6151,9 +6150,7 @@ async function renderItemMasterSheet(el) {
   };
   const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
   const itemOrder = await fetchPanelOrder('store', Object.keys(itemPanels));
-  el.innerHTML = `
-    ${reorderablePanelsHTML('store', itemPanels, itemOrder, itemLabels)}
-    <div class="panel" id="it-edit-panel" style="display:none;"><h3>Edit Item</h3><div id="it-edit-body"></div></div>`;
+  el.innerHTML = reorderablePanelsHTML('store', itemPanels, itemOrder, itemLabels);
   if (pendingItems.length) renderPendingItemsPanel(pendingItems);
 }
 window.approveItemChange = async (id) => {
@@ -6169,11 +6166,12 @@ window.reactivateItem = async (id) => {
   try { await api('/masters/items/' + id + '/reactivate', { method: 'POST' }); navigate('store'); }
   catch (e) { alert(e.message); }
 };
+// Edit Item (2026-10-13: converted from a bottom-of-page scroll-to panel to
+// the generic popup - see openEditVendor's own comment for why).
 window.openEditItem = (id) => {
   const i = (window.__ITEM_CACHE || []).find(x => x.id === id);
   if (!i) return;
-  const panel = document.getElementById('it-edit-panel');
-  document.getElementById('it-edit-body').innerHTML = `
+  openAppModal('Edit Item — ' + esc(i.name), `
     <div class="form-grid">
       <div><label>Item Code</label><input id="ie-code" value="${esc(i.item_code)}"></div>
       <div><label>Name</label><input id="ie-name" value="${esc(i.name)}"></div>
@@ -6183,12 +6181,9 @@ window.openEditItem = (id) => {
       <div><label>Rack / Location</label><input id="ie-loc" value="${esc(i.location)}"></div>
       <div><label>Reorder Level</label><input id="ie-reorder" type="number" value="${i.reorder_level||0}"></div>
     </div>
-    <button class="btn" onclick="saveEditItem(${id})">Save Changes</button>
-    <button class="btn outline" type="button" onclick="document.getElementById('it-edit-panel').style.display='none'">Cancel</button>
+    <button class="btn" id="ie-save-btn" onclick="saveEditItem(${id})">Save Changes</button>
     <div class="muted" style="margin-top:8px;">${ME.role === 'Admin' ? 'As Admin, this applies immediately.' : "This won't take effect until an Admin approves it - see Pending Item Changes above."}</div>
-    <div id="ie-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    <div id="ie-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
 };
 window.saveEditItem = async (id) => {
   const errEl = document.getElementById('ie-err');
@@ -6198,7 +6193,7 @@ window.saveEditItem = async (id) => {
       hsn_code: val('ie-hsn'), location: val('ie-loc'), reorder_level: val('ie-reorder'),
     })});
     if (r.message) alert(r.message);
-    navigate('store');
+    confirmSavedThenClose('ie-save-btn', 'store');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.deleteItem = async (id) => {
@@ -9783,13 +9778,17 @@ window.addUser = async () => {
     navigate('users');
   } catch (e) { alert(e.message); }
 };
+// Edit User (2026-10-13: converted from a bottom-of-page scroll-to panel to
+// the generic popup - see openEditVendor's own comment for why). The
+// #user-edit-panel bottom panel stays in the page for linkUserEmployee's
+// own Change Link flow (not part of this ask) - independent now, no
+// conflict since the popup is a floating overlay.
 window.openEditUser = (id) => {
   const u = (window.__USER_CACHE || []).find(x => x.id === id);
   if (!u) return;
   const roles = window.__USER_ROLES || [];
   const depts = window.__USER_DEPTS || [];
-  const panel = document.getElementById('user-edit-panel');
-  document.getElementById('user-edit-body').innerHTML = `
+  openAppModal('Edit User — ' + esc(u.username), `
     <div class="form-grid">
       <div><label>Full Name</label><input id="ue-name" value="${esc(u.full_name)}"></div>
       <div><label>Email</label><input id="ue-email" type="email" value="${esc(u.email)}"></div>
@@ -9799,13 +9798,12 @@ window.openEditUser = (id) => {
       <div><label>Reset Password (optional)</label><input id="ue-pass" type="text" placeholder="Leave blank to keep current password"></div>
     </div>
     <div id="ue-dept-warning" class="msg err" style="display:none;margin-top:8px;"></div>
-    <button class="btn" onclick="saveEditUser(${id})">Save Changes</button>
-    <button class="btn outline" type="button" onclick="document.getElementById('user-edit-panel').style.display='none'">Cancel</button>`;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    <button class="btn" id="ue-save-btn" onclick="saveEditUser(${id})">Save Changes</button>
+    <div id="ue-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
   checkUserDeptWarning('ue');
 };
 window.saveEditUser = async (id) => {
+  const errEl = document.getElementById('ue-err');
   try {
     const body = {
       full_name: val('ue-name'), email: val('ue-email'), role_id: val('ue-role'), department_id: val('ue-dept') || null,
@@ -9813,8 +9811,8 @@ window.saveEditUser = async (id) => {
     };
     if (val('ue-pass').trim()) body.password = val('ue-pass').trim();
     await api(`/masters/users/${id}`, { method: 'PUT', body: JSON.stringify(body) });
-    navigate('users');
-  } catch (e) { alert(e.message); }
+    confirmSavedThenClose('ue-save-btn', 'users');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.toggleUser = async (id) => {
   await api(`/masters/users/${id}/toggle`, { method: 'PATCH' });
