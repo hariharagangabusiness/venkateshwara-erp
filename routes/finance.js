@@ -14,6 +14,8 @@ const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { poReceivedQty } = require('../lib/purchaseOrders');
 const { oversightDepartmentIds } = require('../lib/roleOversight');
+const { computeVendorLedger } = require('../lib/vendorLedger');
+const { generateVendorLedgerPdf } = require('../lib/vendorLedgerPdf');
 const router = express.Router();
 router.use(authRequired);
 
@@ -733,18 +735,28 @@ function nextCreditNoteNo() {
   db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(next));
   return `VCN/${fy}/${String(next).padStart(4, '0')}`;
 }
-// Every purchase_orders row already carries its own received quantity via
-// poReceivedQty() - "billable" is that minus whatever's already been
-// invoiced (across any non-cancelled purchase invoice) against that exact
-// line, so a PO billed in two instalments can't be double-invoiced.
+// Stock In/Out + Store HOD reconciliation (2026-10-13) - a PO line's
+// received quantity used to be directly billable the moment it physically
+// arrived; now every receipt starts a grn_reconciliation (Store HOD review,
+// PO vs vendor invoice) and only an Approved one counts toward what Finance
+// may bill. Summing received_qty off Approved rows (rather than reusing
+// poReceivedQty()) can never exceed what was actually received, since each
+// grn_reconciliations row is created 1:1 with the stock_movements IN row
+// that produced it (see routes/purchase.js's POST /store/receive).
+function poLineReconciledQty(poLineId) {
+  return db.prepare(`SELECT COALESCE(SUM(received_qty), 0) as n FROM grn_reconciliations WHERE po_id = ? AND status = 'Approved'`).get(poLineId).n;
+}
+// "Billable" is reconciled quantity minus whatever's already been invoiced
+// (across any non-cancelled purchase invoice) against that exact line, so a
+// PO billed in two instalments can't be double-invoiced.
 function poLineBillableQty(poLineId) {
-  const received = poReceivedQty(poLineId);
+  const reconciled = poLineReconciledQty(poLineId);
   const invoiced = db.prepare(`
     SELECT COALESCE(SUM(pii.quantity), 0) as n
     FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
     WHERE pii.purchase_order_line_id = ? AND pi.status != 'Cancelled' AND pi.status != 'Rejected'
   `).get(poLineId).n;
-  return received - invoiced;
+  return reconciled - invoiced;
 }
 function purchaseInvoicePaidAmount(invoiceId) {
   return db.prepare(`
@@ -785,7 +797,28 @@ router.get('/purchase-invoices/billable-po-lines', requirePermission('purchase_i
     SELECT po.*, i.name as item_name FROM purchase_orders po LEFT JOIN items i ON i.id = po.item_id
     WHERE po.po_no = ? AND po.status != 'Cancelled'
   `).all(poNo);
-  res.json(lines.map(l => ({ ...l, received_qty: poReceivedQty(l.id), billable_qty: poLineBillableQty(l.id) })).filter(l => l.billable_qty > 0));
+  res.json(lines.map(l => ({ ...l, received_qty: poReceivedQty(l.id), reconciled_qty: poLineReconciledQty(l.id), billable_qty: poLineBillableQty(l.id) })).filter(l => l.billable_qty > 0));
+});
+// "Ready to Bill" queue (2026-10-13) - every Approved GRN reconciliation
+// still carrying billable quantity, with the vendor's own invoice
+// no/date/qty/rate already captured at receiving time, so the New Purchase
+// Invoice form can be pre-filled rather than Accounts retyping what Store
+// already typed off the same bill. Accounts still clicks Create - this
+// never books an invoice on its own.
+// Registered before '/purchase-invoices/:id' for the same :id-before-
+// literal-sibling reason as billable-po-lines above.
+router.get('/purchase-invoices/ready-to-bill', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT g.*, po.po_no, po.vendor_id, po.item_id, po.hsn_code, po.gst_rate, po.unit,
+      i.name as item_name, v.name as vendor_name
+    FROM grn_reconciliations g
+    JOIN purchase_orders po ON po.id = g.po_id
+    LEFT JOIN items i ON i.id = po.item_id
+    LEFT JOIN vendors v ON v.id = po.vendor_id
+    WHERE g.status = 'Approved'
+    ORDER BY g.id DESC
+  `).all();
+  res.json(rows.map(r => ({ ...r, billable_qty: poLineBillableQty(r.po_id) })).filter(r => r.billable_qty > 0));
 });
 router.get('/purchase-invoices/:id', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
   const inv = db.prepare(`
@@ -822,7 +855,7 @@ router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), 
     if (l.purchase_order_line_id) {
       const billable = poLineBillableQty(l.purchase_order_line_id);
       if (Number(l.quantity) > billable) {
-        return res.status(400).json({ error: `${prefix}only ${billable} is still billable against that PO line (already received/invoiced accounted for).` });
+        return res.status(400).json({ error: `${prefix}only ${billable} is still billable against that PO line (requires Store HOD's GRN reconciliation to be Approved, minus whatever's already invoiced).` });
       }
     }
   }
@@ -1337,6 +1370,38 @@ router.get('/gst-summary', requirePermission('report.view_all', 'expense_voucher
     net_payable: outputGst - itc,
     note: 'For reference only - a reporting aid to help estimate GST liability. Verify with your GST practitioner before filing.',
   });
+});
+
+// ---- Vendor Ledger (2026-10-13) - mirrors routes/soa.js's client ledger,
+// backed by Purchase Invoices (debit) + payments/vendor credit notes
+// (credit) via lib/vendorLedger.js's computeVendorLedger(). Lives here
+// rather than its own router since every other piece of this PO payment
+// lifecycle (Purchase Invoices, vendor payments, credit notes) is already
+// in this file.
+router.get('/vendor-ledger/:vendorId', requirePermission('purchase_invoice.manage', 'report.view_all'), (req, res) => {
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.vendorId);
+  if (!vendor) return res.status(404).json({ error: 'Not found' });
+  const ledger = computeVendorLedger(req.params.vendorId, { from: req.query.from, to: req.query.to });
+  res.json({ vendor, ...ledger });
+});
+router.get('/vendor-ledger/:vendorId/pdf', requirePermission('purchase_invoice.manage', 'report.view_all'), async (req, res) => {
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.vendorId);
+  if (!vendor) return res.status(404).json({ error: 'Not found' });
+  const { from, to } = req.query;
+  const ledger = computeVendorLedger(vendor.id, { from, to });
+  try {
+    const gen = await generateVendorLedgerPdf(vendor, ledger, { start: from || null, end: to || null }, getCompanySettings());
+    const filename = buildDownloadFilename({
+      docType: 'Vendor_Ledger', reference: vendor.id, partyName: vendor.legal_name || vendor.name,
+      date: to || new Date().toISOString().slice(0, 10), version: buildVersionStamp(),
+    });
+    res.download(gen.outPath, filename, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

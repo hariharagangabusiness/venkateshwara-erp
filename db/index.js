@@ -1348,6 +1348,49 @@ const MIGRATIONS = [
     expense_category_id INTEGER PRIMARY KEY REFERENCES expense_categories(id),
     operating_expense_category_id INTEGER NOT NULL REFERENCES operating_expense_categories(id)
   )`,
+
+  // Store & Inventory GRN reconciliation (2026-10-13): one row per receiving
+  // event against a PO line (same one-line-at-a-time shape POST
+  // /store/receive already uses, per the owner's own confirmed choice over
+  // batching several lines into one GRN). `received_qty`/`po_rate` snapshot
+  // what the PO line looked like at the moment of receipt - a PO can be
+  // edited later (see routes/purchase.js's unconditional resubmit-on-edit),
+  // so this is what Store's HOD is actually reconciling against, not
+  // whatever the PO happens to say today. vendor_invoiced_qty/rate are what
+  // the receiving clerk typed off the vendor's own bill (optional - it may
+  // not have arrived yet); comparing these against received_qty/po_rate is
+  // the whole point of this table. Starts PendingApproval and only counts
+  // toward a PO line's billable quantity once Approved - see
+  // routes/finance.js's poLineReconciledQty(), which Purchase Invoice
+  // booking is now gated on instead of raw received quantity. See
+  // bootstrapGrnReconciliationApproval() below for the approval chain
+  // (Store department's own HOD/Supervisor, single step).
+  `CREATE TABLE IF NOT EXISTS grn_reconciliations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id INTEGER NOT NULL REFERENCES purchase_orders(id),
+    stock_movement_id INTEGER REFERENCES stock_movements(id),
+    received_qty REAL NOT NULL,
+    po_rate REAL NOT NULL,
+    vendor_invoice_no TEXT,
+    vendor_invoice_date TEXT,
+    vendor_invoiced_qty REAL,
+    vendor_invoiced_rate REAL,
+    status TEXT DEFAULT 'PendingApproval', -- PendingApproval, Approved, Rejected, InfoRequested
+    approval_id INTEGER REFERENCES approvals(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // Supports both the "how much of this PO line is reconciled" rollup
+  // (routes/finance.js's poLineReconciledQty()) and the Stock In/Out page's
+  // own per-line reconciliation-status lookup.
+  `CREATE INDEX IF NOT EXISTS idx_grn_reconciliations_po_id ON grn_reconciliations(po_id)`,
+  // Performance fix (2026-10-13): GET /orders (routes/purchase.js) computes
+  // every PO line's received_qty via a correlated subquery on
+  // stock_movements.reference ('PO#'+id) - with no index on that column,
+  // this was a full table scan per PO row, the primary driver of the
+  // reported "huge lag" reloading the page after receiving stock, worse the
+  // more movements accumulate over time.
+  `CREATE INDEX IF NOT EXISTS idx_stock_movements_reference ON stock_movements(reference)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -2117,6 +2160,26 @@ function bootstrapServiceRequestApproval() {
   } catch (e) { console.error('[db] Service request approval bootstrap failed:', e.message); }
 }
 
+// GRN reconciliation (2026-10-13) - single step, the Store department's own
+// HOD/Supervisor (role 'Store' + requires_supervisor), same shape as
+// ServiceRequest/SaleRejectionMRN above. Every PO-line receipt starts this
+// chain (see routes/purchase.js's POST /store/receive) - min_amount=0 so
+// it's always required regardless of the line's value, matching the
+// "always goes to Store HOD" ask rather than a value-gated step.
+function bootstrapGrnReconciliationApproval() {
+  try {
+    const storeRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Store'`).get()?.id;
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('GrnReconciliation', 'Store & Inventory HOD review - PO vs vendor invoice reconciliation at receiving')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'GrnReconciliation'`).get().id;
+    if (storeRoleId) upsertStep.run(chainId, 1, storeRoleId, 0, 1);
+  } catch (e) { console.error('[db] GRN reconciliation approval bootstrap failed:', e.message); }
+}
+
 // One-time (but safe to re-run every boot) data repair: PUT /employees/:id
 // used to write `monthly_salary`/`referral_incentive_amount` straight
 // through from the request body without the same `|| 0` fallback
@@ -2145,5 +2208,5 @@ module.exports = {
   db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
-  bootstrapServiceRequestApproval,
+  bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
 };

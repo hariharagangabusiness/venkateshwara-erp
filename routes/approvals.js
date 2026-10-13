@@ -199,6 +199,23 @@ function describeEntity(entityType, entityId) {
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
+    case 'grn_reconciliation': {
+      const r = db.prepare(`
+        SELECT g.*, po.po_no, i.name as item_name, v.name as vendor_name, u.full_name as raised_by_name,
+          u.department_id as department_id, d.name as department_name
+        FROM grn_reconciliations g JOIN purchase_orders po ON po.id = g.po_id
+        LEFT JOIN items i ON i.id = po.item_id LEFT JOIN vendors v ON v.id = po.vendor_id
+        LEFT JOIN users u ON u.id = g.created_by LEFT JOIN departments d ON d.id = u.department_id
+        WHERE g.id = ?`).get(entityId);
+      if (!r) return {};
+      const variance = r.vendor_invoiced_qty != null && r.vendor_invoiced_rate != null
+        ? ` (vendor bill: ${r.vendor_invoiced_qty} @ ₹${r.vendor_invoiced_rate})` : ' (vendor bill not yet on file)';
+      return {
+        ref: `${r.po_no} / ${r.item_name || 'item'}`,
+        summary: `${r.received_qty} received @ PO rate ₹${r.po_rate} from ${r.vendor_name || 'vendor'}${variance}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+      };
+    }
     default:
       return {};
   }
@@ -422,6 +439,17 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE fg_dispatches SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // Single-row, same shape as purchase_invoice/service_request. Rejected
+  // stays a visible, numbered record (never deleted) - same "honest audit
+  // trail" convention every other approval-gated entity in this app
+  // follows; the receipt itself already happened (stock is already in),
+  // this is only reconciliation status.
+  if (entityType === 'grn_reconciliation') {
+    const statusByResult = { Approved: 'Approved', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE grn_reconciliations SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   // Single-row, same shape as purchase_invoice. Rejected stays a visible,
   // numbered record (never deleted) - same "honest audit trail" convention
   // every other approval-gated entity in this app follows.
@@ -472,6 +500,7 @@ const ENTITY_LABELS = {
   fg_dispatch: 'FG Dispatch',
   sale_rejection_mrn: 'Sale Rejection MRN',
   service_request: 'Service Request (Inbound Email)',
+  grn_reconciliation: 'GRN Reconciliation (Store)',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -539,6 +568,7 @@ const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
   referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3, service_request: 1,
+  grn_reconciliation: 3,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
@@ -546,6 +576,7 @@ const ENTITY_TABLE = {
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
   referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
   fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns', service_request: 'service_requests',
+  grn_reconciliation: 'grn_reconciliations',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;
