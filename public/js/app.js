@@ -4779,9 +4779,9 @@ function renderVendorRows(rows) {
     <td>${esc(v.legal_name || v.name)}</td><td>${esc(v.gstin)||'-'}</td><td>${esc(v.state)||'-'}</td><td>${esc(v.category)||'-'}</td>
     <td>${esc(v.contact_person)||'-'}</td><td>${esc(v.phone)||'-'}</td><td>${esc(v.po_email||v.email)||'-'}</td>
     <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td>
-    <td><button class="btn small outline" type="button" onclick="openEditVendor(${v.id})">Edit</button>
+    <td>${actionButtonsCell(`<button class="btn small outline" type="button" onclick="openEditVendor(${v.id})">Edit</button>
     <button class="btn small outline" type="button" onclick="openVendorLedger(${v.id},'${esc(v.legal_name||v.name).replace(/'/g,"\\'")}')">Ledger</button>
-    <button class="btn small outline" type="button" onclick="deleteVendor(${v.id})">Delete</button></td></tr>`);
+    <button class="btn small outline" type="button" onclick="deleteVendor(${v.id})">Delete</button>`)}</td></tr>`);
 }
 // Vendor Ledger (2026-10-13) - Purchase Invoices (debit) vs payments/vendor
 // credit notes (credit), mirroring the client Statement of Accounts - see
