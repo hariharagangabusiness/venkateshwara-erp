@@ -731,9 +731,12 @@ CREATE TABLE IF NOT EXISTS challan_items (
 );
 
 -- ===================== FREE OF COST (FOC) MATERIAL ISSUE =====================
+-- foc_no is NOT unique - a multi-item FOC request (2026-10-13) is several
+-- rows sharing one foc_no, same "several rows, one shared document number"
+-- shape as a multi-line Purchase Order's po_no (see purchase_orders).
 CREATE TABLE IF NOT EXISTS foc_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  foc_no TEXT UNIQUE,
+  foc_no TEXT,
   sales_order_id INTEGER REFERENCES sales_orders(id),
   project_id INTEGER REFERENCES projects(id),
   department_id INTEGER REFERENCES departments(id),

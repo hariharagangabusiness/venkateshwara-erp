@@ -1542,6 +1542,48 @@ function migrateOffersClientIdNullable() {
 }
 migrateOffersClientIdNullable();
 
+// FOC Material Request: multi-line items (2026-10-13, requested directly by
+// the owner) - foc_requests.foc_no was originally UNIQUE (one row = one
+// request = one item), but a multi-item FOC request is now several rows
+// sharing one foc_no by design (see routes/finance.js's POST /foc), the
+// exact same "several rows, one shared document number" shape
+// migratePurchaseOrdersDropPoNoUnique() above already established for
+// purchase_orders.po_no. Built generically off the live table's own PRAGMA
+// table_info()/foreign_key_list() (mirroring migrateOffersClientIdNullable()
+// just above) rather than a hand-transcribed column list, since foc_requests
+// has picked up 8 ALTER TABLE ADD COLUMNs since the base schema and
+// hand-copying them risked silently dropping one. No triggers reference
+// foc_requests and nothing else has a foreign key into it, so this is a
+// plain rebuild - no trigger drop/recreate or self-referential FK concern
+// like offers needed. Guarded so it only ever fires once, against a
+// database where foc_no is still UNIQUE; schema.sql's own CREATE TABLE
+// already omits the constraint for a brand-new database.
+function migrateFocRequestsDropFocNoUnique() {
+  const row = raw.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='foc_requests'`).get();
+  if (!row || !/foc_no\s+TEXT\s+UNIQUE/i.test(row.sql)) return;
+  const cols = raw.prepare(`PRAGMA table_info(foc_requests)`).all();
+  const fks = raw.prepare(`PRAGMA foreign_key_list(foc_requests)`).all();
+  const fkTableByColumn = new Map(fks.map(fk => [fk.from, fk.table]));
+  const colDefs = cols.map(c => {
+    if (c.pk) return `${c.name} INTEGER PRIMARY KEY AUTOINCREMENT`;
+    let def = `${c.name} ${c.type}`;
+    if (c.notnull) def += ' NOT NULL';
+    if (fkTableByColumn.has(c.name)) def += ` REFERENCES ${fkTableByColumn.get(c.name)}(id)`;
+    if (c.dflt_value !== null && c.dflt_value !== undefined) def += ` DEFAULT ${c.dflt_value}`;
+    return def;
+  });
+  const colNames = cols.map(c => c.name).join(', ');
+  raw.exec(`
+    BEGIN;
+    CREATE TABLE foc_requests_new (${colDefs.join(',\n      ')});
+    INSERT INTO foc_requests_new (${colNames}) SELECT ${colNames} FROM foc_requests;
+    DROP TABLE foc_requests;
+    ALTER TABLE foc_requests_new RENAME TO foc_requests;
+    COMMIT;
+  `);
+}
+migrateFocRequestsDropFocNoUnique();
+
 // ---- Round 14: Duplicate-prevention UNIQUE indexes ----
 // SQLite has no "ALTER TABLE ... ADD UNIQUE" for an existing column, so these
 // are enforced as CREATE UNIQUE INDEX (idempotent via IF NOT EXISTS) rather

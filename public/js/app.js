@@ -1732,8 +1732,13 @@ async function renderApprovalDrilldown(key) {
     if (r.source === 'FOC') {
       const rows = await api('/finance/foc');
       const f = rows.find(x => x.id === r.entity_id);
+      // A multi-item FOC request is several rows sharing one foc_no - show
+      // every item in the group, not just the one the queue entry's
+      // entity_id happens to point at.
+      const groupItems = f ? rows.filter(x => x.foc_no === f.foc_no) : [];
       container.innerHTML = f ? `<div style="padding:10px;background:#f9f9f9;border-radius:6px;font-size:13px;">
-        <b>Item:</b> ${esc(f.item_description)} &nbsp; <b>Qty:</b> ${f.quantity} ${esc(f.unit)} &nbsp; <b>Est. Value:</b> ₹${fmt(f.estimated_value)}<br>
+        ${tableHTML(['Item', 'Qty', 'Unit', 'Est. Value (₹)'], groupItems, it => `
+          <tr><td>${esc(it.item_description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${fmt(it.estimated_value)}</td></tr>`)}
         <b>Reason:</b> ${esc(f.reason)||'-'}
       </div>` : '<p class="muted">FOC request not found.</p>';
       return;
@@ -10061,13 +10066,43 @@ window.saveMatrixChain = async (chainId) => {
 
 // ---- FOC (Free of Cost) Material Issue ----
 // Department HOD/Supervisor logins raise these (linked to a sales order
-// wherever possible); Management/Admin approve or reject them. All fields
-// stay editable while a request is Pending.
+// wherever possible); Management/Admin approve or reject them. A request is
+// stored as one foc_requests row per line item, several rows sharing one
+// foc_no for a multi-item request (2026-10-13) - same "several rows, one
+// shared document number" shape multi-line Purchase Orders already use for
+// po_no. Approve/Reject/Issue act on the whole foc_no group at once; all
+// fields stay editable per-line while the group is still Pending.
+let FOC_LINES = [];
+function renderFocLines() {
+  const el = document.getElementById('foc-lines');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Material / Item Description', 'Quantity', 'Unit', 'Estimated Value (₹)', ''], FOC_LINES, (l, i) => `
+    <tr>
+      <td><input value="${esc(l.item_description||'')}" placeholder="e.g. M8 hex bolts, 2 boxes" onchange="FOC_LINES[${i}].item_description=this.value" style="min-width:200px;"></td>
+      <td><input type="number" value="${l.quantity}" onchange="FOC_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
+      <td><input value="${esc(l.unit||'Nos')}" onchange="FOC_LINES[${i}].unit=this.value" style="width:80px;"></td>
+      <td><input type="number" value="${l.estimated_value}" onchange="FOC_LINES[${i}].estimated_value=Number(this.value)" style="width:110px;"></td>
+      <td>${FOC_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="FOC_LINES.splice(${i},1);renderFocLines()">✕</button>` : ''}</td>
+    </tr>`);
+}
+window.addFocLine = () => { FOC_LINES.push({ item_description: '', quantity: 1, unit: 'Nos', estimated_value: 0 }); renderFocLines(); };
 PAGES.foc = async (el) => {
   const [reqs, orders, clients, departments] = await Promise.all([api('/finance/foc'), api('/sales/orders'), api('/masters/clients'), api('/masters/departments')]);
   const canRequest = has('foc.request') && (ME.is_supervisor || ME.role === 'Admin');
   const canApprove = has('foc.approve');
   window.FOC_DEPARTMENTS = departments;
+  FOC_LINES = [{ item_description: '', quantity: 1, unit: 'Nos', estimated_value: 0 }];
+  // Group the flat row list by foc_no - a single-item request (the common
+  // case) renders exactly like before; a multi-item one collapses its line
+  // rows by default (per this file's own standing collapse-by-default rule
+  // for multi-item/repeating list UI), same look as a multi-line Purchase
+  // Order's own group row.
+  const groups = [];
+  const byFocNo = new Map();
+  reqs.forEach(r => {
+    if (!byFocNo.has(r.foc_no)) { const g = []; byFocNo.set(r.foc_no, g); groups.push(g); }
+    byFocNo.get(r.foc_no).push(r);
+  });
   el.innerHTML = `
     ${canRequest ? `
     <div class="panel"><h3>New FOC Material Request</h3>
@@ -10086,29 +10121,70 @@ PAGES.foc = async (el) => {
       <div class="form-grid" id="foc-manual-wrap">
         <div><label>Customer Name (manual)</label><input id="foc-cust-name"></div>
       </div>
-      <div class="form-grid">
-        <div><label>Material / Item Description</label><input id="foc-desc" placeholder="e.g. M8 hex bolts, 2 boxes"></div>
-        <div><label>Quantity</label><input id="foc-qty" type="number" value="1"></div>
-        <div><label>Unit</label><input id="foc-unit" value="Nos"></div>
-        <div><label>Estimated Value (₹)</label><input id="foc-value" type="number" value="0"></div>
+      <h4 style="margin:12px 0 4px;">Material Line Items</h4>
+      <div id="foc-lines"></div>
+      <button class="btn small outline" type="button" onclick="addFocLine()">+ Add Line Item</button>
+      <div class="form-grid" style="margin-top:10px;">
         <div><label>Reason</label><input id="foc-reason" placeholder="Why this needs to go out free of cost"></div>
-        <div><label>Supporting Document</label><input id="foc-file" type="file"></div>
       </div>
       <button class="btn" onclick="addFOC()">Submit Request</button>
-      <div class="muted" style="margin-top:8px;">Approval: Management/Admin.</div>
+      <div class="muted" style="margin-top:8px;">Approval: Management/Admin, for the whole request (all items) at once. Attach supporting documents per item after submitting.</div>
     </div>` : ''}
-    ${collapsiblePanel('foc-requests-list', `FOC Requests (${reqs.length})`, `
-      ${tableHTML(['FOC No', 'Order', 'Customer', 'Requesting Dept', 'Item', 'Qty', 'Value', 'Requested By', 'Fulfilling Dept', 'Status', 'Action', ''], reqs, r => `
-        <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
-        <td>${focEditableCell(r, 'item_description')}</td><td>${focEditableCell(r, 'quantity')} ${esc(r.unit)}</td><td>₹${fmt(r.estimated_value)}</td>
-        <td>${esc(r.requested_by_name)}</td><td>${esc(r.fulfilling_department_name)||'-'}</td><td>${badge(r.status)}</td>
-        <td>${focActions(r, canApprove)}</td>
-        <td>
-          <button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button>
-          ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}
-        </td></tr>
-        <tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="12"><div id="foc-attachments-${r.id}"></div></td></tr>`)}
+    ${collapsiblePanel('foc-requests-list', `FOC Requests (${groups.length})`, `
+      ${tableHTML(['FOC No', 'Order', 'Customer', 'Requesting Dept', 'Item(s)', 'Value', 'Requested By', 'Fulfilling Dept', 'Status', 'Action'], groups, lines => focGroupRowHTML(lines, canApprove))}
     `)}`;
+  renderFocLines();
+};
+function focGroupRowHTML(lines, canApprove) {
+  const r = lines[0];
+  const totalValue = lines.reduce((s, l) => s + (l.estimated_value || 0), 0);
+  const itemsCell = lines.length === 1
+    ? `${focEditableCell(r, 'item_description')} (${focEditableCell(r, 'quantity')} ${esc(r.unit)})`
+    : `<a href="#" onclick="toggleFocGroup('${esc(r.foc_no)}');return false;">${lines.length} items</a>`;
+  const groupRow = `
+    <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
+    <td>${itemsCell}</td><td>₹${fmt(totalValue)}</td>
+    <td>${esc(r.requested_by_name)}</td><td>${esc(r.fulfilling_department_name)||'-'}</td><td>${badge(r.status)}</td>
+    <td>${focActions(r, canApprove)}
+      ${lines.length === 1 ? `<button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button>` : ''}
+      ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}
+    </td></tr>
+    ${lines.length === 1 ? `<tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${r.id}"></div></td></tr>` : ''}`;
+  if (lines.length === 1) return groupRow;
+  // Collapsed by default - each line gets its own editable cells and
+  // Attachments toggle, same as a single-item request would have, plus an
+  // Add Line Item mini-form while the group is still Pending.
+  const detailRows = lines.map(l => `
+    <tr class="foc-group-row-${esc(r.foc_no)}" style="display:none;">
+      <td></td><td colspan="3">${focEditableCell(l, 'item_description')}</td>
+      <td>${focEditableCell(l, 'quantity')} ${esc(l.unit)} - ₹${fmt(l.estimated_value)}</td>
+      <td colspan="3"></td><td><button class="btn small outline" type="button" onclick="toggleFOCAttachments(${l.id})">Attachments</button></td></tr>
+    <tr class="foc-group-row-${esc(r.foc_no)}" id="foc-att-row-${l.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${l.id}"></div></td></tr>`).join('');
+  const addLineForm = r.status === 'Pending' ? `
+    <tr class="foc-group-row-${esc(r.foc_no)}" style="display:none;"><td colspan="10">
+      <div class="form-grid" style="margin:6px 0;">
+        <div><label>New Item</label><input id="foc-newline-desc-${r.id}" placeholder="Material / item description"></div>
+        <div><label>Qty</label><input id="foc-newline-qty-${r.id}" type="number" value="1" style="width:80px;"></div>
+        <div><label>Unit</label><input id="foc-newline-unit-${r.id}" value="Nos" style="width:80px;"></div>
+        <div><label>Est. Value (₹)</label><input id="foc-newline-value-${r.id}" type="number" value="0" style="width:110px;"></div>
+      </div>
+      <button class="btn small outline" type="button" onclick="addFocGroupLine(${r.id})">+ Add Line Item</button>
+    </td></tr>` : '';
+  return groupRow + detailRows + addLineForm;
+}
+window.toggleFocGroup = (focNo) => {
+  document.querySelectorAll(`.foc-group-row-${CSS.escape(focNo)}`).forEach(row => {
+    row.style.display = row.style.display === 'none' ? '' : 'none';
+  });
+};
+window.addFocGroupLine = async (id) => {
+  try {
+    await api(`/finance/foc/${id}/add-line`, { method: 'POST', body: JSON.stringify({
+      item_description: val(`foc-newline-desc-${id}`), quantity: val(`foc-newline-qty-${id}`),
+      unit: val(`foc-newline-unit-${id}`), estimated_value: val(`foc-newline-value-${id}`),
+    })});
+    navigate('foc');
+  } catch (e) { alert(e.message); }
 };
 window.toggleFOCAttachments = (id) => {
   const row = document.getElementById(`foc-att-row-${id}`);
@@ -10123,7 +10199,9 @@ function focActions(r, canApprove) {
   if (r.status === 'Pending' && canApprove) {
     // The approver must pick which department will issue the material
     // before Approve or Reject is even clickable - routing is decided as
-    // part of the decision, not as a separate step afterward.
+    // part of the decision, not as a separate step afterward. Acts on the
+    // whole foc_no group (routes/finance.js resolves it server-side from
+    // this one representative row's id).
     const deptOptions = (window.FOC_DEPARTMENTS || []).map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
     return `
       <select id="foc-dept-${r.id}" style="margin-bottom:4px;" onchange="document.getElementById('foc-approve-${r.id}').disabled = !this.value; document.getElementById('foc-reject-${r.id}').disabled = !this.value;">
@@ -10145,18 +10223,14 @@ function focActions(r, canApprove) {
 }
 window.addFOC = async () => {
   try {
-    const { id } = await api('/finance/foc', { method: 'POST', body: JSON.stringify({
+    const lines = FOC_LINES.filter(l => l.item_description && l.item_description.trim());
+    if (!lines.length) { alert('Add at least one line item.'); return; }
+    await api('/finance/foc', { method: 'POST', body: JSON.stringify({
       sales_order_id: val('foc-so') || null,
       client_id: val('foc-client') || null, customer_name: val('foc-cust-name'),
       contact_person: val('foc-contact-person'), contact_phone: val('foc-contact-phone'),
-      item_description: val('foc-desc'), quantity: val('foc-qty'),
-      unit: val('foc-unit'), estimated_value: val('foc-value'), reason: val('foc-reason'),
+      reason: val('foc-reason'), lines,
     })});
-    const fileInput = document.getElementById('foc-file');
-    if (id && fileInput && fileInput.files.length) {
-      const fd = new FormData(); fd.append('file', fileInput.files[0]);
-      await apiUpload(`/attachments/foc_request/${id}`, fd);
-    }
     navigate('foc');
   } catch (e) { alert(e.message); }
 };

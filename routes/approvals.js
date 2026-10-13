@@ -232,18 +232,38 @@ function unifiedQueueForUser(user) {
   });
 
   if (userHasPermission(user, 'foc.approve')) {
-    db.prepare(`
-      SELECT f.id, f.foc_no, f.item_description, f.estimated_value, f.department_id, f.created_at,
+    // A multi-item FOC request (2026-10-13) is several foc_requests rows
+    // sharing one foc_no - one queue entry per foc_no group here, not one
+    // per row, since Approve/Reject/Issue act on the whole group at once
+    // (see routes/finance.js) and a duplicate row per line would let the
+    // second click 400 with "already actioned" the moment the first click
+    // resolves the group. entity_id is the group's first (lowest-id) row -
+    // every group action resolves the whole foc_no from any id in it, so
+    // this is just a stable, deterministic pick, not a meaningful "the"
+    // request row.
+    const pending = db.prepare(`
+      SELECT f.id, f.foc_no, f.item_description, f.quantity, f.unit, f.estimated_value, f.department_id, f.created_at,
         d.name as department_name, u.full_name as raised_by_name
       FROM foc_requests f LEFT JOIN departments d ON d.id = f.department_id LEFT JOIN users u ON u.id = f.requested_by
       WHERE f.status = 'Pending'
-    `).all().forEach(r => {
+      ORDER BY f.id
+    `).all();
+    const byFocNo = new Map();
+    pending.forEach(r => {
+      if (!byFocNo.has(r.foc_no)) byFocNo.set(r.foc_no, []);
+      byFocNo.get(r.foc_no).push(r);
+    });
+    byFocNo.forEach(rows => {
+      const first = rows[0];
+      const summary = rows.length > 1
+        ? rows.map(r => `${r.item_description} (Qty: ${r.quantity} ${r.unit})`).join('; ')
+        : (first.item_description || 'FOC material request');
       items.push({
-        source: 'FOC', id: r.id, entity_type: 'foc_request', entity_id: r.id,
+        source: 'FOC', id: first.id, entity_type: 'foc_request', entity_id: first.id,
         chain_name: 'FOC Material Requests', chain_description: 'Free-of-cost material issue requests',
-        ref: r.foc_no, summary: r.item_description || 'FOC material request', amount: r.estimated_value,
-        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
-        current_step: null, created_at: r.created_at,
+        ref: first.foc_no, summary, amount: rows.reduce((s, r) => s + (r.estimated_value || 0), 0),
+        department_id: first.department_id, department_name: first.department_name, raised_by_name: first.raised_by_name,
+        current_step: null, created_at: first.created_at,
       });
     });
   }
