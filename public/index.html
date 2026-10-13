@@ -122,13 +122,22 @@
   .btn{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:var(--fs-base);cursor:pointer;font-weight:600;font-family:inherit;}
   .btn:hover{background:var(--primary-light);}
   .btn.small{padding:4px 10px;font-size:var(--fs-xs);}
-  /* Purchase Orders list (2026-10-13): each row shows a different subset of
-     buttons depending on status (Draft/PendingApproval/Open/...), so with
-     buttons auto-sizing to their own text, rows wrap onto 1 vs 2 lines
-     inconsistently and the whole column looks jumbled. Scoped to .po-actions
-     only (not every .btn.small in the app) so no other page's button sizing
-     changes. */
-  .po-actions .btn.small{min-width:92px;text-align:center;}
+  /* Purchase Orders list (2026-10-13, refined 2026-10-13 after a first pass
+     with flex-wrap + min-width still looked jumbled): each row shows a
+     different subset of buttons depending on status (Draft/PendingApproval/
+     Open/...), with labels ranging from "Edit" to "Submit Whole PO for
+     Approval" - a min-width alone still let flex-wrap pack buttons by their
+     actual content width, so short- and long-label rows broke onto
+     different line counts with no shared column boundaries. A real grid
+     fixes that: every .po-actions cell lays its buttons into the same
+     column width (the table enforces equal column width across every row,
+     so every row's grid computes the same number/width of columns), and a
+     button's own text wraps onto a 2nd line inside its cell rather than
+     forcing the cell wider - the same discipline whether a row has 2
+     buttons or 7. Scoped to .po-actions only (not every .btn.small in the
+     app) so no other page's button sizing changes. */
+  .po-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px;}
+  .po-actions .btn.small{width:100%;text-align:center;white-space:normal;line-height:1.3;}
   .btn.green{background:var(--green);} .btn.green:hover{background:#276749;}
   .btn.red{background:var(--red);} .btn.red:hover{background:#9b2c2c;}
   .btn.outline{background:#fff;color:var(--primary);border:1px solid var(--primary);}

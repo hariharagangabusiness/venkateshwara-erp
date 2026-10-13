@@ -5594,14 +5594,16 @@ function summarizePOGroupStatus(lines) {
   if (distinct.length === 1) return badge(distinct[0]);
   return distinct.map(s => `${badge(s)} <span class="muted" style="font-size:11px;">×${counts[s]}</span>`).join(' ');
 }
-// Shared actions-cell wrapper (2026-10-07) - every button group in the PO
-// list used to be a bare run of inline <button>s with no layout container,
-// which wraps raggedly once it overflows a cell's width. flex-wrap keeps
-// every button a consistent size and lets the group wrap onto a clean new
-// line instead. Used for both the Documents cell and the action-buttons
-// cell, in both the single-line row and the multi-line group header.
+// Shared actions-cell wrapper (2026-10-07, grid layout added 2026-10-13) -
+// every button group in the PO list used to be a bare run of inline
+// <button>s with no layout container, which wrapped raggedly once it
+// overflowed a cell's width. The actual grid/uniform-width rules live on
+// the .po-actions class in public/index.html (so the same layout applies
+// consistently everywhere this helper is used) - this just applies the
+// class. Used for both the Documents cell and the action-buttons cell, in
+// both the single-line row and the multi-line group header.
 function poActionsCell(buttonsHtml) {
-  return `<div class="po-actions" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${buttonsHtml}</div>`;
+  return `<div class="po-actions">${buttonsHtml}</div>`;
 }
 function poAddLineForm(poId) {
   const items = window.__PO_ITEMS || [];
