@@ -1149,8 +1149,17 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
 // in is derived from stock_movements (movement_type='IN', reference =
 // 'PO#'+id) - see lib/purchaseOrders.js's poReceivedQty(), also used by
 // routes/finance.js's Purchase Invoice booking.
+// Receiving against a PO line now also starts a GRN reconciliation - the PO
+// line (at the rate it actually carried at receipt time) plus whatever the
+// vendor's own invoice says (captured here if it's already in hand;
+// optional, since the bill can arrive after the goods) goes to the Store
+// department's own HOD/Supervisor to review and reconcile before any of
+// this quantity can be billed - see poLineReconciledQty() in
+// routes/finance.js, which Purchase Invoice booking is gated on. A receipt
+// with no po_id (ad hoc stock-in, nothing to reconcile against) is
+// untouched by any of this, same as before.
 router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
-  const { item_id, quantity, po_id, project_id } = req.body;
+  const { item_id, quantity, po_id, project_id, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate } = req.body;
   // Validate before hitting the DB - an empty/missing item_id (e.g. the Item
   // Master has no approved items yet, or the picker was left blank) otherwise
   // surfaces as a raw "FOREIGN KEY constraint failed" 500 with no clue what
@@ -1176,9 +1185,10 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
     if (!project) return res.status(400).json({ error: 'That project no longer exists - refresh the page and try again.' });
   }
   const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, moved_by) VALUES (?, 'IN', ?, ?, ?, ?)`)
+    const moveInfo = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, moved_by) VALUES (?, 'IN', ?, ?, ?, ?)`)
       .run(item_id, qty, po_id ? 'PO#' + po_id : null, project_id || null, req.user.id);
     db.prepare(`UPDATE items SET current_stock = current_stock + ? WHERE id = ?`).run(qty, item_id);
+    let grnId = null;
     if (po_id) {
       // Receiving less than the full ordered quantity used to still mark
       // the PO fully 'Received' outright - which then also dropped it out
@@ -1188,10 +1198,56 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
       const receivedSoFar = poReceivedQty(po_id);
       const newStatus = receivedSoFar >= po.quantity ? 'Received' : 'PartiallyReceived';
       db.prepare(`UPDATE purchase_orders SET status = ? WHERE id = ?`).run(newStatus, po_id);
+      const grnInfo = db.prepare(`
+        INSERT INTO grn_reconciliations (po_id, stock_movement_id, received_qty, po_rate, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(po_id, moveInfo.lastInsertRowid, qty, po.rate,
+        (vendor_invoice_no && String(vendor_invoice_no).trim()) || null, vendor_invoice_date || null,
+        vendor_invoiced_qty !== undefined && vendor_invoiced_qty !== '' ? Number(vendor_invoiced_qty) : null,
+        vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
+        req.user.id);
+      grnId = grnInfo.lastInsertRowid;
     }
+    return grnId;
   });
-  tx();
-  res.json({ ok: true });
+  const grnId = tx();
+  if (grnId) {
+    const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', grnId, 0, req.user.id);
+    db.prepare('UPDATE grn_reconciliations SET approval_id = ? WHERE id = ?').run(approvalId, grnId);
+  }
+  res.json({ ok: true, grn_id: grnId });
+});
+
+// GRN reconciliation - the Store HOD's review queue needs the full PO-vs-
+// vendor-invoice comparison (see My Approvals' grn_reconciliation drilldown,
+// routes/approvals.js), and the Stock In/Out page itself shows every line's
+// reconciliation status so receiving clerks can see what's still pending.
+router.get('/store/grn-reconciliations', (req, res) => {
+  let q = `
+    SELECT g.*, po.po_no, po.item_id, i.name as item_name, v.name as vendor_name
+    FROM grn_reconciliations g
+    JOIN purchase_orders po ON po.id = g.po_id
+    LEFT JOIN items i ON i.id = po.item_id
+    LEFT JOIN vendors v ON v.id = po.vendor_id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (req.query.po_id) { q += ' AND g.po_id = ?'; params.push(req.query.po_id); }
+  q += ' ORDER BY g.id DESC';
+  res.json(db.prepare(q).all(...params));
+});
+router.get('/store/grn-reconciliations/:id', (req, res) => {
+  const g = db.prepare(`
+    SELECT g.*, po.po_no, po.item_id, po.quantity as po_quantity, po.unit, po.hsn_code, po.gst_rate,
+      i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin
+    FROM grn_reconciliations g
+    JOIN purchase_orders po ON po.id = g.po_id
+    LEFT JOIN items i ON i.id = po.item_id
+    LEFT JOIN vendors v ON v.id = po.vendor_id
+    WHERE g.id = ?
+  `).get(req.params.id);
+  if (!g) return res.status(404).json({ error: 'Not found' });
+  res.json(g);
 });
 
 router.post('/store/issue', requirePermission('store.manage'), (req, res) => {

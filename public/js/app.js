@@ -1958,6 +1958,24 @@ async function renderApprovalDrilldown(key) {
         ${tableHTML(['Description', 'Qty Rejected', 'Unit', 'Rate (₹)'], items, it => `
           <tr><td>${esc(it.description)}</td><td>${it.quantity_rejected}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td></tr>`)}
       `;
+    } else if (r.entity_type === 'grn_reconciliation') {
+      const [g, hist] = await Promise.all([api(`/purchase/store/grn-reconciliations/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      history = hist;
+      attachType = 'grn_reconciliation';
+      const qtyDiff = g.vendor_invoiced_qty != null && Number(g.vendor_invoiced_qty) !== Number(g.received_qty);
+      const rateDiff = g.vendor_invoiced_rate != null && Number(g.vendor_invoiced_rate) !== Number(g.po_rate);
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">PO vs Vendor Invoice</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>PO No:</b> ${esc(g.po_no)} &nbsp; <b>Item:</b> ${esc(g.item_name)||'-'} &nbsp; <b>Vendor:</b> ${esc(g.vendor_name)||'-'} (${esc(g.vendor_gstin)||'GSTIN N/A'})
+        </p>
+        ${tableHTML(['', 'Qty', 'Rate (₹)'], [1], () => `
+          <tr><td><b>As per PO (received)</b></td><td>${g.received_qty}</td><td>₹${fmt(g.po_rate)}</td></tr>
+          <tr><td><b>As per Vendor Invoice${g.vendor_invoice_no ? ' (' + esc(g.vendor_invoice_no) + (g.vendor_invoice_date ? ', ' + esc(g.vendor_invoice_date) : '') + ')' : ''}</b></td>
+            <td style="${qtyDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_qty != null ? g.vendor_invoiced_qty : 'Not yet on file'}</td>
+            <td style="${rateDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_rate != null ? '₹' + fmt(g.vendor_invoiced_rate) : '-'}</td></tr>`)}
+        ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
+      `;
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -4736,8 +4754,45 @@ function renderVendorRows(rows) {
     <td>${esc(v.contact_person)||'-'}</td><td>${esc(v.phone)||'-'}</td><td>${esc(v.po_email||v.email)||'-'}</td>
     <td>${esc(v.payment_terms)||'-'}</td><td>${badge(v.status||'Active')}</td>
     <td><button class="btn small outline" type="button" onclick="openEditVendor(${v.id})">Edit</button>
+    <button class="btn small outline" type="button" onclick="openVendorLedger(${v.id},'${esc(v.legal_name||v.name).replace(/'/g,"\\'")}')">Ledger</button>
     <button class="btn small outline" type="button" onclick="deleteVendor(${v.id})">Delete</button></td></tr>`);
 }
+// Vendor Ledger (2026-10-13) - Purchase Invoices (debit) vs payments/vendor
+// credit notes (credit), mirroring the client Statement of Accounts - see
+// lib/vendorLedger.js. Uses the generic popup (openAppModal, introduced for
+// Service Request Edit/Schedule) rather than a new standalone page, same
+// "no standalone ledger page for clients either - it lives on an existing
+// screen" precedent soaSectionHTML already set for Client 360.
+window.openVendorLedger = async (vendorId, vendorName) => {
+  openAppModal('Vendor Ledger — ' + esc(vendorName), '<p class="muted">Loading...</p>');
+  await loadVendorLedgerInto(vendorId, vendorName, '', '');
+};
+window.loadVendorLedgerInto = async (vendorId, vendorName, from, to) => {
+  const body = document.getElementById('app-modal-body');
+  if (!body) return;
+  try {
+    const q = (from ? '?from=' + from + (to ? '&to=' + to : '') : (to ? '?to=' + to : ''));
+    const ledger = await api('/finance/vendor-ledger/' + vendorId + q);
+    const rows = ledger.rows || [];
+    body.innerHTML = `
+      <div class="form-grid">
+        <div><label>From</label><input id="vl-from" type="date" value="${esc(from)}"></div>
+        <div><label>To</label><input id="vl-to" type="date" value="${esc(to)}"></div>
+      </div>
+      <button class="btn small" type="button" onclick="loadVendorLedgerInto(${vendorId},'${esc(vendorName).replace(/'/g,"\\'")}',val('vl-from'),val('vl-to'))" style="margin:6px 0;">Apply</button>
+      <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/vendor-ledger/${vendorId}/pdf'+(val('vl-from')?'?from='+val('vl-from')+(val('vl-to')?'&to='+val('vl-to'):''):(val('vl-to')?'?to='+val('vl-to'):'')),'Vendor-Ledger-${vendorId}.pdf')">Download PDF</button>
+      ${tableHTML(['Date', 'Type', 'Reference', 'Description', 'Debit (₹)', 'Credit (₹)', 'Balance (₹)'],
+        [{ _opening: true }, ...rows], r => r._opening
+          ? `<tr><td colspan="6" style="text-align:right;"><b>Opening Balance</b></td><td><b>₹${fmt(ledger.openingBalance)}</b></td></tr>`
+          : `<tr><td>${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.ref)}</td><td>${esc(r.description)}</td>
+             <td>${r.debit ? '₹' + fmt(r.debit) : '-'}</td><td>${r.credit ? '₹' + fmt(r.credit) : '-'}</td><td>₹${fmt(r.balance)}</td></tr>`)}
+      <p style="text-align:right;margin-top:8px;">
+        <b>Total Debit:</b> ₹${fmt(ledger.totalDebit)} &nbsp; <b>Total Credit:</b> ₹${fmt(ledger.totalCredit)} &nbsp;
+        <b>Closing Balance:</b> ₹${fmt(Math.abs(ledger.closingBalance))} ${ledger.closingBalance !== 0 ? (ledger.closingBalance > 0 ? '(Payable)' : '(In Credit)') : ''}
+      </p>
+    `;
+  } catch (e) { body.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
 window.openEditVendor = (id) => {
   const v = (window.__VENDOR_CACHE || []).find(x => x.id === id);
   if (!v) return;
@@ -6152,15 +6207,22 @@ function poGroupMatch(g, q) {
     g.lines.some(l => (l.item_name || '').toLowerCase().includes(q));
 }
 async function renderStockInOutSheet(el) {
-  const items = (await api('/masters/items')).filter(i => !['Pending', 'Discontinued'].includes(i.status));
-  const movements = await api('/purchase/store/movements');
-  const openPOs = (await api('/purchase/orders')).filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
-  const [projects, departments, clients] = await Promise.all([api('/projects'), api('/masters/departments'), api('/masters/clients')]);
+  // Previously 4 sequential awaits (6 total round trips once fetchPanelOrder's
+  // own read is counted) - total wait time was their SUM, not their MAX. Same
+  // fix already applied to Purchase Requests/Orders on 2026-10-04.
+  const [itemsRaw, movements, posRaw, projects, departments, clients, grns] = await Promise.all([
+    api('/masters/items'), api('/purchase/store/movements'), api('/purchase/orders'),
+    api('/projects'), api('/masters/departments'), api('/masters/clients'),
+    api('/purchase/store/grn-reconciliations'),
+  ]);
+  const items = itemsRaw.filter(i => !['Pending', 'Discontinued'].includes(i.status));
+  const openPOs = posRaw.filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
   window.__STOCK_ITEMS = items;
   window.__GROUPED_POS = groupPOsByNo(openPOs);
   window.__STOCK_PROJECTS = projects;
   window.__STOCK_DEPARTMENTS = departments;
   window.__STOCK_CLIENTS = clients;
+  window.__STOCK_GRNS = grns;
   const stockTabs = [['receive', 'Receive (IN)'], ['issue', 'Issue to Production (OUT)']];
   const stockPanels = {
     'scan-barcode': `
@@ -6189,8 +6251,22 @@ async function renderStockInOutSheet(el) {
         <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td>
           <td>${esc(m.department_name)||'-'}</td><td>${esc(m.client_name)||'-'}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
     `),
+    'grn-reconciliation': collapsiblePanel('grn-reconciliation', `GRN Reconciliation (${grns.length})`, `
+      <p class="muted">Every PO-line receipt goes to the Store HOD/Supervisor to reconcile the PO against the vendor's own invoice (My Approvals) before that quantity can be billed in Purchase Invoices (AP). Attach the vendor's invoice copy here if it wasn't uploaded at receiving time.</p>
+      ${tableHTML(['PO No', 'Item', 'Vendor', 'Received Qty', 'PO Rate', 'Vendor Invoice', 'Vendor Qty/Rate', 'Status', ''], grns, g => {
+        const qtyDiff = g.vendor_invoiced_qty != null && Number(g.vendor_invoiced_qty) !== Number(g.received_qty);
+        const rateDiff = g.vendor_invoiced_rate != null && Number(g.vendor_invoiced_rate) !== Number(g.po_rate);
+        return `<tr><td>${esc(g.po_no)}</td><td>${esc(g.item_name)||'-'}</td><td>${esc(g.vendor_name)||'-'}</td>
+          <td>${g.received_qty}</td><td>₹${fmt(g.po_rate)}</td>
+          <td>${esc(g.vendor_invoice_no)||'-'}${g.vendor_invoice_date ? ' (' + esc(g.vendor_invoice_date) + ')' : ''}</td>
+          <td>${g.vendor_invoiced_qty != null ? `<span style="${qtyDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_qty}</span>` : '-'} / ${g.vendor_invoiced_rate != null ? `<span style="${rateDiff?'color:#b00;font-weight:bold;':''}">₹${fmt(g.vendor_invoiced_rate)}</span>` : '-'}</td>
+          <td>${badge(g.status)}</td>
+          <td><button class="btn small outline" type="button" onclick="toggleGrnAttachments(${g.id})">Attach Invoice</button></td></tr>
+          <tr id="grn-attach-row-${g.id}" style="display:none;"><td colspan="8"><div id="grn-attach-${g.id}"></div></td></tr>`;
+      })}
+    `),
   };
-  const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements' };
+  const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements', 'grn-reconciliation': 'GRN Reconciliation' };
   const stockOrder = await fetchPanelOrder('stock-in-out', Object.keys(stockPanels));
   el.innerHTML = reorderablePanelsHTML('stock-in-out', stockPanels, stockOrder, stockLabels);
   renderStockTabBody();
@@ -6250,14 +6326,20 @@ function renderStockPoLines() {
   if (vendorInput) vendorInput.value = group ? group.vendor_name : '';
   if (group) {
     linesEl.innerHTML = `
-      <table><thead><tr><th>Item</th><th>Ordered</th><th>Received</th><th>Qty to Receive</th><th></th></tr></thead>
+      <p class="muted">Compare against the vendor's own invoice before receiving - typing their invoiced qty/rate here sends it straight to the Store HOD/Supervisor to reconcile, alongside what the PO itself says.</p>
+      <table><thead><tr><th>Item</th><th>PO Rate</th><th>Ordered</th><th>Received</th><th>Qty to Receive</th><th>Vendor Invoice No</th><th>Invoice Date</th><th>Vendor Qty</th><th>Vendor Rate</th><th></th></tr></thead>
       <tbody>${group.lines.map(l => {
         const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
         return `<tr>
           <td>${esc(l.item_name) || '-'}</td>
+          <td>₹${fmt(l.rate)}</td>
           <td>${l.quantity}</td>
           <td>${l.received_qty || 0}</td>
-          <td><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0" style="width:90px;"></td>
+          <td><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0" style="width:80px;"></td>
+          <td><input id="st-po-line-vinv-${l.id}" placeholder="optional" style="width:110px;"></td>
+          <td><input id="st-po-line-vdate-${l.id}" type="date" style="width:130px;"></td>
+          <td><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
+          <td><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
           <td><button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button></td>
         </tr>`;
       }).join('')}</tbody></table>
@@ -6280,7 +6362,14 @@ window.receivePoLine = async (lineId) => {
     let line = null;
     for (const g of (window.__GROUPED_POS || [])) { line = g.lines.find(l => l.id === lineId); if (line) break; }
     if (!line) return;
-    await api('/purchase/store/receive', { method: 'POST', body: JSON.stringify({ item_id: line.item_id, po_id: line.id, quantity: qty }) });
+    const body = {
+      item_id: line.item_id, po_id: line.id, quantity: qty,
+      vendor_invoice_no: val(`st-po-line-vinv-${lineId}`) || undefined,
+      vendor_invoice_date: val(`st-po-line-vdate-${lineId}`) || undefined,
+      vendor_invoiced_qty: val(`st-po-line-vqty-${lineId}`) || undefined,
+      vendor_invoiced_rate: val(`st-po-line-vrate-${lineId}`) || undefined,
+    };
+    await api('/purchase/store/receive', { method: 'POST', body: JSON.stringify(body) });
     navigate('stock-in-out');
   } catch (e) { alert(e.message); }
 };
@@ -6319,6 +6408,16 @@ window.storeMove = async (type) => {
     await api('/purchase/store/' + type, { method: 'POST', body: JSON.stringify(body) });
     navigate('stock-in-out');
   } catch (e) { alert(e.message); }
+};
+window.toggleGrnAttachments = (grnId) => {
+  const row = document.getElementById('grn-attach-row-' + grnId);
+  if (!row) return;
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : 'table-row';
+  if (!showing && !row.dataset.built) {
+    row.dataset.built = '1';
+    renderAttachmentsWidget('grn_reconciliation', grnId, document.getElementById('grn-attach-' + grnId));
+  }
 };
 window.downloadStockTemplate = () => downloadTemplateFile('/purchase/store/movements/template', 'stock_in_out_upload_template.xlsx');
 window.uploadStockTemplate = () => uploadTemplateFile('/purchase/store/movements/bulk-upload', 'st-upload-file', 'st-upload-result', () => navigate('stock-in-out'));
@@ -10819,6 +10918,22 @@ function renderPILines() {
       <td><input value="${esc(l.hsn_code)}" onchange="PI_LINES[${i}].hsn_code=this.value" style="width:90px;"></td>
       <td><input type="number" value="${l.gst_rate}" onchange="PI_LINES[${i}].gst_rate=Number(this.value)" style="width:70px;"></td></tr>`);
 }
+window.prefillFromReadyToBill = async (g) => {
+  document.getElementById('pi-vendor').value = g.vendor_id;
+  await window.loadVendorPOsForInvoice();
+  document.getElementById('pi-po').value = g.po_no;
+  await window.loadBillablePOLines();
+  if (g.vendor_invoice_no) document.getElementById('pi-vendor-inv-no').value = g.vendor_invoice_no;
+  if (g.vendor_invoice_date) document.getElementById('pi-vendor-inv-date').value = g.vendor_invoice_date;
+  // The vendor's own invoiced rate (captured at receiving time) is what
+  // Accounts should actually bill at, if it differs from the PO rate the
+  // line was pre-filled with - that's the whole point of reconciling first.
+  if (g.vendor_invoiced_rate != null) {
+    const idx = PI_LINES.findIndex(l => l.purchase_order_line_id === g.po_id);
+    if (idx >= 0) { PI_LINES[idx].rate = g.vendor_invoiced_rate; renderPILines(); }
+  }
+  document.getElementById('pi-vendor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 window.loadVendorPOsForInvoice = async () => {
   const vendorId = Number(val('pi-vendor'));
   const sel = document.getElementById('pi-po');
@@ -10829,11 +10944,13 @@ window.loadVendorPOsForInvoice = async () => {
   PI_LINES = [];
 };
 PAGES['purchase-invoices'] = async (el) => {
-  const [vendors, orders, invoices, creditNotes, pendingBills] = await Promise.all([
+  const [vendors, orders, invoices, creditNotes, pendingBills, readyToBill] = await Promise.all([
     api('/masters/vendors'), api('/purchase/orders'), api('/finance/purchase-invoices'),
     api('/finance/vendor-credit-notes'), api('/finance/pending-purchase-bills'),
+    api('/finance/purchase-invoices/ready-to-bill'),
   ]);
   window.__PI_ORDERS = orders;
+  window.__PI_READY_TO_BILL = readyToBill;
   PI_LINES = [];
   el.innerHTML = `
     <div class="panel"><h3>Book Purchase Invoice (Vendor Bill)</h3>
@@ -10848,6 +10965,14 @@ PAGES['purchase-invoices'] = async (el) => {
       <button class="btn" onclick="bookPurchaseInvoice()" style="margin-top:10px;">Book Invoice</button>
       <div id="pi-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
+    ${collapsiblePanel('ready-to-bill', `Ready to Bill - Reconciled GRNs (${readyToBill.length})`, `
+      <p class="muted">PO lines the Store HOD has already reconciled against the vendor's own invoice - click Create Invoice to pre-fill the form above with what Store already captured, then Book Invoice to confirm.</p>
+      ${tableHTML(['PO No', 'Item', 'Vendor', 'Billable Qty', 'Vendor Invoice', 'Vendor Rate', ''], readyToBill, g => `
+        <tr><td>${esc(g.po_no)}</td><td>${esc(g.item_name)||'-'}</td><td>${esc(g.vendor_name)||'-'}</td><td>${fmt(g.billable_qty)}</td>
+        <td>${esc(g.vendor_invoice_no)||'-'}${g.vendor_invoice_date ? ' (' + esc(g.vendor_invoice_date) + ')' : ''}</td>
+        <td>${g.vendor_invoiced_rate != null ? '₹' + fmt(g.vendor_invoiced_rate) : '-'}</td>
+        <td><button class="btn small" type="button" onclick='prefillFromReadyToBill(${JSON.stringify(g)})'>Create Invoice</button></td></tr>`)}
+    `)}
     ${collapsiblePanel('purchase-invoices-list', `Purchase Invoices (${invoices.length})`, `
       ${tableHTML(['Invoice No', 'Vendor', 'Vendor Bill No', 'PO', 'Taxable', 'GST', 'TDS', 'Net Payable', 'Paid', 'Due', 'Status', ''], invoices, i => `
         <tr><td>${esc(i.invoice_no)}</td><td>${esc(i.vendor_name)}</td><td>${esc(i.vendor_invoice_no)}</td><td>${esc(i.po_no)||'-'}</td>
