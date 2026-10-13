@@ -220,6 +220,13 @@ router.get('/expense-summary', requirePermission('report.view_all', 'expense_vou
 // ---- Free of Cost (FOC) material issue ----
 // Requested by a department HOD/Supervisor (linked to a sales order/project
 // wherever possible), approved or rejected by a Management login (or Admin).
+// A "request" is still stored as one foc_requests row per line item (no
+// separate foc_request_items table - same "several rows, one shared
+// document number" shape multi-line Purchase Orders already use for po_no,
+// see db/index.js's migrateFocRequestsDropFocNoUnique()), several rows
+// sharing one foc_no for a multi-item request (2026-10-13). Approve/Reject/
+// Issue below all act on the whole foc_no group at once - one decision, one
+// fulfilling department, for every line - never per line.
 router.get('/foc', (req, res) => {
   res.json(db.prepare(`
     SELECT f.*, so.order_no, p.project_code, d.name as department_name,
@@ -239,12 +246,26 @@ router.get('/foc', (req, res) => {
   `).all());
 });
 
+// Accepts either the current multi-line shape (`lines: [...]`, what the New
+// FOC Material Request form's Add Line Item button sends) or the older
+// single-item shape (item_description/quantity/unit/estimated_value at the
+// top level, no `lines`) for any other caller - e.g. routes/sales.js's MRN
+// "FOC Replacement" resolution, which inserts its own single-row request
+// directly and never goes through this route at all. Both funnel into the
+// same insert loop, mirroring routes/purchase.js's POST /orders exactly.
 router.post('/foc', requirePermission('foc.request'), (req, res) => {
   if (req.user.role_name !== 'Admin' && !req.user.is_supervisor) {
     return res.status(403).json({ error: 'Only a department HOD/Supervisor (or Admin) can raise an FOC request.' });
   }
-  const { sales_order_id, client_id, customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason } = req.body;
-  if (!item_description) return res.status(400).json({ error: 'Describe the material being requested.' });
+  const { sales_order_id, client_id, customer_name, contact_person, contact_phone, reason } = req.body;
+  const lines = Array.isArray(req.body.lines) && req.body.lines.length
+    ? req.body.lines
+    : [{ item_description: req.body.item_description, quantity: req.body.quantity, unit: req.body.unit, estimated_value: req.body.estimated_value }];
+  for (let i = 0; i < lines.length; i++) {
+    if (!String(lines[i].item_description || '').trim()) {
+      return res.status(400).json({ error: `${lines.length > 1 ? `Line ${i + 1}: ` : ''}describe the material being requested.` });
+    }
+  }
   let projectId = null;
   let clientId = client_id || null;
   if (sales_order_id) {
@@ -257,14 +278,49 @@ router.post('/foc', requirePermission('foc.request'), (req, res) => {
     return res.status(400).json({ error: 'Not linked to an order - pick a customer from Clients or type a customer name.' });
   }
   const focNo = 'FOC-' + Date.now();
-  const info = db.prepare(`
+  const insert = db.prepare(`
     INSERT INTO foc_requests (foc_no, sales_order_id, project_id, department_id, requested_by, client_id,
       customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(focNo, sales_order_id || null, projectId, req.user.department_id, req.user.id, clientId,
-    sales_order_id ? null : (customer_name || null), contact_person || null, contact_phone || null,
-    item_description, quantity || 1, unit || 'Nos', estimated_value || 0, reason || null);
-  res.json({ id: info.lastInsertRowid, foc_no: focNo });
+  `);
+  const ids = [];
+  db.transaction(() => {
+    for (const l of lines) {
+      const info = insert.run(focNo, sales_order_id || null, projectId, req.user.department_id, req.user.id, clientId,
+        sales_order_id ? null : (customer_name || null), contact_person || null, contact_phone || null,
+        l.item_description, l.quantity || 1, l.unit || 'Nos', l.estimated_value || 0, reason || null);
+      ids.push(info.lastInsertRowid);
+    }
+  })();
+  res.json({ ids, id: ids[0], foc_no: focNo });
+});
+
+// Adding a line to an already-raised request - only while it's still
+// Pending (per the owner's locked design: once Management has decided,
+// the set of items they decided on shouldn't change - raise a new FOC
+// request for anything further, same spirit as Purchase Orders' own
+// Add Line Item lock). requested_by on the new row is deliberately kept as
+// the ORIGINAL requester's (not whoever happens to be adding the line),
+// since every line in one foc_no group represents one person's one request.
+router.post('/foc/:id/add-line', requirePermission('foc.request', 'foc.approve'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const isOwner = existing.requested_by === req.user.id;
+  const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
+  if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Management can add items to this request.' });
+  if (existing.status !== 'Pending') {
+    return res.status(400).json({ error: 'Items can only be added while this request is still Pending - once a decision has been made, raise a new FOC request for anything further.' });
+  }
+  const { item_description, quantity, unit, estimated_value } = req.body;
+  if (!String(item_description || '').trim()) return res.status(400).json({ error: 'Describe the material being requested.' });
+  const info = db.prepare(`
+    INSERT INTO foc_requests (foc_no, sales_order_id, project_id, department_id, requested_by, client_id,
+      customer_name, contact_person, contact_phone, item_description, quantity, unit, estimated_value, reason, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending')
+  `).run(existing.foc_no, existing.sales_order_id, existing.project_id, existing.department_id, existing.requested_by, existing.client_id,
+    existing.customer_name, existing.contact_person, existing.contact_phone,
+    item_description, quantity || 1, unit || 'Nos', estimated_value || 0, existing.reason);
+  res.json({ id: info.lastInsertRowid, foc_no: existing.foc_no });
 });
 
 // All fields stay editable - by whoever raised it, or Admin/Management -
@@ -330,23 +386,32 @@ function userHasPermission(user, ...codes) {
 // Approving an FOC request fires an in-app to-do + notification for the
 // fulfilling department's HOD, so nobody needs to be told by paper slip or
 // email that free material is waiting on them to issue - the whole
-// "eliminate the paper/email trail" point of this workflow.
-function notifyFocRouted(foc, departmentId) {
+// "eliminate the paper/email trail" point of this workflow. Covers every
+// item in the group in one combined To-Do (2026-10-13) - a multi-item
+// request is one hand-off to the fulfilling department, not one per line.
+function notifyFocRouted(focNo, items, departmentId) {
   const hod = departmentHOD(departmentId);
   if (!hod) return; // no active supervisor on file for that department yet - skip silently, same as bgReminderScan.js's equivalent guard
   const today = new Date().toISOString().slice(0, 10);
   const dueDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
-  const brief = `Issue FOC material - ${foc.foc_no} (${foc.item_description})`;
+  const brief = `Issue FOC material - ${focNo}${items.length > 1 ? ` (${items.length} items)` : ''}`;
+  const itemsList = items.map(it => `${it.item_description} (Qty: ${it.quantity} ${it.unit})`).join('; ');
   const info = db.prepare(`
     INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
     VALUES (?,?,?,?,?,?,?,?,?)
   `).run(hod.id, hod.id, today, dueDate, brief,
-    `Qty: ${foc.quantity} ${foc.unit}. Approved for free issue - print the Annexure from the FOC Material Issue page and hand it over with the material.`,
-    'High', 'FOC_ROUTED', foc.id);
+    `${itemsList}. Approved for free issue - print the Annexure from the FOC Material Issue page and hand it over with the material.`,
+    'High', 'FOC_ROUTED', items[0].id);
   db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
     .run(hod.id, 'TODO_ASSIGNED', info.lastInsertRowid, `New To-Do assigned to you: ${brief}`);
 }
 
+// Approve/Reject/Issue all act on the WHOLE foc_no group at once (every row
+// sharing the clicked line's foc_no), not just the one row clicked -
+// Management makes one decision and picks one fulfilling department for the
+// entire request, same as a multi-line Purchase Order's own group-wide
+// approval. `existing` (found by the clicked id) only supplies which group
+// to act on; the actual UPDATE and notification cover every sibling line.
 router.post('/foc/:id/approve', requirePermission('foc.approve'), (req, res) => {
   const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
@@ -356,10 +421,11 @@ router.post('/foc/:id/approve', requirePermission('foc.approve'), (req, res) => 
   const dept = db.prepare('SELECT id FROM departments WHERE id = ?').get(departmentId);
   if (!dept) return res.status(400).json({ error: 'That department no longer exists.' });
   const tx = db.transaction(() => {
+    const items = db.prepare(`SELECT * FROM foc_requests WHERE foc_no = ? AND status = 'Pending' ORDER BY id`).all(existing.foc_no);
     db.prepare(`
-      UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, fulfilling_department_id = ? WHERE id = ?
-    `).run(req.user.id, departmentId, existing.id);
-    notifyFocRouted(existing, departmentId);
+      UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, fulfilling_department_id = ? WHERE foc_no = ? AND status = 'Pending'
+    `).run(req.user.id, departmentId, existing.foc_no);
+    notifyFocRouted(existing.foc_no, items, departmentId);
   });
   tx();
   res.json({ ok: true });
@@ -368,8 +434,8 @@ router.post('/foc/:id/reject', requirePermission('foc.approve'), (req, res) => {
   const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.status !== 'Pending') return res.status(400).json({ error: 'This request has already been actioned.' });
-  db.prepare(`UPDATE foc_requests SET status = 'Rejected', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ?`)
-    .run(req.user.id, req.params.id);
+  db.prepare(`UPDATE foc_requests SET status = 'Rejected', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE foc_no = ? AND status = 'Pending'`)
+    .run(req.user.id, existing.foc_no);
   res.json({ ok: true });
 });
 // Gate depends on the row, not just the route: Admin always; the current
@@ -386,8 +452,8 @@ router.post('/foc/:id/issue', (req, res) => {
     || (existing.fulfilling_department_id && req.user.department_id === existing.fulfilling_department_id)
     || (!existing.fulfilling_department_id && userHasPermission(req.user, 'store.manage'));
   if (!allowed) return res.status(403).json({ error: 'Only the department this was routed to (or Admin) can mark it issued.' });
-  db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = CURRENT_TIMESTAMP WHERE id = ?`)
-    .run(req.user.id, existing.id);
+  db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = CURRENT_TIMESTAMP WHERE foc_no = ? AND status = 'Approved'`)
+    .run(req.user.id, existing.foc_no);
   res.json({ ok: true });
 });
 
@@ -408,8 +474,12 @@ router.get('/foc/:id/pdf', async (req, res) => {
   if (foc.status === 'Pending' || foc.status === 'Rejected') {
     return res.status(400).json({ error: 'The Annexure is only available once this request has been approved.' });
   }
+  // The Annexure covers every item in the group, not just the clicked row -
+  // one combined document per foc_no, same reasoning as Approve/Reject/Issue
+  // above (one request, one hand-off, regardless of line count).
+  const items = db.prepare(`SELECT item_description, quantity, unit, estimated_value FROM foc_requests WHERE foc_no = ? ORDER BY id`).all(foc.foc_no);
   try {
-    const gen = await generateFocAnnexurePdf(foc, getCompanySettings());
+    const gen = await generateFocAnnexurePdf(foc, getCompanySettings(), items);
     const filename = buildDownloadFilename({
       docType: 'FOC_Annexure',
       reference: foc.foc_no,
