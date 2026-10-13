@@ -122,6 +122,13 @@
   .btn{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:var(--fs-base);cursor:pointer;font-weight:600;font-family:inherit;}
   .btn:hover{background:var(--primary-light);}
   .btn.small{padding:4px 10px;font-size:var(--fs-xs);}
+  /* Purchase Orders list (2026-10-13): each row shows a different subset of
+     buttons depending on status (Draft/PendingApproval/Open/...), so with
+     buttons auto-sizing to their own text, rows wrap onto 1 vs 2 lines
+     inconsistently and the whole column looks jumbled. Scoped to .po-actions
+     only (not every .btn.small in the app) so no other page's button sizing
+     changes. */
+  .po-actions .btn.small{min-width:92px;text-align:center;}
   .btn.green{background:var(--green);} .btn.green:hover{background:#276749;}
   .btn.red{background:var(--red);} .btn.red:hover{background:#9b2c2c;}
   .btn.outline{background:#fff;color:var(--primary);border:1px solid var(--primary);}

@@ -32,7 +32,7 @@ router.post('/login', (req, res) => {
   if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
-  const token = jwt.sign({ id: user.id }, SECRET, { expiresIn: '12h' });
+  const token = jwt.sign({ id: user.id }, SECRET, { expiresIn: '24h' });
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type) VALUES (?, 'login', 'user')`).run(user.id);
   res.json({
     token,

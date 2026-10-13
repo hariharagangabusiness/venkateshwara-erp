@@ -10,6 +10,22 @@ async function api(path, opts = {}) {
   let data;
   try { data = await res.json(); } catch (e) { data = {}; }
   if (!res.ok) {
+    // A mid-session token expiry (middleware/auth.js's "Not authenticated"/
+    // "Invalid or expired token"/"Invalid session") used to surface as
+    // whatever raw alert() the calling action happened to use, leaving the
+    // user staring at a stale, still-rendered page with no indication they
+    // need to log back in - every action anywhere in the app hit this the
+    // same way once a session ran past its expiry, not just Store & Inventory
+    // Receive, which is just where it was first reported. Now it logs out
+    // and shows the login screen itself, with a clear message, rather than
+    // propagating the backend's literal text - the login screen appears
+    // underneath whatever alert() the calling code still shows.
+    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+      doLogout();
+      const err = new Error('Your session has expired - please sign in again.');
+      err.data = data;
+      throw err;
+    }
     const err = new Error(data.error || 'Request failed');
     err.data = data; // lets a caller read structured fields beyond .message (e.g. a soft-warning's conflict list)
     throw err;
@@ -5585,7 +5601,7 @@ function summarizePOGroupStatus(lines) {
 // line instead. Used for both the Documents cell and the action-buttons
 // cell, in both the single-line row and the multi-line group header.
 function poActionsCell(buttonsHtml) {
-  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${buttonsHtml}</div>`;
+  return `<div class="po-actions" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${buttonsHtml}</div>`;
 }
 function poAddLineForm(poId) {
   const items = window.__PO_ITEMS || [];
@@ -5706,6 +5722,7 @@ function renderMultiLinePOGroup(lines) {
       <button class="btn small outline" type="button" onclick="togglePOAttachments(${first.id})">Attachments</button>
       <button class="btn small outline" type="button" onclick="togglePOTerms(${first.id})">Terms</button>
       ${anyDraft ? `<button class="btn small" type="button" onclick="submitPOForApproval(${first.id})">Submit Whole PO for Approval</button>` : ''}
+      ${canEditPO(first) ? `<button class="btn small outline" type="button" onclick="togglePOGroupEditFirst(${groupId})">Edit</button>` : ''}
       ${canAddPOLine(first) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${first.id})">+ Add Line Item</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button>`)}</td></tr>
@@ -5763,6 +5780,22 @@ function poEditForm(o) {
   <button class="btn small" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
   <div id="po-edit-err-${o.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
 }
+// Group-header "Edit" button for a multi-line PO (2026-10-13) - previously
+// Edit only existed per-line, hidden behind the collapsed "N items" toggle,
+// so a multi-line Draft/PendingApproval PO had no obvious way to edit it at
+// all without first expanding. groupId is always the group's first line's
+// own id (see renderMultiLinePOGroup), so editing it also edits every
+// shared header field (vendor/addresses/freight/terms) - PUT /orders/:id
+// already propagates those onto every sibling line, same as editing any
+// other line would. Expands the group first if it's still collapsed, so the
+// opened edit form has visible context, then opens that line's own edit
+// panel via the existing togglePOEdit().
+window.togglePOGroupEditFirst = (groupId) => {
+  const rows = document.querySelectorAll(`.po-group-row-${groupId}`);
+  const collapsed = !rows.length || rows[0].style.display === 'none';
+  if (collapsed) window.togglePOGroupLines(groupId);
+  window.togglePOEdit(groupId);
+};
 window.togglePOEdit = (id) => {
   const row = document.getElementById(`po-edit-row-${id}`);
   const showing = row.style.display !== 'none';
