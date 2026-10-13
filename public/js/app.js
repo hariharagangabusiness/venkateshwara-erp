@@ -4974,9 +4974,7 @@ PAGES['purchase-requests'] = async (el) => {
     `),
   };
   const prLabels = { 'rfq-inbox': 'Vendor Quote Responses (Email)', 'new-request': 'New Purchase Request', 'list': 'Purchase Requests List' };
-  el.innerHTML = `
-    ${reorderablePanelsHTML('purchase-requests', prPanels, prOrder, prLabels)}
-    <div class="panel" id="pr-edit-panel" style="display:none;"><h3>Edit Purchase Request</h3><div id="pr-edit-body"></div></div>`;
+  el.innerHTML = reorderablePanelsHTML('purchase-requests', prPanels, prOrder, prLabels);
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   renderPRLines();
   window.__PR_CACHE = reqs;
@@ -5404,16 +5402,18 @@ let EDIT_PR_LINES = [];
 // This flag drives the read-only rendering below and tells saveEditPR() to
 // leave `items` out of the request entirely rather than send a doomed call.
 let EDIT_PR_ITEMS_LOCKED = false;
+// Edit Purchase Request (2026-10-13: converted from a bottom-of-page
+// scroll-to panel to the generic popup - see openEditVendor's own comment
+// for why).
 window.openEditPR = async (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
   if (!r) return;
   const projects = window.__PR_PROJECTS || [];
-  const panel = document.getElementById('pr-edit-panel');
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
   EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
     : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
   EDIT_PR_ITEMS_LOCKED = ['Approved', 'OrderPlaced'].includes(r.status);
-  document.getElementById('pr-edit-body').innerHTML = `
+  openAppModal('Edit PR — ' + esc(r.pr_no), `
     <div class="form-grid">
       <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
     </div>
@@ -5421,13 +5421,10 @@ window.openEditPR = async (id) => {
     <div id="pre-lines"></div>
     ${EDIT_PR_ITEMS_LOCKED ? '' : `<button class="btn small outline" type="button" onclick="addEditPRLine()">+ Add Line Item</button>`}
     <div style="margin-top:12px;">
-      <button class="btn" onclick="saveEditPR(${id})">Save Changes</button>
-      <button class="btn outline" type="button" onclick="document.getElementById('pr-edit-panel').style.display='none'">Cancel</button>
+      <button class="btn" id="pre-save-btn-${id}" onclick="saveEditPR(${id})">Save Changes</button>
     </div>
     <div id="pre-err" class="msg err" style="display:none;margin-top:10px;"></div>
-    <div id="pr-attachments-${id}"></div>`;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    <div id="pr-attachments-${id}"></div>`);
   renderEditPRLines();
   renderAttachmentsWidget('purchase_request', id, document.getElementById(`pr-attachments-${id}`));
 };
@@ -5459,7 +5456,7 @@ window.saveEditPR = async (id) => {
       payload.items = lines;
     }
     await api('/purchase/requests/' + id, { method: 'PUT', body: JSON.stringify(payload) });
-    navigate('purchase-requests');
+    confirmSavedThenClose(`pre-save-btn-${id}`, 'purchase-requests');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
