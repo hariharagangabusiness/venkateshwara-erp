@@ -825,26 +825,44 @@ function groupByCustomerGroup(rows) {
   });
   return groups;
 }
-// `renderRowsFn` is whichever page's own existing row-renderer
-// (renderOfferRows/renderOrderRows) - reused verbatim so each page's row
-// markup still lives in exactly one place. When no Customer Group has ever
-// been assigned to anything in this list, every row ends up its own
-// singleton group - rendered as a flat table with no rollup wrapper at all,
-// so an install that's never touched Customer Groups sees zero visual
-// change, same reasoning the PO Archive/FOC-group collapsing already uses.
-function customerGroupedHTML(rows, idPrefix, renderRowsFn) {
+// `columns` is the page's own header-label array (what it used to pass to
+// tableHTML() directly); `rowHTML(row)` returns exactly one row's own
+// <tr>...</tr> markup (what tableHTML()'s own rowRenderer callback already
+// looked like) - reused verbatim so each page's row markup still lives in
+// exactly one place (see offerRowHTML/orderRowHTML below). When no Customer
+// Group has ever been assigned to anything in this list, every row ends up
+// its own singleton group - rendered as a flat table with no rollup wrapper
+// at all, so an install that's never touched Customer Groups sees zero
+// visual change, same reasoning the PO Archive/FOC-group collapsing already
+// uses.
+//
+// 2026-10-14 follow-up: this used to call a full-table-producing
+// renderRowsFn(rows) once per group, so a list with more than one
+// multi-record group rendered several independent <table>s - each one's
+// plain `table-layout:auto` computes its OWN column widths from only that
+// group's own content, so one group's header row ends up a different width
+// than the next group's, visibly misaligned down the page. Fixed by
+// building ONE shared <table> (one <thead>, so column widths are computed
+// once across every row in every group) with each group's own rows in
+// their own toggleable <tbody> - a <table> can hold several <tbody>
+// elements, each independently shown/hidden, same as the single <div>
+// wrapper this replaced.
+function customerGroupedHTML(rows, idPrefix, columns, rowHTML) {
+  if (!rows.length) return '<div class="empty">No records yet.</div>';
   const groups = groupByCustomerGroup(rows);
-  if (groups.every(g => g.rows.length === 1)) return renderRowsFn(rows);
-  return groups.map((g, i) => {
-    if (g.rows.length === 1) return renderRowsFn(g.rows);
+  if (groups.every(g => g.rows.length === 1)) return tableHTML(columns, rows, rowHTML);
+  const colCount = columns.length;
+  const body = groups.map((g, i) => {
+    if (g.rows.length === 1) return g.rows.map(rowHTML).join('');
     const gid = `${idPrefix}-grp-${i}`;
-    return `<div class="panel" style="margin-bottom:8px;">
-      <div style="cursor:pointer;font-weight:600;padding:4px 0;" onclick="toggleCustomerGroupRollup('${gid}')">
-        <span id="${gid}-chev">&#9654;</span> ${esc(g.label)} <span class="muted">(${g.rows.length} records)</span>
-      </div>
-      <div id="${gid}-body" style="display:none;">${renderRowsFn(g.rows)}</div>
-    </div>`;
+    return `<tbody><tr>
+        <td colspan="${colCount}" style="cursor:pointer;font-weight:600;background:#f7f9fb;" onclick="toggleCustomerGroupRollup('${gid}')">
+          <span id="${gid}-chev">&#9654;</span> ${esc(g.label)} <span class="muted">(${g.rows.length} records)</span>
+        </td>
+      </tr></tbody>
+      <tbody id="${gid}-body" style="display:none;">${g.rows.map(rowHTML).join('')}</tbody>`;
   }).join('');
+  return `<div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead>${body}</table></div>`;
 }
 window.toggleCustomerGroupRollup = (gid) => {
   const body = document.getElementById(gid + '-body');
@@ -881,6 +899,31 @@ function tableHTML(columns, rows, rowRenderer) {
   return `<div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
     ${rows.map(rowRenderer).join('')}
   </tbody></table></div>`;
+}
+
+// Grid-based line-item editing table (2026-10-14) - purpose-built for the
+// New PO/PR/Edit PR/SO/FOC line-item forms, where every "column" holds a
+// live input/picker rather than plain text. A plain <table> there left each
+// column's rendered width to whatever its widest row's own hand-picked
+// style="width:Npx" happened to force, independent of its header label -
+// the same "no single declared width" root cause PR #172 fixed for row
+// buttons via a real CSS grid. `colTemplate` is one grid-template-columns
+// track list, applied identically to the header row and every data row
+// (and the optional footer row) via the shared .glt-row class in
+// index.html, so a column's width is always exactly what's declared here,
+// never dependent on any one row's own input markup. `rowRenderer(row, i)`
+// returns that row's own <div>...</div> cells (no wrapping element) -
+// replaces the old tableHTML()+<tr>/<td> markup these forms used to use.
+// `footerCellsHtml`, when given, is one more .glt-row for a totals line
+// (its own <div>s may use grid-column:span N to mimic a <td colspan>).
+function gridLineTableHTML(colTemplate, columns, rows, rowRenderer, footerCellsHtml) {
+  if (!rows.length) return '<div class="empty">No lines yet.</div>';
+  const rowStyle = `style="grid-template-columns:${colTemplate};"`;
+  return `<div class="grid-line-table" style="overflow-x:auto;">
+    <div class="glt-row glt-head" ${rowStyle}>${columns.map(c => `<div>${c}</div>`).join('')}</div>
+    ${rows.map((r, i) => `<div class="glt-row" ${rowStyle}>${rowRenderer(r, i)}</div>`).join('')}
+    ${footerCellsHtml ? `<div class="glt-row glt-foot" ${rowStyle}>${footerCellsHtml}</div>` : ''}
+  </div>`;
 }
 
 // ---- Click-to-sort table headers ----
@@ -2701,9 +2744,14 @@ function poTermsBadge(o) {
   if (o.po_status === 'NotProvided') return `<span class="muted">No PO</span>`;
   return `<span class="muted">-</span>`;
 }
-function renderOrderRows(rows) {
-  return tableHTML(['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Customer PO', 'Annexure', ''], rows, o => `
-    <tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
+// Column labels + single-row renderer split out of what used to be one
+// tableHTML()-calling renderOrderRows(rows) (2026-10-14) - customerGroupedHTML()
+// needs a one-row-at-a-time renderer so every group's rows can share one
+// <table>/<thead> instead of each group getting its own independently-sized
+// table (see customerGroupedHTML's own comment above for why that matters).
+const ORDER_LIST_COLUMNS = ['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Customer PO', 'Annexure', ''];
+function orderRowHTML(o) {
+  return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
@@ -2716,7 +2764,7 @@ function renderOrderRows(rows) {
     `)}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
     <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>
-    <tr id="so-items-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-items-body-${o.id}"></div></td></tr>`);
+    <tr id="so-items-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-items-body-${o.id}"></div></td></tr>`;
 }
 window.toggleSOItems = async (id) => {
   const row = document.getElementById(`so-items-row-${id}`);
@@ -2958,19 +3006,18 @@ window.cancelSalesCreditNote = async (id) => {
   catch (e) { alert(e.message); }
 };
 let SO_LINES = [];
+const SO_LINES_GRID_COLS = 'minmax(220px,2fr) 90px 90px 110px 110px 100px 44px';
 function renderSOLines() {
   const el = document.getElementById('so-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Description', 'Quantity', 'Unit', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], SO_LINES, (l, i) => `
-    <tr>
-      <td><input value="${esc(l.description||'')}" onchange="SO_LINES[${i}].description=this.value" style="min-width:160px;"></td>
-      <td><input type="number" value="${l.quantity}" onchange="SO_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
-      <td><input value="${esc(l.unit||'Nos')}" onchange="SO_LINES[${i}].unit=this.value" style="width:80px;"></td>
-      <td><input type="number" value="${l.rate}" onchange="SO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
-      <td><input value="${esc(l.hsn_code||'')}" onchange="SO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
-      <td><input type="number" value="${l.gst_rate}" onchange="SO_LINES[${i}].gst_rate=Number(this.value)" style="width:80px;"></td>
-      <td><button class="btn small outline" type="button" onclick="SO_LINES.splice(${i},1);renderSOLines()">✕</button></td>
-    </tr>`);
+  el.innerHTML = gridLineTableHTML(SO_LINES_GRID_COLS, ['Description', 'Quantity', 'Unit', 'Rate (₹)', 'HSN Code', 'GST Rate (%)', ''], SO_LINES, (l, i) => `
+      <div><input value="${esc(l.description||'')}" onchange="SO_LINES[${i}].description=this.value"></div>
+      <div><input type="number" value="${l.quantity}" onchange="SO_LINES[${i}].quantity=Number(this.value)"></div>
+      <div><input value="${esc(l.unit||'Nos')}" onchange="SO_LINES[${i}].unit=this.value"></div>
+      <div><input type="number" value="${l.rate}" onchange="SO_LINES[${i}].rate=Number(this.value)"></div>
+      <div><input value="${esc(l.hsn_code||'')}" onchange="SO_LINES[${i}].hsn_code=this.value"></div>
+      <div><input type="number" value="${l.gst_rate}" onchange="SO_LINES[${i}].gst_rate=Number(this.value)"></div>
+      <div><button class="btn small outline" type="button" onclick="SO_LINES.splice(${i},1);renderSOLines()">✕</button></div>`);
 }
 window.addSOLine = () => { SO_LINES.push({ description: '', quantity: 1, unit: 'Nos', rate: 0, hsn_code: '', gst_rate: 18 }); renderSOLines(); };
 
@@ -3014,10 +3061,10 @@ PAGES.orders = async (el) => {
     <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button></div>
     ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
       ${renderListSearch('orders', orders, ['order_no', 'client_name', 'group_name', 'status', 'description'], (rows) => {
-        document.getElementById('so-table-wrap').innerHTML = customerGroupedHTML(rows, 'so', renderOrderRows);
+        document.getElementById('so-table-wrap').innerHTML = customerGroupedHTML(rows, 'so', ORDER_LIST_COLUMNS, orderRowHTML);
         document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
       }, 'Search by order no, client, status...')}
-      <div id="so-table-wrap">${customerGroupedHTML(orders, 'so', renderOrderRows)}</div>
+      <div id="so-table-wrap">${customerGroupedHTML(orders, 'so', ORDER_LIST_COLUMNS, orderRowHTML)}</div>
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     `)}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
@@ -3480,10 +3527,10 @@ PAGES.offers = async (el) => {
     <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button></div>
     ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
       ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'group_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
-        document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', renderOfferRows);
+        document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', OFFER_LIST_COLUMNS, offerRowHTML);
         document.getElementById('of-count').textContent = 'All Offers (' + rows.length + ')';
       }, 'Search by offer no, client, subject, status...')}
-      <div id="of-table-wrap">${customerGroupedHTML(offers, 'of', renderOfferRows)}</div>
+      <div id="of-table-wrap">${customerGroupedHTML(offers, 'of', OFFER_LIST_COLUMNS, offerRowHTML)}</div>
     `)}
     <div class="panel" id="offer-copy-panel" style="display:none;">
       <h3>Copy Offer to Another Customer</h3>
@@ -3524,12 +3571,17 @@ window.prefillOfferContactFromClient = () => {
   document.getElementById('nf-phone').value = c.phone || '';
   document.getElementById('nf-email').value = c.email || '';
 };
-function renderOfferRows(rows) {
-  return tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], rows, o => `
-    <tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
+// Column labels + single-row renderer split out of what used to be one
+// tableHTML()-calling renderOfferRows(rows) (2026-10-14) - see the identical
+// ORDER_LIST_COLUMNS/orderRowHTML split above and customerGroupedHTML()'s
+// own comment for why (one shared <table> per list instead of one per
+// Customer Group rollup, so column widths line up across every group).
+const OFFER_LIST_COLUMNS = ['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''];
+function offerRowHTML(o) {
+  return `<tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
     <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
     <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
-    ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`);
+    ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`;
 }
 // `labelOverride`, when given, skips the __OFFERS_CACHE lookup entirely -
 // used by "Create Offer from Template" (useTemplate() below), since a
@@ -5238,22 +5290,25 @@ function prItemOptions(selectedId, itemsOverride) {
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
     .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join('')}`;
 }
+// Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
+// 6 columns in both forms.
+const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 120px 44px';
 function renderPRLines() {
   const el = document.getElementById('pr-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
-    <tr>
-      <td><div style="display:flex;gap:6px;align-items:flex-start;">
+  const total = PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
+      <div><div style="display:flex;gap:6px;align-items:flex-start;">
         <div style="flex:0 0 auto;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
           `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
-      </div></td>
-      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value" style="min-width:140px;"></td>
-      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></td>
-      <td><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
-      <td><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()" style="width:100px;"></td>
-      <td>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</td>
-    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="4" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+      </div></div>
+      <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value"></div>
+      <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></div>
+      <div><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)"></div>
+      <div><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()"></div>
+      <div>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</div>`,
+    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
 window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderPRLines(); };
 function renderPRRows(rows) {
@@ -5631,16 +5686,16 @@ function renderEditPRLines() {
   const el = document.getElementById('pre-lines');
   if (!el) return;
   const ro = EDIT_PR_ITEMS_LOCKED;
-  el.innerHTML = tableHTML(['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
-    <tr>
-      <td>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}</td>
-      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" style="min-width:140px;" ${ro ? 'disabled' : ''}></td>
-      <td><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></td>
-      <td><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" style="width:80px;" ${ro ? 'disabled' : ''}></td>
-      <td><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" style="width:100px;" ${ro ? 'disabled' : ''}></td>
-      <td>${!ro && EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</td>
-    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="4" style="text-align:right;"><b>Total Est. Value</b></td><td><b>₹${fmt(EDIT_PR_LINES.reduce((s,l)=>s+(Number(l.estimated_value)||0),0))}</b></td><td></td></tr></tfoot></table>`);
+  const total = EDIT_PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
+      <div>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}</div>
+      <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" ${ro ? 'disabled' : ''}></div>
+      <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></div>
+      <div><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" ${ro ? 'disabled' : ''}></div>
+      <div><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" ${ro ? 'disabled' : ''}></div>
+      <div>${!ro && EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</div>`,
+    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
 window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderEditPRLines(); };
 window.saveEditPR = async (id) => {
@@ -5799,26 +5854,30 @@ PAGES['purchase-orders'] = async (el) => {
   el.innerHTML = reorderablePanelsHTML('purchase-orders', poPanels, poOrder, poLabels);
   renderPOLines();
 };
+// Grid-column track list shared by every New-PO-style line-item table in
+// this file (PO_LINES here, PR_LINES/EDIT_PR_LINES/SO_LINES/FOC_LINES below)
+// - declared once per table via gridLineTableHTML() so a column's width
+// always matches its header, instead of racing each row's own hand-picked
+// input width (2026-10-14, see gridLineTableHTML()'s own comment).
+const PO_LINES_GRID_COLS = 'minmax(260px,1.8fr) minmax(140px,1.2fr) 100px 110px 110px 90px 110px 100px 44px';
 function renderPOLines() {
   const el = document.getElementById('po-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Item', 'Additional Details', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
-    <tr>
-      <td><div style="display:flex;gap:6px;align-items:flex-start;">
+  el.innerHTML = gridLineTableHTML(PO_LINES_GRID_COLS, ['Item', 'Additional Details', 'Quantity', 'Unit', 'Rate (₹)', 'Discount %', 'HSN Code', 'GST Rate (%)', ''], PO_LINES, (l, i) => `
+      <div><div style="display:flex;gap:6px;align-items:flex-start;">
         <div style="flex:0 0 auto;">${itemPickerHTML(`po-item-${i}`, window.__PO_ITEMS || [], l.item_id,
           (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}${it.status === 'Pending' ? ' (pending review)' : ''}${it.status === 'Discontinued' ? ' (discontinued)' : ''}</option>`).join(''),
           `onchange="PO_LINES[${i}].item_id=this.value?Number(this.value):'';prefillPOLineUnit(${i});showVendorsForPOLines()"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PO_LINES[${i}].item_id,{vendorSelectId:'po-vendor'})">Price History</button>
-      </div></td>
-      <td><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PO_LINES[${i}].details=this.value" style="min-width:140px;"></td>
-      <td><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
-      <td>${unitPickerHTML(`po-unit-${i}`, l.unit, `PO_LINES[${i}].unit`)}</td>
-      <td><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
-      <td><input type="number" value="${l.discount_percent||0}" min="0" max="100" onchange="PO_LINES[${i}].discount_percent=Number(this.value)" style="width:80px;"></td>
-      <td><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value" style="width:100px;"></td>
-      <td><input type="number" value="${l.gst_rate}" onchange="PO_LINES[${i}].gst_rate=Number(this.value)" style="width:80px;"></td>
-      <td>${PO_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PO_LINES.splice(${i},1);renderPOLines()">✕</button>` : ''}</td>
-    </tr>`);
+      </div></div>
+      <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PO_LINES[${i}].details=this.value"></div>
+      <div><input type="number" value="${l.quantity}" onchange="PO_LINES[${i}].quantity=Number(this.value)"></div>
+      <div>${unitPickerHTML(`po-unit-${i}`, l.unit, `PO_LINES[${i}].unit`)}</div>
+      <div><input type="number" value="${l.rate}" onchange="PO_LINES[${i}].rate=Number(this.value)"></div>
+      <div><input type="number" value="${l.discount_percent||0}" min="0" max="100" onchange="PO_LINES[${i}].discount_percent=Number(this.value)"></div>
+      <div><input value="${esc(l.hsn_code||'')}" onchange="PO_LINES[${i}].hsn_code=this.value"></div>
+      <div><input type="number" value="${l.gst_rate}" onchange="PO_LINES[${i}].gst_rate=Number(this.value)"></div>
+      <div>${PO_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PO_LINES.splice(${i},1);renderPOLines()">✕</button>` : ''}</div>`);
 }
 // When an item is picked, default its line's Unit to that item's own Item
 // Master unit (still freely overridable afterward) - skipped if the item
@@ -10451,17 +10510,16 @@ window.saveMatrixChain = async (chainId) => {
 // po_no. Approve/Reject/Issue act on the whole foc_no group at once; all
 // fields stay editable per-line while the group is still Pending.
 let FOC_LINES = [];
+const FOC_LINES_GRID_COLS = 'minmax(240px,2fr) 90px 90px 130px 44px';
 function renderFocLines() {
   const el = document.getElementById('foc-lines');
   if (!el) return;
-  el.innerHTML = tableHTML(['Material / Item Description', 'Quantity', 'Unit', 'Estimated Value (₹)', ''], FOC_LINES, (l, i) => `
-    <tr>
-      <td><input value="${esc(l.item_description||'')}" placeholder="e.g. M8 hex bolts, 2 boxes" onchange="FOC_LINES[${i}].item_description=this.value" style="min-width:200px;"></td>
-      <td><input type="number" value="${l.quantity}" onchange="FOC_LINES[${i}].quantity=Number(this.value)" style="width:80px;"></td>
-      <td><input value="${esc(l.unit||'Nos')}" onchange="FOC_LINES[${i}].unit=this.value" style="width:80px;"></td>
-      <td><input type="number" value="${l.estimated_value}" onchange="FOC_LINES[${i}].estimated_value=Number(this.value)" style="width:110px;"></td>
-      <td>${FOC_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="FOC_LINES.splice(${i},1);renderFocLines()">✕</button>` : ''}</td>
-    </tr>`);
+  el.innerHTML = gridLineTableHTML(FOC_LINES_GRID_COLS, ['Material / Item Description', 'Quantity', 'Unit', 'Estimated Value (₹)', ''], FOC_LINES, (l, i) => `
+      <div><input value="${esc(l.item_description||'')}" placeholder="e.g. M8 hex bolts, 2 boxes" onchange="FOC_LINES[${i}].item_description=this.value"></div>
+      <div><input type="number" value="${l.quantity}" onchange="FOC_LINES[${i}].quantity=Number(this.value)"></div>
+      <div><input value="${esc(l.unit||'Nos')}" onchange="FOC_LINES[${i}].unit=this.value"></div>
+      <div><input type="number" value="${l.estimated_value}" onchange="FOC_LINES[${i}].estimated_value=Number(this.value)"></div>
+      <div>${FOC_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="FOC_LINES.splice(${i},1);renderFocLines()">✕</button>` : ''}</div>`);
 }
 window.addFocLine = () => { FOC_LINES.push({ item_description: '', quantity: 1, unit: 'Nos', estimated_value: 0 }); renderFocLines(); };
 PAGES.foc = async (el) => {
