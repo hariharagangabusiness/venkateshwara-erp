@@ -2201,6 +2201,24 @@ function bootstrapGrnReconciliationApproval() {
   } catch (e) { console.error('[db] GRN reconciliation approval bootstrap failed:', e.message); }
 }
 
+// To-Do completion -> Management review (2026-10-14) - marking a To-Do
+// Completed now routes through this single-step chain instead of writing
+// Completed directly; same "always goes straight to Management, no value
+// threshold" shape as FgDispatch's/SalaryHikeCycle's own Management step.
+function bootstrapTodoCompletionApproval() {
+  try {
+    const mgmtRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('TodoCompletion', 'Management review before a To-Do is marked Completed')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'TodoCompletion'`).get().id;
+    if (mgmtRoleId) upsertStep.run(chainId, 1, mgmtRoleId, 0, 0);
+  } catch (e) { console.error('[db] To-Do completion approval bootstrap failed:', e.message); }
+}
+
 // One-time (but safe to re-run every boot) data repair: PUT /employees/:id
 // used to write `monthly_salary`/`referral_incentive_amount` straight
 // through from the request body without the same `|| 0` fallback
@@ -2230,4 +2248,5 @@ module.exports = {
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
+  bootstrapTodoCompletionApproval,
 };

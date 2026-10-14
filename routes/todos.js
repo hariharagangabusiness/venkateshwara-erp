@@ -2,6 +2,7 @@ const express = require('express');
 const { db } = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { inOversightDept, oversightDepartmentIds } = require('../lib/roleOversight');
+const { startApproval } = require('../lib/approvals');
 const router = express.Router();
 router.use(authRequired);
 
@@ -15,6 +16,10 @@ function scopedDepartmentIds(user) {
   return ids;
 }
 
+// 'PendingReview' is a real status (surfaced via the badge, blocking any
+// further manual PATCH below) but deliberately not one a caller may set
+// directly via this list - marking something Completed is what routes it
+// there, via the TodoCompletion approval chain (see PATCH /:id below).
 const STATUSES = ['Pending', 'InProgress', 'Completed', 'OnHold'];
 
 // Only Admin/Management get company-wide reach - every other role's To-Do
@@ -223,6 +228,24 @@ router.get('/', (req, res) => {
   res.json(rows);
 });
 
+// Single-row read, scoped by the same visibility rule as everywhere else in
+// this file - used by the My Approvals drilldown's `todo` branch. Registered
+// after every literal one-segment GET route above (/people, /mine, /board-
+// summary, /board-items, /my-pending-count, /) so this :id pattern can't
+// shadow any of them - this app's own recurring route-ordering bug class.
+router.get('/:id', (req, res) => {
+  const t = db.prepare(`
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    FROM todos t
+    LEFT JOIN users h ON h.id = t.hod_id
+    JOIN users a ON a.id = t.assigned_to
+    WHERE t.id = ?
+  `).get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  if (!canSeeTodo(req.user, t)) return res.status(403).json({ error: 'Access denied' });
+  res.json(t);
+});
+
 router.post('/', (req, res) => {
   if (!canLog(req.user)) return res.status(403).json({ error: 'Only a department HOD or Admin can log a To-Do.' });
   const { hod_id, assigned_to, start_date, target_date, brief_description, details, priority } = req.body;
@@ -259,14 +282,32 @@ router.patch('/:id', (req, res) => {
   const isOwner = t.assigned_to === req.user.id;
   const isManager = canManageTodo(req.user, t);
   if (!isOwner && !isManager) return res.status(403).json({ error: 'Access denied' });
+  // A To-Do awaiting Management's completion review (or already sent back
+  // for more info) can't have its status hand-set around that chain - same
+  // "the chain's own Approve/Reject is the only way out" lockout Service
+  // Requests already use (routes/service.js's PendingApproval guard).
+  if (req.body.status !== undefined && (t.status === 'PendingReview' || t.status === 'InfoRequested')) {
+    return res.status(400).json({ error: 'This To-Do is awaiting Management review - it needs to be approved or rejected under My Approvals first.' });
+  }
   const { status, start_date, target_date, brief_description, details, hod_id, assigned_to, priority } = req.body;
   const updates = []; const params = [];
+  let sentForReview = false;
   // Anyone with the action can move its status; only the logging HOD/Admin
-  // can redefine the task itself or hand it to someone else.
+  // can redefine the task itself or hand it to someone else. Marking
+  // something Completed doesn't write Completed directly - it starts the
+  // TodoCompletion approval chain and the row sits at PendingReview until
+  // Management decides (see routes/approvals.js's syncEntityStatus, which
+  // is the only thing that ever writes a real 'Completed').
   if (status !== undefined) {
     if (!STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    updates.push('status = ?', 'completed_at = ?');
-    params.push(status, status === 'Completed' ? new Date().toISOString() : null);
+    if (status === 'Completed') {
+      sentForReview = true;
+      updates.push('status = ?', 'completed_at = ?');
+      params.push('PendingReview', null);
+    } else {
+      updates.push('status = ?', 'completed_at = ?');
+      params.push(status, null);
+    }
   }
   if (isManager) {
     if (hod_id !== undefined && hod_id && !isGlobal(req.user)) {
@@ -293,7 +334,10 @@ router.patch('/:id', (req, res) => {
   // two read as one thread instead of two disconnected logs.
   if (status !== undefined) {
     db.prepare(`INSERT INTO todo_updates (todo_id, user_id, note, status_at_update) VALUES (?,?,?,?)`)
-      .run(t.id, req.user.id, `Status changed to ${status}`, status);
+      .run(t.id, req.user.id, sentForReview ? 'Marked complete - sent for Management review' : `Status changed to ${status}`, sentForReview ? 'PendingReview' : status);
+  }
+  if (sentForReview) {
+    startApproval('TodoCompletion', 'todo', t.id, 0, req.user.id);
   }
   res.json({ ok: true });
 });
