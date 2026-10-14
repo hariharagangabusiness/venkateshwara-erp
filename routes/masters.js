@@ -362,6 +362,14 @@ router.get('/items', (req, res) => {
   if (status) return res.json(db.prepare('SELECT * FROM items WHERE status = ? ORDER BY id DESC').all(status));
   res.json(db.prepare('SELECT * FROM items ORDER BY name').all());
 });
+// Sidebar "pending count" badge (2026-10-14) - Store's own global review
+// queue (items awaiting Store approval before they're usable on a real
+// PR/PO), not personal, so every user who can see the Item Master nav item
+// sees the same figure.
+router.get('/items/pending-count', (req, res) => {
+  const row = db.prepare(`SELECT COUNT(*) as count FROM items WHERE status = 'Pending'`).get();
+  res.json({ count: row.count });
+});
 router.get('/items/by-barcode/:code', (req, res) => {
   const item = db.prepare('SELECT * FROM items WHERE barcode = ?').get(req.params.code);
   if (!item) return res.status(404).json({ error: 'No item matches that barcode.' });
