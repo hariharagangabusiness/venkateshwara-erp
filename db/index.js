@@ -1391,6 +1391,13 @@ const MIGRATIONS = [
   // reported "huge lag" reloading the page after receiving stock, worse the
   // more movements accumulate over time.
   `CREATE INDEX IF NOT EXISTS idx_stock_movements_reference ON stock_movements(reference)`,
+  // Purchase Order: Freight Notes + General Notes (2026-10-14). Both
+  // header-level (one value for the whole order, not per line) and
+  // duplicated onto every sibling line the same way freight/LD terms
+  // already are - see POST /orders, PATCH /orders/:id/commercial-terms,
+  // and POST /orders/:id/add-line in routes/purchase.js.
+  `ALTER TABLE purchase_orders ADD COLUMN freight_notes TEXT`,
+  `ALTER TABLE purchase_orders ADD COLUMN general_notes TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

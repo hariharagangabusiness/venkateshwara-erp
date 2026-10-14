@@ -1958,6 +1958,8 @@ async function renderApprovalDrilldown(key) {
             <b>Ship-To Address:</b> ${first.company_ship_address_label ? esc(first.company_ship_address_label) : '-'}<br>
             <b>LD Rate:</b> ${first.ld_percentage != null ? first.ld_percentage + '%' : '-'} &nbsp; <b>LD Cap:</b> ${first.ld_cap_percentage != null ? first.ld_cap_percentage + '%' : '-'}
             ${first.ld_trigger_notes ? `<br><b>LD Trigger Notes:</b> ${esc(first.ld_trigger_notes)}` : ''}
+            ${first.freight_notes ? `<br><b>Freight Comments:</b> ${esc(first.freight_notes)}` : ''}
+            ${first.general_notes ? `<br><b>General Notes:</b> ${esc(first.general_notes)}` : ''}
             ${first.terms ? `<br><b>Additional Terms:</b> ${esc(first.terms)}` : ''}
           </p>
           <h5 style="margin:8px 0 4px;">Line Items</h5>
@@ -5624,12 +5626,18 @@ PAGES['purchase-orders'] = async (el) => {
       <div class="form-grid" style="margin-top:12px;">
         <div><label>Delivery Date</label><input id="po-delivery" type="date"></div>
         <div><label>Payment Terms</label><select id="po-payment-terms"><option value="">-</option>${paymentTermsOptions.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-grid" style="margin-top:8px;">
         <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
         <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
+        <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
+      </div>
+      <div class="form-grid" style="margin-top:8px;">
         <div><label>Freight (₹)</label><input id="po-freight" type="number" value="0"></div>
         <div><label>Freight GST (%)</label><input id="po-freight-gst" type="number" value="${(purchaseSettings && purchaseSettings.default_gst_rate) || 18}"></div>
+        <div><label>Freight Comments</label><textarea id="po-freight-notes" rows="2" placeholder="e.g. covers door delivery, excludes unloading"></textarea></div>
       </div>
-      <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
+      <div style="margin-top:8px;"><label>General Notes</label><textarea id="po-general-notes" rows="2" style="width:100%;" placeholder="Any other notes for this order"></textarea></div>
       <div class="form-grid" style="margin-top:8px;">
         <div><label>Bill-To Address</label><select id="po-bill-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}">${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
         <div><label>Ship-To Address</label><select id="po-ship-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}">${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
@@ -6118,6 +6126,7 @@ window.addPO = async () => {
       company_ship_address_id: val('po-ship-address') || null,
       ld_percentage: val('po-ld-pct') || null, ld_cap_percentage: val('po-ld-cap') || null, ld_trigger_notes: val('po-ld-notes') || null,
       freight: val('po-freight') || 0, freight_gst_rate: val('po-freight-gst') || 18,
+      freight_notes: val('po-freight-notes') || null, general_notes: val('po-general-notes') || null,
     })});
     alert(`Purchase Order ${r.po_no} saved as a Draft - review it below (Download PDF/Word for a preview, or Edit to make changes), then click Submit for Approval when it's ready. It can't be sent to the vendor or received against until approved.`);
     navigate('purchase-orders');
@@ -6127,13 +6136,19 @@ function poTermsForm(o) {
   return `<div class="form-grid" style="margin-top:8px;">
     <div><label>Promised Delivery Date</label><input id="po-terms-delivery-${o.id}" type="date" value="${o.delivery_date || ''}"></div>
     <div><label>Payment Terms</label><select id="po-terms-payment-${o.id}"><option value="">-</option>${(window.__PO_PAYMENT_TERMS||[]).map(t => `<option value="${esc(t)}" ${t===o.payment_terms?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+  </div>
+  <div class="form-grid" style="margin-top:8px;">
     <div><label>LD Rate (%)</label><input id="po-terms-ldpct-${o.id}" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
     <div><label>LD Cap (%)</label><input id="po-terms-ldcap-${o.id}" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+    <div><label>Trigger Conditions/Notes</label><textarea id="po-terms-ldnotes-${o.id}" rows="2">${esc(o.ld_trigger_notes || '')}</textarea></div>
+  </div>
+  <div class="form-grid" style="margin-top:8px;">
     <div><label>Freight (₹)</label><input id="po-terms-freight-${o.id}" type="number" value="${o.freight || 0}"></div>
     <div><label>Freight GST (%)</label><input id="po-terms-freight-gst-${o.id}" type="number" value="${o.freight_gst_rate ?? 18}"></div>
+    <div><label>Freight Comments</label><textarea id="po-terms-freight-notes-${o.id}" rows="2">${esc(o.freight_notes || '')}</textarea></div>
   </div>
-  <div><label>Trigger Conditions/Notes</label><textarea id="po-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
-  <button class="btn small" type="button" onclick="savePOTerms(${o.id})">Save Terms</button>
+  <div style="margin-top:8px;"><label>General Notes</label><textarea id="po-terms-general-notes-${o.id}" rows="2" style="width:100%;">${esc(o.general_notes || '')}</textarea></div>
+  <button class="btn small" type="button" onclick="savePOTerms(${o.id})" style="margin-top:8px;">Save Terms</button>
   <p class="muted" style="margin-top:6px;">These apply to the whole PO - every line item shares one delivery date, payment terms, LD clause and freight.</p>`;
 }
 window.togglePOTerms = (id) => {
@@ -6155,6 +6170,7 @@ window.savePOTerms = async (id) => {
       ld_cap_percentage: val(`po-terms-ldcap-${id}`) || null,
       ld_trigger_notes: val(`po-terms-ldnotes-${id}`) || null,
       freight: val(`po-terms-freight-${id}`) || 0, freight_gst_rate: val(`po-terms-freight-gst-${id}`) || 18,
+      freight_notes: val(`po-terms-freight-notes-${id}`) || null, general_notes: val(`po-terms-general-notes-${id}`) || null,
     })});
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
