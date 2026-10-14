@@ -4676,16 +4676,34 @@ function jobCardBoardRowHTML(c) {
   return `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
       <td>${jobCardActions(c)}</td></tr>`;
 }
+// Completed cards move into their own collapsed-by-default "Closed" bucket
+// (2026-10-14) - the same "a bucket that only ever grows stays collapsed,
+// separate from the active queue" pattern already shipped for the Service
+// Request Queue's and Purchase Orders list's own Closed/Archive panels.
+// Every job-card board (My Job Cards, each Admin/PM department tab, each
+// Manufacturing sub-process tab) funnels through this one function, so
+// splitting it here covers all of them in one place.
 function renderJobCardSection(key, title, rows, cardRow) {
   const tableWrapId = 'jc-tw-' + key;
   const countId = 'jc-count-' + key;
+  const closedTableWrapId = 'jc-closed-tw-' + key;
+  const closedCountId = 'jc-closed-count-' + key;
+  const activeRows = rows.filter(r => r.status !== 'Completed');
+  const closedRows = rows.filter(r => r.status === 'Completed');
   const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], rs, cardRow) : '<p class="muted">No job cards in this section.</p>';
-  return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${rows.length})</span>`, `
-    ${renderListSearch('jc-' + key, rows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name', 'status'], (filtered) => {
+  return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${activeRows.length})</span>`, `
+    ${renderListSearch('jc-' + key, activeRows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name', 'status'], (filtered) => {
       document.getElementById(tableWrapId).innerHTML = renderRows(filtered);
       document.getElementById(countId).textContent = title + ' (' + filtered.length + ')';
     }, 'Search by project, customer, item, status, assignee...')}
-    <div id="${tableWrapId}">${renderRows(rows)}</div>
+    <div id="${tableWrapId}">${renderRows(activeRows)}</div>
+    ${collapsiblePanel('dept-job-cards-closed-' + key, `<span id="${closedCountId}">Closed (${closedRows.length})</span>`, `
+      ${renderListSearch('jc-closed-' + key, closedRows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name'], (filtered) => {
+        document.getElementById(closedTableWrapId).innerHTML = renderRows(filtered);
+        document.getElementById(closedCountId).textContent = 'Closed (' + filtered.length + ')';
+      }, 'Search by project, customer, item, assignee...')}
+      <div id="${closedTableWrapId}">${renderRows(closedRows)}</div>
+    `)}
   `);
 }
 async function renderDeptJobCards(el, stage, label, onlyStage) {
