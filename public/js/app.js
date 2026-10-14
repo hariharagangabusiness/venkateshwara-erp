@@ -323,6 +323,7 @@ async function boot() {
   } catch (e) {
     return doLogout();
   }
+  SIDEBAR_GROUP_ORDER = (await api('/settings/sidebar-group-order').catch(() => ({ order: [] }))).order || [];
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('user-name').textContent = ME.full_name;
@@ -566,6 +567,11 @@ const DEPT_JOBCARDS_GROUPS = [];
 // their department (e.g. "Design", "Electrical", "Manufacturing") - set up
 // fresh in boot() for whoever's currently logged in.
 const DEPT_OWN_GROUP = { group: '', items: [] };
+// Admin-configurable global sidebar group order (2026-10-14) - an array of
+// group labels in the order the Admin chose via Company Settings; empty
+// (the default) means "use the built-in order" (NAV's alphabetical order,
+// dynamic groups after it). Fetched once in boot(); see orderSidebarGroups().
+let SIDEBAR_GROUP_ORDER = [];
 
 // Which sidebar groups the user has explicitly EXPANDED, keyed by group
 // label - kept in memory only for the current page load (2026-10-14, per
@@ -692,19 +698,37 @@ function closeSidebarDrawer() {
 window.toggleSidebarDrawer = toggleSidebarDrawer;
 window.closeSidebarDrawer = closeSidebarDrawer;
 
+// Reorders the combined static+dynamic sidebar group list per the Admin's
+// saved global order (Company Settings > Sidebar Group Order, 2026-10-14) -
+// an empty/unset order (nothing configured yet) leaves the list exactly as
+// built (NAV's own alphabetical order, dynamic per-login groups appended
+// after it). A group whose label isn't in the saved order (a new NAV group
+// added later, or a department not anticipated when the order was last
+// saved) keeps its original relative position rather than disappearing or
+// jumping somewhere unexpected.
+function orderSidebarGroups(groups) {
+  const order = SIDEBAR_GROUP_ORDER || [];
+  if (!order.length) return groups;
+  return groups
+    .map((g, i) => { const idx = order.indexOf(g.group); return { g, key: idx === -1 ? order.length + i : idx }; })
+    .sort((a, b) => a.key - b.key)
+    .map(x => x.g);
+}
 function renderSidebar() {
   const el = document.getElementById('sidebar');
   el.innerHTML = `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
-  const groups = [...NAV];
-  // Pinned at the very top regardless of their own label (2026-10-14, per
-  // the owner's explicit ask when the static groups above went alphabetical)
-  // rather than sorted in alongside them - these are per-user/per-login
-  // groups Admin/PM/department logins can't afford to have drift down the
-  // list depending on what the department happens to be named.
-  if (DEPT_OWN_GROUP.items.length) groups.splice(0, 0, DEPT_OWN_GROUP);
+  let groups = [...NAV];
+  // These per-user/per-login groups (a department's own Job Cards tab, and
+  // Admin/PM's per-department tabs) used to be unconditionally pinned to
+  // the very top - since 2026-10-14 they're positioned by the Admin's saved
+  // order like any other group (see orderSidebarGroups() above), per the
+  // owner's explicit ask; appended here just gives them a stable default
+  // position (after every static group) when no order's been configured.
+  if (DEPT_OWN_GROUP.items.length) groups.push(DEPT_OWN_GROUP);
   // Each department is its own separate group/tab, in pipeline order,
   // rather than combined into one "Department Job Cards" group.
-  if (DEPT_JOBCARDS_GROUPS.length) groups.splice(0, 0, ...DEPT_JOBCARDS_GROUPS);
+  if (DEPT_JOBCARDS_GROUPS.length) groups.push(...DEPT_JOBCARDS_GROUPS);
+  groups = orderSidebarGroups(groups);
   const expanded = loadExpandedNavGroups();
   groups.forEach(g => {
     const items = ALLOWED_PAGES ? g.items.filter(it => ALLOWED_PAGES.has(it.id)) : g.items;
@@ -10467,12 +10491,21 @@ window.focAction = async (id, action) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
     api('/settings/purchase').catch(() => null),
     api('/masters/departments'),
+    api('/settings/sidebar-group-order').catch(() => ({ order: [] })),
   ]);
+  // Every group label the Admin might want to position: the 11 static NAV
+  // groups, plus every real department name (covers both the per-login
+  // "<department> Job Cards" own-group and, since the Admin/PM per-department
+  // tabs - Design/Laser & Bending Processing/Manufacturing - are themselves
+  // named after real departments, those too). Deduped since a department can
+  // share a label with a static group (e.g. "Purchase").
+  const sidebarGroupLabels = Array.from(new Set([...NAV.map(g => g.group), ...departments.map(d => d.name)]));
+  const sidebarGroupOrder = resolvePanelOrder(sidebarOrderResp.order, sidebarGroupLabels);
   el.innerHTML = `
     ${collapsiblePanel('company-details', 'Company Details', `
       <div class="form-grid">
@@ -10628,8 +10661,42 @@ PAGES['company-settings'] = async (el) => {
       <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
       <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
+    ${collapsiblePanel('sidebar-group-order', 'Sidebar Group Order', `
+      <p class="muted">Sets one sidebar group order that applies to every user, replacing the default alphabetical order. Includes every department-specific "Job Cards" group (a department's own tab, and the Admin/Project Manager per-department tabs) alongside the regular menu groups, so those can be positioned too instead of always sitting wherever they land by default.</p>
+      <div class="muted" style="margin-bottom:8px;">Drag a group by its ⠿ handle to rearrange, then Save Order.
+        <button class="btn small outline" type="button" onclick="saveSidebarGroupOrder()" style="margin-left:8px;">Save Order</button>
+        <button class="btn small outline" type="button" onclick="resetSidebarGroupOrder()">Reset to Default</button>
+      </div>
+      <div id="sidebar-order-list">${sidebarGroupOrder.map(label => `
+        <div class="reorder-panel" draggable="true" data-key="${esc(label)}"
+          ondragstart="panelDragStart(event)" ondragover="panelDragOver(event,'sidebar-order-list')" ondragend="panelDragEnd(event)"
+          style="padding:8px 10px;border:1px solid var(--border,#ddd);border-radius:6px;margin-bottom:4px;cursor:move;">
+          <span style="color:var(--muted,#888);">&#10021;</span> ${esc(label)}
+        </div>`).join('')}</div>
+      <div id="sg-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    `)}
   `;
   renderCompanyAddressesPanel();
+};
+window.saveSidebarGroupOrder = async () => {
+  const order = Array.from(document.querySelectorAll('#sidebar-order-list .reorder-panel')).map(w => w.dataset.key);
+  const errEl = document.getElementById('sg-err');
+  errEl.style.display = 'none';
+  try {
+    const r = await api('/settings/sidebar-group-order', { method: 'PUT', body: JSON.stringify({ order }) });
+    SIDEBAR_GROUP_ORDER = r.order || order;
+    renderSidebar();
+    alert('Sidebar group order saved.');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.resetSidebarGroupOrder = async () => {
+  if (!confirm('Reset the sidebar back to its default order?')) return;
+  try {
+    const r = await api('/settings/sidebar-group-order', { method: 'PUT', body: JSON.stringify({ order: [] }) });
+    SIDEBAR_GROUP_ORDER = r.order || [];
+    renderSidebar();
+    navigate('company-settings');
+  } catch (e) { alert(e.message); }
 };
 window.saveDepartmentEmailIdentity = async (id) => {
   const errEl = document.getElementById(`dept-email-err-${id}`);
