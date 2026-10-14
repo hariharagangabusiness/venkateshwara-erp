@@ -4482,7 +4482,6 @@ window.sendCustomerCommunication = async (projectId) => {
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.excludeJobCardFromPlan = async (jcId) => {
-  if (!confirm("Exclude this department from this project's flow? It won't need a job card at all, and can be brought back any time from the Excluded list below.")) return;
   try {
     await api(`/projects/job-cards/${jcId}/exclude`, { method: 'PUT' });
     loadProjectPlan();
