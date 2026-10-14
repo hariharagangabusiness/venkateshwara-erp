@@ -252,7 +252,9 @@ router.delete('/targets/:id', requirePermission('sales_order.manage', 'report.vi
 
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
-    SELECT so.*, c.name as client_name FROM sales_orders so JOIN clients c ON c.id = so.client_id ORDER BY so.id DESC
+    SELECT so.*, c.name as client_name, c.group_id as group_id, cg.name as group_name
+    FROM sales_orders so JOIN clients c ON c.id = so.client_id LEFT JOIN client_groups cg ON cg.id = c.group_id
+    ORDER BY so.id DESC
   `).all());
 });
 // `lines` is optional (Round 2026-10 addition) - an order built without any

@@ -421,8 +421,9 @@ router.get('/', (req, res) => {
   // flag, off by default) - see lib/offerVisibility.js for the rule.
   const vis = offerVisibilityWhere(req.user);
   let q = `
-    SELECT o.*, c.name as client_name, l.enquiry_details as lead_enquiry_details
+    SELECT o.*, c.name as client_name, c.group_id as group_id, cg.name as group_name, l.enquiry_details as lead_enquiry_details
     FROM offers o JOIN clients c ON c.id = o.client_id LEFT JOIN leads l ON l.id = o.lead_id
+    LEFT JOIN client_groups cg ON cg.id = c.group_id
     ${vis.join}
     WHERE o.is_template = 0 AND (${vis.where})
   `;
@@ -968,6 +969,26 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
   }
   if (full.offer.status === 'Won' && full.offer.sales_order_id) {
     return res.status(400).json({ error: 'Offer already confirmed into a sales order' });
+  }
+  // Billing-details mandate (2026-10-14, per the owner's explicit ask) - a
+  // Sales Order confirmed with no real billing address/GSTIN on file leaves
+  // every downstream step (Sales Invoice, Proforma, GST compliance) with
+  // nothing to work from. Hard-blocked here, the one real chokepoint every
+  // offer funnels through before a Sales Order exists, rather than at Add
+  // Client (which has no idea yet whether this client will ever be billed).
+  const confirmClient = db.prepare('SELECT * FROM clients WHERE id = ?').get(full.offer.client_id);
+  const hasBillingAddress = !!db.prepare(`
+    SELECT 1 FROM client_addresses
+    WHERE client_id = ? AND address_type = 'Billing'
+      AND TRIM(COALESCE(line1, '')) != '' AND TRIM(COALESCE(state, '')) != '' AND TRIM(COALESCE(state_code, '')) != ''
+  `).get(confirmClient.id);
+  const missingBillingDetails = [];
+  if (!hasBillingAddress) missingBillingDetails.push('a Billing address (Line 1, State, and State Code)');
+  if (!confirmClient.gstin || !String(confirmClient.gstin).trim()) missingBillingDetails.push('GSTIN');
+  if (missingBillingDetails.length) {
+    return res.status(400).json({
+      error: `Cannot confirm this order - ${confirmClient.name} is missing ${missingBillingDetails.join(' and ')}. Add it under Sales & Marketing → Clients → Edit → Bill-to/Ship-to Addresses (and GSTIN), then try again.`,
+    });
   }
   const orderValue = full.items.reduce((a, b) => a + Number(b.total_price || 0), 0);
 
