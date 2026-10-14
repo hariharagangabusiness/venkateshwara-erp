@@ -706,7 +706,7 @@ router.get('/orders/my-pending-count', (req, res) => {
 router.post('/orders', requirePermission('purchase_order.manage'), (req, res) => {
   const {
     purchase_request_id, vendor_id, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
-    ld_percentage, ld_cap_percentage, ld_trigger_notes,
+    ld_percentage, ld_cap_percentage, ld_trigger_notes, freight_notes, general_notes,
   } = req.body;
   // Freight is one charge for the whole shipment, not per line - same
   // header-level treatment as payment_terms/LD terms below (duplicated onto
@@ -769,8 +769,8 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
   const insert = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, purchase_request_item_id, vendor_id, item_id, quantity, rate, total_value, created_by,
       hsn_code, gst_rate, gst_amount, unit, discount_percent, details, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
-      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Draft')
+      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, freight_notes, general_notes, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Draft')
   `);
   const ids = [];
   let totalOrderValue = 0;
@@ -789,7 +789,7 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
       const info = insert.run(poNo, purchase_request_id || null, l.purchase_request_item_id || null, vendor_id, l.item_id || null,
         quantity, rate, total, req.user.id, l.hsn_code || null, gstRate, gstAmount, unit, discountPercent, l.details || null, effectiveTerms, delivery_date || null,
         company_address_id || null, company_ship_address_id || null, payment_terms || null, ld_percentage || null, ld_cap_percentage || null,
-        ld_trigger_notes || null, freight, freightGstRate);
+        ld_trigger_notes || null, freight, freightGstRate, freight_notes || null, general_notes || null);
       ids.push(info.lastInsertRowid);
     }
   })();
@@ -823,13 +823,14 @@ router.post('/orders/:id/submit-for-approval', requirePermission('purchase_order
 router.patch('/orders/:id/commercial-terms', requirePermission('purchase_order.manage'), (req, res) => {
   const order = db.prepare('SELECT id, po_no FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes, payment_terms, freight, freight_gst_rate } = req.body;
+  const { delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes, payment_terms, freight, freight_gst_rate, freight_notes, general_notes } = req.body;
   db.prepare(`
     UPDATE purchase_orders SET delivery_date = COALESCE(?, delivery_date), ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
-      payment_terms = COALESCE(?, payment_terms), freight = ?, freight_gst_rate = ?
+      payment_terms = COALESCE(?, payment_terms), freight = ?, freight_gst_rate = ?, freight_notes = ?, general_notes = ?
     WHERE po_no = ?
   `).run(delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null, payment_terms || null,
     Number(freight) || 0, freight_gst_rate !== undefined && freight_gst_rate !== '' ? Number(freight_gst_rate) : (getCompanySettings().default_gst_rate || 18),
+    freight_notes || null, general_notes || null,
     order.po_no);
   res.json({ ok: true });
 });
@@ -1002,12 +1003,13 @@ router.post('/orders/:id/add-line', requirePermission('purchase_order.manage'), 
   const info = db.prepare(`
     INSERT INTO purchase_orders (po_no, purchase_request_id, vendor_id, item_id, quantity, rate, total_value, created_by,
       hsn_code, gst_rate, gst_amount, unit, discount_percent, details, terms, delivery_date, company_address_id, company_ship_address_id, payment_terms,
-      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ld_percentage, ld_cap_percentage, ld_trigger_notes, freight, freight_gst_rate, freight_notes, general_notes, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(existing.po_no, existing.purchase_request_id, existing.vendor_id, item_id || null, qty, rt, total, req.user.id,
     hsn_code || null, gstRate, gstAmount, newUnit, discountPercent, details || null, existing.terms, existing.delivery_date,
     existing.company_address_id, existing.company_ship_address_id, existing.payment_terms,
     existing.ld_percentage, existing.ld_cap_percentage, existing.ld_trigger_notes, existing.freight, existing.freight_gst_rate,
+    existing.freight_notes, existing.general_notes,
     existing.status);
 
   if (existing.status === 'Draft') {
