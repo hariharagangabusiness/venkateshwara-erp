@@ -2180,6 +2180,18 @@ async function renderApprovalDrilldown(key) {
             <td style="${rateDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_rate != null ? '₹' + fmt(g.vendor_invoiced_rate) : '-'}</td></tr>`)}
         ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
       `;
+    } else if (r.entity_type === 'todo') {
+      const [t, hist] = await Promise.all([api(`/todos/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      history = hist;
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">To-Do Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>${esc(t.brief_description)}</b>${t.priority === 'High' ? ' <span class="badge Rejected">HIGH</span>' : ''}<br>
+          ${t.details ? esc(t.details) + '<br>' : ''}
+          <b>Assigned To:</b> ${esc(t.assigned_to_name)||'-'} &nbsp; <b>HOD:</b> ${esc(t.hod_name)||'-'}<br>
+          <b>Target Date:</b> ${esc(t.target_date)||'-'}
+        </p>
+      `;
     }
     container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${extraHtml}
@@ -12408,7 +12420,7 @@ function renderTodoCards(items) {
       ${t.details ? `<div class="muted" style="margin:4px 0 6px;">${esc(t.details)}</div>` : ''}
       <div class="muted" style="font-size:11px;margin-bottom:6px;">HOD: ${esc(t.hod_name) || '-'} &middot; ${esc(t.assigned_to_name)}${t.is_mine ? '' : ' (dept)'}</div>
       <div class="meta">${deliveryBadge(t.target_date)}
-        ${(t.is_mine || canLog) ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
+        ${(t.is_mine || canLog) && t.status !== 'PendingReview' && t.status !== 'InfoRequested' ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>` : badge(t.status)}
       </div>

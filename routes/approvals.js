@@ -199,6 +199,19 @@ function describeEntity(entityType, entityId) {
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
       };
     }
+    case 'todo': {
+      const r = db.prepare(`
+        SELECT t.brief_description, t.priority, t.target_date, a.full_name as assigned_to_name,
+          h.department_id as department_id, d.name as department_name
+        FROM todos t JOIN users a ON a.id = t.assigned_to
+        LEFT JOIN users h ON h.id = t.hod_id LEFT JOIN departments d ON d.id = h.department_id
+        WHERE t.id = ?`).get(entityId);
+      if (!r) return {};
+      return {
+        ref: `TODO-${entityId}`, summary: `${r.brief_description || 'To-Do'} - ${r.assigned_to_name}${r.priority === 'High' ? ' (High priority)' : ''}`,
+        department_id: r.department_id, department_name: r.department_name, raised_by_name: r.assigned_to_name,
+      };
+    }
     case 'grn_reconciliation': {
       const r = db.prepare(`
         SELECT g.*, po.po_no, i.name as item_name, v.name as vendor_name, u.full_name as raised_by_name,
@@ -467,6 +480,23 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE sale_rejection_mrns SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // Not the generic single-row map below: Rejected maps back to 'InProgress'
+  // (not a literal 'Rejected', which isn't a real To-Do status) and Pending
+  // maps to 'PendingReview' (not the generic literal 'Pending', which would
+  // collide with a To-Do's own never-started state). On Approved, this is
+  // the one place a To-Do ever actually becomes 'Completed' - PATCH /:id
+  // (routes/todos.js) only ever routes a completion request here via
+  // PendingReview, never writing 'Completed' directly.
+  if (entityType === 'todo') {
+    if (result === 'Approved') {
+      db.prepare(`UPDATE todos SET status = 'Completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(entityId);
+      return;
+    }
+    const statusByResult = { Rejected: 'InProgress', InfoRequested: 'InfoRequested', Pending: 'PendingReview' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare(`UPDATE todos SET status = ?, completed_at = NULL WHERE id = ?`).run(newStatus, entityId);
+    return;
+  }
   const map = {
     expense_voucher: { table: 'expense_vouchers', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
     leave_request: { table: 'leave_requests', approved: 'Approved', rejected: 'Rejected', infoRequested: 'InfoRequested' },
@@ -501,6 +531,7 @@ const ENTITY_LABELS = {
   sale_rejection_mrn: 'Sale Rejection MRN',
   service_request: 'Service Request (Inbound Email)',
   grn_reconciliation: 'GRN Reconciliation (Store)',
+  todo: 'To-Do Completion',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -568,7 +599,7 @@ const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
   referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3, service_request: 1,
-  grn_reconciliation: 3,
+  grn_reconciliation: 3, todo: 2,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
@@ -576,7 +607,7 @@ const ENTITY_TABLE = {
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
   referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
   fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns', service_request: 'service_requests',
-  grn_reconciliation: 'grn_reconciliations',
+  grn_reconciliation: 'grn_reconciliations', todo: 'todos',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;
