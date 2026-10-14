@@ -141,6 +141,24 @@
      sizing changes unless it opts in via .row-actions. */
   .po-actions, .row-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px;}
   .po-actions .btn.small, .row-actions .btn.small{width:100%;text-align:center;white-space:normal;line-height:1.3;}
+  /* Grid-based line-item editing table (2026-10-14, New PO/PR/Edit PR/SO/FOC
+     line items) - same root cause as .row-actions above, one level deeper:
+     every column held a live input whose width was a hand-picked
+     style="width:Npx" on that one <td>'s own input, racing its <th>'s auto
+     width with no single source of truth - a column's rendered width was
+     whatever the widest row happened to force, not what its header actually
+     needed. A real grid fixes it the same way: one grid-template-columns
+     track list, declared once per table and applied identically to the
+     header row and every data row, so a column's width is always exactly
+     what's declared - see gridLineTableHTML() in app.js. */
+  .grid-line-table{border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .glt-row{display:grid;align-items:center;}
+  .glt-row + .glt-row{border-top:1px solid #edf1f4;}
+  .glt-row > div{padding:7px 8px;min-width:0;box-sizing:border-box;}
+  .glt-head{background:#f7f9fb;font-size:var(--fs-sm);font-weight:600;color:var(--muted);}
+  .glt-head > div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .glt-row input, .glt-row select{width:100%;box-sizing:border-box;}
+  .glt-foot{font-weight:600;background:var(--bg,#f7f8fa);}
   .btn.green{background:var(--green);} .btn.green:hover{background:#276749;}
   .btn.red{background:var(--red);} .btn.red:hover{background:#9b2c2c;}
   .btn.outline{background:#fff;color:var(--primary);border:1px solid var(--primary);}
