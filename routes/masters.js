@@ -106,7 +106,37 @@ router.put('/expense-categories/:id', requireRole('Admin'), (req, res) => {
   }
 });
 
-router.get('/clients', (req, res) => res.json(db.prepare('SELECT * FROM clients ORDER BY id DESC').all()));
+// Customer Groups (2026-10-14) - a pure rollup "folder" over clients, no
+// data of its own beyond a name; see db/index.js's client_groups migration
+// comment for why. Open to any authenticated user to read (feeds dropdowns
+// on Add/Edit Client and the grouped Offers/Sales Orders lists); only Admin
+// creates/renames/deletes one, same gate every other shared master-data list
+// in this app (Vendor Status Values, Employment Types, etc.) uses.
+router.get('/client-groups', (req, res) => res.json(db.prepare('SELECT * FROM client_groups ORDER BY name COLLATE NOCASE ASC').all()));
+router.post('/client-groups', requireRole('Admin'), (req, res) => {
+  const name = String((req.body && req.body.name) || '').trim();
+  if (!name) return res.status(400).json({ error: 'Group name is required.' });
+  const info = db.prepare('INSERT INTO client_groups (name) VALUES (?)').run(name);
+  res.json({ id: info.lastInsertRowid });
+});
+router.put('/client-groups/:id', requireRole('Admin'), (req, res) => {
+  const name = String((req.body && req.body.name) || '').trim();
+  if (!name) return res.status(400).json({ error: 'Group name is required.' });
+  const existing = db.prepare('SELECT id FROM client_groups WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  db.prepare('UPDATE client_groups SET name = ? WHERE id = ?').run(name, req.params.id);
+  res.json({ ok: true });
+});
+router.delete('/client-groups/:id', requireRole('Admin'), (req, res) => {
+  const inUse = db.prepare('SELECT COUNT(*) as n FROM clients WHERE group_id = ?').get(req.params.id).n;
+  if (inUse > 0) return res.status(400).json({ error: `${inUse} client(s) are still assigned to this group - move them to another group first.` });
+  db.prepare('DELETE FROM client_groups WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/clients', (req, res) => res.json(db.prepare(`
+  SELECT c.*, cg.name as group_name FROM clients c LEFT JOIN client_groups cg ON cg.id = c.group_id ORDER BY c.id DESC
+`).all()));
 router.get('/clients/:id', (req, res) => {
   const c = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Not found' });
@@ -129,12 +159,19 @@ router.get('/clients/:id/360', (req, res) => {
     .filter(o => canSeeOffer(req.user, o));
   const orders = db.prepare('SELECT * FROM sales_orders WHERE client_id = ? ORDER BY id DESC').all(client.id);
   const totalBusinessValue = orders.reduce((a, o) => a + Number(o.order_value || 0), 0);
-  res.json({ client, leads, offers, orders, totalBusinessValue });
+  // Customer Group context - the whole reason this ask came up: a business
+  // group spans several separate `clients` rows, so Client 360 for any one
+  // of them should surface its sibling companies, not just its own history.
+  const group = client.group_id ? db.prepare('SELECT * FROM client_groups WHERE id = ?').get(client.group_id) : null;
+  const groupSiblings = client.group_id
+    ? db.prepare('SELECT id, name, client_code FROM clients WHERE group_id = ? AND id != ? ORDER BY name COLLATE NOCASE ASC').all(client.group_id, client.id)
+    : [];
+  res.json({ client, leads, offers, orders, totalBusinessValue, group, groupSiblings });
 });
 router.post('/clients', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
-  const { name, contact_person, phone, email, address, gstin, source } = req.body;
-  const info = db.prepare(`INSERT INTO clients (name, contact_person, phone, email, address, gstin, source) VALUES (?,?,?,?,?,?,?)`)
-    .run(name, contact_person, phone, email, address, gstin, source);
+  const { name, contact_person, phone, email, address, gstin, source, group_id } = req.body;
+  const info = db.prepare(`INSERT INTO clients (name, contact_person, phone, email, address, gstin, source, group_id) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(name, contact_person, phone, email, address, gstin, source, group_id || null);
   // Client ID is customer-facing and derived from the row's own id, so it
   // needs the id to exist first - same two-step pattern as items.barcode.
   const clientCode = 'CLI-' + String(info.lastInsertRowid).padStart(6, '0');
@@ -142,11 +179,11 @@ router.post('/clients', requirePermission('lead.manage', 'sales_order.manage'), 
   res.json({ id: info.lastInsertRowid, client_code: clientCode });
 });
 router.put('/clients/:id', requirePermission('lead.manage', 'sales_order.manage'), (req, res) => {
-  const { name, contact_person, phone, email, address, gstin, source } = req.body;
+  const { name, contact_person, phone, email, address, gstin, source, group_id } = req.body;
   const existing = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  db.prepare(`UPDATE clients SET name=?, contact_person=?, phone=?, email=?, address=?, gstin=?, source=? WHERE id=?`)
-    .run(name, contact_person, phone, email, address, gstin, source, req.params.id);
+  db.prepare(`UPDATE clients SET name=?, contact_person=?, phone=?, email=?, address=?, gstin=?, source=?, group_id=? WHERE id=?`)
+    .run(name, contact_person, phone, email, address, gstin, source, group_id || null, req.params.id);
   res.json({ ok: true });
 });
 

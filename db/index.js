@@ -1398,6 +1398,20 @@ const MIGRATIONS = [
   // and POST /orders/:id/add-line in routes/purchase.js.
   `ALTER TABLE purchase_orders ADD COLUMN freight_notes TEXT`,
   `ALTER TABLE purchase_orders ADD COLUMN general_notes TEXT`,
+  // Customer Group (2026-10-14) - a business group/conglomerate commonly
+  // spans several separate `clients` rows (each its own company, its own
+  // GSTIN/address), with nothing today tying them together. This is a pure
+  // rollup layer sitting ABOVE `clients` - same "additive, touches nothing
+  // about how the underlying rows already work" shape as `org_nodes` (the
+  // Region->Unit->Department rollup tree) - a client with no group is
+  // completely unaffected. See routes/masters.js, and the Offers/Sales
+  // Orders list grouping in public/js/app.js.
+  `CREATE TABLE IF NOT EXISTS client_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `ALTER TABLE clients ADD COLUMN group_id INTEGER REFERENCES client_groups(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

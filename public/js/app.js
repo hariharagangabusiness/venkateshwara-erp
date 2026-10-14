@@ -808,6 +808,51 @@ function esc(s) { return (s === null || s === undefined) ? '' : String(s).replac
 function actionButtonsCell(buttonsHtml) {
   return `<div class="row-actions">${buttonsHtml}</div>`;
 }
+// Customer Group rollup (2026-10-14) - shared by the Offers and Sales
+// Orders lists, since a business group commonly spans several separate
+// `clients` rows (companies), and both lists need the identical "group by
+// client_groups, fall back to the individual client" rollup rather than two
+// slightly different implementations. Each row must carry `client_id`,
+// `client_name`, `group_id` and `group_name` (every GET /offers and
+// GET /orders response already does, via a LEFT JOIN client_groups).
+function groupByCustomerGroup(rows) {
+  const groups = []; const byKey = {};
+  rows.forEach(r => {
+    const key = r.group_id ? 'g' + r.group_id : 'c' + r.client_id;
+    const label = r.group_id ? r.group_name : r.client_name;
+    if (!byKey[key]) { byKey[key] = { key, label, rows: [] }; groups.push(byKey[key]); }
+    byKey[key].rows.push(r);
+  });
+  return groups;
+}
+// `renderRowsFn` is whichever page's own existing row-renderer
+// (renderOfferRows/renderOrderRows) - reused verbatim so each page's row
+// markup still lives in exactly one place. When no Customer Group has ever
+// been assigned to anything in this list, every row ends up its own
+// singleton group - rendered as a flat table with no rollup wrapper at all,
+// so an install that's never touched Customer Groups sees zero visual
+// change, same reasoning the PO Archive/FOC-group collapsing already uses.
+function customerGroupedHTML(rows, idPrefix, renderRowsFn) {
+  const groups = groupByCustomerGroup(rows);
+  if (groups.every(g => g.rows.length === 1)) return renderRowsFn(rows);
+  return groups.map((g, i) => {
+    if (g.rows.length === 1) return renderRowsFn(g.rows);
+    const gid = `${idPrefix}-grp-${i}`;
+    return `<div class="panel" style="margin-bottom:8px;">
+      <div style="cursor:pointer;font-weight:600;padding:4px 0;" onclick="toggleCustomerGroupRollup('${gid}')">
+        <span id="${gid}-chev">&#9654;</span> ${esc(g.label)} <span class="muted">(${g.rows.length} records)</span>
+      </div>
+      <div id="${gid}-body" style="display:none;">${renderRowsFn(g.rows)}</div>
+    </div>`;
+  }).join('');
+}
+window.toggleCustomerGroupRollup = (gid) => {
+  const body = document.getElementById(gid + '-body');
+  const chev = document.getElementById(gid + '-chev');
+  const showing = body.style.display !== 'none';
+  body.style.display = showing ? 'none' : '';
+  chev.innerHTML = showing ? '&#9654;' : '&#9660;';
+};
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -2107,13 +2152,17 @@ async function renderApprovalDrilldown(key) {
 
 // ---- Clients ----
 function renderClientRows(rows) {
-  return tableHTML(['Client ID', 'Name', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
-    <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
+  return tableHTML(['Client ID', 'Name', 'Group', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
+    <tr><td>${esc(c.client_code)||'-'}</td><td>${esc(c.name)}</td><td>${esc(c.group_name)||'-'}</td><td>${esc(c.contact_person)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.address)}</td><td>${esc(c.source)}</td>
     <td>${actionButtonsCell(`<button class="btn small outline" onclick='editClient(${JSON.stringify(c)})'>Edit</button>
     <button class="btn small outline" onclick="openClient360(${c.id})">View 360</button>`)}</td></tr>`);
 }
+function clientGroupOptionsHTML(selectedId) {
+  return `<option value="">- None -</option>${(window.__CLIENT_GROUPS||[]).map(g => `<option value="${g.id}" ${Number(selectedId)===g.id?'selected':''}>${esc(g.name)}</option>`).join('')}`;
+}
 PAGES.clients = async (el) => {
-  const clients = await api('/masters/clients');
+  const [clients, groups] = await Promise.all([api('/masters/clients'), api('/masters/client-groups')]);
+  window.__CLIENT_GROUPS = groups;
   el.innerHTML = `
     <div class="panel">
       <h3 id="cl-form-title">Add Client</h3>
@@ -2124,6 +2173,7 @@ PAGES.clients = async (el) => {
         <div><label>Email</label><input id="cl-email"></div>
         <div><label>GSTIN</label><input id="cl-gstin"></div>
         <div><label>Source</label><input id="cl-source" placeholder="Referral / Website / Exhibition"></div>
+        <div><label>Customer Group <span class="muted">(optional)</span></label><select id="cl-group">${clientGroupOptionsHTML('')}</select></div>
       </div>
       <label>Address</label>
       <textarea id="cl-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
@@ -2132,14 +2182,55 @@ PAGES.clients = async (el) => {
       </div>
     </div>
     <div id="cl-addresses-panel"></div>
+    ${ME.role === 'Admin' ? collapsiblePanel('client-groups', 'Customer Groups', `
+      <p class="muted">A Customer Group is a pure folder - a shared name tying several companies (each its own Client row, GSTIN, address) together, same as how a conglomerate's own filing already works. Nothing about an individual client's own details is shared or duplicated - assigning one to a group only changes how Offers/Sales Orders roll up in their lists and what shows as "sibling companies" on Customer 360.</p>
+      <div id="client-groups-list">${clientGroupsListHTML(groups)}</div>
+      <div class="form-grid" style="margin-top:10px;">
+        <div><label>New Group Name</label><input id="cg-new-name" placeholder="e.g. Adani Group"></div>
+      </div>
+      <button class="btn small" type="button" onclick="addClientGroup()">Add Group</button>
+      <div id="cg-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    `) : ''}
     <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button></div>
     ${collapsiblePanel('clients-list', `<span id="cl-count">All Clients (${clients.length})</span>`, `
-      ${renderListSearch('clients', clients, ['client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'source', 'gstin'], (rows) => {
+      ${renderListSearch('clients', clients, ['client_code', 'name', 'group_name', 'contact_person', 'phone', 'email', 'address', 'source', 'gstin'], (rows) => {
         document.getElementById('cl-table-wrap').innerHTML = renderClientRows(rows);
         document.getElementById('cl-count').textContent = 'All Clients (' + rows.length + ')';
       }, 'Search by name, contact, phone, email, GSTIN, address...')}
       <div id="cl-table-wrap">${renderClientRows(clients)}</div>
     `)}`;
+};
+function clientGroupsListHTML(groups) {
+  if (!groups.length) return '<p class="muted">No customer groups yet.</p>';
+  return tableHTML(['Name', ''], groups, g => `
+    <tr><td><input id="cg-name-${g.id}" value="${esc(g.name)}" style="width:100%;"></td>
+    <td>${actionButtonsCell(`<button class="btn small outline" type="button" onclick="renameClientGroup(${g.id})">Save</button>
+    <button class="btn small red" type="button" onclick="deleteClientGroup(${g.id})">Delete</button>`)}</td></tr>`);
+}
+window.addClientGroup = async () => {
+  const errEl = document.getElementById('cg-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/masters/client-groups', { method: 'POST', body: JSON.stringify({ name: val('cg-new-name') }) });
+    navigate('clients');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.renameClientGroup = async (id) => {
+  const errEl = document.getElementById('cg-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/masters/client-groups/' + id, { method: 'PUT', body: JSON.stringify({ name: val('cg-name-' + id) }) });
+    navigate('clients');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteClientGroup = async (id) => {
+  if (!confirm('Delete this customer group? Any client still assigned to it must be moved first.')) return;
+  const errEl = document.getElementById('cg-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/masters/client-groups/' + id, { method: 'DELETE' });
+    navigate('clients');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 // Edit Client (2026-10-13: converted from repurposing the "Add Client" form
 // at the top of the page - scroll-to-it, swap its title/button text - into
@@ -2158,6 +2249,7 @@ window.editClient = (c) => {
       <div><label>Email</label><input id="cle-email" value="${esc(c.email)}"></div>
       <div><label>GSTIN</label><input id="cle-gstin" value="${esc(c.gstin)}"></div>
       <div><label>Source</label><input id="cle-source" value="${esc(c.source)}" placeholder="Referral / Website / Exhibition"></div>
+      <div><label>Customer Group <span class="muted">(optional)</span></label><select id="cle-group">${clientGroupOptionsHTML(c.group_id)}</select></div>
     </div>
     <label>Address</label>
     <textarea id="cle-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(c.address)}</textarea>
@@ -2170,6 +2262,7 @@ window.saveClientEdit = async (id) => {
   const payload = {
     name: val('cle-name'), contact_person: val('cle-contact'), phone: val('cle-phone'),
     email: val('cle-email'), gstin: val('cle-gstin'), source: val('cle-source'), address: val('cle-address'),
+    group_id: val('cle-group') || null,
   };
   try {
     await api('/masters/clients/' + id, { method: 'PUT', body: JSON.stringify(payload) });
@@ -2179,7 +2272,8 @@ window.saveClientEdit = async (id) => {
 window.saveClient = async () => {
   const payload = {
     name: val('cl-name'), contact_person: val('cl-contact'), phone: val('cl-phone'),
-    email: val('cl-email'), gstin: val('cl-gstin'), source: val('cl-source'), address: val('cl-address')
+    email: val('cl-email'), gstin: val('cl-gstin'), source: val('cl-source'), address: val('cl-address'),
+    group_id: val('cl-group') || null,
   };
   try {
     await api('/masters/clients', { method: 'POST', body: JSON.stringify(payload) });
@@ -2188,7 +2282,7 @@ window.saveClient = async () => {
 };
 window.reportClients = async () => {
   const clients = await api('/masters/clients');
-  downloadCSV('clients_report.csv', clients, ['id', 'client_code', 'name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
+  downloadCSV('clients_report.csv', clients, ['id', 'client_code', 'name', 'group_name', 'contact_person', 'phone', 'email', 'address', 'gstin', 'source']);
 };
 
 // ---- Bill-to / Ship-to addresses (shown once a client exists to edit) ----
@@ -2274,8 +2368,13 @@ window.openClient360 = async (clientId) => {
       <div><label>Email</label><div>${esc(c.email) || '-'}</div></div>
       <div><label>GSTIN</label><div>${esc(c.gstin) || '-'}</div></div>
       <div><label>Source</label><div>${esc(c.source) || '-'}</div></div>
+      <div><label>Customer Group</label><div>${esc(d.group && d.group.name) || '-'}</div></div>
       <div><label>Total Business Value</label><div><b>₹${fmt(d.totalBusinessValue)}</b></div></div>
     </div>
+    ${d.group ? `<h4>Sibling Companies in "${esc(d.group.name)}" (${d.groupSiblings.length})</h4>
+    ${d.groupSiblings.length ? tableHTML(['Client ID', 'Name', ''], d.groupSiblings, s => `
+      <tr><td>${esc(s.client_code)||'-'}</td><td>${esc(s.name)}</td><td><button class="btn small outline" type="button" onclick="openClient360(${s.id})">View 360</button></td></tr>`)
+      : '<p class="muted">No other companies in this group yet.</p>'}` : ''}
     <h4>Leads (${d.leads.length})</h4>
     ${tableHTML(['Product', 'Value', 'Stage', 'Owner'], d.leads, l => `
       <tr><td>${esc(l.product_interest)}</td><td>₹${fmt(l.expected_value)}</td><td>${badge(l.stage)}</td><td>${esc(l.owner_name) || '-'}</td></tr>`)}
@@ -2914,11 +3013,11 @@ PAGES.orders = async (el) => {
     </div>
     <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button></div>
     ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
-      ${renderListSearch('orders', orders, ['order_no', 'client_name', 'status', 'description'], (rows) => {
-        document.getElementById('so-table-wrap').innerHTML = renderOrderRows(rows);
+      ${renderListSearch('orders', orders, ['order_no', 'client_name', 'group_name', 'status', 'description'], (rows) => {
+        document.getElementById('so-table-wrap').innerHTML = customerGroupedHTML(rows, 'so', renderOrderRows);
         document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
       }, 'Search by order no, client, status...')}
-      <div id="so-table-wrap">${renderOrderRows(orders)}</div>
+      <div id="so-table-wrap">${customerGroupedHTML(orders, 'so', renderOrderRows)}</div>
       <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     `)}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
@@ -3365,13 +3464,14 @@ PAGES.offers = async (el) => {
   el.innerHTML = `
     <div class="panel"><h3>New Offer</h3>
       <div class="form-grid">
-        <div><label>Client</label><select id="nf-client">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div><label>Client</label><select id="nf-client" onchange="prefillOfferContactFromClient()">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
         <div><label>Linked Enquiry / RFQ (optional)</label><select id="nf-lead">
           <option value="">-- None --</option>
           ${leads.map(l => `<option value="${l.id}">${esc(l.client_name)} - ${esc(l.product_interest || l.enquiry_details || ('Lead #' + l.id))}</option>`).join('')}
         </select></div>
         <div><label>Contact Person</label><input id="nf-contact"></div>
         <div><label>Contact Phone</label><input id="nf-phone"></div>
+        <div><label>Contact Email</label><input id="nf-email"></div>
         <div><label>Subject / Machine</label><input id="nf-subject" placeholder="e.g. Electronic Weighing and Bagging System"></div>
       </div>
       ${clients.length === 0 ? '<div class="msg err">Add a client first (Sales &amp; Marketing &rarr; Clients).</div>' : ''}
@@ -3379,11 +3479,11 @@ PAGES.offers = async (el) => {
     </div>
     <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button></div>
     ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
-      ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
-        document.getElementById('of-table-wrap').innerHTML = renderOfferRows(rows);
+      ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'group_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
+        document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', renderOfferRows);
         document.getElementById('of-count').textContent = 'All Offers (' + rows.length + ')';
       }, 'Search by offer no, client, subject, status...')}
-      <div id="of-table-wrap">${renderOfferRows(offers)}</div>
+      <div id="of-table-wrap">${customerGroupedHTML(offers, 'of', renderOfferRows)}</div>
     `)}
     <div class="panel" id="offer-copy-panel" style="display:none;">
       <h3>Copy Offer to Another Customer</h3>
@@ -3404,6 +3504,25 @@ PAGES.offers = async (el) => {
     </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
   `;
+  // Pre-fill Contact Person/Phone/Email from whichever client the browser's
+  // own <select> defaults to selecting (its first option) - without this
+  // the form opens showing a client already "picked" but blank contact
+  // fields, the exact gap reported (switching the dropdown is the same
+  // code path, see prefillOfferContactFromClient() below).
+  if (clients.length) prefillOfferContactFromClient();
+};
+// Client picked/switched on New Offer (2026-10-14) - always overwrites
+// Contact Person/Phone/Email from that client's own saved record, per the
+// owner's explicit "always overwrite" answer - picking a client is expected
+// to load their current default contact, not merge with whatever was typed
+// for a previously-selected client.
+window.prefillOfferContactFromClient = () => {
+  const id = Number(val('nf-client'));
+  const c = (window.__OFFERS_CLIENTS || []).find(x => x.id === id);
+  if (!c) return;
+  document.getElementById('nf-contact').value = c.contact_person || '';
+  document.getElementById('nf-phone').value = c.phone || '';
+  document.getElementById('nf-email').value = c.email || '';
 };
 function renderOfferRows(rows) {
   return tableHTML(['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''], rows, o => `
@@ -3507,7 +3626,7 @@ window.reportOffers = async () => {
 window.createOffer = async () => {
   try {
     const r = await api('/offers', { method: 'POST', body: JSON.stringify({
-      client_id: val('nf-client'), lead_id: val('nf-lead') || null, contact_person: val('nf-contact'), contact_phone: val('nf-phone'), subject: val('nf-subject')
+      client_id: val('nf-client'), lead_id: val('nf-lead') || null, contact_person: val('nf-contact'), contact_phone: val('nf-phone'), contact_email: val('nf-email'), subject: val('nf-subject')
     })});
     await openOfferBuilder(r.id);
   } catch (e) { alert(e.message); }
