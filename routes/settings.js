@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -163,5 +163,14 @@ router.put('/purchase', requireRole('Admin'), (req, res) => {
 });
 // Convenience single-value endpoint for the frontend, per the task spec.
 router.get('/purchase-quote-threshold', (req, res) => res.json({ quote_threshold: getPurchaseSettings().quote_threshold }));
+
+// Admin-configurable global sidebar group order (2026-10-14) - any
+// authenticated user can read it (every login's sidebar needs it), only
+// Admin can change it. See lib/settings.js for the storage shape.
+router.get('/sidebar-group-order', (req, res) => res.json({ order: getSidebarGroupOrder() }));
+router.put('/sidebar-group-order', requireRole('Admin'), (req, res) => {
+  setSidebarGroupOrder((req.body && req.body.order) || []);
+  res.json({ order: getSidebarGroupOrder() });
+});
 
 module.exports = router;
