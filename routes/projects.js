@@ -270,6 +270,22 @@ router.get('/job-cards/mine', (req, res) => {
   res.json(withPerms);
 });
 
+// Sidebar "pending count" badge (2026-10-14) - mirrors job-cards/mine's own
+// WHERE clause exactly (same department-scoped queue), just a COUNT and
+// excluding Completed, so the figure always matches what that page itself
+// would show once expanded.
+router.get('/job-cards/my-pending-count', (req, res) => {
+  const stages = combinedStagesForRole(req.user.role_name)
+    .concat(oversightRoleNames(db, req.user.id).flatMap(combinedStagesForRole));
+  const placeholders = stages.map(() => '?').join(',');
+  const row = db.prepare(`
+    SELECT COUNT(*) as count FROM job_cards jc
+    WHERE (jc.stage IN (${placeholders}) OR jc.assigned_to = ?) AND jc.planned_start IS NOT NULL
+      AND jc.status NOT IN ('NotApplicable', 'Completed')
+  `).get(...stages, req.user.id);
+  res.json({ count: row.count });
+});
+
 // One department's full queue, across every project - not filtered down to
 // "assigned to me". Backs the separate per-department Job Cards tabs that
 // Admin/PM see (one tab per department, so they can watch every

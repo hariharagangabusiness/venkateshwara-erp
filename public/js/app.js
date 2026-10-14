@@ -256,6 +256,45 @@ async function refreshTodoPendingCount() {
   }
 }
 
+// ===================== Per-page sidebar badges (Purchase / Store & Inventory / Job Cards) =====================
+// Live "pending count" badges for the handful of other sidebar pages that
+// have an obvious "needs attention" count (2026-10-14, per the owner's
+// explicit ask). Deliberately scoped to Purchase, Store & Inventory, and
+// Job Cards "for now" - most sidebar pages (Vendors, Challans, Service
+// Centers Master, Company Settings, every report...) have no natural
+// pending-count concept, so this stays a short explicit map rather than
+// trying to force one onto every page. Purchase Requests/Orders count the
+// signed-in user's own not-yet-cleared items (Draft/pending approval/
+// Rejected - mirrors canEditPR()/canEditPO()'s own "still active" reading
+// of those statuses); Item Master and the GRN Reconciliation queue are
+// global counts (Store's own review queues, not personal); My Job Cards
+// mirrors GET /job-cards/mine's own department-scoped WHERE clause, so the
+// count always matches what that page itself would show once expanded.
+//
+// Unlike the DOM-patch above, these are baked straight into renderSidebar()
+// via PAGE_PENDING_COUNTS (same reasoning as the Todos badge's own
+// "baked into markup, not just patched" comment: a nav-group toggle
+// rebuilds the sidebar's innerHTML from scratch, which would otherwise wipe
+// a DOM-only patch until the next refresh).
+const PAGE_PENDING_COUNT_ENDPOINTS = {
+  'purchase-requests': '/purchase/requests/my-pending-count',
+  'purchase-orders': '/purchase/orders/my-pending-count',
+  'store': '/masters/items/pending-count',
+  'stock-in-out': '/purchase/store/grn-reconciliations/pending-count',
+  'jobcards': '/projects/job-cards/my-pending-count',
+};
+let PAGE_PENDING_COUNTS = {};
+async function refreshPagePendingCounts() {
+  const entries = Object.entries(PAGE_PENDING_COUNT_ENDPOINTS);
+  const results = await Promise.all(entries.map(([, path]) => api(path).then(r => r.count).catch(() => null)));
+  entries.forEach(([pageId], i) => { if (results[i] != null) PAGE_PENDING_COUNTS[pageId] = results[i]; });
+  renderSidebar();
+  if (CURRENT_PAGE) {
+    const navEl = document.getElementById('nav-' + CURRENT_PAGE);
+    if (navEl) navEl.classList.add('active');
+  }
+}
+
 let ALLOWED_PAGES = null; // null = unrestricted; Set of page ids once an Admin has configured this role
 // Faint company branding watermark across the app shell - best-effort and
 // non-blocking, same idea as the one baked into every generated PDF
@@ -397,53 +436,32 @@ async function boot() {
   }
   renderSidebar();
   refreshTodoPendingCount();
+  refreshPagePendingCounts();
   if (!window.__TODO_BADGE_POLL) window.__TODO_BADGE_POLL = setInterval(refreshTodoPendingCount, 5 * 60 * 1000);
+  if (!window.__PAGE_BADGE_POLL) window.__PAGE_BADGE_POLL = setInterval(refreshPagePendingCounts, 5 * 60 * 1000);
   const landing = (!ALLOWED_PAGES || ALLOWED_PAGES.has('dashboard')) ? 'dashboard' : (NAV.flatMap(g => g.items).find(it => ALLOWED_PAGES.has(it.id)) || { id: 'dashboard' }).id;
   navigate(landing);
 }
 
 // ===================== Navigation / Sidebar =====================
+// Group order is alphabetical by group label (2026-10-14, per the owner's
+// explicit ask) - this array's own declaration order IS the sidebar order,
+// so keep it sorted A-Z when adding/renaming a group rather than relying on
+// a runtime sort, which would obscure the ordering rule from a future edit.
 const NAV = [
-  { group: 'Overview', items: [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'approvals', label: 'My Approvals' },
-    { id: 'todos', label: 'To-Do List' },
-    { id: 'dept-report', label: 'Department Report' },
+  { group: 'Admin', items: [
+    { id: 'users', label: 'Users & Roles' },
+    { id: 'access', label: 'User Access' },
+    { id: 'approval-matrix', label: 'Approval Matrix' },
+    { id: 'company-settings', label: 'Company Settings' },
+    { id: 'data-import', label: 'Data Import' },
+    { id: 'full-data-export', label: 'Full Data Export' },
+    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
+    { id: 'backups', label: 'Backups' },
   ]},
-  { group: 'Sales & Marketing', items: [
-    { id: 'leads', label: 'Leads / Enquiries' },
-    { id: 'pipeline', label: 'Pipeline (Kanban)' },
-    { id: 'followups', label: "Today's Follow-ups" },
-    { id: 'offers', label: 'Offers / Quotations' },
-    { id: 'offer-options', label: 'Offer Field Options' },
-    { id: 'offer-pdf-designer', label: 'Offer PDF Layout Designer' },
-    { id: 'orders', label: 'Sales Orders' },
-    { id: 'fg-dispatches', label: 'FG Packing & Dispatch' },
-    { id: 'sale-rejection-mrns', label: 'Sale Rejection MRN' },
-    { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
-    { id: 'clients', label: 'Clients' },
-    { id: 'sales-analytics', label: 'Sales Analytics' },
-    { id: 'sales-targets', label: 'Sales Targets' },
-  ]},
-  { group: 'Projects Management', items: [
-    { id: 'projects', label: 'Projects' },
-    { id: 'targets', label: 'Targets' },
-    { id: 'dept-capacity', label: 'Department Capacity' },
-    { id: 'jobcards', label: 'My Job Cards' },
-    { id: 'time-motion-report', label: 'Time & Motion Report' },
-  ]},
-  { group: 'Purchase', items: [
-    { id: 'purchase-requests', label: 'Purchase Requests' },
-    { id: 'purchase-orders', label: 'Purchase Orders' },
-    { id: 'vendors', label: 'Vendors' },
-  ]},
-  { group: 'Store & Inventory', items: [
-    { id: 'store', label: 'Item Master' },
-    { id: 'stock-in-out', label: 'Stock In/Out' },
-    { id: 'challans', label: 'Challans' },
-    { id: 'service-centers', label: 'Service Centers Master' },
-    { id: 'sc-transfers', label: 'Store → Service Center Transfers' },
-    { id: 'sc-stock', label: 'Service Center Stock Levels' },
+  { group: 'Asset Management', items: [
+    { id: 'assets', label: 'Asset Register' },
+    { id: 'assets-maintenance', label: 'Maintenance / EOL Report' },
   ]},
   { group: 'Electrical & Service', items: [
     { id: 'service', label: 'Service & Spares' },
@@ -455,18 +473,6 @@ const NAV = [
     { id: 'sc-reconciliation', label: 'Service Center Reconciliation' },
     { id: 'site-visits', label: 'Site Visit Tracker' },
     { id: 'daily-work-log', label: 'Engineer Daily Work Log' },
-  ]},
-  { group: 'Payroll & HR', items: [
-    { id: 'employees', label: 'Employees' },
-    { id: 'attendance', label: 'Attendance' },
-    { id: 'leave', label: 'Leave Requests' },
-    { id: 'advances', label: 'Salary Advances' },
-    { id: 'payroll', label: 'Payroll' },
-    { id: 'leave-balances', label: 'Leave Balances Master' },
-    { id: 'referral-incentives', label: 'Referral Incentives' },
-    { id: 'salary-hikes', label: 'Salary Hike History' },
-    { id: 'salary-hike-cycles', label: 'Salary Hike Cycles' },
-    { id: 'salary-report', label: 'Salary Report' },
   ]},
   { group: 'Finance', items: [
     { id: 'expenses', label: 'Expense Vouchers' },
@@ -489,24 +495,63 @@ const NAV = [
     { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
     { id: 'foreign-payments', label: 'Foreign Payments' },
   ]},
-  { group: 'Asset Management', items: [
-    { id: 'assets', label: 'Asset Register' },
-    { id: 'assets-maintenance', label: 'Maintenance / EOL Report' },
+  { group: 'Overview', items: [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'approvals', label: 'My Approvals' },
+    { id: 'todos', label: 'To-Do List' },
+    { id: 'dept-report', label: 'Department Report' },
+  ]},
+  { group: 'Payroll & HR', items: [
+    { id: 'employees', label: 'Employees' },
+    { id: 'attendance', label: 'Attendance' },
+    { id: 'leave', label: 'Leave Requests' },
+    { id: 'advances', label: 'Salary Advances' },
+    { id: 'payroll', label: 'Payroll' },
+    { id: 'leave-balances', label: 'Leave Balances Master' },
+    { id: 'referral-incentives', label: 'Referral Incentives' },
+    { id: 'salary-hikes', label: 'Salary Hike History' },
+    { id: 'salary-hike-cycles', label: 'Salary Hike Cycles' },
+    { id: 'salary-report', label: 'Salary Report' },
+  ]},
+  { group: 'Projects Management', items: [
+    { id: 'projects', label: 'Projects' },
+    { id: 'targets', label: 'Targets' },
+    { id: 'dept-capacity', label: 'Department Capacity' },
+    { id: 'jobcards', label: 'My Job Cards' },
+    { id: 'time-motion-report', label: 'Time & Motion Report' },
+  ]},
+  { group: 'Purchase', items: [
+    { id: 'purchase-requests', label: 'Purchase Requests' },
+    { id: 'purchase-orders', label: 'Purchase Orders' },
+    { id: 'vendors', label: 'Vendors' },
+  ]},
+  { group: 'Sales & Marketing', items: [
+    { id: 'leads', label: 'Leads / Enquiries' },
+    { id: 'pipeline', label: 'Pipeline (Kanban)' },
+    { id: 'followups', label: "Today's Follow-ups" },
+    { id: 'offers', label: 'Offers / Quotations' },
+    { id: 'offer-options', label: 'Offer Field Options' },
+    { id: 'offer-pdf-designer', label: 'Offer PDF Layout Designer' },
+    { id: 'orders', label: 'Sales Orders' },
+    { id: 'fg-dispatches', label: 'FG Packing & Dispatch' },
+    { id: 'sale-rejection-mrns', label: 'Sale Rejection MRN' },
+    { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
+    { id: 'clients', label: 'Clients' },
+    { id: 'sales-analytics', label: 'Sales Analytics' },
+    { id: 'sales-targets', label: 'Sales Targets' },
+  ]},
+  { group: 'Store & Inventory', items: [
+    { id: 'store', label: 'Item Master' },
+    { id: 'stock-in-out', label: 'Stock In/Out' },
+    { id: 'challans', label: 'Challans' },
+    { id: 'service-centers', label: 'Service Centers Master' },
+    { id: 'sc-transfers', label: 'Store → Service Center Transfers' },
+    { id: 'sc-stock', label: 'Service Center Stock Levels' },
   ]},
   { group: 'Tickets', items: [
     { id: 'tickets-raise', label: 'Raise a Ticket' },
     { id: 'tickets-mine', label: 'My Tickets' },
     { id: 'tickets-department', label: 'Department Tickets' },
-  ]},
-  { group: 'Admin', items: [
-    { id: 'users', label: 'Users & Roles' },
-    { id: 'access', label: 'User Access' },
-    { id: 'approval-matrix', label: 'Approval Matrix' },
-    { id: 'company-settings', label: 'Company Settings' },
-    { id: 'data-import', label: 'Data Import' },
-    { id: 'full-data-export', label: 'Full Data Export' },
-    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
-    { id: 'backups', label: 'Backups' },
   ]},
 ];
 // Per-department Job Cards groups are injected dynamically in boot() for
@@ -523,19 +568,21 @@ const DEPT_JOBCARDS_GROUPS = [];
 const DEPT_OWN_GROUP = { group: '', items: [] };
 
 // Which sidebar groups the user has explicitly EXPANDED, keyed by group
-// label, persisted per-browser so it survives navigation and page reloads.
-// Every group defaults to collapsed (a missing/falsy key) unless the user
-// has opened it before - the inverse of an earlier "collapsed" map, kept as
-// an expanded-set instead so a fresh browser starts with the whole sidebar
-// collapsed rather than everything open. A group containing the page
-// currently being opened is always force-expanded (see navigate()) even if
-// the user had previously collapsed it - collapsing a group is a "get it
-// out of my way for now" choice, not "hide this forever".
+// label - kept in memory only for the current page load (2026-10-14, per
+// the owner's explicit ask: every fresh session should start with the whole
+// sidebar collapsed again, not carry over a prior visit's expand state via
+// localStorage the way this used to). Every group defaults to collapsed (a
+// missing/falsy key) unless expanded within this same session. A group
+// containing the page currently being opened is still force-expanded (see
+// navigate()) even if the user had just collapsed it this session -
+// collapsing a group is a "get it out of my way for now" choice, not "hide
+// this forever", and navigation still needs to reveal the active item.
+let EXPANDED_NAV_GROUPS = {};
 function loadExpandedNavGroups() {
-  try { return JSON.parse(localStorage.getItem('erp_expanded_nav_groups') || '{}'); } catch (e) { return {}; }
+  return EXPANDED_NAV_GROUPS;
 }
 function saveExpandedNavGroups(map) {
-  try { localStorage.setItem('erp_expanded_nav_groups', JSON.stringify(map)); } catch (e) {}
+  EXPANDED_NAV_GROUPS = map;
 }
 window.toggleNavGroup = (label) => {
   const map = loadExpandedNavGroups();
@@ -649,12 +696,15 @@ function renderSidebar() {
   const el = document.getElementById('sidebar');
   el.innerHTML = `<div class="brand"><strong>Venkateshwara Engineers</strong><span>ERP System</span></div>`;
   const groups = [...NAV];
-  if (DEPT_OWN_GROUP.items.length) groups.splice(3, 0, DEPT_OWN_GROUP); // right after Projects Management
-  // Placed right after Projects Management too (not appended at the very
-  // bottom below 11 other groups) so Admin/PM logins can't miss it - each
-  // department is its own separate group/tab, in pipeline order, rather than
-  // combined into one "Department Job Cards" group.
-  if (DEPT_JOBCARDS_GROUPS.length) groups.splice(3, 0, ...DEPT_JOBCARDS_GROUPS);
+  // Pinned at the very top regardless of their own label (2026-10-14, per
+  // the owner's explicit ask when the static groups above went alphabetical)
+  // rather than sorted in alongside them - these are per-user/per-login
+  // groups Admin/PM/department logins can't afford to have drift down the
+  // list depending on what the department happens to be named.
+  if (DEPT_OWN_GROUP.items.length) groups.splice(0, 0, DEPT_OWN_GROUP);
+  // Each department is its own separate group/tab, in pipeline order,
+  // rather than combined into one "Department Job Cards" group.
+  if (DEPT_JOBCARDS_GROUPS.length) groups.splice(0, 0, ...DEPT_JOBCARDS_GROUPS);
   const expanded = loadExpandedNavGroups();
   groups.forEach(g => {
     const items = ALLOWED_PAGES ? g.items.filter(it => ALLOWED_PAGES.has(it.id)) : g.items;
@@ -671,7 +721,8 @@ function renderSidebar() {
     items.forEach(it => {
       const a = document.createElement('a');
       a.className = 'nav-item'; a.id = 'nav-' + it.id;
-      a.innerHTML = esc(it.label) + (it.id === 'todos' && TODO_PENDING_COUNT > 0 ? ` <span class="nav-badge">${TODO_PENDING_COUNT}</span>` : '');
+      const badgeCount = it.id === 'todos' ? TODO_PENDING_COUNT : PAGE_PENDING_COUNTS[it.id];
+      a.innerHTML = esc(it.label) + (badgeCount > 0 ? ` <span class="nav-badge">${badgeCount}</span>` : '');
       a.onclick = () => navigate(it.id);
       itemsWrap.appendChild(a);
     });
@@ -717,6 +768,7 @@ async function navigate(id) {
     content.innerHTML = `<div class="msg err">${e.message}</div>`;
   }
   refreshTodoPendingCount();
+  refreshPagePendingCounts();
 }
 
 // ===================== Helpers =====================
@@ -2530,11 +2582,13 @@ function renderOrderRows(rows) {
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
     <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
-    <td><button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
+    <td>${actionButtonsCell(`
+    <button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
     <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
-    ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}</td></tr>
+    ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}
+    `)}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
     <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>
     <tr id="so-items-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-items-body-${o.id}"></div></td></tr>`);

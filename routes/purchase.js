@@ -63,6 +63,20 @@ router.get('/requests', (req, res) => {
   `).all());
 });
 
+// Sidebar "pending count" badge (2026-10-14) - the signed-in user's own
+// Purchase Requests still needing action: Draft (not yet submitted),
+// Pending/PendingQuotes (awaiting the approval chain), or Rejected (needs
+// resubmission) - mirrors canEditPR()'s own "still active" status set.
+// Registered ahead of /requests/:id/items, same :id-before-literal-sibling
+// discipline this file already follows everywhere else.
+router.get('/requests/my-pending-count', (req, res) => {
+  const row = db.prepare(`
+    SELECT COUNT(*) as count FROM purchase_requests
+    WHERE raised_by = ? AND status NOT IN ('Approved', 'OrderPlaced', 'Received', 'Cancelled')
+  `).get(req.user.id);
+  res.json({ count: row.count });
+});
+
 // Line items for a single PR - drives the Edit panel and the "From PR" line
 // picker on Purchase Order creation.
 router.get('/requests/:id/items', (req, res) => {
@@ -672,6 +686,16 @@ router.get('/orders', (req, res) => {
     ORDER BY po.id DESC
   `).all());
 });
+// Sidebar "pending count" badge (2026-10-14) - the signed-in user's own
+// Purchase Orders still needing action: Draft, PendingApproval, or
+// Rejected - mirrors canEditPO()'s own "still active" status set.
+router.get('/orders/my-pending-count', (req, res) => {
+  const row = db.prepare(`
+    SELECT COUNT(*) as count FROM purchase_orders
+    WHERE created_by = ? AND status NOT IN ('Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled')
+  `).get(req.user.id);
+  res.json({ count: row.count });
+});
 // A "Purchase Order" is still stored as one purchase_orders row per line
 // item (no separate po_items table - see the payment_terms migration note
 // in db/index.js), several rows sharing one po_no for a multi-item PO. The
@@ -1235,6 +1259,15 @@ router.get('/store/grn-reconciliations', (req, res) => {
   if (req.query.po_id) { q += ' AND g.po_id = ?'; params.push(req.query.po_id); }
   q += ' ORDER BY g.id DESC';
   res.json(db.prepare(q).all(...params));
+});
+// Sidebar "pending count" badge (2026-10-14) - Store's own global review
+// queue (not personal, same as the queue itself), so every user who can
+// see the Stock In/Out nav item sees the same figure. Registered ahead of
+// /store/grn-reconciliations/:id, same :id-before-literal-sibling
+// discipline this file already follows everywhere else.
+router.get('/store/grn-reconciliations/pending-count', (req, res) => {
+  const row = db.prepare(`SELECT COUNT(*) as count FROM grn_reconciliations WHERE status = 'PendingApproval'`).get();
+  res.json({ count: row.count });
 });
 router.get('/store/grn-reconciliations/:id', (req, res) => {
   const g = db.prepare(`
