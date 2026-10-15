@@ -4014,7 +4014,28 @@ async function renderScopeTab(el, data) {
   const equipmentRefs = data.equipmentReferences || [];
   const sectionTitles = await api('/offers/section-titles').catch(() => []);
   window.__SECTION_TITLES = sectionTitles;
-  el.innerHTML = `
+  // Unit of Measurement + flat Discount Amount per line (2026-10-15) -
+  // Spares-format offers only, matching the owner's locked scope (a full
+  // machinery offer's Scope Of Supply stays exactly as it was). Spares mode
+  // also drops the Item Code column here, per the owner's own call that it's
+  // redundant with Description once the line is this simple.
+  const isSpares = data.offer.offer_format === 'Spares';
+  const grandTotal = items.reduce((a, b) => a + Number(b.total_price || 0), 0);
+  const listTable = isSpares ? `
+    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Discount (₹)</th><th>Taxable</th><th>Picture</th><th></th></tr></thead>
+    <tbody>${items.map((it, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
+        <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td><td>₹${fmt(it.discount_amount || 0)}</td><td>₹${fmt(it.total_price)}</td>
+        <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
+        <td>
+          <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
+          <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="9" class="empty">No items yet.</td></tr>'}
+    <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="3"><b>₹${fmt(grandTotal)}</b></td></tr>
+    </tbody></table>` : `
     <table><thead><tr><th>Item</th><th>Section</th><th>Description</th><th>Picture</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
     <tbody>${items.map(it => `
       <tr>
@@ -4028,8 +4049,10 @@ async function renderScopeTab(el, data) {
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
         </td>
       </tr>`).join('') || '<tr><td colspan="8" class="empty">No items yet.</td></tr>'}
-    <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(items.reduce((a, b) => a + Number(b.total_price || 0), 0))}</b></td></tr>
-    </tbody></table>
+    <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(grandTotal)}</b></td></tr>
+    </tbody></table>`;
+  el.innerHTML = `
+    ${listTable}
     <h4 id="it-form-title">Add Machinery / Scope Line</h4>
     <div class="form-grid">
       <div><label>Item Code</label><input id="it-code" placeholder="A / B / C"></div>
@@ -4037,6 +4060,8 @@ async function renderScopeTab(el, data) {
       <div><label>Or type a new Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
       <div><label>Qty</label><input id="it-qty" type="number" value="1"></div>
       <div><label>Unit Price (₹)</label><input id="it-price" type="number" value="0"></div>
+      ${isSpares ? `<div><label>Unit</label>${unitPickerHTML('it-unit', 'Nos', null)}</div>
+      <div><label>Discount Amount (₹)</label><input id="it-discount" type="number" value="0"></div>` : ''}
       <div><label>Picture (optional, overrides the library picture)</label><input id="it-image" type="file" accept="image/*"></div>
     </div>
     <div id="it-image-preview" style="margin:6px 0;"></div>
@@ -4113,6 +4138,20 @@ window.editOfferItem = async (itemId) => {
   document.getElementById('it-summary').value = it.summary || '';
   document.getElementById('it-qty').value = it.qty;
   document.getElementById('it-price').value = it.unit_price;
+  // Unit/Discount Amount only exist on the form in Spares mode (see
+  // renderScopeTab) - the unit picker's <select>/Other-input pair has to be
+  // populated after the fact here since it's a static, already-rendered
+  // picker, not rebuilt per edit (same reasoning as every other "fill an
+  // existing form" editXxx function in this file).
+  const unitSel = document.getElementById('it-unit');
+  if (unitSel) {
+    const isPreset = PO_UNIT_PRESETS.includes(it.unit);
+    unitSel.value = isPreset ? (it.unit || 'Nos') : 'Other';
+    toggleUnitOther('it-unit');
+    if (!isPreset) document.getElementById('it-unit-other').value = it.unit || '';
+  }
+  const discountEl = document.getElementById('it-discount');
+  if (discountEl) discountEl.value = it.discount_amount || 0;
   document.getElementById('it-form-title').textContent = 'Edit Machinery / Scope Line';
   document.getElementById('it-submit-btn').textContent = 'Update Line';
   document.getElementById('it-cancel-btn').style.display = '';
@@ -4133,6 +4172,8 @@ window.addOfferItem = async () => {
     fd.append('summary', val('it-summary'));
     fd.append('qty', val('it-qty'));
     fd.append('unit_price', val('it-price'));
+    if (document.getElementById('it-unit')) fd.append('unit', unitPickerValue('it-unit'));
+    if (document.getElementById('it-discount')) fd.append('discount_amount', val('it-discount'));
     fd.append('revision_reason', reason || '');
     if (val('it-section-select')) fd.append('section_title_id', val('it-section-select'));
     const fileInput = document.getElementById('it-image');
