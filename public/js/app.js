@@ -2236,7 +2236,6 @@ PAGES.clients = async (el) => {
         <button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button>
       </div>
     </div>
-    <div id="cl-addresses-panel"></div>
     ${ME.role === 'Admin' ? collapsiblePanel('client-groups', 'Customer Groups', `
       <p class="muted">A Customer Group is a pure folder - a shared name tying several companies (each its own Client row, GSTIN, address) together, same as how a conglomerate's own filing already works. Nothing about an individual client's own details is shared or duplicated - assigning one to a group only changes how Offers/Sales Orders roll up in their lists and what shows as "sibling companies" on Customer 360.</p>
       <div id="client-groups-list">${clientGroupsListHTML(groups)}</div>
@@ -2292,11 +2291,15 @@ window.deleteClientGroup = async (id) => {
 // the generic popup, see openEditVendor's own comment for why). A separate
 // form from Add Client's own (cle- prefixed ids, not cl-) so Add stays
 // completely untouched rather than needing an edit-mode branch inside it.
-// Bill-to/Ship-to Addresses management still populates in the background
-// (the same #cl-addresses-panel on the page, below Add Client) exactly as
-// before - not part of what was asked to change here.
-window.editClient = (c) => {
-  openAppModal('Edit Client — ' + esc(c.name) + (c.client_code ? ' (' + esc(c.client_code) + ')' : ''), `
+// Shared with openMissingBillingModal() below (the Confirm-Order recovery
+// popup, 2026-10-15) so both use the identical fields/ids - only the
+// wrapping title and what's appended after it differ. keepOpenOnSave=true
+// (the recovery-modal caller) saves without closing the modal/navigating
+// away - closing would destroy the "Retry Confirm Order" button and the
+// Add Address panel still open underneath it, exactly the context the
+// recovery popup exists to keep the user inside.
+function clientEditFormHTML(c, keepOpenOnSave) {
+  return `
     <div class="form-grid">
       <div><label>Name</label><input id="cle-name" value="${esc(c.name)}"></div>
       <div><label>Contact Person</label><input id="cle-contact" value="${esc(c.contact_person)}"></div>
@@ -2308,11 +2311,48 @@ window.editClient = (c) => {
     </div>
     <label>Address</label>
     <textarea id="cle-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(c.address)}</textarea>
-    <button class="btn" id="cle-save-btn" onclick="saveClientEdit(${c.id})" style="margin-top:10px;">Save Changes</button>
-    <div id="cle-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
-  renderClientAddressesPanel(c.id);
+    <button class="btn" id="cle-save-btn" onclick="saveClientEdit(${c.id}, ${!!keepOpenOnSave})" style="margin-top:10px;">Save Changes</button>
+    <div id="cle-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    <div id="cle-addr-panel" style="margin-top:14px;"></div>`;
+}
+// 2026-10-15 bug fix: this used to render the Bill-to/Ship-to Addresses
+// panel into #cl-addresses-panel, a div sitting on the underlying Clients
+// page - invisible once openAppModal() stacks its own full-viewport
+// backdrop (z-index 200) on top, so the panel existed in the DOM but was
+// completely unreachable. Now built directly into the modal body via
+// clientEditFormHTML()'s own #cle-addr-panel placeholder.
+window.editClient = (c) => {
+  openAppModal('Edit Client — ' + esc(c.name) + (c.client_code ? ' (' + esc(c.client_code) + ')' : ''), clientEditFormHTML(c));
+  renderClientAddressesPanel(c.id, 'cle-addr-panel');
 };
-window.saveClientEdit = async (id) => {
+// Confirm-Order recovery popup (2026-10-15) - POST /offers/:id/confirm's
+// missing-billing-details 400 now carries the full client row structured
+// (routes/offers.js), so instead of a bare alert() telling the user to go
+// find Clients -> Edit themselves, the exact same Edit-Client form opens
+// right here with a Retry button, so fixing the GSTIN/address and
+// re-attempting confirmation never leaves the Offer Builder.
+window.openMissingBillingModal = (c) => {
+  openAppModal('Missing Billing Details — ' + esc(c.name), `
+    <p class="msg err" style="display:block;margin-bottom:10px;">This order can't be confirmed yet - add a Billing address (Line 1, State, State Code) and/or GSTIN below, then retry.</p>
+    ${clientEditFormHTML(c, true)}
+    <button class="btn" type="button" style="margin-top:14px;" onclick="retryConfirmOfferFromModal()">Retry Confirm Order</button>
+    <div id="cle-retry-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
+  renderClientAddressesPanel(c.id, 'cle-addr-panel');
+};
+window.retryConfirmOfferFromModal = async () => {
+  const errEl = document.getElementById('cle-retry-err');
+  errEl.style.display = 'none';
+  try {
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/confirm`, { method: 'POST' });
+    closeAppModal();
+    alert(`Sales Order ${r.orderNo} created. Project ${r.projCode} queued for execution across all departments.`);
+    navigate('projects');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+};
+window.saveClientEdit = async (id, keepOpen) => {
   const errEl = document.getElementById('cle-err');
   const payload = {
     name: val('cle-name'), contact_person: val('cle-contact'), phone: val('cle-phone'),
@@ -2321,7 +2361,20 @@ window.saveClientEdit = async (id) => {
   };
   try {
     await api('/masters/clients/' + id, { method: 'PUT', body: JSON.stringify(payload) });
-    confirmSavedThenClose('cle-save-btn', 'clients');
+    if (keepOpen) {
+      // Missing-billing recovery modal (2026-10-15) - closing here would
+      // destroy the still-open Add Address form and the Retry Confirm
+      // Order button beneath it, so just confirm the save happened and
+      // stay put.
+      const btn = document.getElementById('cle-save-btn');
+      if (btn) {
+        const original = btn.textContent;
+        btn.textContent = 'Saved ✓';
+        setTimeout(() => { if (btn.textContent === 'Saved ✓') btn.textContent = original; }, 1200);
+      }
+    } else {
+      confirmSavedThenClose('cle-save-btn', 'clients');
+    }
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.saveClient = async () => {
@@ -2341,15 +2394,20 @@ window.reportClients = async () => {
 };
 
 // ---- Bill-to / Ship-to addresses (shown once a client exists to edit) ----
-async function renderClientAddressesPanel(clientId) {
-  const panel = document.getElementById('cl-addresses-panel');
+// targetId identifies which placeholder div to render into - both current
+// callers (editClient, openMissingBillingModal) use the same modal-internal
+// #cle-addr-panel id, but it's threaded through explicitly (not hardcoded)
+// so this never silently regresses into rendering behind a modal again.
+async function renderClientAddressesPanel(clientId, targetId) {
+  const panel = document.getElementById(targetId);
+  if (!panel) return;
   const addresses = await api(`/masters/clients/${clientId}/addresses`);
   const addrRow = (a) => `<tr>
       <td>${esc(a.address_type)}${a.is_default ? ' <span class="badge active">Default</span>' : ''}</td>
       <td>${esc(a.label)||'-'}</td>
       <td>${[a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).map(esc).join(', ')}</td>
       <td>${esc(a.gstin)||'-'}</td>
-      <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id})">Delete</button></td>
+      <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id}, '${targetId}')">Delete</button></td>
     </tr>`;
   panel.innerHTML = `
     <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
@@ -2366,11 +2424,11 @@ async function renderClientAddressesPanel(clientId) {
         <div><label>Pincode</label><input id="ca-pincode"></div>
         <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
       </div>
-      <button class="btn" onclick="addClientAddress(${clientId})">Add Address</button>
+      <button class="btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
       <div id="ca-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>`;
 }
-window.addClientAddress = async (clientId) => {
+window.addClientAddress = async (clientId, targetId) => {
   const errEl = document.getElementById('ca-err');
   try {
     await api(`/masters/clients/${clientId}/addresses`, { method: 'POST', body: JSON.stringify({
@@ -2378,13 +2436,13 @@ window.addClientAddress = async (clientId) => {
       city: val('ca-city'), state: val('ca-state'), state_code: val('ca-state-code'), pincode: val('ca-pincode'),
       gstin: val('ca-gstin'), is_default: document.getElementById('ca-default').checked,
     })});
-    renderClientAddressesPanel(clientId);
+    renderClientAddressesPanel(clientId, targetId);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
-window.deleteClientAddress = async (clientId, id) => {
+window.deleteClientAddress = async (clientId, id, targetId) => {
   if (!confirm('Delete this address?')) return;
   await api(`/masters/client-addresses/${id}`, { method: 'DELETE' });
-  renderClientAddressesPanel(clientId);
+  renderClientAddressesPanel(clientId, targetId);
 };
 function val(id) { return document.getElementById(id).value; }
 
@@ -3846,7 +3904,13 @@ window.confirmOffer = async () => {
     const r = await api(`/offers/${CURRENT_OFFER_ID}/confirm`, { method: 'POST' });
     alert(`Sales Order ${r.orderNo} created. Project ${r.projCode} queued for execution across all departments.`);
     navigate('projects');
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    // Missing billing details (routes/offers.js) - open the fix-it-here
+    // popup instead of just telling the user to go find Clients -> Edit
+    // themselves (2026-10-15).
+    if (e.data && e.data.missing_billing && e.data.client) openMissingBillingModal(e.data.client);
+    else alert(e.message);
+  }
 };
 window.markOfferSent = async () => {
   if (!confirm('Mark this offer as Sent to the customer? This also updates the Offer Date to today.')) return;
