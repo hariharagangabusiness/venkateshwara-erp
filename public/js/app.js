@@ -1565,11 +1565,30 @@ function resolvePanelOrder(saved, allKeys) {
   const missing = allKeys.filter(k => !known.includes(k));
   return [...known, ...missing];
 }
+// Dragging only happens inside an explicit "Edit Widget Layout" mode
+// (2026-10-15) - before this, every panel on every one of these 11 pages
+// was always draggable in place, so an accidental grab-and-drop during
+// ordinary use (clicking near a panel header, a touch-scroll on mobile)
+// could silently reorder the page. LAYOUT_EDIT_MODE is a plain in-memory,
+// per-pageKey flag (same "resets on reload/new login, not persisted"
+// philosophy as EXPANDED_NAV_GROUPS) - entering/leaving it goes through
+// navigate(pageKey), the same full-page-rerender mechanism resetPanelOrder()
+// already uses, so no call site of reorderablePanelsHTML() needs its own
+// toggle plumbing.
+let LAYOUT_EDIT_MODE = {};
 function reorderablePanelsHTML(pageKey, panelsObj, order, labels) {
   const keys = order.filter(k => panelsObj[k]);
   const containerId = `reorder-${pageKey}`;
+  const editing = !!LAYOUT_EDIT_MODE[pageKey];
+  const editToggleBtn = `<button class="btn small outline" type="button" onclick="toggleLayoutEditMode('${pageKey}')">${editing ? 'Done Arranging' : 'Edit Widget Layout'}</button>`;
+  if (!editing) {
+    return `
+      <div style="margin-bottom:8px;">${editToggleBtn}</div>
+      <div id="${containerId}">${keys.map(k => `<div class="reorder-panel" data-key="${k}">${panelsObj[k]}</div>`).join('')}</div>`;
+  }
   return `
     <div class="muted" style="margin-bottom:8px;">Drag a panel by its ⠿ handle to rearrange, then Save Layout.
+      ${editToggleBtn}
       <button class="btn small outline" type="button" onclick="savePanelOrder('${pageKey}','${containerId}')" style="margin-left:8px;">Save Layout</button>
       <button class="btn small outline" type="button" onclick="resetPanelOrder('${pageKey}')">Reset to Default</button>
     </div>
@@ -1580,6 +1599,10 @@ function reorderablePanelsHTML(pageKey, panelsObj, order, labels) {
         ${panelsObj[k]}
       </div>`).join('')}</div>`;
 }
+window.toggleLayoutEditMode = (pageKey) => {
+  LAYOUT_EDIT_MODE[pageKey] = !LAYOUT_EDIT_MODE[pageKey];
+  navigate(pageKey);
+};
 let PANEL_DRAG_KEY = null;
 window.panelDragStart = (e) => {
   PANEL_DRAG_KEY = e.currentTarget.dataset.key;
@@ -1603,6 +1626,8 @@ window.savePanelOrder = async (pageKey, containerId) => {
   try {
     await api('/dashboard/layout/' + pageKey, { method: 'PUT', body: JSON.stringify({ panel_order: order }) });
     alert('Layout saved.');
+    LAYOUT_EDIT_MODE[pageKey] = false;
+    navigate(pageKey);
   } catch (e) { alert(e.message); }
 };
 window.resetPanelOrder = async (pageKey) => {
