@@ -1412,6 +1412,21 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
   `ALTER TABLE clients ADD COLUMN group_id INTEGER REFERENCES client_groups(id)`,
+  // Offer Scope Of Supply: Unit of Measurement + flat Discount Amount,
+  // Spares-format offers only (2026-10-15) - offer_items never had either
+  // field (unlike purchase_orders' own unit/discount_percent); the Offer
+  // Builder's item form and lib/offerPdf.js's Spares-mode Scope Of Supply
+  // table only show/use these for an offer_format='Spares' offer, but the
+  // columns exist unconditionally so switching an offer's format later
+  // never loses data already entered. discount_amount is a flat ₹ figure
+  // (not a percent like purchase_orders.discount_percent) per the owner's
+  // own wording of the ask - total_price keeps meaning "this line's taxable
+  // value" (qty*unit_price - discount_amount, clamped to >=0), so GST
+  // applied downstream (once this flows into sales_order_items.value at
+  // offer-confirm time) is already computed on the post-discount figure
+  // with no further change needed there.
+  `ALTER TABLE offer_items ADD COLUMN unit TEXT DEFAULT 'Nos'`,
+  `ALTER TABLE offer_items ADD COLUMN discount_amount REAL DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

@@ -630,11 +630,11 @@ function cloneOfferContent(source, opts) {
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
-      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, total_price, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, total_price, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     items.forEach(it => {
-      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.total_price, it.sort_order);
+      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.total_price, it.sort_order);
     });
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
     techSpecs.forEach(s => specStmt.run(newId, s.spec_key, s.spec_value, s.sort_order));
@@ -739,9 +739,15 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, sort_order, revision_reason, section_title_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const q = Number(qty || 1), rate = Number(unit_price || 0);
+  // Unit + flat Discount Amount (2026-10-15, Spares-format offers only on
+  // the frontend, but stored unconditionally) - total_price stays "this
+  // line's taxable value", now discount-adjusted, clamped so a stray
+  // over-large discount can't push it negative.
+  const discount = Math.max(0, Number(discount_amount || 0));
+  const taxable = Math.max(0, q * rate - discount);
   let imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
   // No file uploaded by hand, but a library entry was picked and it has a
   // picture on file - a browser can't pre-fill a file input for security
@@ -751,9 +757,9 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
-    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, total_price, sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || 0);
+    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, total_price, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, taxable, sort_order || 0);
   if (!section_title_id) {
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: info.lastInsertRowid, title: section_title,
@@ -764,8 +770,10 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, sort_order, revision_reason, section_title_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
+  const discount = Math.max(0, Number(discount_amount || 0));
+  const taxable = Math.max(0, q * rate - discount);
   const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const version = ensureEditableVersion(existing.offer_id, req.user.id, revision_reason, req.user.role_name === 'Admin');
@@ -792,9 +800,9 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     }
   }
   db.prepare(`
-    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, total_price=?, sort_order=?
+    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, total_price=?, sort_order=?
     WHERE id=?
-  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, q * rate, sort_order || existing.sort_order, targetItemId);
+  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, taxable, sort_order || existing.sort_order, targetItemId);
   if (!section_title_id) {
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: targetItemId, title: section_title,
@@ -1016,7 +1024,11 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     // lines from day one (FG Dispatch/Sale Rejection MRN need these - see
     // routes/sales.js) - offer_items has no GST rate field, so each line
     // defaults to the company's standard rate; Sales can correct any line
-    // afterwards via the Sales Order's own item editor.
+    // afterwards via the Sales Order's own item editor. `value` carries
+    // through as `it.total_price`, which is already discount-adjusted
+    // (2026-10-15's Unit/Discount Amount fields) - GST applied downstream
+    // against this value is already computed on the post-discount taxable
+    // figure with no extra math needed here.
     if (full.items.length) {
       const insertSoItem = db.prepare(`
         INSERT INTO sales_order_items (sales_order_id, description, quantity, unit, rate, value, gst_rate, sort_order)
@@ -1024,7 +1036,7 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
       `);
       full.items.forEach(it => insertSoItem.run(
         salesOrderId, it.section_title || it.description || it.item_code || 'Item',
-        Number(it.qty) || 1, 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0
+        Number(it.qty) || 1, it.unit || 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0
       ));
     }
 
