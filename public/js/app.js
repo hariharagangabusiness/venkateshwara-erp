@@ -4021,20 +4021,27 @@ async function renderScopeTab(el, data) {
   // redundant with Description once the line is this simple.
   const isSpares = data.offer.offer_format === 'Spares';
   const grandTotal = items.reduce((a, b) => a + Number(b.total_price || 0), 0);
+  // Discount/Picture columns only appear at all when at least one line
+  // actually has that data (2026-10-15 follow-up) - a column nobody filled
+  // in for any line is dead weight on the table, not just a blank cell.
+  const hasDiscount = items.some(it => Number(it.discount_amount) > 0);
+  const hasPicture = items.some(it => it.image_path);
+  const colsBeforeTaxable = 5 + (hasDiscount ? 1 : 0);
+  const totalCols = colsBeforeTaxable + 1 + (hasPicture ? 1 : 0) + 1;
   const listTable = isSpares ? `
-    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Discount (₹)</th><th>Taxable</th><th>Picture</th><th></th></tr></thead>
+    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th>${hasDiscount ? '<th>Discount (₹)</th>' : ''}<th>Taxable</th>${hasPicture ? '<th>Picture</th>' : ''}<th></th></tr></thead>
     <tbody>${items.map((it, i) => `
       <tr>
         <td>${i + 1}</td>
         <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
-        <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td><td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td><td>₹${fmt(it.total_price)}</td>
-        <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>
+        <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td>${hasDiscount ? `<td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td>` : ''}<td>₹${fmt(it.total_price)}</td>
+        ${hasPicture ? `<td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>` : ''}
         <td>
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
         </td>
-      </tr>`).join('') || '<tr><td colspan="9" class="empty">No items yet.</td></tr>'}
-    <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="3"><b>₹${fmt(grandTotal)}</b></td></tr>
+      </tr>`).join('') || `<tr><td colspan="${totalCols}" class="empty">No items yet.</td></tr>`}
+    <tr><td colspan="${colsBeforeTaxable}" class="right"><b>Grand Total</b></td><td colspan="${totalCols - colsBeforeTaxable}"><b>₹${fmt(grandTotal)}</b></td></tr>
     </tbody></table>` : `
     <table><thead><tr><th>Item</th><th>Section</th><th>Description</th><th>Picture</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
     <tbody>${items.map(it => `
