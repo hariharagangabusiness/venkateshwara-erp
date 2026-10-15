@@ -986,8 +986,14 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
   if (!hasBillingAddress) missingBillingDetails.push('a Billing address (Line 1, State, and State Code)');
   if (!confirmClient.gstin || !String(confirmClient.gstin).trim()) missingBillingDetails.push('GSTIN');
   if (missingBillingDetails.length) {
+    // Structured alongside the human-readable message (2026-10-15) so the
+    // Offer Builder can open an inline fix-it popup on the same client
+    // right here, instead of just telling the user to go find Clients ->
+    // Edit -> Bill-to/Ship-to Addresses themselves.
     return res.status(400).json({
       error: `Cannot confirm this order - ${confirmClient.name} is missing ${missingBillingDetails.join(' and ')}. Add it under Sales & Marketing → Clients → Edit → Bill-to/Ship-to Addresses (and GSTIN), then try again.`,
+      missing_billing: true,
+      client: confirmClient,
     });
   }
   const orderValue = full.items.reduce((a, b) => a + Number(b.total_price || 0), 0);
