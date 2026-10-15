@@ -12424,8 +12424,10 @@ function renderTodoCards(items) {
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>` : badge(t.status)}
       </div>
+      ${t.status === 'InfoRequested' && t.info_requested_note ? `<div class="muted" style="font-size:12px;margin-top:4px;">More info requested${t.info_requested_by_name ? ' by ' + esc(t.info_requested_by_name) : ''}: ${esc(t.info_requested_note)}</div>` : ''}
       <div style="margin-top:8px;">
         <button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>
+        ${t.status === 'InfoRequested' && (t.is_mine || canLog) ? `<button class="btn small outline" type="button" onclick="provideInfoTodo(${t.id}, ${t.approval_id})">Provide Info</button>` : ''}
         ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}
       </div>
       <div id="todo-updates-row-${t.id}" style="display:none;margin-top:8px;"><div id="todo-updates-${t.id}"></div></div>
@@ -12508,6 +12510,18 @@ window.saveTodo = async () => {
 window.updateTodoStatus = async (id, status) => {
   try { await api('/todos/' + id, { method: 'PATCH', body: JSON.stringify({ status }) }); navigate('todos'); }
   catch (e) { alert(e.message); }
+};
+// Answers Management's "more info" question on a To-Do completion review -
+// mirrors provideInfoPR() (the one other place in this app with a working
+// InfoRequested resolution path). Resumes the SAME TodoCompletion approval
+// at the same step, same as PR's own flow - the To-Do doesn't need to be
+// marked Completed again.
+window.provideInfoTodo = async (id, approvalId) => {
+  const comment = prompt('Response to the reviewer (optional):');
+  try {
+    await api(`/approvals/${approvalId}/provide-info`, { method: 'POST', body: JSON.stringify({ comment }) });
+    navigate('todos');
+  } catch (e) { alert(e.message); }
 };
 window.deleteTodo = async (id) => {
   if (!confirm('Delete this To-Do?')) return;
