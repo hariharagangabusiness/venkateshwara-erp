@@ -4027,8 +4027,8 @@ async function renderScopeTab(el, data) {
       <tr>
         <td>${i + 1}</td>
         <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
-        <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td><td>₹${fmt(it.discount_amount || 0)}</td><td>₹${fmt(it.total_price)}</td>
-        <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
+        <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td><td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td><td>₹${fmt(it.total_price)}</td>
+        <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>
         <td>
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
