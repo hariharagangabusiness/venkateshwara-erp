@@ -45,6 +45,27 @@ function canLog(user) {
 function canView(user) {
   return isGlobal(user) || !!user.is_supervisor;
 }
+// Resolved live per row rather than a stored approval_id column - todos
+// predates per-entity approval_id columns (leave_request/salary_advance/etc.
+// have one; every approval-gated entity added since 2026-10-02 doesn't, and
+// resolves its live approval the same way) and isn't getting one just for
+// this. Only the InfoRequested leg actually needs it: a board card shows
+// Management's question inline and a "Provide Info" button wired to
+// POST /approvals/:approval_id/provide-info, which resumes the SAME review
+// at the same step - mirroring the one other place in this app that already
+// has a working InfoRequested resolution path (Purchase Requests' own
+// provideInfoPR(), which uses a stored approval_id since PRs are old enough
+// to have one).
+const TODO_APPROVAL_FIELDS = `
+  (SELECT a.id FROM approvals a WHERE a.entity_type = 'todo' AND a.entity_id = t.id ORDER BY a.id DESC LIMIT 1) as approval_id,
+  (SELECT aa.comment FROM approval_actions aa JOIN approvals a2 ON a2.id = aa.approval_id
+     WHERE a2.entity_type = 'todo' AND a2.entity_id = t.id AND aa.action = 'InfoRequested'
+     ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_note,
+  (SELECT u2.full_name FROM approval_actions aa JOIN approvals a2 ON a2.id = aa.approval_id
+     LEFT JOIN users u2 ON u2.id = aa.actor_user_id
+     WHERE a2.entity_type = 'todo' AND a2.entity_id = t.id AND aa.action = 'InfoRequested'
+     ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_by_name
+`;
 // Whether `user` may act as manager (redefine, reassign, add a note as
 // manager) on `t` - a HOD/supervisor only for a To-Do logged against their
 // own department; Admin/Management for any. `t` must carry a
@@ -114,7 +135,8 @@ router.get('/people', (req, res) => {
 router.get('/mine', (req, res) => {
   const { where, params } = visibleTodosWhere(req.user);
   const rows = db.prepare(`
-    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name,
+      ${TODO_APPROVAL_FIELDS}
     FROM todos t
     LEFT JOIN users h ON h.id = t.hod_id
     JOIN users a ON a.id = t.assigned_to
@@ -180,7 +202,8 @@ router.get('/board-items', (req, res) => {
     deptParams.push(req.query.department_id);
   }
   const rows = db.prepare(`
-    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name,
+      ${TODO_APPROVAL_FIELDS}
     FROM todos t
     LEFT JOIN users h ON h.id = t.hod_id
     JOIN users a ON a.id = t.assigned_to
@@ -235,7 +258,8 @@ router.get('/', (req, res) => {
 // shadow any of them - this app's own recurring route-ordering bug class.
 router.get('/:id', (req, res) => {
   const t = db.prepare(`
-    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name
+    SELECT t.*, h.full_name as hod_name, h.department_id as hod_department_id, a.full_name as assigned_to_name,
+      ${TODO_APPROVAL_FIELDS}
     FROM todos t
     LEFT JOIN users h ON h.id = t.hod_id
     JOIN users a ON a.id = t.assigned_to
