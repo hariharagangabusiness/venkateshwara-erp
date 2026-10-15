@@ -4773,8 +4773,59 @@ const DEPT_SUB_STAGES = { Manufacturing: ['Fitting', 'Tacking', 'Welding', 'Buff
 // Shared row renderer for every department job-card board ("My Job Cards"
 // and each Admin/PM per-department tab) - one place to add/change a column
 // so the two boards can never drift out of sync with each other again.
+// Boards never filtered on parent_job_card_id (GET /job-cards/mine and
+// /job-cards/by-stage/:stage both select on stage alone), so a department
+// card and every is_adhoc sub-assembly split off it (same department, same
+// project, parent_job_card_id pointing back at it) rendered as unrelated
+// flat sibling rows - one project could show 3+ separate-looking lines with
+// no visual connection between them (2026-10-15). A "routed" hand-off card
+// (sent to a DIFFERENT department) carries no parent_job_card_id at all, so
+// it's unaffected here - it's genuinely that department's own new top-level
+// card, not something to nest.
+//
+// Groups a board's rows so a child is_adhoc card (one whose
+// parent_job_card_id resolves to another row in this same rows array) nests
+// under its parent instead of appearing as an independent row - same
+// "N items, collapsed by default, expand on click" shape multi-line
+// Purchase Order groups already use. Applied to whatever rows are actually
+// being rendered (post-search-filter), not the raw fetch - a search that
+// matches a child but not its own parent still shows that child, just as a
+// standalone row rather than silently dropping it.
+function groupJobCardRows(rows) {
+  const byId = new Map(rows.map(r => [r.id, r]));
+  const childrenByParent = new Map();
+  rows.forEach(r => {
+    if (r.parent_job_card_id != null && byId.has(r.parent_job_card_id)) {
+      const list = childrenByParent.get(r.parent_job_card_id) || [];
+      list.push(r);
+      childrenByParent.set(r.parent_job_card_id, list);
+    }
+  });
+  const childIds = new Set();
+  childrenByParent.forEach(list => list.forEach(c => childIds.add(c.id)));
+  const ordered = [];
+  rows.forEach(r => {
+    if (childIds.has(r.id)) return;
+    const children = childrenByParent.get(r.id) || [];
+    ordered.push(Object.assign({}, r, { __childCount: children.length }));
+    children.forEach(c => ordered.push(Object.assign({}, c, { __isChild: true, __parentId: r.id })));
+  });
+  return ordered;
+}
+window.toggleJobCardGroup = (parentId) => {
+  const rows = document.querySelectorAll('.jc-child-row-' + parentId);
+  const showing = rows.length && rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  const link = document.getElementById('jc-group-toggle-' + parentId);
+  if (link) link.textContent = (showing ? '▸ ' : '▾ ') + link.dataset.label;
+};
 function jobCardBoardRowHTML(c) {
-  return `<tr><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}${c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : ''}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
+  const n = c.__childCount || 0;
+  const toggleLabel = n + ' sub-assembl' + (n === 1 ? 'y' : 'ies');
+  const groupToggle = n ? ` <a href="#" id="jc-group-toggle-${c.id}" data-label="${toggleLabel}" onclick="toggleJobCardGroup(${c.id});return false;" class="muted" style="font-size:12px;">▸ ${toggleLabel}</a>` : '';
+  const rowAttrs = c.__isChild ? ` class="jc-child-row-${c.__parentId}" style="display:none;"` : '';
+  const itemCell = (c.__isChild ? '&nbsp;&nbsp;↳ ' : '') + esc(c.title || STAGE_LABELS[c.stage] || c.stage) + (c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : '') + groupToggle;
+  return `<tr${rowAttrs}><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${itemCell}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
       <td>${jobCardActions(c)}</td></tr>`;
 }
 // Completed cards move into their own collapsed-by-default "Closed" bucket
@@ -4791,7 +4842,7 @@ function renderJobCardSection(key, title, rows, cardRow) {
   const closedCountId = 'jc-closed-count-' + key;
   const activeRows = rows.filter(r => r.status !== 'Completed');
   const closedRows = rows.filter(r => r.status === 'Completed');
-  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], rs, cardRow) : '<p class="muted">No job cards in this section.</p>';
+  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], groupJobCardRows(rs), cardRow) : '<p class="muted">No job cards in this section.</p>';
   return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${activeRows.length})</span>`, `
     ${renderListSearch('jc-' + key, activeRows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name', 'status'], (filtered) => {
       document.getElementById(tableWrapId).innerHTML = renderRows(filtered);
