@@ -3851,7 +3851,7 @@ async function renderOfferBuilder(panel) {
       <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
       <div><label>Material Of Construction</label>${offerFieldSelect('ob-material', materialOpts, o.material_of_construction)}</div>
-      <div><label>Offer Format</label><select id="ob-format">
+      <div><label>Offer Format</label><select id="ob-format" onchange="offerFormatChanged()">
         <option value="Standard" ${o.offer_format !== 'Spares' ? 'selected' : ''}>Standard (full offer)</option>
         <option value="Spares" ${o.offer_format === 'Spares' ? 'selected' : ''}>Spares / Quick Quote (no cover page, company profile, project data sheet or equipment photos)</option>
       </select></div>
@@ -3962,9 +3962,24 @@ window.switchOfferTab = async (tab) => {
   if (tabsBar) tabsBar.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tabId === tab));
   renderOfferTab(data);
 };
+// Picking a new Offer Format should change what the Scope tab shows (Unit/
+// Discount fields, Spares-vs-Standard table) immediately, not only after a
+// server round-trip via Save Header (2026-10-16) - re-fetches the offer's
+// own data (items etc. haven't changed) and re-renders the active tab.
+window.offerFormatChanged = async () => {
+  if (!CURRENT_OFFER_ID) return;
+  const data = await api('/offers/' + CURRENT_OFFER_ID);
+  renderOfferTab(data);
+};
 
 function renderOfferTab(data) {
   const el = document.getElementById('offer-tab-content');
+  // The Scope tab's layout depends on offer_format - always read it live off
+  // the Offer Format dropdown rather than data.offer's last-saved value, so
+  // an unsaved format change (and a tab switch away and back before saving)
+  // both render correctly without requiring Save Header first.
+  const fmtEl = document.getElementById('ob-format');
+  if (fmtEl) data = Object.assign({}, data, { offer: Object.assign({}, data.offer, { offer_format: fmtEl.value }) });
   if (CURRENT_OFFER_TAB === 'scope') return renderScopeTab(el, data);
   if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value', undefined, data.offer.show_tech_specs === 0, { id: 'ob-show-tech', field: 'show_tech_specs', label: 'Technical Specifications', checked: data.offer.show_tech_specs !== 0 });
   if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0, { id: 'ob-show-boughtout', field: 'show_bought_out', label: 'Make of Bought-Out Items', checked: data.offer.show_bought_out !== 0 });
