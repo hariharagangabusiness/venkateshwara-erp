@@ -13,7 +13,7 @@ const { oversightRoleNames } = require('../lib/roleOversight');
 const router = express.Router();
 router.use(authRequired);
 
-const { getUploadsSubdir } = require('../lib/paths');
+const { getUploadsSubdir, resolveUploadPath } = require('../lib/paths');
 const uploadDir = getUploadsSubdir('job-cards');
 const upload = multer({
   storage: multer.diskStorage({
@@ -352,8 +352,18 @@ router.get('/job-cards/:id/detail', (req, res) => {
     SELECT jc.id, jc.stage, jc.title, jc.status FROM job_card_dependencies d
     JOIN job_cards jc ON jc.id = d.job_card_id WHERE d.depends_on_id = ?
   `).all(jc.id);
+  // The project's own planned top-level sequence (2026-10-16) - shown as a
+  // "Pipeline view" in the Route to Department form, so whoever's about to
+  // manually route a card can see at a glance who's already in line to get
+  // this department's work through the normal flow, before picking a target
+  // the server would reject anyway (see POST /job-cards/:id/route-to).
+  const plannedSequence = db.prepare(`
+    SELECT stage, status, sequence FROM job_cards
+    WHERE project_id = ? AND parent_job_card_id IS NULL AND is_adhoc = 0
+    ORDER BY COALESCE(sequence, id)
+  `).all(jc.project_id);
   res.json({
-    jobCard: jc, children, attachments, comments, dependsOn, routedTo,
+    jobCard: jc, children, attachments, comments, dependsOn, routedTo, plannedSequence,
     canAct: canActOn(req.user, jc), isSupervisor: isSupervisorOf(req.user, jc.stage),
   });
 });
@@ -472,6 +482,21 @@ router.post('/job-cards/:id/route-to', requirePermission('job_card.manage'), (re
   }
   const { stage, duration_days } = req.body;
   if (!stage) return res.status(400).json({ error: 'stage is required' });
+  // Hard-blocked against a department that's already part of this project's
+  // own planned sequence (2026-10-16) - routing there manually would create
+  // a duplicate delivery path for the same information (once via this
+  // manual route, once via the PM's normal planned hand-off reaching that
+  // department later), which is exactly the confusion this restriction
+  // exists to prevent. Only the PM's planned top-level cards count (is_adhoc
+  // = 0, not NotApplicable/excluded) - an earlier ad hoc routed-to card in
+  // the same stage doesn't block a second manual route to it, since that's
+  // not "the sequence", it's itself a manual route.
+  const plannedStage = db.prepare(`
+    SELECT id FROM job_cards WHERE project_id = ? AND parent_job_card_id IS NULL AND is_adhoc = 0 AND status != ? AND stage = ?
+  `).get(source.project_id, NOT_APPLICABLE, stage);
+  if (plannedStage) {
+    return res.status(400).json({ error: `${STAGE_LABELS_SERVER[stage] || stage} is already part of this project's planned sequence - it will receive this department's work through the normal flow. Manual routing is only for departments outside the planned sequence.` });
+  }
   // The sub-assembly/sub-process name carries forward automatically instead
   // of being retyped at every hop - the destination department sees exactly
   // what the source called it. An explicit title still overrides this (e.g.
@@ -498,6 +523,31 @@ router.post('/job-cards/:id/route-to', requirePermission('job_card.manage'), (re
     sourceComments.forEach(c => handoverLines.push(`${sourceLabel} — ${c.user_name || 'system'}: ${c.comment}`));
     db.prepare(`INSERT INTO job_card_comments (job_card_id, user_id, comment) VALUES (?, NULL, ?)`)
       .run(info.lastInsertRowid, handoverLines.join('\n'));
+    // Carry the source card's own attachments forward too (2026-10-16) -
+    // previously only comments crossed a manual hand-off, so the target
+    // department never actually received whatever files the source card had
+    // attached, even though the comment trail talked about them. Physically
+    // duplicated on disk (never a shared path) - same convention this app
+    // already uses for offer cloning - so the new card's own Delete action
+    // can never remove the source department's copy, or vice versa.
+    const sourceAttachments = db.prepare('SELECT * FROM job_card_attachments WHERE job_card_id = ?').all(source.id);
+    if (sourceAttachments.length) {
+      const insertAttachment = db.prepare(`
+        INSERT INTO job_card_attachments (job_card_id, file_path, file_name, uploaded_by) VALUES (?, ?, ?, ?)
+      `);
+      sourceAttachments.forEach(a => {
+        try {
+          const srcAbs = resolveUploadPath(a.file_path);
+          const ext = path.extname(a.file_name) || path.extname(srcAbs);
+          const newFilename = Date.now() + '-' + Math.round(Math.random() * 1e9) + ext;
+          const destAbs = path.join(uploadDir, newFilename);
+          fs.copyFileSync(srcAbs, destAbs);
+          insertAttachment.run(info.lastInsertRowid, '/uploads/job-cards/' + newFilename, a.file_name, a.uploaded_by);
+        } catch (e) {
+          console.error('[route-to] failed to copy attachment ' + a.id + ':', e.message);
+        }
+      });
+    }
     // if the source is already Completed, release the new card immediately
     if (source.status === 'Completed') {
       const today = new Date().toISOString().slice(0, 10);
@@ -539,6 +589,26 @@ router.post('/job-cards/:id/attachments', requirePermission('job_card.manage'), 
     VALUES (?, ?, ?, ?)
   `).run(jc.id, '/uploads/job-cards/' + req.file.filename, req.file.originalname, req.user.id);
   res.json({ id: info.lastInsertRowid });
+});
+// Delete a Job Card attachment (2026-10-16) - there was no way to remove
+// one at all before this, only add. Gated to whoever uploaded it, or this
+// card's own HOD/Supervisor (which already includes Admin via
+// isSupervisorOf) - deliberately not the same broad "any authenticated
+// user" gate the generic routes/attachments.js DELETE route uses, since
+// job-card files can carry real engineering/commercial content a random
+// team member in another department shouldn't be able to remove. Deletes
+// the physical file too (the generic attachments system never did).
+router.delete('/job-cards/:id/attachments/:attachmentId', requirePermission('job_card.manage'), (req, res) => {
+  const jc = db.prepare('SELECT * FROM job_cards WHERE id = ?').get(req.params.id);
+  if (!jc) return res.status(404).json({ error: 'Not found' });
+  const att = db.prepare('SELECT * FROM job_card_attachments WHERE id = ? AND job_card_id = ?').get(req.params.attachmentId, jc.id);
+  if (!att) return res.status(404).json({ error: 'Attachment not found' });
+  if (att.uploaded_by !== req.user.id && !isSupervisorOf(req.user, jc.stage)) {
+    return res.status(403).json({ error: 'Only who uploaded this file, or this card\'s HOD/Supervisor, can delete it.' });
+  }
+  db.prepare('DELETE FROM job_card_attachments WHERE id = ?').run(att.id);
+  try { fs.unlinkSync(resolveUploadPath(att.file_path)); } catch (e) { /* file already gone - the DB row is still the source of truth */ }
+  res.json({ ok: true });
 });
 
 // ---- Comments / handover notes ----
@@ -738,6 +808,74 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
     // this one, once ALL of their dependencies are now satisfied
     releaseDependents(db, jc.id);
   }
+  res.json({ ok: true });
+});
+
+// Recall/reopen a Completed job card (2026-10-16) - there was no way to pull
+// a project back to an earlier stage once a department marked its card
+// Completed; even Admin had no UI path to it (every status-changing control
+// disappears once a card is Completed). Admin can always recall; a non-
+// Admin needs the job_card.recall permission (Admin-grantable via the Role
+// Permissions screen - deliberately not a boot-time bootstrap, so Admin can
+// revoke it later) - isSupervisorOf() itself already short-circuits true for
+// Admin, so this one check covers both "Admin, any stage" and "a granted
+// HOD, only their own stage".
+router.post('/job-cards/:id/recall', requirePermission('job_card.recall'), (req, res) => {
+  const jc = db.prepare('SELECT * FROM job_cards WHERE id = ?').get(req.params.id);
+  if (!jc) return res.status(404).json({ error: 'Not found' });
+  if (!isSupervisorOf(req.user, jc.stage)) {
+    return res.status(403).json({ error: `Only Admin or the ${jc.stage} HOD/Supervisor can recall this stage.` });
+  }
+  if (jc.status !== 'Completed') {
+    return res.status(400).json({ error: 'Only a Completed stage can be recalled.' });
+  }
+  const reason = (req.body && req.body.reason && String(req.body.reason).trim()) || '';
+  if (!reason) return res.status(400).json({ error: 'A reason is required to recall a completed stage.' });
+
+  // Refuse if real work has already started on either path this card's
+  // completion unblocked: a later-sequence sibling in the same planned
+  // chain, or a card this one was manually routed to. Pulling this stage
+  // back while either has already begun would orphan real work against
+  // input that's since been withdrawn - that needs the Admin/HOD to sort out
+  // directly, not something this action should silently paper over. This
+  // does NOT cascade onto this card's own children (sub-processes/sub-
+  // assemblies) - a parent sitting InProgress with Completed children is a
+  // completely normal state, the same one it was in right before it itself
+  // completed.
+  if (jc.sequence != null && !jc.is_adhoc) {
+    const laterStarted = db.prepare(`
+      SELECT stage FROM job_cards
+      WHERE project_id = ? AND sequence > ? AND status NOT IN ('Pending', ?) AND is_adhoc = 0
+        AND parent_job_card_id IS ${jc.parent_job_card_id == null ? 'NULL' : '?'}
+      ORDER BY sequence LIMIT 1
+    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence, NOT_APPLICABLE] : [jc.project_id, jc.sequence, NOT_APPLICABLE, jc.parent_job_card_id]));
+    if (laterStarted) {
+      return res.status(400).json({ error: `Cannot recall this stage - ${STAGE_LABELS_SERVER[laterStarted.stage] || laterStarted.stage} has already started working off it.` });
+    }
+  }
+  const routedStarted = db.prepare(`
+    SELECT jc2.stage FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.job_card_id
+    WHERE d.depends_on_id = ? AND jc2.status != 'Pending' LIMIT 1
+  `).get(jc.id);
+  if (routedStarted) {
+    return res.status(400).json({ error: `Cannot recall this stage - ${STAGE_LABELS_SERVER[routedStarted.stage] || routedStarted.stage}, which this was routed to, has already started working off it.` });
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE job_cards SET status = 'InProgress', completed_at = NULL WHERE id = ?`).run(jc.id);
+    // Recorded as an ordinary comment rather than a new audit table - same
+    // "derive, don't duplicate" reasoning used throughout this app, and it
+    // puts the recall reason right where everyone already looks for this
+    // card's history (Comments / Handover Notes).
+    db.prepare(`INSERT INTO job_card_comments (job_card_id, user_id, comment) VALUES (?, ?, ?)`)
+      .run(jc.id, req.user.id, `Recalled from Completed: ${reason}`);
+    // Re-derives projects.status from scratch, the same as every other
+    // status-changing action - this stage is no longer Completed, so it
+    // becomes the "next in line" again automatically, no separate reversal
+    // logic needed.
+    advanceProjectStatus(db, jc.project_id);
+  });
+  tx();
   res.json({ ok: true });
 });
 

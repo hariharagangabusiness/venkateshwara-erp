@@ -2045,6 +2045,20 @@ function bootstrapPurchaseOrderApproval() {
 // fixed once for Accounts/bg.manage (bootstrapBgManageGrant()) and again for
 // Management/sales_order.manage (bootstrapSalesFulfillmentApprovals()).
 // Idempotent INSERT OR IGNORE, same pattern as both of those.
+// Backfills the 'job_card.recall' permission code row itself (2026-10-16) -
+// no default grant to any role, deliberately: Admin always bypasses
+// requirePermission() checks, and the whole point of this permission is
+// that Admin alone decides, later, whether to extend recall access to a
+// department's own HOD via the Role Permissions screen - a boot-time
+// bootstrap grant would re-apply on every restart and make that revocable
+// choice impossible, same reasoning already documented on
+// bootstrapBgManageGrant() above.
+function bootstrapJobCardRecallPermission() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('job_card.recall')`);
+  } catch (e) { console.error('[db] job_card.recall permission backfill failed:', e.message); }
+}
+
 function bootstrapPurchaseApproverGrants() {
   try {
     const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
@@ -2263,5 +2277,5 @@ module.exports = {
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
-  bootstrapTodoCompletionApproval,
+  bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission,
 };
