@@ -854,7 +854,17 @@ function resubmitPoGroup(poNo, entityId, liveApprovalId, actingUserId) {
   const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(poNo);
   const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
   const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', entityId, groupTotal, actingUserId);
-  db.prepare(`UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ? WHERE po_no = ?`).run(newApprovalId, poNo);
+  // Only re-queue the line actually being edited, plus any sibling still
+  // awaiting its OWN original approval (Draft/PendingApproval/Rejected) - a
+  // sibling that's already live with real stock against it
+  // (Open/PartiallyReceived/Received) must never be knocked out of the
+  // Receive picker just because an unrelated line on the same PO was
+  // edited, and a sibling that's already Closed/Cancelled must stay that
+  // way, not get swept back into a fresh approval cycle (2026-10-16).
+  db.prepare(`
+    UPDATE purchase_orders SET status = 'PendingApproval', approval_id = ?
+    WHERE po_no = ? AND (id = ? OR status IN ('Draft', 'PendingApproval', 'Rejected'))
+  `).run(newApprovalId, poNo, entityId);
 }
 router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
