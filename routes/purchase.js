@@ -663,6 +663,14 @@ function isPurchaseApprover(user) {
   return user.role_name === 'Admin' || user.role_name === 'Management' ||
     (user.role_name === 'Purchase' && !!user.is_supervisor);
 }
+// Same shape, Store department's own HOD/Supervisor instead of Purchase's -
+// the role the GrnReconciliation chain itself routes to (see
+// bootstrapGrnReconciliationApproval() in db/index.js) - used to gate who
+// besides the original receiver can edit+resubmit a Rejected GRN below.
+function isStoreApprover(user) {
+  return user.role_name === 'Admin' || user.role_name === 'Management' ||
+    (user.role_name === 'Store' && !!user.is_supervisor);
+}
 // Shared per-line taxable/GST computation - same formula used by POST
 // /orders' insert loop, PUT /orders/:id's single-line edit, and POST
 // /orders/:id/add-line below; pulled out once so all three can't drift.
@@ -1289,9 +1297,25 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
 // vendor-invoice comparison (see My Approvals' grn_reconciliation drilldown,
 // routes/approvals.js), and the Stock In/Out page itself shows every line's
 // reconciliation status so receiving clerks can see what's still pending.
+// Rejection reason/actor are resolved live from the generic approval engine's
+// own approval_actions, never stored on grn_reconciliations itself - same
+// "resolve it live" approach already used for To-Do's InfoRequested note
+// (routes/todos.js's TODO_APPROVAL_FIELDS) - so a Rejected row always shows
+// whatever the most recent Reject action actually said, with no new column
+// and nothing that can drift out of sync (2026-10-16, "resurface the reason
+// to whoever received it").
+const GRN_REJECTION_REASON_FIELDS = `
+  (SELECT aa.comment FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
+    WHERE ap.entity_type = 'grn_reconciliation' AND ap.entity_id = g.id AND aa.action = 'Rejected'
+    ORDER BY aa.acted_at DESC LIMIT 1) as rejection_reason,
+  (SELECT u.full_name FROM approval_actions aa JOIN approvals ap ON ap.id = aa.approval_id
+    LEFT JOIN users u ON u.id = aa.actor_user_id
+    WHERE ap.entity_type = 'grn_reconciliation' AND ap.entity_id = g.id AND aa.action = 'Rejected'
+    ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name
+`;
 router.get('/store/grn-reconciliations', (req, res) => {
   let q = `
-    SELECT g.*, po.po_no, po.item_id, i.name as item_name, v.name as vendor_name
+    SELECT g.*, po.po_no, po.item_id, i.name as item_name, v.name as vendor_name, ${GRN_REJECTION_REASON_FIELDS}
     FROM grn_reconciliations g
     JOIN purchase_orders po ON po.id = g.po_id
     LEFT JOIN items i ON i.id = po.item_id
@@ -1315,7 +1339,7 @@ router.get('/store/grn-reconciliations/pending-count', (req, res) => {
 router.get('/store/grn-reconciliations/:id', (req, res) => {
   const g = db.prepare(`
     SELECT g.*, po.po_no, po.item_id, po.quantity as po_quantity, po.unit, po.hsn_code, po.gst_rate,
-      i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin
+      i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin, ${GRN_REJECTION_REASON_FIELDS}
     FROM grn_reconciliations g
     JOIN purchase_orders po ON po.id = g.po_id
     LEFT JOIN items i ON i.id = po.item_id
@@ -1324,6 +1348,48 @@ router.get('/store/grn-reconciliations/:id', (req, res) => {
   `).get(req.params.id);
   if (!g) return res.status(404).json({ error: 'Not found' });
   res.json(g);
+});
+// Edit + resubmit a Rejected GRN reconciliation (2026-10-16) - the only way
+// out of a Reject before this was a dead end (no edit route existed at
+// all). Deliberately scoped to the vendor-invoice fields the clerk typed
+// off the vendor's own bill (what a reconciliation mismatch is actually
+// about) - NOT received_qty/po_rate, which are a snapshot of what's
+// already been physically received and fed into stock_movements/the
+// item's stock count at receive time; correcting those would mean also
+// adjusting the linked stock movement, a materially different change.
+// Gated the same "owner or approver" way every other edit action in this
+// app already is - the original receiver, or an Admin/Management/Store
+// HOD - and applies to ANY row currently sitting at Rejected, including
+// ones rejected before this route existed (the gate is a live status
+// check, not an event-time flag).
+router.patch('/store/grn-reconciliations/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM grn_reconciliations WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const isOwner = existing.created_by === req.user.id;
+  if (!isOwner && !isStoreApprover(req.user)) {
+    return res.status(403).json({ error: 'Only the person who received this, or an approver (Store HOD/Management/Admin), can edit it.' });
+  }
+  if (existing.status !== 'Rejected') {
+    return res.status(400).json({ error: 'Only a rejected reconciliation can be edited and resubmitted.' });
+  }
+  const { vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate } = req.body;
+  db.prepare(`
+    UPDATE grn_reconciliations SET vendor_invoice_no = ?, vendor_invoice_date = ?, vendor_invoiced_qty = ?, vendor_invoiced_rate = ?
+    WHERE id = ?
+  `).run(
+    (vendor_invoice_no && String(vendor_invoice_no).trim()) || null,
+    vendor_invoice_date || null,
+    vendor_invoiced_qty !== undefined && vendor_invoiced_qty !== '' ? Number(vendor_invoiced_qty) : null,
+    vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
+    existing.id
+  );
+  // A fresh approval, not a resume of the rejected one - same shape as a
+  // rejected Purchase Request's own POST /requests/:id/resubmit, so the
+  // Rejected approval and its reason stay on file as permanent history
+  // rather than being reused/overwritten.
+  const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', existing.id, 0, req.user.id);
+  db.prepare(`UPDATE grn_reconciliations SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, existing.id);
+  res.json({ ok: true });
 });
 
 router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
