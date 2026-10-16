@@ -874,6 +874,13 @@ window.toggleCustomerGroupRollup = (gid) => {
   body.style.display = showing ? 'none' : '';
   chev.innerHTML = showing ? '&#9654;' : '&#9660;';
 };
+window.toggleApprovalBucket = (bid) => {
+  const body = document.getElementById(bid + '-body');
+  const chev = document.getElementById(bid + '-chev');
+  const showing = body.style.display !== 'none';
+  body.style.display = showing ? 'none' : '';
+  chev.innerHTML = showing ? '&#9654;' : '&#9660;';
+};
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -1885,6 +1892,14 @@ function approvalRowHTML(r) {
 // colspan header <tr> followed by its own rows inside that one table, so
 // every bucket's Action column (and its button grid) is exactly the same
 // width, page-wide, not per bucket.
+//
+// Same-day follow-up: each chain/department bucket is now collapsed by
+// default behind its own clickable header (per this file's own standing
+// collapse-by-default rule for grouped/repeating list UI), same
+// chevron-toggle pattern as customerGroupedHTML()'s group rollups - the
+// header row and its rows live in separate <tbody> elements so one can be
+// hidden/shown independently without touching the shared <table>'s single
+// <thead> (and therefore its column widths).
 PAGES.approvals = async (el) => {
   const pending = await api('/approvals/pending');
   window.__APPROVALS_CACHE = pending;
@@ -1892,6 +1907,7 @@ PAGES.approvals = async (el) => {
   pending.forEach(r => { (byChain[r.chain_name] = byChain[r.chain_name] || []).push(r); });
   const columns = ['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'];
   const colCount = columns.length;
+  let bucketIdx = 0;
   const bodyHtml = Object.keys(byChain).sort().map(chainName => {
     const rows = byChain[chainName];
     const byDept = {};
@@ -1899,10 +1915,15 @@ PAGES.approvals = async (el) => {
     const chainHeader = `<tbody><tr><td colspan="${colCount}" style="background:#eef1f6;font-weight:600;padding:10px 8px;">
       ${esc(chainName)} <span class="muted" style="font-weight:normal;">(${rows.length})</span>
     </td></tr></tbody>`;
-    const deptSections = Object.keys(byDept).sort().map(dept => `<tbody>
-      <tr><td colspan="${colCount}" style="font-weight:600;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:.4px;background:#f7f9fb;padding:6px 8px;">${esc(dept)}</td></tr>
-      ${byDept[dept].map(approvalRowHTML).join('')}
-    </tbody>`).join('');
+    const deptSections = Object.keys(byDept).sort().map(dept => {
+      const bid = `appr-bucket-${bucketIdx++}`;
+      return `<tbody><tr>
+        <td colspan="${colCount}" style="cursor:pointer;font-weight:600;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:.4px;background:#f7f9fb;padding:6px 8px;" onclick="toggleApprovalBucket('${bid}')">
+          <span id="${bid}-chev">&#9654;</span> ${esc(dept)} <span class="muted" style="text-transform:none;letter-spacing:normal;font-weight:normal;">(${byDept[dept].length})</span>
+        </td>
+      </tr></tbody>
+      <tbody id="${bid}-body" style="display:none;">${byDept[dept].map(approvalRowHTML).join('')}</tbody>`;
+    }).join('');
     return chainHeader + deptSections;
   }).join('');
   el.innerHTML = `<div class="panel"><h3>Pending My Approval (${pending.length})</h3>
