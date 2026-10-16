@@ -4979,13 +4979,20 @@ window.openJobCardDetail = async (id) => {
   try {
     data = await api(`/projects/job-cards/${id}/detail`);
   } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; return; }
-  const { jobCard: c, children, attachments, comments, dependsOn, routedTo, canAct, isSupervisor } = data;
+  const { jobCard: c, children, attachments, comments, dependsOn, routedTo, plannedSequence, canAct, isSupervisor } = data;
   title.textContent = `${c.title || STAGE_LABELS[c.stage] || c.stage} — ${badge(c.status)}`;
   title.innerHTML = `${esc(c.title || STAGE_LABELS[c.stage] || c.stage)} ${badge(c.status)}`;
 
   const actionsHTML = canAct && c.status !== 'Completed' ? `
     <button class="btn small green" onclick="advanceJobCard(${c.id}, '${c.status === 'Pending' ? 'InProgress' : 'Completed'}')">${c.status === 'Pending' ? 'Start Work' : 'Complete Work'}</button>
-    <button class="btn small outline" onclick="holdJobCard(${c.id})">Hold</button>` : '';
+    <button class="btn small outline" onclick="holdJobCard(${c.id})">Hold</button>`
+    // Recall - shown to anyone who could plausibly have the right (Admin,
+    // or this stage's own HOD/Supervisor - isSupervisor already covers
+    // both); the backend's job_card.recall permission check is the real
+    // gate, since a non-Admin HOD may not have been granted it yet, same
+    // "frontend shows who could possibly act, backend enforces the actual
+    // grant" pattern used for other Admin-grantable actions in this app.
+    : (isSupervisor && c.status === 'Completed' ? `<button class="btn small outline" onclick="recallJobCard(${c.id})">Recall (Reopen)</button>` : '');
 
   const childrenHTML = children.length ? `
     <h4>Sub-Assemblies / Sub-Processes</h4>
@@ -5017,8 +5024,15 @@ window.openJobCardDetail = async (id) => {
     ${annexureHTML}
     <h4>Attachments</h4>
     <div class="attachments-list">
-    ${attachments.length ? tableHTML(['File', 'Uploaded By', 'Date'], attachments, a => `
-      <tr><td><a href="${a.file_path}" target="_blank">${esc(a.file_name)}</a></td><td>${esc(a.uploaded_by_name)||'-'}</td><td>${new Date(a.created_at).toLocaleDateString()}</td></tr>`) : '<div class="empty">No files yet.</div>'}
+    ${attachments.length ? tableHTML(['File', 'Uploaded By', 'Date', ''], attachments, a => {
+      // Delete is offered to whoever uploaded the file, or this card's own
+      // HOD/Supervisor (isSupervisor already covers Admin) - mirrors the
+      // backend's own gate on DELETE /job-cards/:id/attachments/:id exactly
+      // (2026-10-16 - there was no delete option at all before this).
+      const canDelete = isSupervisor || a.uploaded_by === ME.id;
+      return `<tr><td><a href="${a.file_path}" target="_blank">${esc(a.file_name)}</a></td><td>${esc(a.uploaded_by_name)||'-'}</td><td>${new Date(a.created_at).toLocaleDateString()}</td>
+        <td>${canDelete ? `<button class="btn small red" onclick="deleteJobCardAttachment(${c.id}, ${a.id})">Delete</button>` : ''}</td></tr>`;
+    }) : '<div class="empty">No files yet.</div>'}
     </div>
     ${canAct ? `<form id="jc-upload-form" style="margin-top:8px;"><input type="file" id="jc-file"> <button type="button" class="btn small outline" onclick="uploadJobCardFile(${c.id})">Upload</button></form>` : ''}
   `;
@@ -5031,6 +5045,23 @@ window.openJobCardDetail = async (id) => {
     ${canAct ? `<div class="form-grid"><div style="grid-column:1/-1;"><textarea id="jc-comment" rows="2" placeholder="Add a note for the next person/department..."></textarea></div></div>
       <button class="btn small" onclick="postJobCardComment(${c.id})">Add Comment</button>` : ''}
   `;
+
+  // Pipeline view (2026-10-16) - this project's own planned top-level
+  // department sequence, so whoever's about to manually route this card
+  // knows exactly who already gets their work through the normal flow vs.
+  // who's genuinely outside it. Also drives which departments are even
+  // offered in the Route to Department dropdown below - a department
+  // already in the sequence (and not excluded) is a hard-block server-side
+  // (POST /job-cards/:id/route-to), so it's left out here too rather than
+  // being offered and then rejected.
+  const plannedStageSet = new Set((plannedSequence || []).filter(p => p.status !== 'NotApplicable').map(p => p.stage));
+  const routableStages = Object.keys(STAGE_LABELS).filter(s => !plannedStageSet.has(s));
+  const pipelineHTML = (plannedSequence || []).length ? `
+    <p class="muted" style="margin-bottom:6px;">This project's planned department pipeline:</p>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+      ${plannedSequence.map(p => `<span class="badge ${esc(p.status)}" style="${p.stage === c.stage ? 'outline:2px solid var(--primary);' : ''}" title="${p.stage === c.stage ? 'This card' : ''}">${esc(STAGE_LABELS[p.stage]||p.stage)}${p.stage === c.stage ? ' (this card)' : ''}</span>`).join('')}
+    </div>
+  ` : '';
 
   const hodToolsHTML = isSupervisor ? `
     <div class="hod-tools">
@@ -5049,12 +5080,13 @@ window.openJobCardDetail = async (id) => {
       </div>
     </div>
     <div class="sub-section">
-      <p class="muted">Hand this off to another department once ready (e.g. BOM to Purchase, cut/bend files to Laser & Bending, drawings to Electrical — can route to several departments independently). The sub-assembly/sub-process name below carries forward to the receiving department by default, along with this card's comments so far — edit it only if the handoff is literally a different item.</p>
+      ${pipelineHTML}
+      <p class="muted">Hand this off to another department outside this project's own planned sequence once ready (e.g. BOM to Purchase, cut/bend files to Laser & Bending, drawings to Electrical — can route to several departments independently). A department already in the pipeline above receives your work through the normal flow instead, so it isn't offered here. The sub-assembly/sub-process name below carries forward to the receiving department by default, along with this card's comments so far — edit it only if the handoff is literally a different item.</p>
       <div class="form-grid">
-        <div><label>Route to Department</label><select id="jc-route-stage">${Object.keys(STAGE_LABELS).map(s => `<option value="${s}">${esc(STAGE_LABELS[s])}</option>`).join('')}</select></div>
+        <div><label>Route to Department</label><select id="jc-route-stage">${routableStages.length ? routableStages.map(s => `<option value="${s}">${esc(STAGE_LABELS[s])}</option>`).join('') : '<option value="">No departments outside the planned sequence</option>'}</select></div>
         <div><label>What's being handed off</label><input id="jc-route-title" value="${esc(c.title || STAGE_LABELS[c.stage] || c.stage)}" placeholder="e.g. BOM for Procurement"></div>
       </div>
-      <button class="btn small outline" onclick="routeJobCard(${c.id})">Route to Department</button>
+      <button class="btn small outline" onclick="routeJobCard(${c.id})" ${routableStages.length ? '' : 'disabled'}>Route to Department</button>
     </div>
     <div id="jc-hod-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>
@@ -5121,10 +5153,27 @@ window.routeJobCard = async (id) => {
   const errEl = document.getElementById('jc-hod-err');
   const stage = val('jc-route-stage');
   const title = val('jc-route-title');
+  if (!stage) { errEl.textContent = 'No department outside the planned sequence is available to route to.'; errEl.style.display = 'block'; return; }
   try {
     await api(`/projects/job-cards/${id}/route-to`, { method: 'POST', body: JSON.stringify({ stage, title }) });
     openJobCardDetail(id);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.recallJobCard = async (id) => {
+  const reason = prompt('Reason for recalling this completed stage (required):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('A reason is required to recall a completed stage.'); return; }
+  try {
+    await api(`/projects/job-cards/${id}/recall`, { method: 'POST', body: JSON.stringify({ reason }) });
+    openJobCardDetail(id);
+  } catch (e) { alert(e.message); }
+};
+window.deleteJobCardAttachment = async (jobCardId, attachmentId) => {
+  if (!confirm('Delete this attachment? This cannot be undone.')) return;
+  try {
+    await api(`/projects/job-cards/${jobCardId}/attachments/${attachmentId}`, { method: 'DELETE' });
+    openJobCardDetail(jobCardId);
+  } catch (e) { alert(e.message); }
 };
 
 // ---- HOD sub-process planning (e.g. Manufacturing HOD planning Fitting -> Tacking -> Welding -> Buffing/Sandblast -> Painting) ----
