@@ -6993,6 +6993,15 @@ function renderReceiveTab(el) {
   `;
   renderStockPoLines();
 }
+// Grid column widths for the Receive tab's selected-PO line table
+// (2026-10-16) - this table used to be a plain <table> with each input's
+// own hand-picked style="width:Npx" racing its <th>'s auto-computed width,
+// the exact per-field-sizing anti-pattern PR #172/the 2026-10-14 New
+// PO/PR/SO/FOC line-table round already fixed via gridLineTableHTML() -
+// just never applied here. One declared track list now, shared by the
+// header and every row, so a column's width is always exactly what's
+// declared rather than whatever one row's own input happened to force.
+const STOCK_RECEIVE_GRID_COLS = 'minmax(140px,1.4fr) 70px 70px 70px 100px 130px 115px 85px 90px minmax(170px,1fr)';
 // Re-renders just the part of the Receive tab below the PO picker: either
 // the selected PO's own line items (each with its own qty-to-receive input
 // and Receive button, for partial/per-line shipments) or, with no PO
@@ -7007,23 +7016,25 @@ function renderStockPoLines() {
   if (group) {
     linesEl.innerHTML = `
       <p class="muted">Compare against the vendor's own invoice before receiving - typing their invoiced qty/rate here sends it straight to the Store HOD/Supervisor to reconcile, alongside what the PO itself says.</p>
-      <table><thead><tr><th>Item</th><th>PO Rate</th><th>Ordered</th><th>Received</th><th>Qty to Receive</th><th>Vendor Invoice No</th><th>Invoice Date</th><th>Vendor Qty</th><th>Vendor Rate</th><th></th></tr></thead>
-      <tbody>${group.lines.map(l => {
-        const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
-        return `<tr>
-          <td>${esc(l.item_name) || '-'}</td>
-          <td>₹${fmt(l.rate)}</td>
-          <td>${l.quantity}</td>
-          <td>${l.received_qty || 0}</td>
-          <td><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0" style="width:80px;"></td>
-          <td><input id="st-po-line-vinv-${l.id}" placeholder="optional" style="width:110px;"></td>
-          <td><input id="st-po-line-vdate-${l.id}" type="date" style="width:130px;"></td>
-          <td><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
-          <td><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
-          <td><button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button>
-          <button class="btn small outline" type="button" onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button></td>
-        </tr>`;
-      }).join('')}</tbody></table>
+      ${gridLineTableHTML(STOCK_RECEIVE_GRID_COLS,
+        ['Item', 'PO Rate', 'Ordered', 'Received', 'Qty to Receive', 'Vendor Invoice No', 'Invoice Date', 'Vendor Qty', 'Vendor Rate', ''],
+        group.lines, l => {
+          const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
+          return `
+            <div>${esc(l.item_name) || '-'}</div>
+            <div>₹${fmt(l.rate)}</div>
+            <div>${l.quantity}</div>
+            <div>${l.received_qty || 0}</div>
+            <div><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0"></div>
+            <div><input id="st-po-line-vinv-${l.id}" placeholder="optional"></div>
+            <div><input id="st-po-line-vdate-${l.id}" type="date"></div>
+            <div><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional"></div>
+            <div><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional"></div>
+            <div>${actionButtonsCell(`
+              <button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button>
+              <button class="btn small outline" type="button" onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button>
+            `)}</div>`;
+        })}
     `;
   } else {
     const items = window.__STOCK_ITEMS || [];
@@ -7090,38 +7101,75 @@ window.closeShortShipReceiveLine = async (lineId) => {
     await refreshStockReceiveLines('Line closed as short-shipped - any remaining lines on this Purchase Order are still open above.');
   } catch (e) { alert(e.message); }
 };
+// Multi-line Issue (OUT) - department/project/customer are entered once and
+// shared across every line (2026-10-16, mirroring how a multi-line PO
+// shares one vendor, or FOC lines share one customer). Lines are built the
+// same "+ Add Line Item" way as PO_LINES/FOC_LINES, through the same
+// gridLineTableHTML() grid so the item/quantity columns stay aligned
+// regardless of how many lines are added.
+let ISSUE_LINES = [];
+const ISSUE_LINES_GRID_COLS = 'minmax(260px,2fr) 120px 44px';
+function renderIssueLines() {
+  const el = document.getElementById('issue-lines');
+  if (!el) return;
+  const items = window.__STOCK_ITEMS || [];
+  el.innerHTML = gridLineTableHTML(ISSUE_LINES_GRID_COLS, ['Item', 'Quantity', ''], ISSUE_LINES, (l, i) => `
+      <div>${itemPickerHTML(`issue-item-${i}`, items, l.item_id, stockItemOptions, `onchange="ISSUE_LINES[${i}].item_id=this.value?Number(this.value):''"`)}</div>
+      <div><input type="number" value="${l.quantity}" onchange="ISSUE_LINES[${i}].quantity=Number(this.value)"></div>
+      <div>${ISSUE_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="ISSUE_LINES.splice(${i},1);renderIssueLines()">✕</button>` : ''}</div>`);
+}
+window.addIssueLine = () => { ISSUE_LINES.push({ item_id: '', quantity: 1 }); renderIssueLines(); };
+// Projects whose job cards are all Completed (projects.status is already
+// derived by advanceProjectStatus() to exactly mean that - see
+// lib/pipeline.js) have nothing left to issue material against, so they
+// drop off the active Project picker and move into a collapsed-by-default
+// "Closed Projects" reference list below it (2026-10-16), rather than
+// staying in the active dropdown forever alongside projects still being
+// worked.
 function renderIssueTab(el) {
   const items = window.__STOCK_ITEMS || [];
   const departments = window.__STOCK_DEPARTMENTS || [];
-  const projects = window.__STOCK_PROJECTS || [];
+  const allProjects = window.__STOCK_PROJECTS || [];
+  const activeProjects = allProjects.filter(p => p.status !== 'Completed');
+  const closedProjects = allProjects.filter(p => p.status === 'Completed');
   const clients = window.__STOCK_CLIENTS || [];
+  ISSUE_LINES = [{ item_id: '', quantity: 1 }];
   el.innerHTML = `
     <div class="form-grid">
       <div><label>Department <span class="muted">(who is this being issued to?)</span></label>
         <select id="st-department"><option value="">- Select department -</option>${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
       </div>
-      <div><label>Project (optional)</label>${projectPickerHTML('st-project', projects, '')}</div>
+      <div><label>Project (optional)</label>${projectPickerHTML('st-project', activeProjects, '')}</div>
       <div><label>Customer (optional)</label>${clientPickerHTML('st-client', clients, '')}</div>
     </div>
-    <div class="form-grid" style="margin-top:10px;">
-      <div><label>Item</label>${itemPickerHTML('st-item', items, '', stockItemOptions)}</div>
-      <div><label>Quantity</label><input id="st-qty" type="number"></div>
-    </div>
-    <button class="btn red" onclick="storeMove('issue')" ${!items.length ? 'disabled' : ''}>Issue to Production (OUT)</button>
+    ${closedProjects.length ? collapsiblePanel('issue-closed-projects', `Closed Projects (${closedProjects.length}) <span class="muted" style="font-weight:normal;">- not offered above, every job card is Completed</span>`, `
+      ${tableHTML(['Project Code', 'Title', 'Customer'], closedProjects, p => `
+        <tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td></tr>`)}
+    `) : ''}
+    <div id="issue-lines" style="margin-top:10px;"></div>
+    <button class="btn small outline" type="button" onclick="addIssueLine()" style="margin-top:6px;">+ Add Line Item</button><br>
+    <button class="btn red" onclick="storeIssue()" ${!items.length ? 'disabled' : ''} style="margin-top:10px;">Issue to Production (OUT)</button>
   `;
+  renderIssueLines();
 }
+window.storeIssue = async () => {
+  try {
+    const departmentId = val('st-department');
+    if (!departmentId) { alert('Pick which department this is being issued to.'); return; }
+    const lines = ISSUE_LINES.filter(l => l.item_id && Number(l.quantity) > 0);
+    if (!lines.length) { alert('Add at least one line item with an item and a quantity greater than 0.'); return; }
+    const body = { department_id: departmentId, lines };
+    const projectId = val('st-project');
+    if (projectId) body.project_id = projectId;
+    const clientId = val('st-client');
+    if (clientId) body.client_id = clientId;
+    await api('/purchase/store/issue', { method: 'POST', body: JSON.stringify(body) });
+    navigate('stock-in-out');
+  } catch (e) { alert(e.message); }
+};
 window.storeMove = async (type) => {
   try {
     const body = { item_id: val('st-item'), quantity: val('st-qty') };
-    if (type === 'issue') {
-      const departmentId = val('st-department');
-      if (!departmentId) { alert('Pick which department this is being issued to.'); return; }
-      body.department_id = departmentId;
-      const projectId = val('st-project');
-      if (projectId) body.project_id = projectId;
-      const clientId = val('st-client');
-      if (clientId) body.client_id = clientId;
-    }
     await api('/purchase/store/' + type, { method: 'POST', body: JSON.stringify(body) });
     navigate('stock-in-out');
   } catch (e) { alert(e.message); }

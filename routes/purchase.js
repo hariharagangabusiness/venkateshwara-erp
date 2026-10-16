@@ -1392,19 +1392,27 @@ router.patch('/store/grn-reconciliations/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// Accepts either the original single-item shape (item_id/quantity at the
+// top level) or a multi-line lines:[{item_id,quantity}] array sharing one
+// department/project/client (2026-10-16) - same dual-shape pattern POST
+// /orders and POST /foc already use, so the single-item shape (and anything
+// still calling it, if anything ever does) keeps working unchanged.
+// All-or-nothing: every line is validated - including summing repeated
+// item_ids across lines, so two lines for the same item can't each pass an
+// individual stock check against the same pre-issue quantity and together
+// over-issue it - before anything is written; one bad line 400s the whole
+// request and nothing is applied, rather than issuing some lines and
+// silently skipping others.
 router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
-  const { item_id, quantity, project_id, department_id, client_id } = req.body;
-  if (!item_id) return res.status(400).json({ error: 'Pick an item. If the Item Master is empty, add one there first.' });
-  if (!quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  const { project_id, department_id, client_id } = req.body;
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [{ item_id: req.body.item_id, quantity: req.body.quantity }];
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one line item.' });
   // Store fulfills issue requests from every other department, so recording
   // WHOSE request this is matters even though it has no effect on stock math -
   // required on every interactive issue (the Excel bulk-upload path below is
   // unaffected and still leaves it null, since that template has no
   // department column and this wasn't asked to change).
   if (!department_id) return res.status(400).json({ error: 'Pick which department this is being issued to.' });
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
-  if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh the page and pick an item again.' });
-  if (item.current_stock < quantity) return res.status(400).json({ error: `Insufficient stock - only ${item.current_stock} ${item.unit || ''} available.` });
   const department = db.prepare('SELECT id FROM departments WHERE id = ?').get(department_id);
   if (!department) return res.status(400).json({ error: 'That department no longer exists - refresh the page and try again.' });
   if (project_id) {
@@ -1415,12 +1423,36 @@ router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
     const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
     if (!client) return res.status(400).json({ error: 'That client no longer exists - refresh the page and try again.' });
   }
+  const items = {};
+  const requestedByItem = {};
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const prefix = lines.length > 1 ? `Line ${i + 1}: ` : '';
+    if (!l.item_id) return res.status(400).json({ error: `${prefix}pick an item. If the Item Master is empty, add one there first.` });
+    if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
+    if (!items[l.item_id]) {
+      const item = db.prepare('SELECT * FROM items WHERE id = ?').get(l.item_id);
+      if (!item) return res.status(400).json({ error: `${prefix}that item no longer exists - refresh the page and pick an item again.` });
+      items[l.item_id] = item;
+    }
+    requestedByItem[l.item_id] = (requestedByItem[l.item_id] || 0) + Number(l.quantity);
+  }
+  for (const itemId of Object.keys(requestedByItem)) {
+    const item = items[itemId];
+    if (item.current_stock < requestedByItem[itemId]) {
+      return res.status(400).json({ error: `Insufficient stock for ${item.name} - only ${item.current_stock} ${item.unit || ''} available, ${requestedByItem[itemId]} requested.` });
+    }
+  }
   const tx = db.transaction(() => {
-    db.prepare(`
+    const insertMove = db.prepare(`
       INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, department_id, client_id, moved_by)
       VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)
-    `).run(item_id, quantity, project_id ? 'Project#' + project_id : null, project_id || null, department_id, client_id || null, req.user.id);
-    db.prepare(`UPDATE items SET current_stock = current_stock - ? WHERE id = ?`).run(quantity, item_id);
+    `);
+    const adjustStock = db.prepare(`UPDATE items SET current_stock = current_stock - ? WHERE id = ?`);
+    lines.forEach(l => {
+      insertMove.run(l.item_id, l.quantity, project_id ? 'Project#' + project_id : null, project_id || null, department_id, client_id || null, req.user.id);
+      adjustStock.run(l.quantity, l.item_id);
+    });
   });
   tx();
   res.json({ ok: true });
