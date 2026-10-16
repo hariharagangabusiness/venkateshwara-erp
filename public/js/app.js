@@ -1863,32 +1863,51 @@ function approvalActionCell(r) {
     <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>
     <button class="btn small outline" onclick="actOnApproval(${r.id}, 'InfoRequested')">Ask for More Info</button>`;
 }
+// One row's own <tr>s (the main row, its optional "previously rejected" note,
+// and its hidden drilldown row) - pulled out of what used to be tableHTML()'s
+// own inline rowRenderer so the whole page can share ONE <table> (see below).
+function approvalRowHTML(r) {
+  return `<tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
+    <td>${new Date(r.created_at).toLocaleString()}</td>
+    <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + r.source + '-' + r.id + '\')">Details</button>')}</td></tr>
+    ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
+    <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>`;
+}
+// Button-grid alignment (2026-10-16 follow-up to PR #172/the 2026-10-14
+// Offers-rollup fix) - this page used to call tableHTML() once per
+// chain x department bucket, each producing its own independent <table>.
+// Plain table-layout:auto computes a bucket's column widths purely from
+// that bucket's own content/button-set, so the Action column (and the
+// .row-actions grid inside it) ended up a different width in every bucket -
+// exactly the per-table-own-widths root cause already fixed for the Offers/
+// Sales Orders grouped rollups. Fixed the same way: ONE shared <table>, one
+// <thead>, for the whole page - every chain/department bucket is now just a
+// colspan header <tr> followed by its own rows inside that one table, so
+// every bucket's Action column (and its button grid) is exactly the same
+// width, page-wide, not per bucket.
 PAGES.approvals = async (el) => {
   const pending = await api('/approvals/pending');
   window.__APPROVALS_CACHE = pending;
   const byChain = {};
   pending.forEach(r => { (byChain[r.chain_name] = byChain[r.chain_name] || []).push(r); });
-  el.innerHTML = `<div class="panel"><h3>Pending My Approval (${pending.length})</h3>
-    ${pending.length === 0 ? '<div class="empty">Nothing waiting on you right now.</div>' : ''}
-  </div>` + Object.keys(byChain).sort().map(chainName => {
+  const columns = ['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'];
+  const colCount = columns.length;
+  const bodyHtml = Object.keys(byChain).sort().map(chainName => {
     const rows = byChain[chainName];
     const byDept = {};
     rows.forEach(r => { const dept = r.department_name || 'No department'; (byDept[dept] = byDept[dept] || []).push(r); });
-    return `<div class="panel" style="margin-bottom:12px;">
-      <h4 style="margin:0 0 8px;">${esc(chainName)} <span class="muted" style="font-weight:normal;">(${rows.length})</span></h4>
-      ${Object.keys(byDept).sort().map(dept => `
-        <div style="margin-bottom:10px;">
-          <div style="font-weight:600;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">${esc(dept)}</div>
-          ${tableHTML(['Reference', 'Details', 'Requested By', 'Amount', 'Step', 'Requested', 'Action'], byDept[dept], r => `
-            <tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
-            <td>${new Date(r.created_at).toLocaleString()}</td>
-            <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + r.source + '-' + r.id + '\')">Details</button>')}</td></tr>
-            ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
-            <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>
-          `)}
-        </div>`).join('')}
-    </div>`;
+    const chainHeader = `<tbody><tr><td colspan="${colCount}" style="background:#eef1f6;font-weight:600;padding:10px 8px;">
+      ${esc(chainName)} <span class="muted" style="font-weight:normal;">(${rows.length})</span>
+    </td></tr></tbody>`;
+    const deptSections = Object.keys(byDept).sort().map(dept => `<tbody>
+      <tr><td colspan="${colCount}" style="font-weight:600;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:.4px;background:#f7f9fb;padding:6px 8px;">${esc(dept)}</td></tr>
+      ${byDept[dept].map(approvalRowHTML).join('')}
+    </tbody>`).join('');
+    return chainHeader + deptSections;
   }).join('');
+  el.innerHTML = `<div class="panel"><h3>Pending My Approval (${pending.length})</h3>
+    ${pending.length === 0 ? '<div class="empty">Nothing waiting on you right now.</div>' : ''}
+  </div>` + (pending.length ? `<div class="panel"><div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead>${bodyHtml}</table></div></div>` : '');
 };
 window.actOnApproval = async (id, action) => {
   let comment = null;
