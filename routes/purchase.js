@@ -1026,6 +1026,11 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.status === 'Cancelled') return res.status(400).json({ error: 'This order is already cancelled.' });
   if (existing.status === 'Received') return res.status(400).json({ error: 'This order has already been received and can no longer be cancelled.' });
+  // Closed (short-shipped, 2026-10-16) is its own terminal state, distinct
+  // from a plain Cancel - without this check, Cancel would silently
+  // overwrite a short-ship closure's status (and its reason for being
+  // closed) with a generic Cancel, losing that distinction.
+  if (existing.status === 'Closed') return res.status(400).json({ error: 'This line is already closed and can no longer be cancelled.' });
   const reason = (req.body && req.body.reason) || null;
   const tx = db.transaction(() => {
     db.prepare(`UPDATE purchase_orders SET status = 'Cancelled' WHERE id = ?`).run(existing.id);
@@ -1047,6 +1052,32 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
   });
   tx();
   poAuditLog(req.user.id, 'po_cancel', existing.id, reason);
+  res.json({ ok: true });
+});
+
+// Close a line out as short-shipped (2026-10-16) - distinct from Cancel:
+// a vendor that's stopped shipping against a line (whether nothing at all
+// came in, or only part of it did across one or several of their own
+// invoices) can be closed out explicitly rather than left open forever or
+// marked Cancelled (which reads as "this never happened" even once real
+// stock has already come in against it). Reuses the 'Closed' status -
+// already a recognized terminal PO status throughout this codebase (the
+// Archive bucket, the receive/email/bill blocks, the bulk-import template's
+// valid list) via the legacy bulk importer, just never reachable from an
+// interactive action on a live order before this. Every already-received
+// stock_movements/grn_reconciliations row is left completely untouched -
+// only the line's own status changes.
+router.post('/orders/:id/close-short-ship', requirePermission('purchase_order.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (!['Open', 'PartiallyReceived'].includes(existing.status)) {
+    return res.status(400).json({ error: `This line is ${existing.status} and cannot be closed as short-shipped.` });
+  }
+  const reason = req.body && req.body.reason && String(req.body.reason).trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to close a line as short-shipped.' });
+  db.prepare(`UPDATE purchase_orders SET status = 'Closed' WHERE id = ?`).run(existing.id);
+  const receivedSoFar = poReceivedQty(existing.id);
+  poAuditLog(req.user.id, 'po_close_short_shipped', existing.id, `${reason} (received ${receivedSoFar} of ${existing.quantity})`);
   res.json({ ok: true });
 });
 

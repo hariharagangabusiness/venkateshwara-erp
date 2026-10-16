@@ -6213,7 +6213,8 @@ function renderSinglePORow(o) {
     ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit for Approval</button>` : ''}
     ${canAddPOLine(o) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${o.id})">+ Add Line Item</button>` : ''}
     ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
-    ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+    ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+    ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
@@ -6239,7 +6240,7 @@ function renderMultiLinePOGroup(lines) {
   const totalValue = lines.reduce((s, l) => s + Number(l.total_value || 0), 0);
   const totalQty = lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
   const totalReceived = lines.reduce((s, l) => s + Number(l.received_qty || 0), 0);
-  const anyCancellable = lines.some(l => !['Received', 'Cancelled'].includes(l.status));
+  const anyCancellable = lines.some(l => !['Received', 'Cancelled', 'Closed'].includes(l.status));
   const anyDraft = lines.some(l => l.status === 'Draft');
   const groupId = first.id;
   const lineRows = lines.map(o => `
@@ -6252,7 +6253,8 @@ function renderMultiLinePOGroup(lines) {
       <td>${poActionsCell(`
       ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
       ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
-      ${!['Received','Cancelled'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}`)}</td>
+      ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+      ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}`)}</td>
     </tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
@@ -6302,7 +6304,7 @@ window.cancelWholePO = async (poNo) => {
   if (reason === null) return;
   try {
     const orders = await api('/purchase/orders');
-    const ids = orders.filter(o => o.po_no === poNo && !['Received', 'Cancelled'].includes(o.status)).map(o => o.id);
+    const ids = orders.filter(o => o.po_no === poNo && !['Received', 'Cancelled', 'Closed'].includes(o.status)).map(o => o.id);
     await Promise.all(ids.map(id => api(`/purchase/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) })));
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
@@ -6360,6 +6362,19 @@ window.cancelPO = async (id) => {
   if (reason === null) return; // user hit Cancel on the prompt itself
   try {
     await api(`/purchase/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+// Close a line out as short-shipped (2026-10-16) - distinct from Cancel,
+// which reads as "this never happened" even once real stock has already
+// come in against a line. Already-received stock/GRN records are left
+// completely untouched; only the line's own status changes.
+window.closeShortShip = async (id) => {
+  const reason = prompt('Reason for closing this line as short-shipped (required):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('A reason is required.'); return; }
+  try {
+    await api(`/purchase/orders/${id}/close-short-ship`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };
@@ -6908,7 +6923,8 @@ function renderStockPoLines() {
           <td><input id="st-po-line-vdate-${l.id}" type="date" style="width:130px;"></td>
           <td><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
           <td><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional" style="width:80px;"></td>
-          <td><button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button></td>
+          <td><button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button>
+          <button class="btn small outline" type="button" onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button></td>
         </tr>`;
       }).join('')}</tbody></table>
     `;
@@ -6921,6 +6937,28 @@ function renderStockPoLines() {
       </div>
       <button class="btn green" onclick="storeMove('receive')" ${!items.length ? 'disabled' : ''}>Receive (IN)</button>
     `;
+  }
+}
+// After receiving (or short-shipping) a line, refresh just the Receive
+// tab's own data and re-render the lines table under the still-selected PO
+// picker - a full navigate() used to rebuild the picker from scratch and
+// silently deselect it, forcing a re-search of the same PO for every single
+// line of a multi-line receive (2026-10-16). If that was the PO's last line
+// still open, the picker is cleared too and a message explains why.
+async function refreshStockReceiveLines(doneMessage) {
+  const posRaw = await api('/purchase/orders');
+  const openPOs = posRaw.filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
+  window.__GROUPED_POS = groupPOsByNo(openPOs);
+  const poNo = val('st-po');
+  const stillOpen = poNo && window.__GROUPED_POS.some(g => g.po_no === poNo);
+  if (poNo && !stillOpen) {
+    const poEl = document.getElementById('st-po');
+    if (poEl) poEl.value = '';
+  }
+  renderStockPoLines();
+  if (poNo && !stillOpen) {
+    const linesEl = document.getElementById('st-po-lines');
+    if (linesEl) linesEl.insertAdjacentHTML('afterbegin', `<div class="msg ok">${esc(doneMessage || 'No lines left open on that Purchase Order.')}</div>`);
   }
 }
 window.receivePoLine = async (lineId) => {
@@ -6938,7 +6976,21 @@ window.receivePoLine = async (lineId) => {
       vendor_invoiced_rate: val(`st-po-line-vrate-${lineId}`) || undefined,
     };
     await api('/purchase/store/receive', { method: 'POST', body: JSON.stringify(body) });
-    navigate('stock-in-out');
+    await refreshStockReceiveLines('All lines on this Purchase Order are now fully received.');
+  } catch (e) { alert(e.message); }
+};
+// Explicit "stop expecting more" for a line that's Open or PartiallyReceived
+// (2026-10-16) - distinct from an outright Cancel, which reads as "this
+// never happened" even once real stock has already come in against it.
+// Already-received stock/GRN records are untouched; only the line's own
+// status changes, so it drops out of the Receive picker going forward.
+window.closeShortShipReceiveLine = async (lineId) => {
+  const reason = prompt('Reason for closing this line as short-shipped (required):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('A reason is required.'); return; }
+  try {
+    await api(`/purchase/orders/${lineId}/close-short-ship`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+    await refreshStockReceiveLines('Line closed as short-shipped - any remaining lines on this Purchase Order are still open above.');
   } catch (e) { alert(e.message); }
 };
 function renderIssueTab(el) {
