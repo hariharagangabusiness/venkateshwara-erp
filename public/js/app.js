@@ -41,6 +41,9 @@ function has(...codes) { return ME && (ME.role === 'Admin' || codes.some(c => PE
 // Add Line Item button visibility the same way the backend decides whether
 // to actually allow the call (2026-10-07: creator-vs-approver edit gating).
 function isPurchaseApprover() { return !!ME && (ME.role === 'Admin' || ME.role === 'Management' || (ME.role === 'Purchase' && ME.is_supervisor)); }
+// Mirrors routes/purchase.js's isStoreApprover() - who, besides the
+// original receiver, may edit+resubmit a Rejected GRN reconciliation.
+function isStoreApprover() { return !!ME && (ME.role === 'Admin' || ME.role === 'Management' || (ME.role === 'Store' && ME.is_supervisor)); }
 // Mirrors routes/service.js's isServiceHOD() - who may edit the inbound-
 // mail acknowledgement template (business content, not IMAP credentials).
 function isServiceHOD() { return !!ME && (ME.role === 'Admin' || (ME.role === 'Service' && ME.is_supervisor)); }
@@ -6839,13 +6842,18 @@ async function renderStockInOutSheet(el) {
       ${tableHTML(['PO No', 'Item', 'Vendor', 'Received Qty', 'PO Rate', 'Vendor Invoice', 'Vendor Qty/Rate', 'Status', ''], grns, g => {
         const qtyDiff = g.vendor_invoiced_qty != null && Number(g.vendor_invoiced_qty) !== Number(g.received_qty);
         const rateDiff = g.vendor_invoiced_rate != null && Number(g.vendor_invoiced_rate) !== Number(g.po_rate);
+        const canEditRejected = g.status === 'Rejected' && (g.created_by === ME.id || isStoreApprover());
         return `<tr><td>${esc(g.po_no)}</td><td>${esc(g.item_name)||'-'}</td><td>${esc(g.vendor_name)||'-'}</td>
           <td>${g.received_qty}</td><td>₹${fmt(g.po_rate)}</td>
           <td>${esc(g.vendor_invoice_no)||'-'}${g.vendor_invoice_date ? ' (' + esc(g.vendor_invoice_date) + ')' : ''}</td>
           <td>${g.vendor_invoiced_qty != null ? `<span style="${qtyDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_qty}</span>` : '-'} / ${g.vendor_invoiced_rate != null ? `<span style="${rateDiff?'color:#b00;font-weight:bold;':''}">₹${fmt(g.vendor_invoiced_rate)}</span>` : '-'}</td>
           <td>${badge(g.status)}</td>
-          <td><button class="btn small outline" type="button" onclick="toggleGrnAttachments(${g.id})">Attach Invoice</button></td></tr>
-          <tr id="grn-attach-row-${g.id}" style="display:none;"><td colspan="8"><div id="grn-attach-${g.id}"></div></td></tr>`;
+          <td>${actionButtonsCell(`
+            <button class="btn small outline" type="button" onclick="toggleGrnAttachments(${g.id})">Attach Invoice</button>
+            ${canEditRejected ? `<button class="btn small" type="button" onclick="openEditGrn(${g.id})">Edit &amp; Resubmit</button>` : ''}
+          `)}</td></tr>
+          ${g.status === 'Rejected' && g.rejection_reason ? `<tr><td colspan="9"><div class="msg err" style="margin:0;">Rejected by ${esc(g.rejected_by_name)||'-'}: ${esc(g.rejection_reason)}</div></td></tr>` : ''}
+          <tr id="grn-attach-row-${g.id}" style="display:none;"><td colspan="9"><div id="grn-attach-${g.id}"></div></td></tr>`;
       })}
     `),
   };
@@ -7038,6 +7046,34 @@ window.toggleGrnAttachments = (grnId) => {
     row.dataset.built = '1';
     renderAttachmentsWidget('grn_reconciliation', grnId, document.getElementById('grn-attach-' + grnId));
   }
+};
+// Edit + resubmit a Rejected GRN reconciliation (2026-10-16) - scoped to
+// just the vendor-invoice fields the clerk typed off the vendor's own
+// bill; received_qty/po_rate aren't editable here since they're a snapshot
+// of what's already been physically received, see the backend route's own
+// comment for why.
+window.openEditGrn = (grnId) => {
+  const g = (window.__STOCK_GRNS || []).find(x => x.id === grnId);
+  if (!g) return;
+  openAppModal(`Edit & Resubmit GRN — ${esc(g.po_no)} / ${esc(g.item_name)||''}`, `
+    <p class="muted">Correct the vendor invoice details that caused this to be rejected, then resubmit it for Store HOD/Supervisor review.</p>
+    <div class="form-grid">
+      <div><label>Vendor Invoice No</label><input id="geg-invno" value="${esc(g.vendor_invoice_no)||''}"></div>
+      <div><label>Vendor Invoice Date</label><input id="geg-invdate" type="date" value="${esc(g.vendor_invoice_date)||''}"></div>
+      <div><label>Vendor Invoiced Qty</label><input id="geg-invqty" type="number" step="any" value="${g.vendor_invoiced_qty != null ? g.vendor_invoiced_qty : ''}"></div>
+      <div><label>Vendor Invoiced Rate</label><input id="geg-invrate" type="number" step="any" value="${g.vendor_invoiced_rate != null ? g.vendor_invoiced_rate : ''}"></div>
+    </div>
+    <button class="btn" id="geg-save-btn-${grnId}" onclick="saveEditGrn(${grnId})" style="margin-top:10px;">Save & Resubmit for Approval</button>
+  `);
+};
+window.saveEditGrn = async (grnId) => {
+  try {
+    await api(`/purchase/store/grn-reconciliations/${grnId}`, { method: 'PATCH', body: JSON.stringify({
+      vendor_invoice_no: val('geg-invno'), vendor_invoice_date: val('geg-invdate'),
+      vendor_invoiced_qty: val('geg-invqty'), vendor_invoiced_rate: val('geg-invrate'),
+    })});
+    confirmSavedThenClose(`geg-save-btn-${grnId}`, 'stock-in-out');
+  } catch (e) { alert(e.message); }
 };
 window.downloadStockTemplate = () => downloadTemplateFile('/purchase/store/movements/template', 'stock_in_out_upload_template.xlsx');
 window.uploadStockTemplate = () => uploadTemplateFile('/purchase/store/movements/bulk-upload', 'st-upload-file', 'st-upload-result', () => navigate('stock-in-out'));
