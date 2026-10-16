@@ -1451,12 +1451,12 @@ PAGES.dashboard = async (el) => {
     stock_in: async () => {
       const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'IN');
       return `<h3>Stock In (${win}) - ${moves.length} movements, ${fmt(ws.stockIn)} units</h3>
-        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.reference)||'-'}</td></tr>`)}`;
+        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
     },
     stock_out: async () => {
       const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'OUT');
       return `<h3>Stock Out (${win}) - ${moves.length} movements, ${fmt(ws.stockOut)} units</h3>
-        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.reference)||'-'}</td></tr>`)}`;
+        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
     },
     opex: async () => {
       return `<h3>Operating Expenses (${win})</h3>
@@ -6832,7 +6832,7 @@ async function renderStockInOutSheet(el) {
     'recent-movements': collapsiblePanel('recent-movements', 'Recent Movements', `
       ${tableHTML(['Item', 'Type', 'Qty', 'Department', 'Customer', 'Reference', 'Date'], movements.slice(0, 30), m => `
         <tr><td>${esc(m.item_name)}</td><td>${badge(m.movement_type === 'IN' ? 'Approved' : 'Pending')}${m.movement_type}</td><td>${m.quantity}</td>
-          <td>${esc(m.department_name)||'-'}</td><td>${esc(m.client_name)||'-'}</td><td>${esc(m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
+          <td>${esc(m.department_name)||'-'}</td><td>${esc(m.client_name)||'-'}</td><td>${esc(m.po_no || m.project_code || m.reference)||''}</td><td>${new Date(m.moved_at).toLocaleString()}</td></tr>`)}
     `),
     'grn-reconciliation': collapsiblePanel('grn-reconciliation', `GRN Reconciliation (${grns.length})`, `
       <p class="muted">Every PO-line receipt goes to the Store HOD/Supervisor to reconcile the PO against the vendor's own invoice (My Approvals) before that quantity can be billed in Purchase Invoices (AP). Attach the vendor's invoice copy here if it wasn't uploaded at receiving time.</p>

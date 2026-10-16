@@ -1360,13 +1360,22 @@ router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
   res.json({ ok: true });
 });
 
+// reference stores 'PO#'+id (an internal row id, see POST /store/receive) -
+// on its own it's meaningless to a user searching by the PO number they
+// actually know (po_no). Resolve it back to the real PO No (IN movements)
+// or the linked project's code (OUT movements, which already carry a real
+// project_id - no string-parsing needed there) so "Recent Movements" shows
+// something a user can actually search/recognize (2026-10-16).
 router.get('/store/movements', (req, res) => {
   res.json(db.prepare(`
-    SELECT sm.*, i.name as item_name, d.name as department_name, c.name as client_name
+    SELECT sm.*, i.name as item_name, d.name as department_name, c.name as client_name,
+      po.po_no, p.project_code
     FROM stock_movements sm
     JOIN items i ON i.id = sm.item_id
     LEFT JOIN departments d ON d.id = sm.department_id
     LEFT JOIN clients c ON c.id = sm.client_id
+    LEFT JOIN purchase_orders po ON ('PO#' || po.id) = sm.reference
+    LEFT JOIN projects p ON p.id = sm.project_id
     ORDER BY sm.id DESC LIMIT 200
   `).all());
 });
