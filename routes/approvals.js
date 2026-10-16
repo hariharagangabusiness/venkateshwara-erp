@@ -5,6 +5,7 @@ const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
+const { poReceivedQty } = require('../lib/purchaseOrders');
 const router = express.Router();
 router.use(authRequired);
 
@@ -360,11 +361,32 @@ function syncEntityStatus(entityType, entityId, result) {
   // approval happened to be started against, so this can't go through the
   // generic single-row `WHERE id = ?` map below.
   if (entityType === 'purchase_order') {
-    const statusByResult = { Approved: 'Open', Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const po = db.prepare('SELECT po_no FROM purchase_orders WHERE id = ?').get(entityId);
+    if (!po) return;
+    // Only ever touch a line that's actually mid-cycle for THIS approval
+    // round (PendingApproval, or already InfoRequested going back into one)
+    // - a sibling that's already live (Open/PartiallyReceived/Received) or
+    // already closed out (Closed/Cancelled) must never be swept along by
+    // another line's approval outcome (2026-10-16).
+    if (result === 'Approved') {
+      // Recompute each such line's own real status from what's actually
+      // been received, rather than blanket-resetting every line to 'Open' -
+      // a line that already had PartiallyReceived/Received history (from
+      // before this group was last resubmitted) must keep reflecting that,
+      // not revert to a flat 'Open' that hides real stock already in.
+      const lines = db.prepare(`SELECT id, quantity FROM purchase_orders WHERE po_no = ? AND status IN ('PendingApproval', 'InfoRequested')`).all(po.po_no);
+      const update = db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?');
+      lines.forEach(l => {
+        const received = poReceivedQty(l.id);
+        const newStatus = received <= 0 ? 'Open' : (received >= l.quantity ? 'Received' : 'PartiallyReceived');
+        update.run(newStatus, l.id);
+      });
+      return;
+    }
+    const statusByResult = { Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
     const newStatus = statusByResult[result];
     if (!newStatus) return;
-    const po = db.prepare('SELECT po_no FROM purchase_orders WHERE id = ?').get(entityId);
-    if (po) db.prepare('UPDATE purchase_orders SET status = ? WHERE po_no = ?').run(newStatus, po.po_no);
+    db.prepare(`UPDATE purchase_orders SET status = ? WHERE po_no = ? AND status IN ('PendingApproval', 'InfoRequested')`).run(newStatus, po.po_no);
     return;
   }
   // A single row (no po_no-style grouping) - the only reason this isn't
