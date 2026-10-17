@@ -1182,6 +1182,21 @@ function clientPickerHTML(pickerId, clients, selectedId, placeholder) {
     (c, q) => (c.name || '').toLowerCase().includes(q),
     '', 'Search customer by name...');
 }
+// Sales Order picker for the Generate Invoice form (2026-10-17) - the plain
+// dropdown it replaces listed every order with no way to search it down.
+// Matches on order #, client name, status, description, buyer GSTIN, and
+// order date (all already on the GET /sales/orders row).
+function salesOrderOptions(selectedId, orders) {
+  return orders.map(o => `<option value="${o.id}" ${selectedId && Number(selectedId) === o.id ? 'selected' : ''}>${esc(o.order_no)} - ${esc(o.client_name)} (${esc(o.status)})${o.status === 'Invoiced' ? ' (already invoiced)' : ''}</option>`).join('');
+}
+function salesOrderPickerHTML(pickerId, orders, selectedId, selectAttrs) {
+  return searchPickerHTML(pickerId, orders, selectedId,
+    (sel, list) => salesOrderOptions(sel, list),
+    (o, q) => (o.order_no || '').toLowerCase().includes(q) || (o.client_name || '').toLowerCase().includes(q) ||
+      (o.status || '').toLowerCase().includes(q) || (o.description || '').toLowerCase().includes(q) ||
+      (o.client_gstin || '').toLowerCase().includes(q) || (o.order_date || '').toLowerCase().includes(q),
+    selectAttrs, 'Search by order #, client, status, description, GSTIN or date...');
+}
 // Employee picker for Users & Roles' Link/Change Link action (2026-10-08) -
 // replaces a native prompt() that listed every employee without a login as
 // plain numbered text, which Chrome doesn't let you scroll past a certain
@@ -2950,19 +2965,37 @@ window.removeSOItem = async (orderId, itemId) => {
 let DISPATCH_LINES = [];
 window.loadDispatchableLines = async () => {
   const soId = val('disp-so');
+  const el = document.getElementById('disp-lines');
   DISPATCH_LINES = [];
   if (!soId) { renderDispatchLines(); return; }
-  const lines = await api(`/sales/orders/${soId}/dispatchable-lines`);
-  DISPATCH_LINES = lines.map(l => ({ sales_order_item_id: l.id, description: l.description, unit: l.unit, dispatchable_qty: l.dispatchable_qty, quantity: l.dispatchable_qty }));
-  renderDispatchLines();
+  if (el) el.innerHTML = '<p class="muted">Loading line items...</p>';
+  try {
+    // Every line on the order comes back here now, even one that's already
+    // fully dispatched/claimed (dispatchable_qty 0) - a line silently
+    // filtered out of the response used to look identical to "this order
+    // has no line items at all", which was reported as line items simply
+    // not showing up after picking an order.
+    const lines = await api(`/sales/orders/${soId}/dispatchable-lines`);
+    DISPATCH_LINES = lines.map(l => ({ sales_order_item_id: l.id, description: l.description, unit: l.unit, quantity: l.quantity, dispatchable_qty: l.dispatchable_qty, dispatch_qty: l.dispatchable_qty }));
+    renderDispatchLines();
+  } catch (e) {
+    // Any failure (missing permission, a server error) used to fail
+    // silently here with nothing ever appearing - surface it visibly
+    // instead of leaving the panel stuck on its default message.
+    if (el) el.innerHTML = `<p class="msg err" style="display:block;">${esc(e.message)}</p>`;
+  }
 };
 function renderDispatchLines() {
   const el = document.getElementById('disp-lines');
   if (!el) return;
-  if (!DISPATCH_LINES.length) { el.innerHTML = '<p class="muted">Pick a sales order with dispatchable lines.</p>'; return; }
-  el.innerHTML = tableHTML(['Line', 'Dispatchable Qty', 'Dispatch Qty', 'Unit'], DISPATCH_LINES, (l, i) => `
-    <tr><td>${esc(l.description)}</td><td>${l.dispatchable_qty}</td>
-    <td><input type="number" value="${l.quantity}" max="${l.dispatchable_qty}" onchange="DISPATCH_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
+  if (!DISPATCH_LINES.length) { el.innerHTML = '<p class="muted">This order has no line items yet - add them via the Sales Orders page\'s "Items" button before dispatching.</p>'; return; }
+  const anyDispatchable = DISPATCH_LINES.some(l => l.dispatchable_qty > 0);
+  el.innerHTML = (anyDispatchable ? '' : '<p class="msg err" style="display:block;">Every line on this order is already fully dispatched, or fully claimed by another dispatch still awaiting approval.</p>') +
+    tableHTML(['Line', 'Ordered Qty', 'Already Claimed', 'Dispatchable Qty', 'Dispatch Qty', 'Unit'], DISPATCH_LINES, (l, i) => `
+    <tr><td>${esc(l.description)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.quantity - l.dispatchable_qty)}</td><td>${fmt(l.dispatchable_qty)}</td>
+    <td>${l.dispatchable_qty > 0
+        ? `<input type="number" value="${l.dispatch_qty}" max="${l.dispatchable_qty}" min="0" onchange="DISPATCH_LINES[${i}].dispatch_qty=Number(this.value)" style="width:90px;">`
+        : '<span class="muted">Fully claimed</span>'}</td>
     <td>${esc(l.unit)}</td></tr>`);
 }
 PAGES['fg-dispatches'] = async (el) => {
@@ -2990,7 +3023,7 @@ PAGES['fg-dispatches'] = async (el) => {
     `)}`;
 };
 window.submitDispatch = async () => {
-  const lines = DISPATCH_LINES.filter(l => l.quantity > 0).map(l => ({ sales_order_item_id: l.sales_order_item_id, quantity: l.quantity }));
+  const lines = DISPATCH_LINES.filter(l => l.dispatch_qty > 0).map(l => ({ sales_order_item_id: l.sales_order_item_id, quantity: l.dispatch_qty }));
   if (!lines.length) { alert('Pick a sales order and at least one line with quantity > 0.'); return; }
   try {
     await api('/sales/dispatches', { method: 'POST', body: JSON.stringify({
@@ -11599,10 +11632,11 @@ window.testPurchaseInboundMailConnection = async () => {
 // ===================== Round 5: Sales Invoices =====================
 PAGES['sales-invoices'] = async (el) => {
   const [invoices, orders, proformas] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales')), api('/finance/proforma-invoices')]);
+  window.__INV_ORDERS = orders || [];
   el.innerHTML = `
     <div class="panel"><h3>Generate Invoice from Sales Order</h3>
       <div class="form-grid">
-        <div><label>Sales Order</label><select id="inv-so">${(orders||[]).map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.description||'')}${o.status === 'Invoiced' ? ' (already invoiced)' : ''}</option>`).join('')}</select></div>
+        <div><label>Sales Order</label>${salesOrderPickerHTML('inv-so', window.__INV_ORDERS, null, 'onchange="invoiceSOChanged()"')}</div>
         <div><label>Buyer State</label><input id="inv-buyer-state" placeholder="e.g. Haryana"></div>
         <div><label>Buyer GSTIN</label><input id="inv-buyer-gstin"></div>
         <div><label>Item Description</label><input id="inv-desc" placeholder="Defaults to order description"></div>
@@ -11610,6 +11644,12 @@ PAGES['sales-invoices'] = async (el) => {
         <div><label>Qty</label><input id="inv-qty" type="number" value="1"></div>
         <div><label>Rate (₹)</label><input id="inv-rate" type="number"></div>
         <div><label>GST Rate (%)</label><input id="inv-gst-rate" type="number" value="18"></div>
+      </div>
+      <div class="form-grid" style="margin-top:8px;">
+        <div><label>Client Name</label><input id="inv-buyer-name" placeholder="Defaults from client master"></div>
+        <div><label>Contact Person</label><input id="inv-buyer-contact"></div>
+        <div><label>Address</label><input id="inv-buyer-address"></div>
+        <div><label>Phone Number</label><input id="inv-buyer-phone"></div>
       </div>
       <button class="btn" onclick="generateInvoice()">Generate Invoice</button>
       <div id="inv-err" class="msg err" style="display:none;margin-top:8px;"></div>
@@ -11649,6 +11689,7 @@ PAGES['sales-invoices'] = async (el) => {
           <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
         </td></tr>`)}
     `)}`;
+  invoiceSOChanged();
 };
 window.loadPFMilestones = async () => {
   const sel = document.getElementById('pf-milestone');
@@ -11691,6 +11732,21 @@ window.emailProforma = async (id) => {
     alert(r.sent ? `Emailed to ${r.to}` : `Not sent: ${r.message}`);
   } catch (e) { alert(e.message); }
 };
+// Fills Client Name/Contact Person/Address/Phone from the picked order's
+// client master the moment an order is selected - still freely editable
+// afterward (e.g. billing to a different site contact for this one
+// invoice), same "default from master, editable per-document" pattern the
+// Offer builder's own client autofill already uses.
+window.invoiceSOChanged = () => {
+  const soId = Number(val('inv-so'));
+  const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
+  if (!o) return;
+  document.getElementById('inv-buyer-gstin').value = o.client_gstin || '';
+  document.getElementById('inv-buyer-name').value = o.client_name || '';
+  document.getElementById('inv-buyer-contact').value = o.client_contact_person || '';
+  document.getElementById('inv-buyer-address').value = o.client_address || '';
+  document.getElementById('inv-buyer-phone').value = o.client_phone || '';
+};
 window.generateInvoice = async () => {
   const errEl = document.getElementById('inv-err'); errEl.style.display = 'none';
   const soId = val('inv-so');
@@ -11698,6 +11754,8 @@ window.generateInvoice = async () => {
   try {
     await api(`/finance/invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
       buyer_state: val('inv-buyer-state'), buyer_gstin: val('inv-buyer-gstin'),
+      buyer_name: val('inv-buyer-name'), buyer_contact_person: val('inv-buyer-contact'),
+      buyer_address: val('inv-buyer-address'), buyer_phone: val('inv-buyer-phone'),
       items: val('inv-rate') ? [{ description: val('inv-desc'), hsn_code: val('inv-hsn'), quantity: val('inv-qty') || 1, rate: val('inv-rate'), gst_rate: val('inv-gst-rate') || 18 }] : undefined,
     })});
     navigate('sales-invoices');
