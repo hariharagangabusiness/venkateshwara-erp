@@ -1427,6 +1427,20 @@ const MIGRATIONS = [
   // with no further change needed there.
   `ALTER TABLE offer_items ADD COLUMN unit TEXT DEFAULT 'Nos'`,
   `ALTER TABLE offer_items ADD COLUMN discount_amount REAL DEFAULT 0`,
+  // Sales Invoice: editable buyer details defaulting from the order/client
+  // master (2026-10-17) - sales_invoices previously had buyer_gstin/
+  // buyer_state only, with name/contact/address/phone always joined live
+  // from `clients` at render time. These let the invoice capture a one-off
+  // override (e.g. billing to a different site contact than the client
+  // master's own) without touching the Client Master, same reasoning
+  // buyer_gstin/buyer_state already use. routes/finance.js's
+  // POST /invoices/from-sales-order/:soId defaults them from the order's
+  // client when not explicitly supplied; lib/invoicePdf.js prefers these
+  // over the live client join when set.
+  `ALTER TABLE sales_invoices ADD COLUMN buyer_name TEXT`,
+  `ALTER TABLE sales_invoices ADD COLUMN buyer_contact_person TEXT`,
+  `ALTER TABLE sales_invoices ADD COLUMN buyer_address TEXT`,
+  `ALTER TABLE sales_invoices ADD COLUMN buyer_phone TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

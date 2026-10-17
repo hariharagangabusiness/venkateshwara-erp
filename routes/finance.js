@@ -586,6 +586,16 @@ router.post('/invoices/from-sales-order/:soId', requirePermission('sales_order.m
   }];
   const buyerState = req.body.buyer_state || '';
   const buyerGstin = req.body.buyer_gstin || client.gstin || '';
+  // Editable buyer identity (2026-10-17) - defaults from the order's own
+  // client master but is freely overridable per-invoice, same reasoning
+  // buyer_gstin/buyer_state already use (e.g. billing to a different site
+  // contact than the one on file). Stored on the invoice itself rather than
+  // always joined live, so a later edit to the Client Master can't quietly
+  // change what already-generated invoice printed.
+  const buyerName = req.body.buyer_name || client.name || '';
+  const buyerContactPerson = req.body.buyer_contact_person || client.contact_person || '';
+  const buyerAddress = req.body.buyer_address || client.address || '';
+  const buyerPhone = req.body.buyer_phone || client.phone || '';
   const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
 
   let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
@@ -604,9 +614,11 @@ router.post('/invoices/from-sales-order/:soId', requirePermission('sales_order.m
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO sales_invoices (invoice_no, sales_order_id, client_id, place_of_supply, buyer_gstin, buyer_state,
+        buyer_name, buyer_contact_person, buyer_address, buyer_phone,
         taxable_value, cgst, sgst, igst, total_value, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(invoiceNo, so.id, client.id, buyerState || company.default_place_of_supply, buyerGstin, buyerState,
+      buyerName, buyerContactPerson, buyerAddress, buyerPhone,
       taxableTotal, cgst, sgst, igst, total, 'Draft', req.user.id);
     const insertItem = db.prepare(`
       INSERT INTO sales_invoice_items (invoice_id, description, hsn_code, quantity, unit, rate, taxable_value, gst_rate, sort_order)
@@ -1087,7 +1099,11 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
       ? (milestone.amount || (Number(milestone.percentage) || 0) / 100 * (Number(so.order_value) || 0))
       : Number(req.body.amount) || 0;
     if (!amount) return res.status(400).json({ error: 'Give an amount, or pick a milestone that has one.' });
-    items = [{ description: milestone ? milestone.milestone_name : `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.order_no}`, taxable_value: amount, gst_rate: company.default_gst_rate || 18 }];
+    // Use the order's own description, not its number, as the fallback
+    // label - the order number alone doesn't tell the reader what's being
+    // paid for. Falls back to the order number only if the order itself
+    // has no description on file.
+    items = [{ description: milestone ? milestone.milestone_name : `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`, taxable_value: amount, gst_rate: company.default_gst_rate || 18 }];
   }
   const buyerState = buyer_state || '';
   const buyerGstin = buyer_gstin || client.gstin || '';

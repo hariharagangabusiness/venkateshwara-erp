@@ -252,7 +252,8 @@ router.delete('/targets/:id', requirePermission('sales_order.manage', 'report.vi
 
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
-    SELECT so.*, c.name as client_name, c.group_id as group_id, cg.name as group_name
+    SELECT so.*, c.name as client_name, c.group_id as group_id, cg.name as group_name,
+      c.gstin as client_gstin, c.phone as client_phone, c.contact_person as client_contact_person, c.address as client_address
     FROM sales_orders so JOIN clients c ON c.id = so.client_id LEFT JOIN client_groups cg ON cg.id = c.group_id
     ORDER BY so.id DESC
   `).all());
@@ -643,13 +644,18 @@ router.get('/dispatches', requirePermission('report.view_all', 'sales_order.mana
     ORDER BY fd.id DESC
   `).all());
 });
-// Lines on this SO that still have quantity left to dispatch - drives the
-// New Dispatch form's line picker. See lib/soItems.js's
+// Every line on this SO, with how much is still left to dispatch - drives
+// the New Dispatch form's line picker. See lib/soItems.js's
 // soLineDispatchableQty() - a PendingApproval dispatch already reserves its
 // quantity, so this never lets two dispatches over-claim the same units.
+// Returns EVERY line (even one with dispatchable_qty=0, already fully
+// dispatched or fully claimed by another live dispatch) rather than
+// filtering those out - a line silently dropped from the response looked
+// identical to "no line items on this order" on the frontend, which is
+// exactly the "line items are not visible" bug this was reported as.
 router.get('/orders/:id/dispatchable-lines', requirePermission('sales_order.manage'), (req, res) => {
   const items = db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ? ORDER BY sort_order, id').all(req.params.id);
-  res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })).filter(it => it.dispatchable_qty > 0));
+  res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })));
 });
 // A SO can have more than one live Pre-Dispatch proforma invoice in theory,
 // but in practice this just needs to know: is there one that's been raised
