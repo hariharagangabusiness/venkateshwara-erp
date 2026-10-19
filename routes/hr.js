@@ -8,7 +8,7 @@ const { inOversightDept, oversightDepartmentIds } = require('../lib/roleOversigh
 const router = express.Router();
 router.use(authRequired);
 
-const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const { uploadMemory } = require('../lib/upload');
 // Matches every field on the Add Employee form (public/js/app.js's
 // addEmployee()) in the same order, so a one-time migration of existing
 // employee data can be done entirely via this one template instead of

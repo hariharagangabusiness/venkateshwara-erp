@@ -8,18 +8,11 @@ const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettin
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
-const { getUploadsSubdir } = require('../lib/paths');
-const logoDir = getUploadsSubdir('company');
-const uploadLogo = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, logoDir),
-    filename: (req, file, cb) => cb(null, 'logo-' + Date.now() + path.extname(file.originalname).replace(/[^a-zA-Z0-9.]/g, '')),
-  }),
-  limits: { fileSize: 5 * 1024 * 1024 },
-});
+const uploadLogo = makeUpload('company', 5, name => 'logo-' + Date.now() + path.extname(name).replace(/[^a-zA-Z0-9.]/g, ''));
 
 router.get('/company', (req, res) => res.json(getCompanySettings()));
 router.put('/company', requireRole('Admin'), (req, res) => {

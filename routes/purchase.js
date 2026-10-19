@@ -15,21 +15,13 @@ const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFil
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const { poReceivedQty } = require('../lib/purchaseOrders');
 const path = require('path');
+const { makeUpload, uploadMemory } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
-const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 // Disk storage for quote documents (PDF/image/etc), following the pattern
 // in routes/service.js.
-const { getUploadsSubdir } = require('../lib/paths');
-const quoteUploadDir = getUploadsSubdir('purchase-quotes');
-const uploadQuote = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, quoteUploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_')),
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 },
-});
+const uploadQuote = makeUpload('purchase-quotes', 15);
 
 // ---- Purchase Requests ----
 router.get('/requests', (req, res) => {

@@ -16,18 +16,11 @@ const { poReceivedQty } = require('../lib/purchaseOrders');
 const { oversightDepartmentIds } = require('../lib/roleOversight');
 const { computeVendorLedger } = require('../lib/vendorLedger');
 const { generateVendorLedgerPdf } = require('../lib/vendorLedgerPdf');
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
-const { getUploadsSubdir } = require('../lib/paths');
-const expenseUploadDir = getUploadsSubdir('expenses');
-const uploadExpense = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, expenseUploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_'))
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 }
-});
+const uploadExpense = makeUpload('expenses', 15);
 
 // ---- Expense Vouchers (Operation Expenses, cash vs accounted) ----
 // Unscoped, this grows without bound as vouchers pile up, so a call with no

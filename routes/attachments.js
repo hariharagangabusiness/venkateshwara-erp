@@ -9,18 +9,11 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired } = require('../middleware/auth');
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
-const { getUploadsSubdir } = require('../lib/paths');
-const uploadDir = getUploadsSubdir('attachments');
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_'))
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 }
-});
+const upload = makeUpload('attachments', 15);
 
 const VALID_TYPES = new Set([
   'purchase_request', 'purchase_order', 'purchase_invoice', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',

@@ -10,18 +10,13 @@ const {
   departmentCapacityByRange, planCapacityConflicts,
 } = require('../lib/pipeline');
 const { oversightRoleNames } = require('../lib/roleOversight');
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
 const { getUploadsSubdir, resolveUploadPath } = require('../lib/paths');
 const uploadDir = getUploadsSubdir('job-cards');
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_'))
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 }
-});
+const upload = makeUpload('job-cards', 15);
 
 // A department's HOD/Supervisor (or Admin) can start/complete any card in
 // their own department and allocate work within it; a regular team member

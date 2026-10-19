@@ -10,7 +10,7 @@ const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { canSeeOffer } = require('../lib/offerVisibility');
 const router = express.Router();
 router.use(authRequired);
-const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const { uploadMemory } = require('../lib/upload');
 
 // Simple read-only + admin-managed master lists. This route has no
 // role/permission gate (department rows feed ordinary dropdowns all over

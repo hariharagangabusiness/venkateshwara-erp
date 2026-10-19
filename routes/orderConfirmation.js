@@ -7,9 +7,9 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { submit, approve, reject, unlock } = require('../lib/reviewWorkflow');
 const { generateOrderConfirmationPdf } = require('../lib/orderConfirmationPdf');
 const { getCompanySettings } = require('../lib/settings');
-const { getUploadsSubdir } = require('../lib/paths');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
@@ -139,14 +139,7 @@ router.put('/annexure-reviews/:soId', canEdit, (req, res) => {
 // A manual replacement file for the auto-generated annexure - e.g. a
 // reviewer tweaked wording directly in Word before sign-off. Blocked once
 // locked, same as the existing regenerate-annexure route in routes/sales.js.
-const uploadDir = getUploadsSubdir('annexures');
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_')),
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 },
-});
+const upload = makeUpload('annexures', 15);
 router.post('/annexure-reviews/:soId/upload', canEdit, upload.single('file'), (req, res) => {
   try {
     const salesOrder = getOrder(req.params.soId);

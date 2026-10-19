@@ -13,19 +13,14 @@ const { offerVisibilityWhere, canSeeOffer } = require('../lib/offerVisibility');
 const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
 const { compressImage, compressUploadedImageFile } = require('../lib/imageCompress');
 
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
 const { getUploadsSubdir, resolveUploadPath } = require('../lib/paths');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
 const uploadDir = getUploadsSubdir('offers');
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_'))
-  }),
-  limits: { fileSize: 8 * 1024 * 1024 }
-});
+const upload = makeUpload('offers', 8);
 
 function offerPerm() { return requirePermission('sales_order.manage', 'lead.manage'); }
 

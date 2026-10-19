@@ -8,6 +8,7 @@ const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
 const { getCompanySettings, getServiceSettings, getServiceAckMailSettings, setServiceAckMailSettings, getInboundMailSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundMailScan } = require('../lib/inboundMail');
+const { makeUpload } = require('../lib/upload');
 const router = express.Router();
 router.use(authRequired);
 
@@ -22,13 +23,7 @@ const JOB_STATUS_TRANSITIONS = {
 
 const { getUploadsSubdir } = require('../lib/paths');
 const uploadDir = getUploadsSubdir('service-reports');
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_'))
-  }),
-  limits: { fileSize: 15 * 1024 * 1024 }
-});
+const upload = makeUpload('service-reports', 15);
 
 // Only the Service department's HOD/Supervisor (or Admin) can open a logged
 // request and create its schedule (assign an employee + date) - anyone with

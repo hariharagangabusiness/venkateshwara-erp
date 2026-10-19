@@ -11,7 +11,7 @@ router.use(authRequired);
 // across the whole system.
 router.use(requireRole('Admin'));
  
-const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const { uploadMemory } = require('../lib/upload');
  
 // SheetJS's CSV/XLSX reader auto-detects date-looking cells (including a
 // plain YYYY-MM-DD string typed into a CSV) and hands sheet_to_json back
