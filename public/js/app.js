@@ -8556,19 +8556,19 @@ PAGES.employees = async (el) => {
         <div><label>Emergency Contact Phone</label><input id="em-ec-phone"></div>
         <div><label>Address</label><input id="em-address"></div>
       </div>
-      <h4 style="margin:14px 0 6px;">Referral</h4>
+      <h4>Referral</h4>
       <div class="form-grid">
         <div><label>Referred By (if a referral hire)</label><select id="em-referred-by"><option value="">- Not a referral -</option>${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}${e.employee_code ? ' (' + esc(e.employee_code) + ')' : ''}</option>`).join('')}</select></div>
         <div><label>Referral Incentive Amount (₹)</label><input id="em-referral-amount" type="number" placeholder="0"></div>
         <div><label>Probation End Date</label><input id="em-probation-end" type="date"></div>
       </div>
-      <h4 style="margin:14px 0 6px;">Bank Details</h4>
+      <h4>Bank Details</h4>
       <div class="form-grid">
         <div><label>Bank Name</label><input id="em-bank-name"></div>
         <div><label>Account Number</label><input id="em-bank-acct"></div>
         <div><label>IFSC Code</label><input id="em-bank-ifsc"></div>
       </div>
-      <h4 style="margin:14px 0 6px;">Identity Documents</h4>
+      <h4>Identity Documents</h4>
       <div class="form-grid">
         <div><label>Aadhaar Number</label><input id="em-aadhaar"></div>
         <div><label>Passport Number</label><input id="em-passport"></div>
@@ -8580,11 +8580,11 @@ PAGES.employees = async (el) => {
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per employee, then upload it here. Department names must match exactly (see the "Departments" sheet in the template).</p>
       <button class="btn outline" type="button" onclick="downloadEmployeeTemplate()">Download Template</button>
-      <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-        <input id="em-upload-file" type="file" accept=".xlsx,.xls">
-        <button class="btn" onclick="uploadEmployeeTemplate()">Upload Filled Template</button>
+      <div class="form-grid">
+        <div><input id="em-upload-file" type="file" accept=".xlsx,.xls"></div>
+        <div><button class="btn" onclick="uploadEmployeeTemplate()">Upload Filled Template</button></div>
       </div>
-      <div id="em-upload-result" style="margin-top:10px;"></div>
+      <div id="em-upload-result"></div>
     </div>
     ${collapsiblePanel('employees-list', `Employees (${emps.length})`, `
       ${emps.some(e => !e.full_name || !e.full_name.trim()) ? '<div class="msg err">One or more employees below have a blank name (created before this was required) - click Edit on the highlighted row(s) and fill in Full Name.</div>' : ''}
@@ -8639,19 +8639,19 @@ window.openEditEmployee = (id) => {
       <div><label>Exit Reason</label><select id="eme-exit-reason"><option value="">-</option>${EXIT_REASONS.map(r => `<option ${r===e.exit_reason?'selected':''}>${r}</option>`).join('')}</select></div>
       <div><label>Exit Recommendation</label><select id="eme-exit-rec"><option value="">-</option>${EXIT_RECOMMENDATIONS.map(r => `<option ${r===e.exit_recommendation?'selected':''}>${r}</option>`).join('')}</select></div>
     </div>
-    <h4 style="margin:14px 0 6px;">Referral</h4>
+    <h4>Referral</h4>
     <div class="form-grid">
       <div><label>Referred By (if a referral hire)</label><select id="eme-referred-by"><option value="">- Not a referral -</option>${(window.__EMP_CACHE||[]).filter(x => x.id !== e.id).map(x => `<option value="${x.id}" ${x.id===e.referred_by_employee_id?'selected':''}>${esc(x.full_name)}${x.employee_code ? ' (' + esc(x.employee_code) + ')' : ''}</option>`).join('')}</select></div>
       <div><label>Referral Incentive Amount (₹)</label><input id="eme-referral-amount" type="number" value="${e.referral_incentive_amount||0}"></div>
       <div><label>Probation End Date</label><input id="eme-probation-end" type="date" value="${e.probation_end_date||''}"></div>
     </div>
-    <h4 style="margin:14px 0 6px;">Bank Details</h4>
+    <h4>Bank Details</h4>
     <div class="form-grid">
       <div><label>Bank Name</label><input id="eme-bank-name" value="${esc(e.bank_name)||''}"></div>
       <div><label>Account Number</label><input id="eme-bank-acct" value="${esc(e.account_number)||''}"></div>
       <div><label>IFSC Code</label><input id="eme-bank-ifsc" value="${esc(e.ifsc_code)||''}"></div>
     </div>
-    <h4 style="margin:14px 0 6px;">Identity Documents</h4>
+    <h4>Identity Documents</h4>
     <div class="form-grid">
       <div><label>Aadhaar Number</label><input id="eme-aadhaar" value="${esc(e.aadhaar_number)||''}"></div>
       <div><label>Passport Number</label><input id="eme-passport" value="${esc(e.passport_number)||''}"></div>
@@ -8659,7 +8659,7 @@ window.openEditEmployee = (id) => {
       <div><label>Driving License Number</label><input id="eme-dl" value="${esc(e.driving_license_number)||''}"></div>
     </div>
     <button class="btn" id="eme-save-btn-${id}" onclick="saveEditEmployee(${id})">Save Changes</button>
-    <div id="eme-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
+    <div id="eme-err" class="msg err" style="display:none;"></div>`);
 };
 window.saveEditEmployee = async (id) => {
   const errEl = document.getElementById('eme-err');
@@ -8717,8 +8717,8 @@ PAGES['salary-hikes'] = async (el) => {
       <p class="muted">For migrating past years' hike records - does NOT change an employee's current salary (use Edit Employee for that).</p>
       <button class="btn outline" type="button" onclick="downloadTemplateFile('/hr/salary-hikes/template', 'salary_hikes_upload_template.xlsx')">Download Template</button>
       ${bulkUploadPanelHTML('sh-upload-file')}
-      <button class="btn" onclick="uploadTemplateFile('/hr/salary-hikes/bulk-upload', 'sh-upload-file', 'sh-upload-result', () => navigate('salary-hikes'))" style="margin-top:6px;">Upload Filled Template</button>
-      <div id="sh-upload-result" style="margin-top:10px;"></div>
+      <button class="btn" onclick="uploadTemplateFile('/hr/salary-hikes/bulk-upload', 'sh-upload-file', 'sh-upload-result', () => navigate('salary-hikes'))">Upload Filled Template</button>
+      <div id="sh-upload-result"></div>
     </div>
     ${collapsiblePanel('salary-hike-history', `Hike History (${hikes.length})`, `
       ${tableHTML(['Employee', 'Previous (₹)', 'Hike', 'New (₹)', 'Year', 'Effective Date', 'Source'], hikes, h => `
@@ -8764,14 +8764,14 @@ window.openHikeCycle = async (id) => {
   panel.innerHTML = `
     <h3>${esc(cycle.cycle_name)} <span class="muted">(${cycle.effective_year||'-'})</span> ${badge(cycle.status)}</h3>
     ${editable ? `
-      <h4 style="margin:10px 0 6px;">Bulk-Apply a Hike</h4>
+      <h4>Bulk-Apply a Hike</h4>
       <div class="form-grid">
         <div><label>Department (optional - blank applies to every active employee)</label><select id="shc-bulk-dept"><option value="">- All departments -</option>${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
         <div><label>Hike Type</label><select id="shc-bulk-type"><option value="Percent">Percent</option><option value="Fixed">Fixed (₹)</option></select></div>
         <div><label>Hike Value</label><input id="shc-bulk-value" type="number" placeholder="e.g. 10"></div>
       </div>
       <button class="btn small" type="button" onclick="bulkApplyHike(${cycle.id})">Apply</button>
-      <h4 style="margin:14px 0 6px;">Add / Update One Employee</h4>
+      <h4>Add / Update One Employee</h4>
       <div class="form-grid">
         <div><label>Employee</label><select id="shc-item-emp">${(window.__EMP_CACHE||[]).map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select></div>
         <div><label>Hike Type</label><select id="shc-item-type"><option value="Percent">Percent</option><option value="Fixed">Fixed (₹)</option></select></div>
@@ -8779,14 +8779,14 @@ window.openHikeCycle = async (id) => {
       </div>
       <button class="btn small outline" type="button" onclick="addHikeItem(${cycle.id})">Add/Update</button>
     ` : ''}
-    <h4 style="margin:14px 0 6px;">Proposed Hikes (${items.length})</h4>
+    <h4>Proposed Hikes (${items.length})</h4>
     ${tableHTML(['Employee', 'Department', 'Current (₹)', 'Hike', 'Proposed (₹)', 'Delta (₹)', editable ? '' : null].filter(x => x !== null), items, i => `
       <tr><td>${esc(i.employee_name)}</td><td>${esc(i.department_name)||'-'}</td><td>₹${fmt(i.current_salary)}</td>
       <td>${i.hike_type === 'Fixed' ? '₹' + fmt(i.hike_value) : i.hike_value + '%'}</td><td>₹${fmt(i.proposed_salary)}</td><td>₹${fmt(i.proposed_salary - i.current_salary)}</td>
       ${editable ? `<td><button class="btn small outline" type="button" onclick="removeHikeItem(${cycle.id},${i.id})">Remove</button></td>` : ''}</tr>`)}
-    <p style="font-size:13px;margin:8px 0 0;text-align:right;"><b>Total Current:</b> ₹${fmt(totalCurrent)} &nbsp; <b>Total Proposed:</b> ₹${fmt(totalProposed)} &nbsp; <b>Total Increase:</b> ₹${fmt(totalProposed - totalCurrent)}</p>
-    ${editable ? `<button class="btn" onclick="submitHikeCycle(${cycle.id})" style="margin-top:10px;">Submit for Approval</button>` : ''}
-    ${cycle.status === 'Rejected' ? `<button class="btn" onclick="reopenHikeCycle(${cycle.id})" style="margin-top:10px;">Reopen as Draft</button>` : ''}
+    <p class="muted" style="text-align:right;"><b>Total Current:</b> ₹${fmt(totalCurrent)} &nbsp; <b>Total Proposed:</b> ₹${fmt(totalProposed)} &nbsp; <b>Total Increase:</b> ₹${fmt(totalProposed - totalCurrent)}</p>
+    ${editable ? `<button class="btn" onclick="submitHikeCycle(${cycle.id})">Submit for Approval</button>` : ''}
+    ${cycle.status === 'Rejected' ? `<button class="btn" onclick="reopenHikeCycle(${cycle.id})">Reopen as Draft</button>` : ''}
   `;
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -8847,11 +8847,11 @@ function renderSalaryReport(report) {
   const body = document.getElementById('sr-body');
   const hasProposed = report.rows.some(r => r.proposed_salary != null);
   body.innerHTML = `
-    <h4 style="margin:10px 0 6px;">By Department</h4>
+    <h4>By Department</h4>
     ${tableHTML(['Department', 'Headcount', 'Total Current (₹)', 'Min (₹)', 'Max (₹)'].concat(hasProposed ? ['Total Proposed (₹)', 'Min Proposed (₹)', 'Max Proposed (₹)'] : []), report.departments, d => `
       <tr><td>${esc(d.department_name)}</td><td>${d.headcount}</td><td>₹${fmt(d.total_current)}</td><td>₹${fmt(d.min_current)}</td><td>₹${fmt(d.max_current)}</td>
       ${hasProposed ? `<td>${d.total_proposed!=null?'₹'+fmt(d.total_proposed):'-'}</td><td>${d.min_proposed!=null?'₹'+fmt(d.min_proposed):'-'}</td><td>${d.max_proposed!=null?'₹'+fmt(d.max_proposed):'-'}</td>` : ''}</tr>`)}
-    <p style="font-size:13px;margin:10px 0;"><b>Org-wide:</b> ${report.org_wide.headcount} employees, total ₹${fmt(report.org_wide.total_current)}, min ₹${fmt(report.org_wide.min_current)}, max ₹${fmt(report.org_wide.max_current)}
+    <p class="muted"><b>Org-wide:</b> ${report.org_wide.headcount} employees, total ₹${fmt(report.org_wide.total_current)}, min ₹${fmt(report.org_wide.min_current)}, max ₹${fmt(report.org_wide.max_current)}
       ${hasProposed && report.org_wide.total_proposed != null ? ` &rarr; proposed total ₹${fmt(report.org_wide.total_proposed)}, min ₹${fmt(report.org_wide.min_proposed)}, max ₹${fmt(report.org_wide.max_proposed)}` : ''}</p>
     ${collapsiblePanel('salary-report-detail', `Employee Detail (${report.rows.length})`, `
       ${tableHTML(['Employee', 'Department', 'Current (₹)'].concat(hasProposed ? ['Proposed (₹)'] : []), report.rows, r => `
@@ -8879,8 +8879,8 @@ PAGES.attendance = async (el) => {
       <p class="muted">Download the template, fill in one row per employee per day, then upload it. Matches employees by Employee Code.</p>
       <button class="btn outline" type="button" onclick="downloadAttendanceTemplate()">Download Template</button>
       ${bulkUploadPanelHTML('at-upload-file')}
-      <button class="btn" onclick="uploadAttendanceTemplate()" style="margin-top:6px;">Upload Filled Template</button>
-      <div id="at-upload-result" style="margin-top:10px;"></div>
+      <button class="btn" onclick="uploadAttendanceTemplate()">Upload Filled Template</button>
+      <div id="at-upload-result"></div>
     </div>
     ${collapsiblePanel('attendance-records', `This Month's Records (${records.length})`, `
       ${tableHTML(['Employee', 'Date', 'Status'], records, r => `<tr><td>${esc(r.full_name)}</td><td>${r.work_date}</td><td>${badge(r.status==='Present'?'Approved':r.status==='Absent'?'Rejected':'Pending')}${r.status}</td></tr>`)}
@@ -8955,7 +8955,7 @@ PAGES.advances = async (el) => {
         <div><label>Supporting Document</label><input id="ad-file" type="file"></div>
       </div>
       <button class="btn" onclick="addAdvance()">Submit Request</button>
-      <div class="muted" style="margin-top:8px;">Approval chain: HR then Accounts.</div>
+      <div class="muted">Approval chain: HR then Accounts.</div>
     </div>
     ${collapsiblePanel('advances-list', `Advances (${advs.length})`, `
       ${tableHTML(['Employee', 'Amount', 'Recovered', 'Installments', 'Status', 'Date', ''], advs, a => `
@@ -9086,13 +9086,13 @@ PAGES['leave-balances'] = async (el) => {
       <button class="btn" onclick="addLeaveType()">Add Leave Type</button>
       ${tableHTML(['Name', 'Quota', 'Paid', 'Probation (mo)', 'Accrual', 'Carry Fwd', 'Max Carry', 'Action'], types, t => `
         <tr>
-          <td><input id="lt-name-${t.id}" value="${esc(t.name)}" style="width:100px;"></td>
-          <td><input id="lt-quota-${t.id}" type="number" step="0.5" value="${t.annual_quota}" style="width:70px;"></td>
+          <td><input id="lt-name-${t.id}" value="${esc(t.name)}"></td>
+          <td><input id="lt-quota-${t.id}" type="number" step="0.5" value="${t.annual_quota}"></td>
           <td><select id="lt-paid-${t.id}"><option value="1" ${t.is_paid ? 'selected' : ''}>Paid</option><option value="0" ${!t.is_paid ? 'selected' : ''}>Unpaid</option></select></td>
-          <td><input id="lt-probation-${t.id}" type="number" min="0" value="${t.probation_months || 0}" style="width:60px;"></td>
-          <td><input id="lt-accrual-${t.id}" value="${esc(t.accrual || 'Annual')}" style="width:80px;"></td>
+          <td><input id="lt-probation-${t.id}" type="number" min="0" value="${t.probation_months || 0}"></td>
+          <td><input id="lt-accrual-${t.id}" value="${esc(t.accrual || 'Annual')}"></td>
           <td><select id="lt-carry-${t.id}"><option value="0" ${!t.carry_forward ? 'selected' : ''}>No</option><option value="1" ${t.carry_forward ? 'selected' : ''}>Yes</option></select></td>
-          <td><input id="lt-maxcarry-${t.id}" type="number" step="0.5" value="${t.max_carry_forward || 0}" style="width:70px;"></td>
+          <td><input id="lt-maxcarry-${t.id}" type="number" step="0.5" value="${t.max_carry_forward || 0}"></td>
           <td><button class="btn small" onclick="saveLeaveType(${t.id})">Save</button></td>
         </tr>`)}
     </div>`;
@@ -9174,17 +9174,17 @@ PAGES.expenses = async (el) => {
         <div><label>Bill / Receipt Attachment</label><input id="ex-file" type="file"></div>
       </div>
       <button class="btn" onclick="addExpense()">Submit Voucher</button>
-      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openExCategoryManager()" style="margin-left:8px;">Manage Categories</button>` : ''}
-      <div class="muted" style="margin-top:8px;">Approval chain: Management, then Accounts (both required, any amount). <a href="#" onclick="navigate('expenses-mine');return false;">My Expense Vouchers</a> shows your own submissions' stage-by-stage status.</div>
+      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openExCategoryManager()">Manage Categories</button>` : ''}
+      <div class="muted">Approval chain: Management, then Accounts (both required, any amount). <a href="#" onclick="navigate('expenses-mine');return false;">My Expense Vouchers</a> shows your own submissions' stage-by-stage status.</div>
     </div>
     ${isAdmin ? collapsiblePanel('expense-oe-map', 'Operating Expense Category Mapping', `
       <div class="muted" style="margin-bottom:8px;">Marking a voucher Paid auto-creates a matching Operating Expense entry - pick which Operating Expense category each Expense Voucher category should land in. A category left unmapped blocks Mark Paid until it's set here.</div>
       <div id="ev-oe-map-wrap">${await exOeMapHTML()}</div>
     `) : ''}
     ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
-      <div class="form-grid" style="margin-bottom:10px;">
+      <div class="form-grid">
         <div><label>Month</label><input type="month" id="ex-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="EV_LIST_MONTH=this.value;navigate('expenses')"></div>
-        <div style="align-self:end;"><button class="btn small outline" type="button" onclick="EV_LIST_MONTH='all';navigate('expenses')">Show All</button></div>
+        <div><button class="btn small outline" type="button" onclick="EV_LIST_MONTH='all';navigate('expenses')">Show All</button></div>
       </div>
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Raised By', 'Bill', 'Status', 'Action'], vouchers, v => `
         <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td><td>${esc(v.raised_by_name)}</td>
@@ -9280,11 +9280,11 @@ PAGES['expenses-mine'] = async (el) => {
     </td></tr>`;
   el.innerHTML = `
     <div class="panel"><h3>My Expense Vouchers (${own.length})</h3>
-      <div class="muted" style="margin-bottom:8px;">Status at each stage of your own submitted vouchers - Management approval, then Accounts approval, then Mark Paid with a payment reference.</div>
+      <div class="muted">Status at each stage of your own submitted vouchers - Management approval, then Accounts approval, then Mark Paid with a payment reference.</div>
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Raised By', 'Status', 'Paid Ref / Date', 'Action'], own, rowHTML)}
     </div>
     ${ME && ME.is_supervisor ? collapsiblePanel('expenses-mine-department', `My Department's Expense Vouchers (${department.length})`, `
-      <div class="muted" style="margin-bottom:8px;">Every voucher raised against your own department (or any department you've been granted oversight of), submitted by anyone.</div>
+      <div class="muted">Every voucher raised against your own department (or any department you've been granted oversight of), submitted by anyone.</div>
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Raised By', 'Status', 'Paid Ref / Date', 'Action'], department, rowHTML)}
     `) : ''}`;
 };
@@ -9301,8 +9301,8 @@ window.openExCategoryManager = async () => {
       <div><label>Sort Order</label><input id="ec-sort" type="number" value="${categories.length}"></div>
     </div>
     <button class="btn small" type="button" onclick="addExCategory()">Add Category</button>
-    <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    <div id="ec-list-wrap" style="margin-top:12px;">${exCategoryListHTML(categories)}</div>`;
+    <div id="ec-err" class="msg err" style="display:none;"></div>
+    <div id="ec-list-wrap">${exCategoryListHTML(categories)}</div>`;
   openMiniModal('Manage Expense Voucher Categories', body, true);
 };
 function exCategoryListHTML(categories) {
@@ -10146,25 +10146,25 @@ PAGES['bg-dashboard'] = async (el) => {
         <div><label>Claim Expiry (optional)</label><input id="bg-claim" type="date"></div>
         <div><label>Scanned Copy (optional)</label><input id="bg-scan-file" type="file" accept="image/*,.pdf"></div>
       </div>
-      <div><label>Release Condition / Milestone Link</label><textarea id="bg-milestone" rows="2" style="width:100%;" placeholder="e.g. release on final acceptance / installation completion"></textarea></div>
+      <div><label>Release Condition / Milestone Link</label><textarea id="bg-milestone" rows="2" placeholder="e.g. release on final acceptance / installation completion"></textarea></div>
       <button class="btn" onclick="addBG()">Add Bank Guarantee</button>
     </div>
 
     ${collapsiblePanel('bg-list', `List of Bank Guarantees (${bgs.length})`, `
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div class="tabs" id="bg-tabs">
-          <div class="tab active" onclick="filterBGTab(this,'')">All</div>
-          <div class="tab" onclick="filterBGTab(this,'Advance')">Advance</div>
-          <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
-          <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
+      <div class="form-grid">
+        <div style="grid-column:1/-1;">
+          <div class="tabs" id="bg-tabs">
+            <div class="tab active" onclick="filterBGTab(this,'')">All</div>
+            <div class="tab" onclick="filterBGTab(this,'Advance')">Advance</div>
+            <div class="tab" onclick="filterBGTab(this,'Performance')">Performance</div>
+            <div class="tab" onclick="filterBGTab(this,'PendingRelease')">Pending Release</div>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;">
-          <label style="margin:0;font-weight:normal;"><input type="checkbox" id="bg-show-released" ${showReleased ? 'checked' : ''} onchange="toggleBGShowReleased(this.checked)"> Show Released</label>
-          <button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button>
-          ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="exportBGAttachments()" title="Downloads a small .tar.gz of every BG scanned-document row and file - for migrating BG attachments to another server without a full DB backup.">Export BG Attachments</button>` : ''}
-        </div>
+        <div><label><input type="checkbox" id="bg-show-released" ${showReleased ? 'checked' : ''} onchange="toggleBGShowReleased(this.checked)"> Show Released</label></div>
+        <div><button class="btn small outline" type="button" onclick="openBGColumnPicker()">Customize Columns</button></div>
+        ${ME.role === 'Admin' ? `<div><button class="btn small outline" type="button" onclick="exportBGAttachments()" title="Downloads a small .tar.gz of every BG scanned-document row and file - for migrating BG attachments to another server without a full DB backup.">Export BG Attachments</button></div>` : ''}
       </div>
-      ${!showReleased ? `<p class="muted" style="margin-top:8px;">Showing live Bank Guarantees only (Active / Pending Release). Check "Show Released" above to include closed ones.</p>` : ''}
+      ${!showReleased ? `<p class="muted">Showing live Bank Guarantees only (Active / Pending Release). Check "Show Released" above to include closed ones.</p>` : ''}
       <div id="bg-table-wrap">${bgTableHTML(bgs)}</div>
     `)}`;
   window.__BG_ALL = bgs;
@@ -10521,9 +10521,9 @@ PAGES['foreign-payments'] = async (el) => {
       <h4>Invoice Lines</h4>
       <div id="fp-new-lines-wrap">${fpLinesHTML('fp-new', window.FP_LINES)}</div>
       <button class="btn small outline" type="button" onclick="addFpLine('fp-new')">+ Add Invoice Line</button>
-      <div style="margin-top:12px;">
+      <div>
         <button class="btn" type="button" onclick="createForeignPayment()">Save as Draft</button>
-        <div id="fp-new-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <div id="fp-new-err" class="msg err" style="display:none;"></div>
       </div>
     </div>
     ${collapsiblePanel('foreign-payments-list', `<span id="fp-count">Foreign Payment Requests (${requests.length})</span>`, `
@@ -10591,11 +10591,11 @@ window.openForeignPaymentDetail = async (id) => {
     <div id="fp-edit-${r.id}-lines-wrap">${fpLinesHTML(`fp-edit-${r.id}`, window.FP_EDIT_LINES)}</div>
     ${editable ? `<button class="btn small outline" type="button" onclick="addFpLine('fp-edit-${r.id}')">+ Add Invoice Line</button>` : ''}
     <div id="fp-detail-attachments-${r.id}"></div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-      ${editable ? `<button class="btn green" type="button" onclick="saveForeignPaymentEdit(${r.id})">Save Changes</button>` : ''}
-      ${actionButtons.join('')}
+    <div class="form-grid">
+      ${editable ? `<div><button class="btn green" type="button" onclick="saveForeignPaymentEdit(${r.id})">Save Changes</button></div>` : ''}
+      <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;">${actionButtons.join('')}</div>
     </div>
-    <div id="fp-detail-err-${r.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+    <div id="fp-detail-err-${r.id}" class="msg err" style="display:none;"></div>`;
   const modal = openMiniModal(`Foreign Payment - ${r.request_no}`, body, true);
   if (!editable) {
     modal.querySelectorAll('#fp-detail-fields-wrap input, #fp-detail-fields-wrap select').forEach(inp => inp.disabled = true);
@@ -10648,7 +10648,7 @@ window.openMarkForeignPaymentPaid = (id) => {
       <div><label>Bill of Entry Due Date (optional, defaults to 90 days out)</label><input type="date" id="fp-pay-boe-${id}"></div>
     </div>
     <button class="btn green" type="button" onclick="markForeignPaymentPaid(${id})">Confirm Payment Made</button>
-    <div id="fp-pay-err-${id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+    <div id="fp-pay-err-${id}" class="msg err" style="display:none;"></div>`;
   openMiniModal('Mark Payment Made', body);
 };
 window.markForeignPaymentPaid = async (id) => {
@@ -11368,14 +11368,14 @@ PAGES.foc = async (el) => {
       <div class="form-grid" id="foc-manual-wrap">
         <div><label>Customer Name (manual)</label><input id="foc-cust-name"></div>
       </div>
-      <h4 style="margin:12px 0 4px;">Material Line Items</h4>
+      <h4>Material Line Items</h4>
       <div id="foc-lines"></div>
       <button class="btn small outline" type="button" onclick="addFocLine()">+ Add Line Item</button>
-      <div class="form-grid" style="margin-top:10px;">
+      <div class="form-grid">
         <div><label>Reason</label><input id="foc-reason" placeholder="Why this needs to go out free of cost"></div>
       </div>
       <button class="btn" onclick="addFOC()">Submit Request</button>
-      <div class="muted" style="margin-top:8px;">Approval: Management/Admin, for the whole request (all items) at once. Attach supporting documents per item after submitting.</div>
+      <div class="muted">Approval: Management/Admin, for the whole request (all items) at once. Attach supporting documents per item after submitting.</div>
     </div>` : ''}
     ${collapsiblePanel('foc-requests-list', `FOC Requests (${groups.length})`, `
       ${tableHTML(['FOC No', 'Order', 'Customer', 'Requesting Dept', 'Item(s)', 'Value', 'Requested By', 'Fulfilling Dept', 'Status', 'Action'], groups, lines => focGroupRowHTML(lines, canApprove))}
@@ -11409,11 +11409,11 @@ function focGroupRowHTML(lines, canApprove) {
     <tr class="foc-group-row-${esc(r.foc_no)}" id="foc-att-row-${l.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${l.id}"></div></td></tr>`).join('');
   const addLineForm = r.status === 'Pending' ? `
     <tr class="foc-group-row-${esc(r.foc_no)}" style="display:none;"><td colspan="10">
-      <div class="form-grid" style="margin:6px 0;">
+      <div class="form-grid">
         <div><label>New Item</label><input id="foc-newline-desc-${r.id}" placeholder="Material / item description"></div>
-        <div><label>Qty</label><input id="foc-newline-qty-${r.id}" type="number" value="1" style="width:80px;"></div>
-        <div><label>Unit</label><input id="foc-newline-unit-${r.id}" value="Nos" style="width:80px;"></div>
-        <div><label>Est. Value (₹)</label><input id="foc-newline-value-${r.id}" type="number" value="0" style="width:110px;"></div>
+        <div><label>Qty</label><input id="foc-newline-qty-${r.id}" type="number" value="1"></div>
+        <div><label>Unit</label><input id="foc-newline-unit-${r.id}" value="Nos"></div>
+        <div><label>Est. Value (₹)</label><input id="foc-newline-value-${r.id}" type="number" value="0"></div>
       </div>
       <button class="btn small outline" type="button" onclick="addFocGroupLine(${r.id})">+ Add Line Item</button>
     </td></tr>` : '';
@@ -12227,9 +12227,9 @@ PAGES['purchase-invoices'] = async (el) => {
         <div><label>Vendor's Invoice Date</label><input id="pi-vendor-inv-date" type="date"></div>
         <div><label>TDS Rate (%) <span class="muted">(if applicable)</span></label><input id="pi-tds-rate" type="number" step="0.01" value="0"></div>
       </div>
-      <div id="pi-lines-box" style="margin-top:10px;"></div>
-      <button class="btn" onclick="bookPurchaseInvoice()" style="margin-top:10px;">Book Invoice</button>
-      <div id="pi-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="pi-lines-box"></div>
+      <button class="btn" onclick="bookPurchaseInvoice()">Book Invoice</button>
+      <div id="pi-err" class="msg err" style="display:none;"></div>
     </div>
     ${collapsiblePanel('ready-to-bill', `Ready to Bill - Reconciled GRNs (${readyToBill.length})`, `
       <p class="muted">PO lines the Store HOD has already reconciled against the vendor's own invoice - click Create Invoice to pre-fill the form above with what Store already captured, then Book Invoice to confirm.</p>
@@ -12292,14 +12292,14 @@ window.togglePIDetail = async (id) => {
   box.innerHTML = '<p class="muted">Loading...</p>';
   try {
     const { invoice, items, payments } = await api(`/finance/purchase-invoices/${id}`);
-    box.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;">
-      <h5 style="margin:0 0 6px;">Line Items</h5>
+    box.innerHTML = `<div class="panel">
+      <h5>Line Items</h5>
       ${tableHTML(['Item', 'Qty', 'Rate (₹)', 'HSN', 'GST %', 'Taxable (₹)'], items, it => `
         <tr><td>${esc(it.item_name)||esc(it.description)}</td><td>${it.quantity}</td><td>₹${fmt(it.rate)}</td><td>${esc(it.hsn_code)||'-'}</td><td>${it.gst_rate}%</td><td>₹${fmt(it.taxable_value)}</td></tr>`)}
-      <h5 style="margin:10px 0 6px;">Payments</h5>
+      <h5>Payments</h5>
       ${payments.length ? tableHTML(['Date', 'Amount', 'Description'], payments, p => `
         <tr><td>${new Date(p.entry_date).toLocaleDateString()}</td><td>₹${fmt(p.amount)}</td><td>${esc(p.description)||'-'}</td></tr>`) : '<p class="muted">No payments recorded yet.</p>'}
-      <div id="pi-attachments-${id}" style="margin-top:10px;"></div>
+      <div id="pi-attachments-${id}"></div>
     </div>`;
     renderAttachmentsWidget('purchase_invoice', id, document.getElementById(`pi-attachments-${id}`));
   } catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
@@ -12327,7 +12327,7 @@ window.openCreditNoteForm = (invoiceId) => {
       <div><label>Reason</label><input id="cn-modal-reason" placeholder="e.g. rate correction, short supply"></div>
     </div>
     <button class="btn small" type="button" onclick="submitCreditNote(${invoiceId})">Save Credit Note</button>
-    <div id="cn-modal-err" class="msg err" style="display:none;margin-top:8px;"></div>`;
+    <div id="cn-modal-err" class="msg err" style="display:none;"></div>`;
   openMiniModal('Vendor Credit Note', body);
 };
 window.submitCreditNote = async (invoiceId) => {
@@ -12368,8 +12368,8 @@ PAGES.soa = async (el) => {
         <div><label><input type="checkbox" id="soa-org-enabled" ${settings.org.enabled ? 'checked' : ''}> Enabled</label></div>
       </div>
       <button class="btn small" onclick="saveSoaOrgSettings()">Save Default</button>
-      <button class="btn small outline" onclick="runSoaScanNow()" style="margin-left:6px;">Run Scan Now</button>
-      <p class="muted" style="margin-top:8px;">Every client follows this default unless given their own override below. A statement is only ever queued here for internal review - nothing is emailed to a customer without Verify + Send.</p>
+      <button class="btn small outline" onclick="runSoaScanNow()">Run Scan Now</button>
+      <p class="muted">Every client follows this default unless given their own override below. A statement is only ever queued here for internal review - nothing is emailed to a customer without Verify + Send.</p>
     </div>
     <div class="panel">
       <h3>Per-Client Overrides (${settings.overrides.length})</h3>
@@ -12469,22 +12469,22 @@ PAGES['operating-expenses'] = async (el) => {
         <div><label>Amount (₹)</label><input id="oe-amount" type="number"></div>
         <div><label>Paid Via</label><select id="oe-paid-via"><option>Bank</option><option>Cash</option></select></div>
       </div>
-      <div><label>Description</label><input id="oe-desc" style="width:100%;"></div>
-      <button class="btn" onclick="addOperatingExpense()" style="margin-top:8px;">Add Expense</button>
-      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()" style="margin-top:8px;margin-left:8px;">Manage Categories</button>` : ''}
-      <div id="oe-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div><label>Description</label><input id="oe-desc"></div>
+      <button class="btn" onclick="addOperatingExpense()">Add Expense</button>
+      ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()">Manage Categories</button>` : ''}
+      <div id="oe-err" class="msg err" style="display:none;"></div>
     </div>
     ${collapsiblePanel('operating-expenses-list', `Operating Expenses - ${listMonth === 'all' ? 'All Time' : listMonth} (${rows.length})`, `
-      <div class="form-grid" style="margin-bottom:10px;">
+      <div class="form-grid">
         <div><label>Month</label><input type="month" id="oe-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="OE_LIST_MONTH=this.value;navigate('operating-expenses')"></div>
-        <div style="align-self:end;"><button class="btn small outline" type="button" onclick="OE_LIST_MONTH='all';navigate('operating-expenses')">Show All</button></div>
+        <div><button class="btn small outline" type="button" onclick="OE_LIST_MONTH='all';navigate('operating-expenses')">Show All</button></div>
       </div>
       ${tableHTML(['Date', 'Category', 'Description', 'Amount', 'Paid Via'], rows, r => `
         <tr><td>${new Date(r.expense_date).toLocaleDateString()}</td><td>${esc(r.category)}</td><td>${esc(r.description)}</td><td>₹${fmt(r.amount)}</td><td>${esc(r.paid_via)}</td></tr>`)}
     `)}
     ${collapsiblePanel('operating-expenses-summary', `Monthly Category Summary - ${summaryYear}`, `
-      <div class="form-grid" style="margin-bottom:10px;">
-        <div><label>Year</label><input type="number" id="oe-summary-year" value="${summaryYear}" onchange="OE_SUMMARY_YEAR=this.value;navigate('operating-expenses')" style="width:100px;"></div>
+      <div class="form-grid">
+        <div><label>Year</label><input type="number" id="oe-summary-year" value="${summaryYear}" onchange="OE_SUMMARY_YEAR=this.value;navigate('operating-expenses')"></div>
       </div>
       <div style="overflow-x:auto;">
         <table><thead><tr><th>Category</th>${monthLabels.map(m => `<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
@@ -12513,8 +12513,8 @@ window.openOeCategoryManager = async () => {
       <div><label>Sort Order</label><input id="oec-sort" type="number" value="${categories.length}"></div>
     </div>
     <button class="btn small" type="button" onclick="addOeCategory()">Add Category</button>
-    <div id="oec-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    <div id="oec-list-wrap" style="margin-top:12px;">${oeCategoryListHTML(categories)}</div>`;
+    <div id="oec-err" class="msg err" style="display:none;"></div>
+    <div id="oec-list-wrap">${oeCategoryListHTML(categories)}</div>`;
   openMiniModal('Manage Operating Expense Categories', body, true);
 };
 function oeCategoryListHTML(categories) {
@@ -12546,8 +12546,8 @@ PAGES['gst-summary'] = async (el) => {
         <div><label>To</label><input id="gst-to" type="date"></div>
       </div>
       <button class="btn" onclick="loadGstSummary()">Run Report</button>
-      <div id="gst-result" style="margin-top:16px;"></div>
-      <p class="muted" style="margin-top:12px;">This is a reference report only, computed from invoices and purchase order GST fields recorded in this system - not an official GST filing tool. Verify with your GST practitioner before filing.</p>
+      <div id="gst-result"></div>
+      <p class="muted">This is a reference report only, computed from invoices and purchase order GST fields recorded in this system - not an official GST filing tool. Verify with your GST practitioner before filing.</p>
     </div>`;
 };
 window.loadGstSummary = async () => {
