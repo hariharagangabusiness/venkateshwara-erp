@@ -6933,10 +6933,10 @@ function rfqdVendorsAndEmailFormHTML(subjectValue, bodyValue) {
     </div>
     <div id="rfqd-recipients" style="margin:10px 0;"></div>
     <h4 style="margin-top:16px;margin-bottom:6px;">Email</h4>
-    <div><label>Subject</label><input id="rfqd-subject" style="width:100%;" value="${esc(subjectValue)}"></div>
-    <div style="margin-top:10px;"><label>Body <span class="muted">({{vendor_name}} personalizes each copy)</span></label>
-      <textarea id="rfqd-body" rows="6" style="width:100%;">${esc(bodyValue)}</textarea>
-    </div>
+    <div class="form-grid"><div><label>Subject</label><input id="rfqd-subject" value="${esc(subjectValue)}"></div></div>
+    <div class="form-grid"><div><label>Body <span class="muted">({{vendor_name}} personalizes each copy)</span></label>
+      <textarea id="rfqd-body" rows="6">${esc(bodyValue)}</textarea>
+    </div></div>
     <div id="rfqd-err" class="msg err" style="display:none;margin-top:8px;"></div>
   `;
 }
@@ -11699,8 +11699,8 @@ window.etcTemplateChanged = () => {
   bodyEl.innerHTML = `
     <p class="muted" style="margin-top:10px;">${esc(tpl.description)}</p>
     <p><b>Variables available:</b> ${tpl.variables.map(v => `<code>{{${esc(v)}}}</code>`).join(', ')}</p>
-    <div><label>Subject</label><input id="etc-subject" style="width:100%;" value="${esc(tpl.subject)}"></div>
-    <div style="margin-top:8px;"><label>Body</label><textarea id="etc-body-text" rows="8" style="width:100%;">${esc(tpl.body)}</textarea></div>
+    <div class="form-grid"><div><label>Subject</label><input id="etc-subject" value="${esc(tpl.subject)}"></div></div>
+    <div class="form-grid"><div><label>Body</label><textarea id="etc-body-text" rows="8">${esc(tpl.body)}</textarea></div></div>
     <div style="margin-top:10px;">
       <button class="btn" id="etc-save-btn" onclick="saveEmailTemplate()">Save Template</button>
       ${tpl.is_customized ? `<button class="btn small outline" type="button" onclick="resetEmailTemplateField()">Reset to Default</button>` : ''}
