@@ -2385,21 +2385,19 @@ PAGES.clients = async (el) => {
         <div><label>Customer Group <span class="muted">(optional)</span></label><select id="cl-group">${clientGroupOptionsHTML('')}</select></div>
       </div>
       <label>Address</label>
-      <textarea id="cl-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
-      <div style="margin-top:10px;">
-        <button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button>
-      </div>
+      <textarea id="cl-address" rows="2"></textarea>
+      <button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button>
     </div>
     ${ME.role === 'Admin' ? collapsiblePanel('client-groups', 'Customer Groups', `
       <p class="muted">A Customer Group is a pure folder - a shared name tying several companies (each its own Client row, GSTIN, address) together, same as how a conglomerate's own filing already works. Nothing about an individual client's own details is shared or duplicated - assigning one to a group only changes how Offers/Sales Orders roll up in their lists and what shows as "sibling companies" on Customer 360.</p>
       <div id="client-groups-list">${clientGroupsListHTML(groups)}</div>
-      <div class="form-grid" style="margin-top:10px;">
+      <div class="form-grid">
         <div><label>New Group Name</label><input id="cg-new-name" placeholder="e.g. Adani Group"></div>
       </div>
       <button class="btn small" type="button" onclick="addClientGroup()">Add Group</button>
-      <div id="cg-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="cg-err" class="msg err" style="display:none;"></div>
     `) : ''}
-    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button></div>
+    <button class="btn small outline" onclick="reportClients()">Generate Report (CSV)</button>
     ${collapsiblePanel('clients-list', `<span id="cl-count">All Clients (${clients.length})</span>`, `
       ${renderListSearch('clients', clients, ['client_code', 'name', 'group_name', 'contact_person', 'phone', 'email', 'address', 'source', 'gstin'], (rows) => {
         document.getElementById('cl-table-wrap').innerHTML = renderClientRows(rows);
@@ -2411,7 +2409,7 @@ PAGES.clients = async (el) => {
 function clientGroupsListHTML(groups) {
   if (!groups.length) return '<p class="muted">No customer groups yet.</p>';
   return tableHTML(['Name', ''], groups, g => `
-    <tr><td><input id="cg-name-${g.id}" value="${esc(g.name)}" style="width:100%;"></td>
+    <tr><td><input id="cg-name-${g.id}" value="${esc(g.name)}"></td>
     <td>${actionButtonsCell(`<button class="btn small outline" type="button" onclick="renameClientGroup(${g.id})">Save</button>
     <button class="btn small red" type="button" onclick="deleteClientGroup(${g.id})">Delete</button>`)}</td></tr>`);
 }
@@ -2487,10 +2485,10 @@ window.editClient = (c) => {
 // re-attempting confirmation never leaves the Offer Builder.
 window.openMissingBillingModal = (c) => {
   openAppModal('Missing Billing Details — ' + esc(c.name), `
-    <p class="msg err" style="display:block;margin-bottom:10px;">This order can't be confirmed yet - add a Billing address (Line 1, State, State Code) and/or GSTIN below, then retry.</p>
+    <p class="msg err" style="display:block;">This order can't be confirmed yet - add a Billing address (Line 1, State, State Code) and/or GSTIN below, then retry.</p>
     ${clientEditFormHTML(c, true)}
-    <button class="btn" type="button" style="margin-top:14px;" onclick="retryConfirmOfferFromModal()">Retry Confirm Order</button>
-    <div id="cle-retry-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
+    <button class="btn" type="button" onclick="retryConfirmOfferFromModal()">Retry Confirm Order</button>
+    <div id="cle-retry-err" class="msg err" style="display:none;"></div>`);
   renderClientAddressesPanel(c.id, 'cle-addr-panel');
 };
 window.retryConfirmOfferFromModal = async () => {
@@ -2566,7 +2564,7 @@ async function renderClientAddressesPanel(clientId, targetId) {
   panel.innerHTML = `
     <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
       ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
-      <div class="form-grid" style="margin-top:10px;">
+      <div class="form-grid">
         <div><label>Type</label><select id="ca-type"><option value="Billing">Billing</option><option value="Shipping">Shipping</option></select></div>
         <div><label>Label</label><input id="ca-label" placeholder="e.g. Head Office, Plant 2"></div>
         <div><label>GSTIN</label><input id="ca-gstin"></div>
@@ -2576,10 +2574,10 @@ async function renderClientAddressesPanel(clientId, targetId) {
         <div><label>State</label><input id="ca-state"></div>
         <div><label>State Code</label><input id="ca-state-code" placeholder="e.g. 06"></div>
         <div><label>Pincode</label><input id="ca-pincode"></div>
-        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
+        <div><label><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
       </div>
       <button class="btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
-      <div id="ca-err" class="msg err" style="display:none;margin-top:10px;"></div>
+      <div id="ca-err" class="msg err" style="display:none;"></div>
     </div>`;
 }
 window.addClientAddress = async (clientId, targetId) => {
@@ -2731,7 +2729,7 @@ async function renderLeadsPage(el) {
       </div>
       <button class="btn" onclick="addLead()">Add Lead</button>
     </div>
-    <div class="toolbar" style="margin-bottom:10px;">
+    <div class="toolbar">
       <div class="tabs" style="margin:0;">
         <div class="tab ${LEADS_VIEW === 'list' ? 'active' : ''}" onclick="switchLeadsView('list')">List</div>
         <div class="tab ${LEADS_VIEW === 'kanban' ? 'active' : ''}" onclick="switchLeadsView('kanban')">Kanban</div>
@@ -2764,23 +2762,21 @@ function renderLeadsView(leads) {
 
 function renderLeadsKanban(container, leads) {
   const cols = LEAD_STAGES;
-  container.innerHTML = `<div style="display:flex;gap:10px;overflow-x:auto;padding-top:4px;">
+  container.innerHTML = `<div class="kanban-board">
     ${cols.map(stage => {
       const items = leads.filter(l => l.stage === stage);
       const value = items.reduce((a, b) => a + Number(b.expected_value || 0), 0);
-      return `<div class="kanban-col" data-stage="${esc(stage)}" style="flex:1;min-width:220px;background:#f6f7f9;border-radius:8px;padding:8px;">
-        <div style="font-weight:700;font-size:13px;margin-bottom:6px;display:flex;justify-content:space-between;">
+      return `<div class="kanban-col" data-stage="${esc(stage)}">
+        <div class="kanban-col-header">
           <span>${esc(stage)} (${items.length})</span><span class="muted">₹${fmt(value)}</span>
         </div>
-        <div class="kanban-dropzone" data-stage="${esc(stage)}" style="min-height:60px;">
+        <div class="kanban-dropzone" data-stage="${esc(stage)}">
           ${items.map(l => `
-            <div class="kanban-card" draggable="true" data-lead-id="${l.id}"
-              style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;cursor:grab;"
-              onclick="openLeadDetail(${l.id})">
-              <div style="font-weight:600;font-size:13px;">${esc(l.client_name)}</div>
-              <div class="muted" style="font-size:12px;">₹${fmt(l.expected_value)}</div>
-              <div class="muted" style="font-size:11px;">${esc(l.owner_name || '-')} &middot; ${l.days_in_stage ?? 0}d in stage</div>
-            </div>`).join('') || '<div class="muted" style="font-size:12px;">Empty</div>'}
+            <div class="kanban-card" draggable="true" data-lead-id="${l.id}" onclick="openLeadDetail(${l.id})">
+              <div class="kanban-card-title">${esc(l.client_name)}</div>
+              <div class="muted">₹${fmt(l.expected_value)}</div>
+              <div class="muted">${esc(l.owner_name || '-')} &middot; ${l.days_in_stage ?? 0}d in stage</div>
+            </div>`).join('') || '<div class="muted">Empty</div>'}
         </div>
       </div>`;
     }).join('')}
@@ -2883,22 +2879,22 @@ window.openLeadDetail = async (leadId) => {
     <div class="form-grid">
       <div><label>Type</label><select id="la-type">${ACTIVITY_TYPES.map(t => `<option>${t}</option>`).join('')}</select></div>
       <div><label>Due Date (optional)</label><input id="la-due" type="date"></div>
-      <div style="grid-column:1/-1;"><label>Notes</label><textarea id="la-notes" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea></div>
+      <div style="grid-column:1/-1;"><label>Notes</label><textarea id="la-notes" rows="2"></textarea></div>
     </div>
     <button class="btn small" type="button" onclick="addLeadActivity(${leadId})">Log Activity</button>
-    <h4 style="margin-top:14px;">Activity Timeline</h4>
+    <h4>Activity Timeline</h4>
     <div id="lead-activity-list">${renderActivityList(data.activities)}</div>`;
   openMiniModal('Lead #' + leadId + ' — ' + (l.client_name || ''), body, true);
 };
 function renderActivityList(activities) {
   if (!activities.length) return '<div class="empty">No activity logged yet.</div>';
   return activities.map(a => `
-    <div style="border-bottom:1px solid var(--border);padding:6px 0;font-size:13px;">
+    <div class="activity-item">
       <div><b>${esc(a.activity_type)}</b> ${a.due_date ? `— due ${esc(a.due_date)}` : ''}
         ${a.completed_at ? '<span class="badge Completed">Done</span>' : (a.due_date && a.due_date <= today() ? '<span class="badge red">Due</span>' : '')}
       </div>
       ${a.notes ? `<div class="muted">${esc(a.notes)}</div>` : ''}
-      <div class="muted" style="font-size:11px;">by ${esc(a.created_by_name) || '-'} on ${new Date(a.created_at).toLocaleString()}</div>
+      <div class="muted">by ${esc(a.created_by_name) || '-'} on ${new Date(a.created_at).toLocaleString()}</div>
       ${!a.completed_at ? `<button class="btn small outline" type="button" onclick="completeLeadActivity(${a.lead_id || 0}, ${a.id})">Mark Done</button>` : ''}
     </div>`).join('');
 }
@@ -2927,7 +2923,7 @@ PAGES.followups = async (el) => {
 function followupsTableHTML(items) {
   if (!items.length) return '<div class="empty">Nothing due. Nice work.</div>';
   return tableHTML(['Due Date', 'Client', 'Type', 'Notes', 'Owner', ''], items, a => `
-    <tr style="${a.due_date < today() ? 'background:#fff4f4;' : ''}">
+    <tr class="${a.due_date < today() ? 'followup-overdue' : ''}">
       <td>${esc(a.due_date)}</td><td><a href="#" onclick="openLeadDetail(${a.lead_id});return false;">${esc(a.client_name)}</a></td>
       <td>${esc(a.activity_type)}</td><td>${esc(a.notes) || '-'}</td><td>${esc(a.owner_name) || '-'}</td>
       <td><button class="btn small outline" onclick="completeLeadActivity(${a.lead_id}, ${a.id})">Mark Done</button></td></tr>`);
@@ -3080,7 +3076,7 @@ PAGES['fg-dispatches'] = async (el) => {
         <div><label>E-Way Bill No</label><input id="disp-eway"></div>
       </div>
       <div id="disp-lines"><p class="muted">Pick a sales order with dispatchable lines.</p></div>
-      <button class="btn" onclick="submitDispatch()" style="margin-top:8px;">Dispatch</button>
+      <button class="btn" onclick="submitDispatch()">Dispatch</button>
     </div>
     ${collapsiblePanel('dispatches-list', `Dispatches (${dispatches.length})`, `
       ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
@@ -3114,9 +3110,9 @@ window.toggleDispatchDetail = async (id) => {
   box.innerHTML = '<p class="muted">Loading...</p>';
   const { dispatch, items } = await api(`/sales/dispatches/${id}`);
   box.innerHTML = `
-    <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
-      ${dispatch.payment_override_note ? `<p class="msg err" style="display:block;">${esc(dispatch.payment_override_note)}</p>` : ''}
-      <p style="font-size:13px;"><b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp; <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'}</p>
+    <div class="panel">
+      ${dispatch.payment_override_note ? `<p class="msg err">${esc(dispatch.payment_override_note)}</p>` : ''}
+      <p><b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp; <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'}</p>
       ${tableHTML(['Description', 'Qty', 'Unit', 'HSN'], items, it => `<tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${esc(it.hsn_code)||'-'}</td></tr>`)}
     </div>`;
 };
@@ -3155,7 +3151,7 @@ function renderMrnLines() {
   if (!MRN_LINES.length) { el.innerHTML = '<p class="muted">Pick a Dispatched shipment with rejectable lines.</p>'; return; }
   el.innerHTML = tableHTML(['Line', 'Rejectable Qty', 'Qty Rejected', 'Unit'], MRN_LINES, (l, i) => `
     <tr><td>${esc(l.description)}</td><td>${l.rejectable_qty}</td>
-    <td><input type="number" value="${l.quantity_rejected}" max="${l.rejectable_qty}" onchange="MRN_LINES[${i}].quantity_rejected=Number(this.value)" style="width:90px;"></td>
+    <td><input type="number" value="${l.quantity_rejected}" max="${l.rejectable_qty}" onchange="MRN_LINES[${i}].quantity_rejected=Number(this.value)"></td>
     <td>${esc(l.unit)}</td></tr>`);
 }
 PAGES['sale-rejection-mrns'] = async (el) => {
@@ -3168,9 +3164,9 @@ PAGES['sale-rejection-mrns'] = async (el) => {
         <div><label>Reason</label><select id="mrn-reason"><option>Quality Issue</option><option>Wrong Specification</option><option>Damaged in Transit</option><option>Customer Cancelled</option><option>Other</option></select></div>
         <div><label>Disposition</label><select id="mrn-disposition">${MRN_DISPOSITIONS.map(d => `<option>${d}</option>`).join('')}</select></div>
       </div>
-      <div><label>Description / Notes</label><textarea id="mrn-desc" rows="2" style="width:100%;"></textarea></div>
+      <div><label>Description / Notes</label><textarea id="mrn-desc" rows="2"></textarea></div>
       <div id="mrn-lines"><p class="muted">Pick a Dispatched shipment with rejectable lines.</p></div>
-      <button class="btn" onclick="submitMrn()" style="margin-top:8px;">Raise MRN</button>
+      <button class="btn" onclick="submitMrn()">Raise MRN</button>
     </div>
     ${collapsiblePanel('mrns-list', `Sale Rejection MRNs (${mrns.length})`, `
       ${tableHTML(['MRN No', 'Dispatch', 'Order', 'Client', 'Disposition', 'Status', 'Resolution', ''], mrns, m => `
@@ -3283,31 +3279,31 @@ PAGES.orders = async (el) => {
         <div><label>Description</label><textarea id="so-desc" rows="1"></textarea></div>
         <div><label>Promised Delivery Date</label><input id="so-delivery" type="date"></div>
       </div>
-      <h4 style="margin:14px 0 6px;">Line Items <span class="muted">(optional - leave empty and set Order Value manually for a simple order with no dispatch tracking)</span></h4>
+      <h4>Line Items <span class="muted">(optional - leave empty and set Order Value manually for a simple order with no dispatch tracking)</span></h4>
       <div id="so-lines"></div>
       <button class="btn small outline" type="button" onclick="addSOLine()">+ Add Line Item</button>
-      <div class="form-grid" style="margin-top:10px;">
+      <div class="form-grid">
         <div><label>Order Value (₹) <span class="muted">(ignored once a line item is added - computed automatically instead)</span></label><input id="so-value" type="number"></div>
       </div>
-      <div class="hod-tools" style="margin-top:0;border-top:1px dashed var(--border);padding-top:10px;">
-        <h4 style="margin-top:0;">LD Clause (optional)</h4>
+      <div class="panel hod-tools">
+        <h4>LD Clause (optional)</h4>
         <div class="form-grid">
           <div><label>LD Rate (%)</label><input id="so-ld-pct" type="number" step="0.01"></div>
           <div><label>LD Cap (%)</label><input id="so-ld-cap" type="number" step="0.01"></div>
         </div>
-        <div><label>Trigger Conditions</label><textarea id="so-ld-notes" rows="2" style="width:100%;" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
+        <div><label>Trigger Conditions</label><textarea id="so-ld-notes" rows="2" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       </div>
       ${bgTermsFormFields('so')}
       <button class="btn" onclick="addOrder()">Create Order</button>
     </div>
-    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button></div>
+    <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
     ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
       ${renderListSearch('orders', orders, ['order_no', 'client_name', 'group_name', 'status', 'description'], (rows) => {
         document.getElementById('so-table-wrap').innerHTML = customerGroupedHTML(rows, 'so', ORDER_LIST_COLUMNS, orderRowHTML);
         document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
       }, 'Search by order no, client, status...')}
       <div id="so-table-wrap">${customerGroupedHTML(orders, 'so', ORDER_LIST_COLUMNS, orderRowHTML)}</div>
-      <p class="muted" style="margin-top:10px;">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
+      <p class="muted">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
     `)}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
   renderSOLines();
@@ -3467,18 +3463,18 @@ function bgTermsFormFields(prefix, o) {
   return `<div class="hod-tools" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px;">
     <h4 style="margin-top:0;">Bank Guarantee Terms (optional)</h4>
     <div class="form-grid">
-      <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="${prefix}-abg-required" type="checkbox" ${o.abg_required ? 'checked' : ''}> Advance BG (ABG) required</label></div>
+      <div><label><input id="${prefix}-abg-required" type="checkbox" ${o.abg_required ? 'checked' : ''}> Advance BG (ABG) required</label></div>
       <div><label>ABG %</label><input id="${prefix}-abg-pct" type="number" step="0.01" value="${o.abg_percentage ?? ''}"></div>
       <div><label>ABG Amount (₹, if flat)</label><input id="${prefix}-abg-amt" type="number" value="${o.abg_amount ?? ''}"></div>
       <div><label>ABG Validity (days from issue)</label><input id="${prefix}-abg-days" type="number" value="${o.abg_validity_days ?? ''}"></div>
     </div>
     <div class="form-grid">
-      <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="${prefix}-pbg-required" type="checkbox" ${o.pbg_required ? 'checked' : ''}> Performance BG (PBG) required</label></div>
+      <div><label><input id="${prefix}-pbg-required" type="checkbox" ${o.pbg_required ? 'checked' : ''}> Performance BG (PBG) required</label></div>
       <div><label>PBG %</label><input id="${prefix}-pbg-pct" type="number" step="0.01" value="${o.pbg_percentage ?? ''}"></div>
       <div><label>PBG Amount (₹, if flat)</label><input id="${prefix}-pbg-amt" type="number" value="${o.pbg_amount ?? ''}"></div>
       <div><label>PBG Validity (days from issue)</label><input id="${prefix}-pbg-days" type="number" value="${o.pbg_validity_days ?? ''}"></div>
     </div>
-    <div><label>BG Terms Notes</label><textarea id="${prefix}-bg-notes" rows="2" style="width:100%;">${esc(o.bg_terms_notes || '')}</textarea></div>
+    <div><label>BG Terms Notes</label><textarea id="${prefix}-bg-notes" rows="2">${esc(o.bg_terms_notes || '')}</textarea></div>
   </div>`;
 }
 function readBgTermsFields(prefix) {
@@ -3766,7 +3762,7 @@ PAGES.offers = async (el) => {
       ${clients.length === 0 ? '<div class="msg err">Add a client first (Sales &amp; Marketing &rarr; Clients).</div>' : ''}
       <button class="btn" onclick="createOffer()">Create Offer (opens builder with prefilled sheets)</button>
     </div>
-    <div style="margin-bottom:10px;"><button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button></div>
+    <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
     ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
       ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'group_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
         document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', OFFER_LIST_COLUMNS, offerRowHTML);
@@ -3789,7 +3785,7 @@ PAGES.offers = async (el) => {
       </div>
       <button class="btn" onclick="submitCopyOffer()">Create Copy</button>
       <button class="btn outline" type="button" onclick="document.getElementById('offer-copy-panel').style.display='none'">Cancel</button>
-      <div id="ocp-err" class="msg err" style="display:none;margin-top:10px;"></div>
+      <div id="ocp-err" class="msg err" style="display:none;"></div>
     </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
   `;
