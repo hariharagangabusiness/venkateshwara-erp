@@ -1387,6 +1387,64 @@ function dashboardMetricRegistryByKey(key) { return DASHBOARD_METRIC_REGISTRY.fi
 // ===================== PAGES =====================
 const PAGES = {};
 
+// ---- Dashboard charts (Chart.js, loaded on demand) ----
+// shortcut: Chart.js comes from a CDN, so charts are skipped (with a notice) when
+// the server has no internet; vendor it under public/js/vendor/ to run offline.
+function loadChartJs() {
+  if (window.Chart) return Promise.resolve(window.Chart);
+  if (!window.__CHARTJS_PROMISE) {
+    window.__CHARTJS_PROMISE = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+      s.onload = () => resolve(window.Chart);
+      s.onerror = () => { window.__CHARTJS_PROMISE = null; reject(new Error('Chart.js could not be loaded')); };
+      document.head.appendChild(s);
+    });
+  }
+  return window.__CHARTJS_PROMISE;
+}
+const CHART_COLORS = ['#1565c0', '#2e7d32', '#ef6c00', '#6a1b9a', '#c62828', '#00838f', '#546e7a'];
+async function renderDashboardCharts(d, ws) {
+  const msg = document.getElementById('chart-msg');
+  let Chart;
+  try { Chart = await loadChartJs(); } catch (e) {
+    if (msg) msg.innerHTML = `<p class="muted">Charts unavailable: ${esc(e.message)}. The tables above still show the same data.</p>`;
+    return;
+  }
+  // Re-navigating rebuilds the canvases; free the old chart instances first.
+  (window.__DASH_CHARTS || []).forEach(ch => ch.destroy());
+  window.__DASH_CHARTS = [];
+  const mk = (id, type, data, extra) => {
+    const cv = document.getElementById(id);
+    if (!cv) return; // user navigated away while Chart.js was loading
+    if (!data.datasets[0].data.some(v => Number(v) > 0)) {
+      cv.parentElement.innerHTML = '<p class="muted">No data yet.</p>';
+      return;
+    }
+    window.__DASH_CHARTS.push(new Chart(cv, {
+      type, data,
+      options: Object.assign({ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }, extra),
+    }));
+  };
+  const byMode = {};
+  d.expenseByMode.forEach(r => { byMode[r.payment_mode] = (byMode[r.payment_mode] || 0) + Number(r.total || 0); });
+  mk('chart-expense-mode', 'doughnut', {
+    labels: Object.keys(byMode),
+    datasets: [{ data: Object.values(byMode), backgroundColor: CHART_COLORS }],
+  });
+  const c = d.counts;
+  const open = [['Projects', c.projects_active], ['Leads', c.open_leads], ['Expense Vouchers', c.pending_expense_vouchers],
+    ['Leave', c.pending_leave], ['Purchase Req.', c.pending_purchase_requests], ['Low Stock', c.low_stock_items], ['Service', c.open_service_requests]];
+  mk('chart-open-items', 'bar', {
+    labels: open.map(o => o[0]),
+    datasets: [{ data: open.map(o => o[1]), backgroundColor: CHART_COLORS[0] }],
+  }, { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } });
+  mk('chart-stock', 'bar', {
+    labels: ['Stock In', 'Stock Out'],
+    datasets: [{ data: [ws.stockIn, ws.stockOut], backgroundColor: [CHART_COLORS[1], CHART_COLORS[4]] }],
+  }, { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } });
+}
+
 // ---- Dashboard ----
 PAGES.dashboard = async (el) => {
   const win = window.DASH_WINDOW || 'weekly';
@@ -1531,6 +1589,17 @@ PAGES.dashboard = async (el) => {
         ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}
       </div>
     `,
+    charts: `
+      <div class="panel">
+        <h3>Charts</h3>
+        <div class="chart-grid">
+          <div class="chart-box"><h4>Expenses by Payment Mode</h4><div class="chart-wrap"><canvas id="chart-expense-mode"></canvas></div></div>
+          <div class="chart-box"><h4>Open Work Items</h4><div class="chart-wrap"><canvas id="chart-open-items"></canvas></div></div>
+          <div class="chart-box"><h4>Stock Movement (${esc(win)})</h4><div class="chart-wrap"><canvas id="chart-stock"></canvas></div></div>
+        </div>
+        <div id="chart-msg"></div>
+      </div>
+    `,
     inventoryOpex: `
       <div class="panel">
         <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
@@ -1564,10 +1633,11 @@ PAGES.dashboard = async (el) => {
   el.innerHTML = reorderablePanelsHTML('dashboard', panels, order, DASHBOARD_WIDGET_LABELS);
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
   await renderDashboardCustomMetrics();
+  renderDashboardCharts(d, ws);
 };
 
 const DASHBOARD_WIDGET_LABELS = {
-  keyMetrics: 'Key Metrics', customMetrics: 'Custom Metrics', expensesByMode: 'Expenses by Payment Mode',
+  keyMetrics: 'Key Metrics', customMetrics: 'Custom Metrics', expensesByMode: 'Expenses by Payment Mode', charts: 'Charts',
   inventoryOpex: 'Inventory / Opex / Upcoming Schedules', projectDrilldown: 'Project Drill-Down',
 };
 // ---- Generic per-page panel drag-to-reorder ----
