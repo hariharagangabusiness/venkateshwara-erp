@@ -6837,7 +6837,22 @@ window.openCreateRFQModal = async () => {
       </select></div>
     </div>
     <div id="rfqd-items-wrap"></div>
-    <h4 style="margin-top:14px;">Target Vendors</h4>
+    ${rfqdVendorsAndEmailFormHTML(tpl ? tpl.subject.replace(/\{\{[^}]+\}\}/g, '').trim() : 'Request for Quotation', tpl ? tpl.body : '')}
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn small outline" id="rfqd-draft-btn" type="button" onclick="saveRFQD(true)">Save as Draft</button>
+      <button class="btn" id="rfqd-send-btn" type="button" onclick="saveRFQD(false)">Send Now</button>
+    </div>
+  `);
+  rfqdRenderRecipients();
+};
+// Shared Target Vendors + Email form fragment - both Create and Edit RFQ
+// modals render the identical fields, differing only in starting
+// subject/body text, so this is the one place either has to stay in sync
+// (previously duplicated inline, which had already let the two drift -
+// Edit's Body field was missing the {{vendor_name}} hint Create had).
+function rfqdVendorsAndEmailFormHTML(subjectValue, bodyValue) {
+  return `
+    <h4 style="margin-top:16px;margin-bottom:6px;">Target Vendors</h4>
     <div class="form-grid">
       <div><label>Add Vendor</label><select id="rfqd-vendor-add"></select></div>
       <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddVendor()">+ Add Vendor</button></div>
@@ -6846,20 +6861,15 @@ window.openCreateRFQModal = async () => {
       <div><label>Or type an email not on file</label><input id="rfqd-email-add" placeholder="buyer@example.com"></div>
       <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddEmail()">+ Add Email</button></div>
     </div>
-    <div id="rfqd-recipients" style="margin:8px 0;"></div>
-    <h4 style="margin-top:14px;">Email</h4>
-    <div><label>Subject</label><input id="rfqd-subject" style="width:100%;" value="${esc(tpl ? tpl.subject.replace(/\{\{[^}]+\}\}/g, '') : 'Request for Quotation')}"></div>
-    <div style="margin-top:8px;"><label>Body <span class="muted">({{vendor_name}} personalizes each copy)</span></label>
-      <textarea id="rfqd-body" rows="6" style="width:100%;">${esc(tpl ? tpl.body : '')}</textarea>
+    <div id="rfqd-recipients" style="margin:10px 0;"></div>
+    <h4 style="margin-top:16px;margin-bottom:6px;">Email</h4>
+    <div><label>Subject</label><input id="rfqd-subject" style="width:100%;" value="${esc(subjectValue)}"></div>
+    <div style="margin-top:10px;"><label>Body <span class="muted">({{vendor_name}} personalizes each copy)</span></label>
+      <textarea id="rfqd-body" rows="6" style="width:100%;">${esc(bodyValue)}</textarea>
     </div>
     <div id="rfqd-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn small outline" id="rfqd-draft-btn" type="button" onclick="saveRFQD(true)">Save as Draft</button>
-      <button class="btn" id="rfqd-send-btn" type="button" onclick="saveRFQD(false)">Send Now</button>
-    </div>
-  `);
-  rfqdRenderRecipients();
-};
+  `;
+}
 window.openEditRFQModal = async (id) => {
   const r = (window.__RFQD_CACHE || []).find(x => x.id === id);
   if (!r) return;
@@ -6871,20 +6881,7 @@ window.openEditRFQModal = async (id) => {
   RFQD_LINES_CACHE[r.purchase_request_id] = lines;
   openAppModal('Edit Draft RFQ — ' + esc(r.purchase_request_no || ''), `
     <div id="rfqd-items-wrap">${rfqdItemsHTML(r.purchase_request_id, lines)}</div>
-    <h4 style="margin-top:14px;">Target Vendors</h4>
-    <div class="form-grid">
-      <div><label>Add Vendor</label><select id="rfqd-vendor-add"></select></div>
-      <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddVendor()">+ Add Vendor</button></div>
-    </div>
-    <div class="form-grid">
-      <div><label>Or type an email not on file</label><input id="rfqd-email-add" placeholder="buyer@example.com"></div>
-      <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddEmail()">+ Add Email</button></div>
-    </div>
-    <div id="rfqd-recipients" style="margin:8px 0;"></div>
-    <h4 style="margin-top:14px;">Email</h4>
-    <div><label>Subject</label><input id="rfqd-subject" style="width:100%;" value="${esc(r.subject)}"></div>
-    <div style="margin-top:8px;"><label>Body</label><textarea id="rfqd-body" rows="6" style="width:100%;">${esc(r.body)}</textarea></div>
-    <div id="rfqd-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    ${rfqdVendorsAndEmailFormHTML(r.subject, r.body)}
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn small outline" id="rfqd-draft-btn" type="button" onclick="saveRFQD(true, ${r.id})">Save Draft</button>
       <button class="btn" id="rfqd-send-btn" type="button" onclick="saveRFQD(false, ${r.id})">Send Now</button>
@@ -6894,9 +6891,16 @@ window.openEditRFQModal = async (id) => {
 };
 function rfqdItemsHTML(prId, lines) {
   if (!lines.length) return '<p class="muted">This request has no line items.</p>';
-  return `<h4 style="margin-top:10px;">Line Items</h4>
-    <div class="form-grid" style="grid-template-columns:1fr;">
-      ${lines.map(l => `<label style="font-weight:normal;"><input type="checkbox" class="rfqd-item-cb" value="${l.id}" ${RFQD_SELECTED_ITEMS.includes(l.id) ? 'checked' : ''}>
+  // Deliberately not a .form-grid wrapper - that class's generic
+  // `input{width:100%}` rule (meant for text/select/textarea fields) also
+  // catches a checkbox, stretching its hit-target across the full row width
+  // and visually detaching the native checkbox glyph from its own label
+  // text. Same plain block+margin shape the Access screens' own checkbox
+  // lists already use (`.access-item`/`.access-item input`).
+  return `<h4 style="margin-top:10px;margin-bottom:6px;">Line Items</h4>
+    <div>
+      ${lines.map(l => `<label style="display:block;font-weight:normal;padding:4px 0;">
+        <input type="checkbox" class="rfqd-item-cb" value="${l.id}" style="width:auto;margin-right:6px;vertical-align:middle;" ${RFQD_SELECTED_ITEMS.includes(l.id) ? 'checked' : ''}>
         ${esc(l.item_name || l.item_text || 'Item')} - Qty ${l.quantity}${l.item_unit ? ' ' + esc(l.item_unit) : ''}</label>`).join('')}
     </div>`;
 }
