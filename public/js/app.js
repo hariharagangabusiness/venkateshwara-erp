@@ -5635,13 +5635,13 @@ PAGES['purchase-requests'] = async (el) => {
       </div>
       <div id="pr-lines"></div>
       <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
-      <div id="pr-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <div style="margin-top:12px;"><button class="btn" onclick="addPR()">Save as Draft</button></div>
-      <div id="pr-err" class="msg err" style="display:none;margin-top:10px;"></div>
-      <div class="muted" style="margin-top:8px;">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
+      <div id="pr-vendor-suggestions" class="panel" style="display:none;"></div>
+      <button class="btn" onclick="addPR()">Save as Draft</button>
+      <div id="pr-err" class="msg err" style="display:none;"></div>
+      <p class="muted">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
       This saves the request as a <b>Draft</b> below, not submitted yet — review or edit it there, then click <b>Submit for Approval</b> when it's ready. It then goes to the Purchase HOD/Supervisor first; above the configured threshold it also needs Management sign-off (see Admin → Approval Matrix).<br>
-      Requests with a combined value of ₹${fmt(threshold)} or above will need at least 2 vendor quotes on file before they can be submitted for approval.</div>
+      Requests with a combined value of ₹${fmt(threshold)} or above will need at least 2 vendor quotes on file before they can be submitted for approval.</p>
     `),
     'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">A new request starts as a <b>Draft</b> — click Edit to review/change the items, project, quantities or values, then <b>Submit for Approval</b> when ready. A Pending request can still be edited up to the point it's approved.</p>
@@ -5674,7 +5674,7 @@ window.openConfirmRfqResponse = async (id) => {
   const [vendors, openRfqs] = await Promise.all([api('/masters/vendors'), api('/purchase/rfq-inbox/open-rfqs')]);
   const wrap = document.getElementById(`rfq-inbox-confirm-${id}`);
   wrap.innerHTML = `
-    <div class="form-grid" style="margin-top:10px;border-top:1px solid var(--border,#ccc);padding-top:10px;">
+    <div class="form-grid">
       <div><label>RFQ</label><select id="ri-rfq-${id}">
         <option value="">- Select the RFQ this reply belongs to -</option>
         ${openRfqs.map(r => `<option value="${r.id}" ${item.matched_rfq_request_id===r.id?'selected':''}>${esc(r.purchase_request_no)||'-'} - ${esc(r.subject)}</option>`).join('')}
@@ -5688,10 +5688,10 @@ window.openConfirmRfqResponse = async (id) => {
       <div><label>Payment Terms</label><input id="ri-terms-${id}"></div>
       <div><label>Delivery Commit Date</label><input id="ri-delivery-${id}" type="date"></div>
     </div>
-    <div><label>Notes</label><textarea id="ri-notes-${id}" rows="2" style="width:100%;">${esc(item.body_text)}</textarea></div>
+    <div><label>Notes</label><textarea id="ri-notes-${id}" rows="2">${esc(item.body_text)}</textarea></div>
     <button class="btn small" onclick="saveConfirmRfqResponse(${id})">Save as Quote</button>
     <button class="btn small outline" type="button" onclick="document.getElementById('rfq-inbox-confirm-${id}').innerHTML=''">Cancel</button>
-    <div id="ri-err-${id}" class="msg err" style="display:none;margin-top:6px;"></div>`;
+    <div id="ri-err-${id}" class="msg err" style="display:none;"></div>`;
 };
 window.saveConfirmRfqResponse = async (id) => {
   const errEl = document.getElementById(`ri-err-${id}`);
@@ -5859,7 +5859,7 @@ async function renderPRQuotesPanel(prId) {
   RFQ_SELECTED_VENDORS[prId] = [];
   RFQ_SELECTED_EMAILS[prId] = [];
   container.innerHTML = `
-    <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+    <div class="panel">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
       ${tableHTML(['Vendor', 'Line Item', 'Quoted Amount', 'Qty Offered', 'Payment Terms', 'Delivery Commit', 'File', 'Notes', 'Selected', ''], quotes, q => `
         <tr>
@@ -5877,7 +5877,7 @@ async function renderPRQuotesPanel(prId) {
             <button class="btn small outline" type="button" onclick="deletePRQuote(${prId},${q.id})">Remove</button>
           </td>
         </tr>`)}
-      <div class="form-grid" style="margin-top:10px;">
+      <div class="form-grid">
         <div><label>Vendor</label><select id="prq-vendor-${prId}">${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No vendors -</option>'}</select></div>
         <div><label>Line Item (optional)</label><select id="prq-item-${prId}"><option value="">- Whole PR (lump sum) -</option>${lines.map(l => `<option value="${l.id}">${lineLabel(l)}</option>`).join('')}</select></div>
         <div><label>Quoted Amount (₹)</label><input id="prq-amount-${prId}" type="number"></div>
@@ -5888,39 +5888,38 @@ async function renderPRQuotesPanel(prId) {
         <div><label>Notes</label><input id="prq-notes-${prId}"></div>
       </div>
       <button class="btn small" type="button" onclick="addPRQuote(${prId})" ${!vendors.length ? 'disabled' : ''}>Add Quote</button>
-      ${pr && pr.quotes_required ? `<button class="btn" type="button" style="margin-left:10px;" onclick="submitPRForApproval(${prId})" ${canSubmit ? '' : 'disabled'}>Submit for Approval</button>
-      ${!canSubmit && pr.status === 'PendingQuotes' ? `<span class="muted" style="margin-left:8px;">Need at least 2 quotes (have ${quotes.length}).</span>` : ''}` : ''}
+      ${pr && pr.quotes_required ? `<button class="btn" type="button" onclick="submitPRForApproval(${prId})" ${canSubmit ? '' : 'disabled'}>Submit for Approval</button>
+      ${!canSubmit && pr.status === 'PendingQuotes' ? `<span class="muted">Need at least 2 quotes (have ${quotes.length}).</span>` : ''}` : ''}
     </div>
-    <div style="padding:10px;background:#f4f8fb;border-radius:6px;margin-top:10px;">
+    <div class="panel">
       <h4 style="margin:0 0 8px;">Request for Quotation (RFQ)</h4>
-      <p class="muted" style="margin-top:0;">Select line items and vendors, then edit and send an RFQ email. A vendor's reply still comes back by phone/email outside the system - type it in as a quote above once you have it.</p>
-      <div style="margin-bottom:8px;"><b>Line Items</b><br>
+      <p class="muted">Select line items and vendors, then edit and send an RFQ email. A vendor's reply still comes back by phone/email outside the system - type it in as a quote above once you have it.</p>
+      <div><b>Line Items</b></div>
         ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
       </div>
-      <div style="margin-bottom:8px;">
-        <label><b>Vendors</b></label><br>
-        <select id="rfq-vendor-add-${prId}" style="max-width:320px;"></select>
+      <div>
+        <label><b>Vendors</b></label>
+        <select id="rfq-vendor-add-${prId}"></select>
         <button class="btn small outline" type="button" onclick="addRFQVendor(${prId})">+ Add Vendor</button>
-        <div class="muted" style="margin-top:4px;">
-          ${vendors.length ? `${vendorsWithEmail.length} of ${vendors.length} suggested vendor(s) have an email on file and can be sent an RFQ.` : 'No suggested vendors - add one in Vendor Master.'}
+        <p class="muted">${vendors.length ? `${vendorsWithEmail.length} of ${vendors.length} suggested vendor(s) have an email on file and can be sent an RFQ.` : 'No suggested vendors - add one in Vendor Master.'}
           ${vendorsNoEmail.length ? (vendorsNoEmail.length <= 10
             ? ` ${vendorsNoEmail.length} excluded for having none: ${vendorsNoEmail.map(v => esc(v.name)).join(', ')}.`
             : ` ${vendorsNoEmail.length} excluded for having none - add one in Vendor Master to include them here.`) : ''}
-        </div>
-        <div style="margin-top:8px;">
-          <input type="email" id="rfq-email-add-${prId}" placeholder="or type an email address not on file" style="max-width:320px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addRFQEmail(${prId});}">
+        </p>
+        <div>
+          <input type="email" id="rfq-email-add-${prId}" placeholder="or type an email address not on file" onkeydown="if(event.key==='Enter'){event.preventDefault();addRFQEmail(${prId});}">
           <button class="btn small outline" type="button" onclick="addRFQEmail(${prId})">+ Add Email</button>
         </div>
-        <div id="rfq-vendor-list-${prId}" style="margin-top:8px;"></div>
+        <div id="rfq-vendor-list-${prId}"></div>
       </div>
       <button class="btn small outline" type="button" onclick="loadRFQTemplate(${prId})">Load Default Template</button>
-      <div class="form-grid" style="margin-top:8px;">
+      <div class="form-grid">
         <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
-        <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10" style="width:100%;"></textarea></div>
+        <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10"></textarea></div>
       </div>
       <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!lines.length ? 'disabled' : ''}>Send RFQ</button>
-      <div id="rfq-send-result-${prId}" style="margin-top:8px;"></div>
-      <div id="rfq-history-${prId}" style="margin-top:14px;"></div>
+      <div id="rfq-send-result-${prId}"></div>
+      <div id="rfq-history-${prId}"></div>
     </div>`;
   renderRFQVendorList(prId);
   if (lines.length) loadRFQTemplate(prId);
@@ -6221,31 +6220,31 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>From PR (approved)</label><select id="po-pr" onchange="fillPOFromPR()"><option value="">-</option>${prs.map(r => `<option value="${r.id}">${esc(r.pr_no)}</option>`).join('')}</select></div>
         <div><label>Vendor</label><select id="po-vendor" ${!vendors.length ? 'disabled' : ''}>${vendors.length ? vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') : '<option value="">- No vendors -</option>'}</select></div>
       </div>
-      <div id="po-pr-detail" style="display:none;margin-top:8px;margin-bottom:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
+      <div id="po-pr-detail" class="panel" style="display:none;"></div>
       <div id="po-lines"></div>
       <button class="btn small outline" type="button" onclick="addPOLine()">+ Add Line Item</button>
-      <div id="po-vendor-suggestions" style="display:none;margin-top:8px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;"></div>
-      <div class="form-grid" style="margin-top:12px;">
+      <div id="po-vendor-suggestions" class="panel" style="display:none;"></div>
+      <div class="form-grid">
         <div><label>Delivery Date</label><input id="po-delivery" type="date"></div>
         <div><label>Payment Terms</label><select id="po-payment-terms"><option value="">-</option>${paymentTermsOptions.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
       </div>
-      <div class="form-grid" style="margin-top:8px;">
+      <div class="form-grid">
         <div><label>LD Rate (%)</label><input id="po-ld-pct" type="number" step="0.01"></div>
         <div><label>LD Cap (%)</label><input id="po-ld-cap" type="number" step="0.01"></div>
         <div><label>Trigger Conditions/Notes</label><textarea id="po-ld-notes" rows="2" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       </div>
-      <div class="form-grid" style="margin-top:8px;">
+      <div class="form-grid">
         <div><label>Freight (₹)</label><input id="po-freight" type="number" value="0"></div>
         <div><label>Freight GST (%)</label><input id="po-freight-gst" type="number" value="${(purchaseSettings && purchaseSettings.default_gst_rate) || 18}"></div>
         <div><label>Freight Comments</label><textarea id="po-freight-notes" rows="2" placeholder="e.g. covers door delivery, excludes unloading"></textarea></div>
       </div>
-      <div style="margin-top:8px;"><label>General Notes</label><textarea id="po-general-notes" rows="2" style="width:100%;" placeholder="Any other notes for this order"></textarea></div>
-      <div class="form-grid" style="margin-top:8px;">
+      <div class="form-grid"><div style="grid-column:1/-1;"><label>General Notes</label><textarea id="po-general-notes" rows="2" placeholder="Any other notes for this order"></textarea></div></div>
+      <div class="form-grid">
         <div><label>Bill-To Address</label><select id="po-bill-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}">${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
         <div><label>Ship-To Address</label><select id="po-ship-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}">${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
       </div>
-      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''} style="margin-top:8px;">Save as Draft</button>
-      <p class="muted" style="margin-top:6px;">Saves this as a Draft below - nothing is submitted for approval yet. Review it (Download PDF/Word for a preview, or Edit to change anything), then click Submit for Approval when it's ready.</p>
+      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Save as Draft</button>
+      <p class="muted">Saves this as a Draft below - nothing is submitted for approval yet. Review it (Download PDF/Word for a preview, or Edit to change anything), then click Submit for Approval when it's ready.</p>
     `),
     'bulk-import': collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
       <p class="muted">Bring in orders already open with a vendor before this system was used - each row becomes a real PO you can then receive, edit, cancel, or print, same as one created here. Vendor names not on file are added automatically; items are matched by Item Code or barcode.</p>
@@ -6356,7 +6355,7 @@ function poActionsCell(buttonsHtml) {
 }
 function poAddLineForm(poId) {
   const items = window.__PO_ITEMS || [];
-  return `<div class="form-grid" style="margin-top:8px;">
+  return `<div class="form-grid">
     <div><label>Item</label>${itemPickerHTML(`po-addline-item-${poId}`, items, '',
       (selectedId, its) => its.map(it => `<option value="${it.id}" ${it.id===selectedId?'selected':''}>${esc(it.name)}</option>`).join(''))}</div>
     <div><label>Additional Details</label><input id="po-addline-details-${poId}" placeholder="e.g. grade, size, drawing ref"></div>
@@ -6368,7 +6367,7 @@ function poAddLineForm(poId) {
     <div><label>GST Rate (%)</label><input id="po-addline-gst-${poId}" type="number" value="18"></div>
   </div>
   <button class="btn small" type="button" onclick="savePOAddLine(${poId})">Add Item</button>
-  <div id="po-addline-err-${poId}" class="msg err" style="display:none;margin-top:8px;"></div>`;
+  <div id="po-addline-err-${poId}" class="msg err" style="display:none;"></div>`;
 }
 window.togglePOAddLine = (id) => {
   const row = document.getElementById(`po-addline-row-${id}`);
@@ -9326,7 +9325,9 @@ window.toggleExCategory = async (id, active) => {
   document.getElementById('ec-list-wrap').innerHTML = exCategoryListHTML(categories);
 };
 
-// ---- Monthly Expense Tracker (replaces the team's tracking Excel) ----
+/* ============ RETIRED: Expense Tracker module (folded into Operating Expenses) ============
+   Backend routes (/api/expense-tracker) and DB tables left intact; restore by uncommenting
+   these blocks and re-adding the 3 NAV sidebar entries.
 // Daily categories: a day-wise grid for the selected month, editable inline.
 // Fixed categories: one lump-sum amount for the whole month.
 let EXP_TRACKER_MONTH = null;
@@ -9419,8 +9420,9 @@ window.saveExpenseTracker = async () => {
     navigate('expense-tracker');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
+*/
 
-// ---- Expense Tracker - Year Summary (always live, no manual retyping) ----
+/* ============ RETIRED: Expense Tracker Year Summary ============
 let EXP_TRACKER_YEAR = null;
 PAGES['expense-tracker-summary'] = async (el) => {
   const year = EXP_TRACKER_YEAR || String(new Date().getFullYear());
@@ -9447,8 +9449,9 @@ PAGES['expense-tracker-summary'] = async (el) => {
       <h4>Grand Total: ₹${fmt(data.grandTotal)}</h4>
     </div>`;
 };
+*/
 
-// ---- Expense Tracker - Categories (Admin/Accounts manage the list) ----
+/* ============ RETIRED: Expense Tracker Categories ============
 PAGES['expense-tracker-categories'] = async (el) => {
   const cats = await api('/expense-tracker/categories');
   el.innerHTML = `
@@ -9476,6 +9479,7 @@ window.toggleExpTrackerCategory = async (id, active) => {
   await api('/expense-tracker/categories/' + id, { method: 'PUT', body: JSON.stringify({ active }) });
   navigate('expense-tracker-categories');
 };
+*/
 
 // ---- Offer Field Options (Application / Type of System / Material of Construction) ----
 const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
