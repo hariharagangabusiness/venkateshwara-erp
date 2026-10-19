@@ -12681,10 +12681,10 @@ PAGES['tickets-raise'] = async (el) => {
         <div><label>Priority</label><select id="tk-priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
         <div><label>Target Department</label><select id="tk-dept">${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
       </div>
-      <div><label>Description</label><textarea id="tk-desc" rows="3" style="width:100%;"></textarea></div>
-      <div style="margin-top:8px;"><label>Attachment (optional)</label><input id="tk-file" type="file"></div>
-      <button class="btn" onclick="raiseTicket()" style="margin-top:8px;">Submit Ticket</button>
-      <div id="tk-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div><label>Description</label><textarea id="tk-desc" rows="3"></textarea></div>
+      <div><label>Attachment (optional)</label><input id="tk-file" type="file"></div>
+      <button class="btn" onclick="raiseTicket()">Submit Ticket</button>
+      <div id="tk-err" class="msg err" style="display:none;"></div>
     </div>`;
 };
 window.raiseTicket = async () => {
@@ -12732,12 +12732,12 @@ window.viewTicket = async (id) => {
     <div class="form-grid">
       <div><label>Status</label><select id="tk-status">${['Open','InProgress','Resolved','Closed','Reopened'].map(s => `<option ${s===ticket.status?'selected':''}>${s}</option>`).join('')}</select></div>
     </div>
-    <button class="btn outline" type="button" onclick="updateTicket(${id})" style="margin-top:8px;">Update Status</button>
-    <h4 style="margin-top:16px;">Comments</h4>
-    <div>${comments.map(c => `<div style="padding:6px 0;border-bottom:1px solid var(--border);"><b>${esc(c.user_name)}</b> <span class="muted">${new Date(c.created_at).toLocaleString()}</span><br>${esc(c.comment)}</div>`).join('') || '<span class="muted">No comments yet.</span>'}</div>
-    <textarea id="tk-comment" rows="2" style="width:100%;margin-top:8px;" placeholder="Add a reply..."></textarea>
-    <button class="btn" onclick="addTicketComment(${id})" style="margin-top:6px;">Post Comment</button>
-    <h4 style="margin-top:16px;">Attachments</h4>
+    <button class="btn outline" type="button" onclick="updateTicket(${id})">Update Status</button>
+    <h4>Comments</h4>
+    <div>${comments.map(c => `<div class="ticket-comment"><b>${esc(c.user_name)}</b> <span class="muted">${new Date(c.created_at).toLocaleString()}</span><br>${esc(c.comment)}</div>`).join('') || '<span class="muted">No comments yet.</span>'}</div>
+    <textarea id="tk-comment" rows="2" placeholder="Add a reply..."></textarea>
+    <button class="btn" onclick="addTicketComment(${id})">Post Comment</button>
+    <h4>Attachments</h4>
     <div id="tk-attachments-${id}"></div>`;
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -13174,7 +13174,7 @@ PAGES['todos'] = async (el) => {
         <button class="btn small outline" type="button" onclick="toggleTodoColumnManager()">Customize Columns</button>
       </h3>
       <p class="muted">Grouped by the department it's logged against. Click a column's header to load its items.</p>
-      <div id="todo-col-manager" style="display:none;margin-bottom:14px;">${renderTodoColumnManager()}</div>
+      <div id="todo-col-manager" style="display:none;">${renderTodoColumnManager()}</div>
       <div id="todo-board-wrap">${renderTodoBoardColumns()}</div>
     </div>
 
@@ -13184,8 +13184,8 @@ PAGES['todos'] = async (el) => {
 function renderTodoColumnManager() {
   const { departments, order, hidden } = window.__TODO_BOARD;
   return `
-    <div class="muted" style="margin-bottom:8px;">Drag by the handle to reorder, uncheck to hide a column, then Save.
-      <button class="btn small outline" type="button" onclick="saveTodoColumnLayout()" style="margin-left:8px;">Save</button>
+    <div class="muted todo-col-manager-hint">Drag by the handle to reorder, uncheck to hide a column, then Save.
+      <button class="btn small outline" type="button" onclick="saveTodoColumnLayout()">Save</button>
       <button class="btn small outline" type="button" onclick="resetTodoColumnLayout()">Reset to Default</button>
     </div>
     <div id="todo-col-manager-list">
@@ -13195,7 +13195,7 @@ function renderTodoColumnManager() {
         const isHidden = hidden.has(key);
         return `<div class="reorder-panel" draggable="true" data-key="${key}"
           ondragstart="panelDragStart(event)" ondragover="panelDragOver(event,'todo-col-manager-list')" ondragend="panelDragEnd(event)"
-          style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);">
+          class="todo-column-item">
           <span style="cursor:move;color:var(--muted);">&#10021;</span>
           <label style="flex:1;margin:0;display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleTodoColumnHidden('${key}', this.checked)"> ${esc(d.department_name)}
@@ -13274,20 +13274,20 @@ function renderTodoCards(items) {
   return items.map(t => `
     <div class="todo-card${t.priority === 'High' ? ' high' : ''}">
       <div class="title">${t.priority === 'High' ? '<span class="badge Rejected" style="margin-right:4px;">HIGH</span>' : ''}${esc(t.brief_description)}</div>
-      ${t.details ? `<div class="muted" style="margin:4px 0 6px;">${esc(t.details)}</div>` : ''}
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">HOD: ${esc(t.hod_name) || '-'} &middot; ${esc(t.assigned_to_name)}${t.is_mine ? '' : ' (dept)'}</div>
+      ${t.details ? `<div class="muted todo-card-details">${esc(t.details)}</div>` : ''}
+      <div class="muted todo-card-meta">HOD: ${esc(t.hod_name) || '-'} &middot; ${esc(t.assigned_to_name)}${t.is_mine ? '' : ' (dept)'}</div>
       <div class="meta">${deliveryBadge(t.target_date)}
         ${(t.is_mine || canLog) && t.status !== 'PendingReview' && t.status !== 'InfoRequested' ? `<select onchange="updateTodoStatus(${t.id}, this.value)">
           ${TODO_STATUSES.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>` : badge(t.status)}
       </div>
-      ${t.status === 'InfoRequested' && t.info_requested_note ? `<div class="muted" style="font-size:12px;margin-top:4px;">More info requested${t.info_requested_by_name ? ' by ' + esc(t.info_requested_by_name) : ''}: ${esc(t.info_requested_note)}</div>` : ''}
-      <div style="margin-top:8px;">
+      ${t.status === 'InfoRequested' && t.info_requested_note ? `<div class="muted todo-card-info">More info requested${t.info_requested_by_name ? ' by ' + esc(t.info_requested_by_name) : ''}: ${esc(t.info_requested_note)}</div>` : ''}
+      <div class="todo-card-actions">
         <button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button>
         ${t.status === 'InfoRequested' && (t.is_mine || canLog) ? `<button class="btn small outline" type="button" onclick="provideInfoTodo(${t.id}, ${t.approval_id})">Provide Info</button>` : ''}
         ${canLog ? `<button class="btn small outline" onclick="deleteTodo(${t.id})">Delete</button>` : ''}
       </div>
-      <div id="todo-updates-row-${t.id}" style="display:none;margin-top:8px;"><div id="todo-updates-${t.id}"></div></div>
+      <div id="todo-updates-row-${t.id}" style="display:none;"><div id="todo-updates-${t.id}"></div></div>
     </div>`).join('');
 }
 function renderClosedStrip(totalClosed) {
@@ -13296,7 +13296,7 @@ function renderClosedStrip(totalClosed) {
       <div><h3>Closed (${totalClosed})</h3><div class="closed-note">Completed To-Dos - not loaded until opened</div></div>
       <span class="chev" id="todo-closed-chev">&#9654;</span>
     </div>
-    <div class="board-col-body collapsed" id="todo-closed-body" style="margin-top:0;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;padding:4px 14px;max-height:none;"></div>`;
+    <div class="board-col-body collapsed todo-closed-body" id="todo-closed-body"></div>`;
 }
 window.toggleClosedTodos = async () => {
   const body = document.getElementById('todo-closed-body');
@@ -13314,7 +13314,7 @@ window.toggleClosedTodos = async () => {
 };
 function renderClosedTable(items) {
   return tableHTML(['Action / Details', 'HOD', 'Assigned To', 'Target Date', 'Status', ''], items, t => `
-    <tr><td>${esc(t.brief_description)}${t.details ? `<div class="muted" style="margin-top:4px;">${esc(t.details)}</div>` : ''}</td>
+    <tr><td>${esc(t.brief_description)}${t.details ? `<div class="muted todo-card-details">${esc(t.details)}</div>` : ''}</td>
     <td>${esc(t.hod_name) || '-'}</td><td>${esc(t.assigned_to_name)}</td><td>${t.target_date || '-'}</td>
     <td>${badge(t.status)}</td>
     <td><button class="btn small outline" type="button" onclick="toggleTodoUpdates(${t.id})">Updates</button></td></tr>
@@ -13330,15 +13330,15 @@ async function renderTodoUpdates(id) {
   const wrap = document.getElementById(`todo-updates-${id}`);
   const updates = await api(`/todos/${id}/updates`);
   wrap.innerHTML = `
-    <div style="padding:10px;background:#f6f7f9;border-radius:6px;">
+    <div class="panel todo-updates-panel">
       ${updates.length ? updates.map(u => `
-        <div style="padding:6px 0;border-bottom:1px solid var(--border);">
+        <div class="todo-update-item">
           <b>${esc(u.user_name) || 'System'}</b> <span class="muted">${new Date(u.created_at).toLocaleString()}</span>
           ${u.status_at_update ? badge(u.status_at_update) : ''}
           <div>${esc(u.note)}</div>
         </div>`).join('') : '<div class="muted">No updates logged yet.</div>'}
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <input id="todo-update-note-${id}" placeholder="Add an update..." style="flex:1;">
+      <div class="todo-update-actions">
+        <input id="todo-update-note-${id}" placeholder="Add an update..." class="todo-update-input">
         <button class="btn small" onclick="addTodoUpdate(${id})">Add</button>
       </div>
     </div>`;
