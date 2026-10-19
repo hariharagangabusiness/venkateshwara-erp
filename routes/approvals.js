@@ -4,6 +4,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
+const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
 const { poReceivedQty } = require('../lib/purchaseOrders');
 const router = express.Router();
@@ -571,12 +572,52 @@ async function notifyRequesterOfOutcome(approval, result, comment, actorName) {
     const label = ENTITY_LABELS[approval.entity_type] || approval.entity_type;
     const info = describeEntity(approval.entity_type, approval.entity_id);
     const ref = info.ref || ('#' + approval.entity_id);
-    await sendMail({
-      to: requester.email,
-      subject: `${label} ${ref} - ${result}`,
-      text: `Hello ${requester.full_name},\n\nYour ${label} ${ref}${info.summary ? ' (' + info.summary + ')' : ''} has been ${result.toLowerCase()} by ${actorName}.\n\n${result === 'Rejected' && comment ? 'Reason: ' + comment + '\n\n' : ''}Regards,\nVenkateshwara Engineers ERP`,
+    const tplKey = result === 'Approved' ? 'approval_outcome_approved' : 'approval_outcome_rejected';
+    const tpl = getEmailTemplate(tplKey);
+    const { subject, body } = renderTemplate(tpl, {
+      requester_name: requester.full_name,
+      entity_label: label,
+      ref,
+      summary: info.summary ? ' (' + info.summary + ')' : '',
+      actor_name: actorName,
+      reason: result === 'Rejected' && comment ? 'Reason: ' + comment : '',
     });
+    await sendMail({ to: requester.email, subject, text: body });
   } catch (e) { /* best-effort - never let a notification failure affect the approval action itself */ }
+}
+
+// Fired the moment an approval sits at `Pending` on a given step - a brand
+// new chain starting, a step advancing to the next approver, or an
+// InfoRequested review resuming - so whoever can act on it right now
+// actually knows it's there, rather than only discovering it on their next
+// visit to My Approvals. Resolves the same way lib/approvals.js's canAct()
+// does (role_id + optional is_supervisor), so "who gets notified" can never
+// drift from "who's actually allowed to act."
+async function notifyApproversPending(approval) {
+  try {
+    const step = db.prepare(`
+      SELECT * FROM approval_chain_steps WHERE chain_id = ? AND step_order = ?
+    `).get(approval.chain_id, approval.current_step);
+    if (!step) return;
+    let sql = `SELECT full_name, email FROM users WHERE role_id = ? AND is_active = 1 AND email IS NOT NULL AND email != ''`;
+    const params = [step.approver_role_id];
+    if (step.requires_supervisor) sql += ' AND is_supervisor = 1';
+    const approvers = db.prepare(sql).all(...params);
+    if (!approvers.length) return;
+    const label = ENTITY_LABELS[approval.entity_type] || approval.entity_type;
+    const info = describeEntity(approval.entity_type, approval.entity_id);
+    const ref = info.ref || ('#' + approval.entity_id);
+    const tpl = getEmailTemplate('action_pending');
+    for (const u of approvers) {
+      const { subject, body } = renderTemplate(tpl, {
+        approver_name: u.full_name,
+        entity_label: label,
+        ref,
+        summary: info.summary ? ' (' + info.summary + ')' : '',
+      });
+      await sendMail({ to: u.email, subject, text: body });
+    }
+  } catch (e) { /* best-effort - never let a notification failure affect the approval itself */ }
 }
 
 router.post('/:id/act', (req, res) => {
@@ -589,6 +630,13 @@ router.post('/:id/act', (req, res) => {
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:' + action, approval.entity_type, approval.entity_id, comment || null);
     notifyRequesterOfOutcome(approval, result, comment, req.user.full_name).catch(() => {});
+    // result === 'Pending' here means it advanced to the NEXT step (not the
+    // one `req.user` just acted on) - that next approver hasn't been told
+    // yet, so notify them the same way a brand-new chain's first step does.
+    if (result === 'Pending') {
+      const advanced = db.prepare('SELECT * FROM approvals WHERE id = ?').get(req.params.id);
+      notifyApproversPending(advanced).catch(() => {});
+    }
     res.json({ status: result });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -606,6 +654,7 @@ router.post('/:id/provide-info', (req, res) => {
     syncEntityStatus(approval.entity_type, approval.entity_id, 'Pending');
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:InfoProvided', approval.entity_type, approval.entity_id, comment || null);
+    notifyApproversPending(approval).catch(() => {});
     res.json({ status: 'Pending' });
   } catch (e) {
     res.status(400).json({ error: e.message });
