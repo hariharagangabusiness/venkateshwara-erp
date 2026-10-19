@@ -1441,6 +1441,31 @@ const MIGRATIONS = [
   `ALTER TABLE sales_invoices ADD COLUMN buyer_contact_person TEXT`,
   `ALTER TABLE sales_invoices ADD COLUMN buyer_address TEXT`,
   `ALTER TABLE sales_invoices ADD COLUMN buyer_phone TEXT`,
+  // RFQ Dashboard: Draft/Sent/Closed status (2026-10-19) - rfq_requests
+  // previously had no status column at all (creating one always meant
+  // sending immediately). A Draft hasn't been sent yet, so it has no real
+  // rfq_request_vendors/rfq_request_emails rows yet either - its intended
+  // recipients are kept here as JSON (same convention item_ids already
+  // uses) until an explicit Send materializes real send-attempt rows.
+  // Existing rows (all of which were already sent under the old one-step
+  // flow) default to 'Sent', not 'Draft', so nothing already sent looks
+  // unsent after this migration.
+  `ALTER TABLE rfq_requests ADD COLUMN status TEXT DEFAULT 'Sent'`,
+  `ALTER TABLE rfq_requests ADD COLUMN vendor_ids TEXT`,
+  `ALTER TABLE rfq_requests ADD COLUMN extra_emails TEXT`,
+  `ALTER TABLE rfq_requests ADD COLUMN closed_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE rfq_requests ADD COLUMN closed_at TEXT`,
+  // Email Template Customizer (2026-10-19) - see lib/emailTemplates.js.
+  // One row per template key; a key with no row here falls back to
+  // DEFAULT_TEMPLATES in code, so an install that's never touched this
+  // screen keeps sending exactly the same text as before this round.
+  `CREATE TABLE IF NOT EXISTS email_templates (
+    template_key TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

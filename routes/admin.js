@@ -3,8 +3,35 @@ const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { PAGE_CATALOG, ALL_PAGE_IDS } = require('../lib/pageCatalog');
 const { PERMISSION_CATALOG, ALL_PERMISSION_CODES } = require('../lib/permissionCatalog');
+const { getEmailTemplateCatalog, setEmailTemplate, resetEmailTemplate } = require('../lib/emailTemplates');
 const router = express.Router();
 router.use(authRequired);
+
+// Email Template Customizer (2026-10-19) - see lib/emailTemplates.js for
+// the DEFAULT_TEMPLATES/fallback shape. GET is open to any authenticated
+// user (read-only, same convention as /page-catalog above); only the save
+// is Admin-gated.
+router.get('/email-templates', (req, res) => res.json(getEmailTemplateCatalog()));
+router.put('/email-templates/:key', requireRole('Admin'), (req, res) => {
+  try {
+    setEmailTemplate(req.params.key, req.body.subject, req.body.body, req.user.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+// Removes a saved customization outright - the catalog then falls back to
+// DEFAULT_TEMPLATES again (getEmailTemplateCatalog()'s own "no row = built-in
+// text" behavior), so this is a genuine "restore the original wording"
+// action, not just clearing the textarea for the Admin to retype by hand.
+router.delete('/email-templates/:key', requireRole('Admin'), (req, res) => {
+  try {
+    resetEmailTemplate(req.params.key);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 router.get('/page-catalog', (req, res) => res.json(PAGE_CATALOG));
 

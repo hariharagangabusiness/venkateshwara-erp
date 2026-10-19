@@ -303,33 +303,10 @@ router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'pu
   })));
 });
 
-router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
-  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
-  if (!pr) return res.status(404).json({ error: 'Not found' });
-  const { item_ids, vendor_ids, subject, body } = req.body;
-  // Manually-typed recipients not on file in Vendor Master at all (a new
-  // vendor's buyer, a broker, an alternate contact) - optional, alongside
-  // (not instead of) picking from Vendor Master.
-  const extraEmails = [...new Set((Array.isArray(req.body.extra_emails) ? req.body.extra_emails : [])
-    .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
-  const badEmails = extraEmails.filter(e => !RFQ_EMAIL_RE.test(e));
-  if (badEmails.length) return res.status(400).json({ error: `"${badEmails.join('", "')}" doesn't look like a valid email address.` });
-  if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
-  if ((!Array.isArray(vendor_ids) || !vendor_ids.length) && !extraEmails.length) {
-    return res.status(400).json({ error: 'Add at least one vendor or email address to send the RFQ to.' });
-  }
-  if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
-  if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
-  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(pr.id).map(r => r.id);
-  const badItems = item_ids.filter(id => !lines.includes(Number(id)));
-  if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
-  const vendorIds = Array.isArray(vendor_ids) ? vendor_ids : [];
-  const vendors = vendorIds.length ? db.prepare(`SELECT * FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).all(...vendorIds) : [];
-  if (vendors.length !== vendorIds.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
-
-  const info = db.prepare(`INSERT INTO rfq_requests (purchase_request_id, item_ids, subject, body, created_by) VALUES (?,?,?,?,?)`)
-    .run(pr.id, JSON.stringify(item_ids.map(Number)), subject.trim(), body, req.user.id);
-  const rfqId = info.lastInsertRowid;
+// Actually emails every vendor/extra-address targeted by an RFQ - shared by
+// the immediate "Send Now" path below and POST /purchase/rfqs/:id/send
+// (sending an already-saved Draft), so the two can never drift apart.
+async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body) {
   const insertVendorRow = db.prepare(`INSERT INTO rfq_request_vendors (rfq_request_id, vendor_id, email_status) VALUES (?,?,'Pending')`);
   const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
   const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
@@ -342,7 +319,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
     const rowId = insertVendorRow.run(rfqId, vendor.id).lastInsertRowid;
     const to = vendor.po_email || vendor.email;
     if (!to) {
-      updateVendorRow.run('NoEmail', 'This vendor has no PO/general email on file.', null, rowId);
+      updateVendorRow.run('NoEmail', 'This vendor has no PO/general email on file.', null, null, rowId);
       results.push({ vendor_id: vendor.id, vendor_name: vendor.name, email_status: 'NoEmail' });
       continue;
     }
@@ -372,7 +349,150 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
       results.push({ email, email_status: 'Failed', email_error: result.reason });
     }
   }
-  res.json({ id: rfqId, results });
+  return results;
+}
+
+router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
+  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'Not found' });
+  const { item_ids, vendor_ids, subject, body } = req.body;
+  const isDraft = !!req.body.draft;
+  // Manually-typed recipients not on file in Vendor Master at all (a new
+  // vendor's buyer, a broker, an alternate contact) - optional, alongside
+  // (not instead of) picking from Vendor Master.
+  const extraEmails = [...new Set((Array.isArray(req.body.extra_emails) ? req.body.extra_emails : [])
+    .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
+  const badEmails = extraEmails.filter(e => !RFQ_EMAIL_RE.test(e));
+  if (badEmails.length) return res.status(400).json({ error: `"${badEmails.join('", "')}" doesn't look like a valid email address.` });
+  if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
+  // A Draft can be saved with no recipients yet (they're often added later,
+  // while reviewing) - only an actual send requires at least one.
+  if (!isDraft && (!Array.isArray(vendor_ids) || !vendor_ids.length) && !extraEmails.length) {
+    return res.status(400).json({ error: 'Add at least one vendor or email address to send the RFQ to.' });
+  }
+  if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
+  if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
+  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(pr.id).map(r => r.id);
+  const badItems = item_ids.filter(id => !lines.includes(Number(id)));
+  if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
+  const vendorIds = Array.isArray(vendor_ids) ? vendor_ids.map(Number) : [];
+  const vendors = vendorIds.length ? db.prepare(`SELECT * FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).all(...vendorIds) : [];
+  if (vendors.length !== vendorIds.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
+
+  const info = db.prepare(`
+    INSERT INTO rfq_requests (purchase_request_id, item_ids, subject, body, created_by, status, vendor_ids, extra_emails)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).run(pr.id, JSON.stringify(item_ids.map(Number)), subject.trim(), body, req.user.id,
+    isDraft ? 'Draft' : 'Sent', JSON.stringify(vendorIds), JSON.stringify(extraEmails));
+  const rfqId = info.lastInsertRowid;
+
+  if (isDraft) return res.json({ id: rfqId, status: 'Draft' });
+  const results = await dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body);
+  res.json({ id: rfqId, status: 'Sent', results });
+});
+
+// Sends a Draft RFQ - reads back the vendor_ids/extra_emails it was saved
+// with (same dual Vendor-Master/manually-typed shape POST /requests/:id/rfq
+// already accepts) and dispatches through the identical shared sender, then
+// flips status to Sent. Only a genuine Draft can be sent this way - a
+// Sent/Closed RFQ already has its own real send-attempt rows and isn't
+// re-sendable through this route.
+router.post('/rfqs/:id/send', requirePermission('purchase_request.create', 'purchase_order.manage'), async (req, res) => {
+  const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found' });
+  if (rfq.status !== 'Draft') return res.status(400).json({ error: 'Only a Draft RFQ can be sent from here.' });
+  const vendorIds = JSON.parse(rfq.vendor_ids || '[]');
+  const extraEmails = JSON.parse(rfq.extra_emails || '[]');
+  if (!vendorIds.length && !extraEmails.length) {
+    return res.status(400).json({ error: 'Add at least one vendor or email address before sending - edit the Draft first.' });
+  }
+  const vendors = vendorIds.length ? db.prepare(`SELECT * FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).all(...vendorIds) : [];
+  const results = await dispatchRfqEmails(rfq.id, vendors, extraEmails, rfq.subject, rfq.body);
+  db.prepare(`UPDATE rfq_requests SET status = 'Sent' WHERE id = ?`).run(rfq.id);
+  res.json({ id: rfq.id, status: 'Sent', results });
+});
+
+// Edits a Draft's own content (item_ids/subject/body/targeted vendors) -
+// locked once Sent/Closed, same "Draft is freely editable, a live
+// record isn't" shape Purchase Requests/Orders already use elsewhere.
+router.put('/rfqs/:id', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found' });
+  if (rfq.status !== 'Draft') return res.status(400).json({ error: 'Only a Draft RFQ can be edited - a Sent RFQ already went out with its original content.' });
+  const { item_ids, vendor_ids, subject, body } = req.body;
+  const extraEmails = [...new Set((Array.isArray(req.body.extra_emails) ? req.body.extra_emails : [])
+    .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
+  const badEmails = extraEmails.filter(e => !RFQ_EMAIL_RE.test(e));
+  if (badEmails.length) return res.status(400).json({ error: `"${badEmails.join('", "')}" doesn't look like a valid email address.` });
+  if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
+  if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
+  if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
+  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(rfq.purchase_request_id).map(r => r.id);
+  const badItems = item_ids.filter(id => !lines.includes(Number(id)));
+  if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
+  const vendorIds = Array.isArray(vendor_ids) ? vendor_ids.map(Number) : [];
+  if (vendorIds.length) {
+    const count = db.prepare(`SELECT COUNT(*) as n FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).get(...vendorIds).n;
+    if (count !== vendorIds.length) return res.status(400).json({ error: 'One or more selected vendors no longer exist.' });
+  }
+  db.prepare(`
+    UPDATE rfq_requests SET item_ids=?, subject=?, body=?, vendor_ids=?, extra_emails=? WHERE id = ?
+  `).run(JSON.stringify(item_ids.map(Number)), subject.trim(), body, JSON.stringify(vendorIds), JSON.stringify(extraEmails), rfq.id);
+  res.json({ ok: true });
+});
+
+// Deletes a Draft outright - nothing was ever sent, so there's no "honest
+// audit trail" reason to keep it around the way a Cancel/Close leaves a
+// real record for.
+router.delete('/rfqs/:id', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found' });
+  if (rfq.status !== 'Draft') return res.status(400).json({ error: 'Only a Draft RFQ can be deleted.' });
+  db.prepare('DELETE FROM rfq_requests WHERE id = ?').run(rfq.id);
+  res.json({ ok: true });
+});
+
+// Marks a Sent RFQ as Closed - no more quotes are expected against it.
+// Purely a status label (same role Purchase Orders' own "Closed"/Short
+// Ship status plays) - doesn't touch purchase_request_quotes or anything
+// already received against it.
+router.post('/rfqs/:id/close', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found' });
+  if (rfq.status !== 'Sent') return res.status(400).json({ error: 'Only a Sent RFQ can be closed.' });
+  db.prepare(`UPDATE rfq_requests SET status = 'Closed', closed_by = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(req.user.id, rfq.id);
+  res.json({ ok: true });
+});
+
+// Cross-PR RFQ Dashboard list - every RFQ ever created (Draft/Sent/Closed),
+// with its linked PR and a target-vendor count. GET /requests/:id/rfq above
+// stays scoped to one PR (used by that PR's own detail screen); this is the
+// system-wide view the RFQ Dashboard page needs, which didn't exist before
+// this round - the previous RFQ UI only ever showed one PR's own RFQs.
+router.get('/rfqs', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.*, u.full_name as created_by_name, pr.pr_no as purchase_request_no, pr.id as pr_id
+    FROM rfq_requests r
+    LEFT JOIN users u ON u.id = r.created_by
+    LEFT JOIN purchase_requests pr ON pr.id = r.purchase_request_id
+    ORDER BY r.id DESC
+  `).all();
+  const vendorCounts = db.prepare(`SELECT rfq_request_id, COUNT(*) as n FROM rfq_request_vendors GROUP BY rfq_request_id`).all();
+  const emailCounts = db.prepare(`SELECT rfq_request_id, COUNT(*) as n FROM rfq_request_emails GROUP BY rfq_request_id`).all();
+  const vendorCountById = Object.fromEntries(vendorCounts.map(r => [r.rfq_request_id, r.n]));
+  const emailCountById = Object.fromEntries(emailCounts.map(r => [r.rfq_request_id, r.n]));
+  res.json(rows.map(r => ({
+    ...r,
+    item_ids: JSON.parse(r.item_ids || '[]'),
+    vendor_ids: JSON.parse(r.vendor_ids || '[]'),
+    extra_emails: JSON.parse(r.extra_emails || '[]'),
+    // For a Draft (no real send-attempt rows yet) the target count comes
+    // from the saved intent; for Sent/Closed it comes from the actual rows
+    // dispatchRfqEmails() created - these can never disagree once sent.
+    target_vendor_count: r.status === 'Draft'
+      ? JSON.parse(r.vendor_ids || '[]').length + JSON.parse(r.extra_emails || '[]').length
+      : (vendorCountById[r.id] || 0) + (emailCountById[r.id] || 0),
+  })));
 });
 
 // ===================== RFQ vendor-response mailbox scan =====================
