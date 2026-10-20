@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const { db } = require('../db');
+const { db, issueRfqToken } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateChallanPdf } = require('../lib/challanPdf');
@@ -298,7 +298,7 @@ router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'pu
 // Actually emails every vendor/extra-address targeted by an RFQ - shared by
 // the immediate "Send Now" path below and POST /purchase/rfqs/:id/send
 // (sending an already-saved Draft), so the two can never drift apart.
-async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body) {
+async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, baseUrl) {
   const insertVendorRow = db.prepare(`INSERT INTO rfq_request_vendors (rfq_request_id, vendor_id, email_status) VALUES (?,?,'Pending')`);
   const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
   const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
@@ -318,7 +318,20 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body) {
     // {{vendor_name}} is the only personalization token - simple mail-merge,
     // not a template engine, since the editable body is meant to stay
     // readable/predictable for whoever wrote it.
-    const personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
+    let personalizedBody = body.split('{{vendor_name}}').join(vendor.name || '');
+    // Per-vendor portal link: a re-send replaces this vendor's earlier unused
+    // token (the raw token can't be recovered), but a vendor who already
+    // submitted keeps theirs and gets no new link.
+    let portalLink = '';
+    const prior = db.prepare('SELECT t.id, (SELECT COUNT(*) FROM vendor_responses r WHERE r.rfq_token_id = t.id) as done FROM rfq_tokens t WHERE t.rfq_request_id = ? AND t.vendor_id = ?').get(rfqId, vendor.id);
+    if (!(prior && prior.done)) {
+      if (prior) db.prepare('DELETE FROM rfq_tokens WHERE id = ?').run(prior.id);
+      portalLink = `${baseUrl}/vendor.html?token=${issueRfqToken(rfqId, vendor.id)}`;
+    }
+    if (personalizedBody.includes('{{portal_link}}')) personalizedBody = personalizedBody.split('{{portal_link}}').join(portalLink);
+    else if (portalLink) personalizedBody += `
+
+Submit your quotation online: ${portalLink}`;
     const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateVendorRow.run('Sent', null, now(), result.messageId || null, rowId);
@@ -331,7 +344,7 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body) {
   for (const email of extraEmails) {
     const rowId = insertEmailRow.run(rfqId, email).lastInsertRowid;
     // No vendor name to personalize with for a manually-typed address.
-    const personalizedBody = body.split('{{vendor_name}}').join('');
+    const personalizedBody = body.split('{{vendor_name}}').join('').split('{{portal_link}}').join(''); // no vendor id -> no portal link
     const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateEmailRow.run('Sent', null, now(), result.messageId || null, rowId);
@@ -379,7 +392,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
   const rfqId = info.lastInsertRowid;
 
   if (isDraft) return res.json({ id: rfqId, status: 'Draft' });
-  const results = await dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body);
+  const results = await dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, `${req.protocol}://${req.get('host')}`);
   res.json({ id: rfqId, status: 'Sent', results });
 });
 
@@ -399,7 +412,7 @@ router.post('/rfqs/:id/send', requirePermission('purchase_request.create', 'purc
     return res.status(400).json({ error: 'Add at least one vendor or email address before sending - edit the Draft first.' });
   }
   const vendors = vendorIds.length ? db.prepare(`SELECT * FROM vendors WHERE id IN (${vendorIds.map(() => '?').join(',')})`).all(...vendorIds) : [];
-  const results = await dispatchRfqEmails(rfq.id, vendors, extraEmails, rfq.subject, rfq.body);
+  const results = await dispatchRfqEmails(rfq.id, vendors, extraEmails, rfq.subject, rfq.body, `${req.protocol}://${req.get('host')}`);
   db.prepare(`UPDATE rfq_requests SET status = 'Sent' WHERE id = ?`).run(rfq.id);
   res.json({ id: rfq.id, status: 'Sent', results });
 });
@@ -485,6 +498,52 @@ router.get('/rfqs', requirePermission('purchase_request.create', 'purchase_order
       ? JSON.parse(r.vendor_ids || '[]').length + JSON.parse(r.extra_emails || '[]').length
       : (vendorCountById[r.id] || 0) + (emailCountById[r.id] || 0),
   })));
+});
+
+// Side-by-side comparison of vendor-portal quotations for one RFQ.
+router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 'purchase_order.manage'), (req, res) => {
+  const rfq = db.prepare('SELECT r.*, pr.pr_no FROM rfq_requests r LEFT JOIN purchase_requests pr ON pr.id = r.purchase_request_id WHERE r.id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found' });
+  const itemIds = JSON.parse(rfq.item_ids || '[]').map(Number);
+  const items = itemIds.length ? db.prepare(`
+    SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.quantity, COALESCE(i.unit, 'Nos') as unit
+    FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
+    WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
+  `).all(...itemIds) : [];
+  const vendors = db.prepare(`
+    SELECT rv.vendor_id, v.name, vr.id as response_id, vr.remarks, vr.submitted_at
+    FROM rfq_request_vendors rv
+    JOIN vendors v ON v.id = rv.vendor_id
+    LEFT JOIN rfq_tokens t ON t.rfq_request_id = rv.rfq_request_id AND t.vendor_id = rv.vendor_id
+    LEFT JOIN vendor_responses vr ON vr.rfq_token_id = t.id
+    WHERE rv.rfq_request_id = ? ORDER BY v.name
+  `).all(rfq.id);
+  const qtyById = Object.fromEntries(items.map(i => [i.id, i.quantity]));
+  const out = vendors.map(v => {
+    const lines = {};
+    let total = 0, maxLead = 0;
+    if (v.response_id) {
+      db.prepare('SELECT purchase_request_item_id as item_id, unit_rate, lead_days FROM vendor_response_lines WHERE vendor_response_id = ?').all(v.response_id)
+        .forEach(l => {
+          const subtotal = l.unit_rate * (qtyById[l.item_id] || 0);
+          lines[l.item_id] = { unit_rate: l.unit_rate, lead_days: l.lead_days, subtotal };
+          total += subtotal; maxLead = Math.max(maxLead, l.lead_days);
+        });
+    }
+    return { vendor_id: v.vendor_id, name: v.name, responded: !!v.response_id, submitted_at: v.submitted_at, remarks: v.remarks,
+      lines, total: v.response_id ? total : null, max_lead_days: v.response_id ? maxLead : null, is_lowest_total: false };
+  });
+  const responded = out.filter(v => v.responded);
+  if (responded.length) {
+    const minTotal = Math.min(...responded.map(v => v.total));
+    responded.forEach(v => { v.is_lowest_total = v.total === minTotal; });
+  }
+  items.forEach(it => {
+    const rates = responded.filter(v => v.lines[it.id]).map(v => ({ id: v.vendor_id, r: v.lines[it.id].unit_rate }));
+    const min = rates.length ? Math.min(...rates.map(x => x.r)) : null;
+    it.lowest_rate_vendor_ids = rates.filter(x => x.r === min).map(x => x.id);
+  });
+  res.json({ rfq: { id: rfq.id, reference: rfq.pr_no || ('RFQ-' + rfq.id), status: rfq.status }, items, vendors: out });
 });
 
 // ===================== RFQ vendor-response mailbox scan =====================

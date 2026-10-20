@@ -1466,6 +1466,31 @@ const MIGRATIONS = [
     updated_by INTEGER REFERENCES users(id),
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // Vendor web portal (2026-10-20): one hashed, expiring link per (RFQ, vendor).
+  `CREATE TABLE IF NOT EXISTS rfq_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rfq_request_id INTEGER NOT NULL REFERENCES rfq_requests(id),
+    vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    revoked INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_opened_at TEXT,
+    UNIQUE (rfq_request_id, vendor_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS vendor_responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rfq_token_id INTEGER NOT NULL UNIQUE REFERENCES rfq_tokens(id),
+    remarks TEXT,
+    submitted_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS vendor_response_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_response_id INTEGER NOT NULL REFERENCES vendor_responses(id),
+    purchase_request_item_id INTEGER NOT NULL REFERENCES purchase_request_items(id),
+    unit_rate REAL NOT NULL,
+    lead_days INTEGER NOT NULL
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -2311,8 +2336,27 @@ function repairCorruptedEmployeeNumericFields() {
   } catch (e) { console.error('[db] employee numeric-field repair failed:', e.message); }
 }
 
+// Creates the vendor-portal link for one (RFQ, vendor). Returns the RAW token
+// (put it in the emailed link) - only its SHA-256 hash is stored, so a DB
+// leak yields no usable links. expiresAt defaults to 14 days out.
+function issueRfqToken(rfqId, vendorId, expiresAt) {
+  const crypto = require('crypto');
+  const token = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  // Explicit override wins; otherwise Purchase Settings' rfq_default_expiry_days (14 if missing/invalid).
+  // Lazy require: lib/settings depends on this module.
+  let days = Number(require('../lib/settings').getPurchaseSettings().rfq_default_expiry_days);
+  if (!(days >= 1 && days <= 365)) days = 14;
+  const d = expiresAt ? new Date(expiresAt) : new Date(Date.now() + Math.round(days) * 86400000);
+  if (isNaN(d)) throw new Error('Invalid expiresAt');
+  const exp = d.toISOString().slice(0, 19).replace('T', ' '); // same format as SQLite datetime('now')
+  db.prepare('INSERT INTO rfq_tokens (rfq_request_id, vendor_id, token_hash, expires_at) VALUES (?,?,?,?)')
+    .run(rfqId, vendorId, hash, exp);
+  return token;
+}
+
 module.exports = {
-  db, isNew, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
+  db, isNew, issueRfqToken, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,

@@ -6994,9 +6994,36 @@ function rfqDashboardActions(r) {
   } else if (r.status === 'Sent') {
     btns.push(`<button class="btn small outline" type="button" onclick="closeRFQ(${r.id})">Close</button>`);
   }
+  if (r.status === 'Sent' || r.status === 'Closed') btns.push(`<button class="btn small green" type="button" onclick="openRFQComparison(${r.id})">Compare Quotes</button>`);
   btns.push(`<button class="btn small outline" type="button" onclick="viewRFQRecipients(${r.id})">Recipients</button>`);
-  return btns.join('');
+  return actionButtonsCell(btns.join(''));
 }
+// Side-by-side vendor quotation matrix (portal responses), 2026-10-20.
+// Lowest unit rate per item and the lowest overall total are green.
+window.openRFQComparison = async (id) => {
+  openAppModal('Compare Quotes', '<span class="muted">Loading...</span>');
+  let d;
+  try { d = await api('/purchase/rfqs/' + id + '/comparison'); }
+  catch (e) { return openAppModal('Compare Quotes', '<div class="msg err" style="display:block;">' + esc(e.message) + '</div>'); }
+  const G = 'background:#dcfce7;font-weight:bold;';
+  const vs = d.vendors;
+  const head = vs.map(v => '<th style="min-width:130px;">' + esc(v.name) + (v.responded ? '' : '<br><span class="muted" style="font-weight:normal;">Awaiting response</span>') + '</th>').join('');
+  const rows = d.items.map(it => '<tr><td style="position:sticky;left:0;background:#fff;"><b>' + esc(it.name) + '</b><br><span class="muted">' + esc(it.quantity) + ' ' + esc(it.unit) + '</span></td>' +
+    vs.map(v => {
+      const l = v.lines[it.id];
+      if (!l) return '<td class="muted">-</td>';
+      const low = it.lowest_rate_vendor_ids.includes(v.vendor_id);
+      return '<td style="' + (low ? G : '') + '">₹' + fmt(l.unit_rate) + '<br><span class="muted" style="font-weight:normal;">' + esc(l.lead_days) + ' days · ₹' + fmt(l.subtotal) + '</span></td>';
+    }).join('') + '</tr>').join('');
+  const totals = '<tr><td style="position:sticky;left:0;background:#fff;"><b>Total</b></td>' + vs.map(v => v.responded
+    ? '<td style="' + (v.is_lowest_total ? G : 'font-weight:bold;') + '">₹' + fmt(v.total) + '<br><span class="muted" style="font-weight:normal;">Max lead ' + esc(v.max_lead_days) + ' days</span></td>'
+    : '<td class="muted">-</td>').join('') + '</tr>';
+  const remarks = '<tr><td style="position:sticky;left:0;background:#fff;"><b>Remarks</b></td>' + vs.map(v => '<td style="font-size:12px;white-space:pre-wrap;">' + esc(v.remarks || '') + '</td>').join('') + '</tr>';
+  openAppModal('Compare Quotes - ' + d.rfq.reference,
+    vs.length ? '<div style="overflow-x:auto;max-width:100%;"><table><thead><tr><th style="position:sticky;left:0;background:#fff;">Item</th>' + head + '</tr></thead><tbody>' + rows + totals + remarks + '</tbody></table></div>' +
+      '<p class="muted" style="margin-top:8px;">Green = lowest unit rate per item / lowest overall total. Each cell: unit rate, then lead time and line total.</p>'
+      : '<p class="muted">No vendors on this RFQ.</p>');
+};
 window.viewRFQRecipients = (id) => {
   const r = (window.__RFQD_CACHE || []).find(x => x.id === id);
   if (!r) return;

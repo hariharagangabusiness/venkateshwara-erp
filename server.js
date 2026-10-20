@@ -64,6 +64,8 @@ console.log(process.env.UPLOADS_DIR
   : `[uploads] UPLOADS_DIR not set - using ephemeral default: ${uploadsDir}`);
 
 app.use('/api/auth', require('./routes/auth'));
+// Unauthenticated by design (token-gated + rate-limited inside the router).
+app.use('/api/public', require('./routes/vendorPortal'));
 app.use('/api/masters', require('./routes/masters'));
 app.use('/api/approvals', require('./routes/approvals'));
 app.use('/api/hr', require('./routes/hr'));
