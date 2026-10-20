@@ -116,7 +116,7 @@
   .badge.PendingReview{background:#fef3cd;color:var(--amber);}
   .badge.Approved,.badge.Completed,.badge.Paid,.badge.Won,.badge.active,.badge.Dispatched{background:#dcf3e6;color:var(--green);}
   .badge.Rejected,.badge.Lost{background:#fde2e2;color:var(--red);}
-  .badge.InProgress,.badge.Draft,.badge.OrderPlaced,.badge.Open{background:#dbeafe;color:#1d4ed8;}
+  .badge.InProgress,.badge.Draft,.badge.OrderPlaced,.badge.Open,.badge.Sent{background:#dbeafe;color:#1d4ed8;}
   .badge.OnHold,.badge.Cancelled{background:#eee;color:#666;}
   .badge.InfoRequested,.badge.PartiallyPaid{background:#fef3cd;color:var(--amber);}
   .badge.PaymentMade{background:#dbeafe;color:#1d4ed8;}
@@ -144,9 +144,39 @@
      discipline whether a row has 2 buttons or 7. .po-actions is kept as an
      alias (the Purchase Orders list's own helper already emits it) rather
      than renamed, so this is purely additive - no other page's button
-     sizing changes unless it opts in via .row-actions. */
-  .po-actions, .row-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px;}
+     sizing changes unless it opts in via .row-actions.
+     auto-fill, NOT auto-fit: auto-fit collapses the empty tracks, so a row
+     with 2 buttons would stretch those 2 across the whole column while a
+     row with 4 buttons used 4 narrower ones - the column boundaries would
+     no longer line up between rows, which is the exact problem this grid
+     was introduced to solve. auto-fill keeps the empty tracks in place so
+     every row in the column resolves to the same track list. */
+  .po-actions, .row-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;align-items:center;}
   .po-actions .btn.small, .row-actions .btn.small{width:100%;text-align:center;white-space:normal;line-height:1.3;}
+  /* Anchor styled as a button (2026-10-20, multi-action table cells) -
+     some row actions are real links (a document download, a PDF preview)
+     that must keep their href, so they can't become <button>s. Giving
+     them the .btn class makes them line up with the real <button>s in
+     the same .row-actions grid; the text-decoration reset is needed
+     because <a> underlines by default. */
+  a.btn{text-decoration:none;display:inline-block;}
+  /* A <select> that shares a .row-actions grid with buttons (the Service
+     Request status dropdown, the FOC routing dropdown) has to fill its
+     grid cell - at its default intrinsic width the cell looks ragged and
+     the dropdown overflows the column. It also spans the grid's full
+     width (grid-column:1/-1): a dropdown's own option text ("Update
+     status...", "Route to department") is far wider than the 80px
+     minimum column, and squeezing it into one column would clip it. */
+  .row-actions select{width:100%;grid-column:1/-1;}
+  /* Reorder (up/down) control pair - its own single-column grid. The
+     reorder column is a fixed 36px (see the <th style="width:36px"> on
+     the Project Plan / Sub-Plan tables), so two arrows side by side
+     would overflow it; stacked, each arrow fills the 36px cell and the
+     pair never widens the table. A full .row-actions grid would be
+     wrong here - its 80px-minimum columns are 4x wider than the
+     column these live in. */
+  .reorder-actions{display:grid;grid-template-columns:1fr;gap:2px;}
+  .reorder-actions .btn.small{width:100%;padding:4px 2px;}
   /* Grid-based line-item editing table (2026-10-14, New PO/PR/Edit PR/SO/FOC
      line items) - same root cause as .row-actions above, one level deeper:
      every column held a live input whose width was a hand-picked
@@ -283,6 +313,21 @@
     .cards{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;}
     .form-grid{grid-template-columns:1fr;gap:12px;}
     .access-grid{grid-template-columns:1fr;}
+    /* Approval/action button grids stack vertically on phones so the
+       Action cell never forces the table wider than the viewport.
+       minmax(80px,1fr), NOT a bare 1fr: the mobile rule above turns each
+       <tr> into its own table (display:table), so a row's column widths
+       are computed from THAT ROW's content alone - the Action column's
+       width is then its cell's min-content width. A bare 1fr track takes
+       its minimum from the buttons' own text (min-content of the grid),
+       so a row whose longest label is a fraction wider ("D" vs "A")
+       computes a slightly wider Action column than its neighbours and
+       the buttons stop lining up down the table. An explicit 80px track
+       minimum is the SAME for every row, so every row's Action cell
+       contributes the same intrinsic width and the column boundaries
+       stay aligned - the same invariant the desktop grid guarantees. */
+    .row-actions,.po-actions{grid-template-columns:minmax(80px,1fr);}
+    .row-actions .btn.small,.po-actions .btn.small{width:100%;}
 
     /* Tables are the main horizontal-scroll risk on mobile. Rather than
        compressing every column illegibly, let each table scroll

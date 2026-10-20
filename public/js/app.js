@@ -1962,7 +1962,7 @@ function approvalActionCell(r) {
 function approvalRowHTML(r) {
   return `<tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
     <td>${new Date(r.created_at).toLocaleString()}</td>
-    <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + r.source + '-' + r.id + '\')">Details</button>')}</td></tr>
+    <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(r.source) + '-' + esc(r.id) + '\')">Details</button>')}</td></tr>
     ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
     <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>`;
 }
@@ -2974,7 +2974,7 @@ function orderRowHTML(o) {
   return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
-    <td>${o.annexure_path ? `<a href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
+    <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td>${actionButtonsCell(`
     <button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
@@ -3081,11 +3081,11 @@ PAGES['fg-dispatches'] = async (el) => {
     ${collapsiblePanel('dispatches-list', `Dispatches (${dispatches.length})`, `
       ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
         <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
-          <a href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event,${d.id})">PDF</a>
+          <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">PDF</a>
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
-        </td></tr>
+        `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
     `)}`;
 };
@@ -3172,13 +3172,13 @@ PAGES['sale-rejection-mrns'] = async (el) => {
       ${tableHTML(['MRN No', 'Dispatch', 'Order', 'Client', 'Disposition', 'Status', 'Resolution', ''], mrns, m => `
         <tr><td>${esc(m.mrn_no)}</td><td>${esc(m.dispatch_no)}</td><td>${esc(m.order_no)}</td><td>${esc(m.client_name)}</td><td>${esc(m.disposition)}</td>
         <td>${badge(m.status)}</td><td>${esc(m.resolution)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="toggleMrnDetail(${m.id})">Details</button>
           ${m.status === 'Approved' && m.resolution === 'Unresolved' ? `
             <button class="btn small outline" type="button" onclick="resolveMrnCreditNote(${m.id})">Generate Credit Note</button>
             <button class="btn small outline" type="button" onclick="resolveMrnFoc(${m.id})">Create FOC Replacement</button>` : ''}
           ${['PendingApproval','InfoRequested'].includes(m.status) ? `<button class="btn small red" type="button" onclick="cancelMrn(${m.id})">Cancel</button>` : ''}
-        </td></tr>
+        `)}</td></tr>
         <tr id="mrn-detail-row-${m.id}" style="display:none;"><td colspan="8"><div id="mrn-detail-${m.id}"></div></td></tr>`)}
     `)}`;
 };
@@ -3817,9 +3817,11 @@ window.prefillOfferContactFromClient = () => {
 const OFFER_LIST_COLUMNS = ['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''];
 function offerRowHTML(o) {
   return `<tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
-    <td><button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
-    <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
-    ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}</td></tr>`;
+    <td>${actionButtonsCell(`
+      <button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
+      <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
+      ${ME.role === 'Admin' && !o.locked ? `<button class="btn small red" onclick="deleteOfferRow(${o.id})">Delete</button>` : ''}
+    `)}</td></tr>`;
 }
 // `labelOverride`, when given, skips the __OFFERS_CACHE lookup entirely -
 // used by "Create Offer from Template" (useTemplate() below), since a
@@ -3981,8 +3983,8 @@ async function renderOfferBuilder(panel) {
       ${tableHTML(['Version', 'Status', 'Date', 'Revision Reason', ''], versions, v => `
         <tr${v.id === o.id ? ' style="font-weight:600;"' : ''}><td>v${v.version}</td><td>${badge(v.status)}</td><td>${new Date(v.offer_date).toLocaleDateString()}</td>
         <td class="muted">${esc(v.revision_reason) || '-'}</td>
-        <td>${v.id !== o.id ? `<button class="btn small outline" onclick="openOfferBuilder(${v.id})">View</button>` : '<span class="muted">Current</span>'}
-        <a href="#" onclick="downloadOfferVersionPdf(${v.id});return false;">PDF</a></td></tr>`)}
+        <td>${actionButtonsCell(`${v.id !== o.id ? `<button class="btn small outline" onclick="openOfferBuilder(${v.id})">View</button>` : '<span class="muted">Current</span>'}
+          <a class="btn small outline" href="#" onclick="downloadOfferVersionPdf(${v.id});return false;">PDF</a>`)}</td></tr>`)}
     </div>` : ''}
     <div class="form-grid">
       <div><label>${o.is_template ? 'Template Name' : 'Subject / Machine'}</label><input id="ob-subject" value="${esc(o.subject)}"></div>
@@ -4194,10 +4196,10 @@ async function renderScopeTab(el, data) {
         <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
         <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td>${hasDiscount ? `<td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td>` : ''}<td>₹${fmt(it.total_price)}</td>
         ${hasPicture ? `<td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>` : ''}
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
-        </td>
+        `)}</td>
       </tr>`).join('') || `<tr><td colspan="${totalCols}" class="empty">No items yet.</td></tr>`}
     <tr><td colspan="${colsBeforeTaxable}" class="right"><b>Grand Total</b></td><td colspan="${totalCols - colsBeforeTaxable}"><b>₹${fmt(grandTotal)}</b></td></tr>
     </tbody></table>` : `
@@ -4209,10 +4211,10 @@ async function renderScopeTab(el, data) {
         <td style="white-space:pre-wrap;max-width:220px;">${esc(it.description)}</td>
         <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
         <td>${it.qty}</td><td>₹${fmt(it.unit_price)}</td><td>₹${fmt(it.total_price)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
-        </td>
+        `)}</td>
       </tr>`).join('') || '<tr><td colspan="8" class="empty">No items yet.</td></tr>'}
     <tr><td colspan="6" class="right"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(grandTotal)}</b></td></tr>
     </tbody></table>`;
@@ -4708,8 +4710,10 @@ window.loadProjectPlan = async () => {
       ${activeCards.map((c, i) => `
         <tr data-jc="${c.id}">
           <td class="pl-reorder">
-            <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
-            <button type="button" class="btn small outline" onclick="moveRow(this,1)" title="Move down">▼</button>
+            <div class="reorder-actions">
+              <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
+              <button type="button" class="btn small outline" onclick="moveRow(this,1)" title="Move down">▼</button>
+            </div>
           </td>
           <td>${esc(STAGE_LABELS[c.stage] || c.stage)}${c.child_count ? ` <span class="muted">(+${c.child_count} sub-processes, HOD-planned)</span>` : ''}</td>
           <td><input type="number" min="1" class="pl-duration" value="${c.duration_days || 7}" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
@@ -5344,8 +5348,10 @@ window.openSubPlan = async (parentId, parentLabel) => {
       ${activeChildren.map(c => `
         <tr data-jc="${c.id}">
           <td class="pl-reorder">
-            <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
-            <button type="button" class="btn small outline" onclick="moveRow(this,1)" title="Move down">▼</button>
+            <div class="reorder-actions">
+              <button type="button" class="btn small outline" onclick="moveRow(this,-1)" title="Move up">▲</button>
+              <button type="button" class="btn small outline" onclick="moveRow(this,1)" title="Move down">▼</button>
+            </div>
           </td>
           <td>${esc(STAGE_LABELS[c.stage] || c.stage)}</td>
           <td><input type="number" min="1" class="sp-duration" value="${c.duration_days || 2}" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
@@ -5868,10 +5874,10 @@ async function renderPRQuotesPanel(prId) {
           <td>${q.quote_file_path ? `<a href="${esc(q.quote_file_path)}" target="_blank">View</a>` : '-'}</td>
           <td>${esc(q.notes)||''}</td>
           <td>${q.is_selected ? '✓' : ''}</td>
-          <td>
+          <td>${actionButtonsCell(`
             ${!q.is_selected ? `<button class="btn small outline" type="button" onclick="selectPRQuote(${prId},${q.id})">Select</button>` : ''}
             <button class="btn small outline" type="button" onclick="deletePRQuote(${prId},${q.id})">Remove</button>
-          </td>
+          `)}</td>
         </tr>`)}
       <div class="form-grid">
         <div><label>Vendor</label><select id="prq-vendor-${prId}">${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('') || '<option value="">- No vendors -</option>'}</select></div>
@@ -7077,8 +7083,8 @@ async function renderItemMasterSheet(el) {
         <tr><td>${esc(c.item_code)||''} ${esc(c.item_name)}</td><td>${badge(c.change_type)}</td>
         <td>${c.change_type === 'Edit' ? esc(Object.entries(JSON.parse(c.proposed_fields||'{}')).map(([k,v]) => `${k}: ${v}`).join(', ')) : '<span class="muted">Delete this item</span>'}</td>
         <td>${esc(c.requested_by_name)||'-'}</td>
-        <td>${ME.role === 'Admin' ? `<button class="btn small" type="button" onclick="approveItemChange(${c.id})">Approve</button>
-          <button class="btn small outline" type="button" onclick="rejectItemChange(${c.id})">Reject</button>` : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
+        <td>${ME.role === 'Admin' ? actionButtonsCell(`<button class="btn small" type="button" onclick="approveItemChange(${c.id})">Approve</button>
+          <button class="btn small outline" type="button" onclick="rejectItemChange(${c.id})">Reject</button>`) : '<span class="muted">Awaiting Admin</span>'}</td></tr>`)}
     </div>` : '',
     'bulk-upload': `
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
@@ -7638,7 +7644,8 @@ async function renderChallanList() {
   const challans = await api('/purchase/store/challans');
   const renderRows = (rows) => tableHTML(['Challan No', 'Date', 'From', 'To', 'Vehicle', 'Items', 'Value', ''], rows, c => `
       <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.vehicle_no)||'-'}</td><td>${c.item_count}</td><td>₹${fmt(c.total_value)}</td>
-      <td><button class="btn small outline" onclick="printChallan(${c.id})">Print</button> <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button></td></tr>`);
+      <td>${actionButtonsCell(`<button class="btn small outline" onclick="printChallan(${c.id})">Print</button>
+        <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button>`)}</td></tr>`);
   listEl.innerHTML = collapsiblePanel('challans-list', `<span id="ch-list-count">Saved Challans (${challans.length})</span>`, `
     ${renderListSearch('challans', challans, ['challan_no', 'vehicle_no', 'from_location', 'to_location'], (rows) => {
       document.getElementById('ch-list-table').innerHTML = renderRows(rows);
@@ -7822,7 +7829,9 @@ function srRowHTML(r) {
     </td>
     <td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
     <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
-    <td>${srActions(r)} <button class="btn small outline" type="button" onclick="openEditSR(${r.id})">Edit</button> <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button></td></tr>`;
+    <td>${actionButtonsCell(`${srActions(r)}
+      <button class="btn small outline" type="button" onclick="openEditSR(${r.id})">Edit</button>
+      <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button>`)}</td></tr>`;
 }
 // Same source-email fetch as viewSrSourceEmail() below, but toggles inline
 // inside the My Approvals drilldown card instead of the Service page's
@@ -8684,10 +8693,10 @@ PAGES['referral-incentives'] = async (el) => {
   const rows = r => `<tr>
     <td>${esc(r.employee_name)}</td><td>${esc(r.referred_by_name)}</td><td>₹${fmt(r.incentive_amount)}</td>
     <td>${r.probation_end_date||'-'}</td><td>${badge(r.status)}</td><td>${r.payment_reference ? esc(r.payment_reference) + (r.paid_date ? ' (' + r.paid_date + ')' : '') : '-'}</td>
-    <td>
+    <td>${actionButtonsCell(`
       ${r.status === 'Eligible' ? `<button class="btn small" type="button" onclick="submitReferralIncentive(${r.id})">Submit for Approval</button>` : ''}
       ${r.status === 'Approved' ? `<button class="btn small" type="button" onclick="markReferralIncentivePaid(${r.id})">Mark Paid</button>` : ''}
-    </td></tr>`;
+    `)}</td></tr>`;
   el.innerHTML = `
     <div class="panel"><h3>Referral Incentives</h3>
       <p class="muted">Created automatically when an employee is added with a referrer and incentive amount (Add Employee's Referral section). Becomes Eligible once the referred employee's probation period passes - forfeited automatically if they exit before then.</p>
@@ -9185,10 +9194,10 @@ PAGES.expenses = async (el) => {
       ${tableHTML(['Voucher No', 'Dept', 'Category', 'Amount', 'Mode', 'Accounted', 'Raised By', 'Bill', 'Status', 'Action'], vouchers, v => `
         <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td><td>${esc(v.raised_by_name)}</td>
         <td>${v.attachment_path ? `<a href="${v.attachment_path}" target="_blank">View</a>` : '-'}</td><td>${badge(v.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           ${v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
           <button class="btn small outline" type="button" onclick="showExpenseVoucherHistory(${v.approval_id || 'null'}, 'Approval History - ${esc(v.voucher_no)}')">History</button>
-        </td></tr>`)}
+        `)}</td></tr>`)}
     `)}`;
 };
 // Admin-only Expense Voucher category -> Operating Expense category mapping
@@ -9270,10 +9279,10 @@ PAGES['expenses-mine'] = async (el) => {
     <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td>
     <td>${esc(v.raised_by_name)}</td><td>${badge(v.status)}</td>
     <td>${v.status === 'Paid' ? `${esc(v.payment_reference || '-')}${v.paid_at ? ' (' + esc(v.paid_at) + ')' : ''}` : '-'}</td>
-    <td>
+    <td>${actionButtonsCell(`
       ${canMarkPaid && v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
       <button class="btn small outline" type="button" onclick="showExpenseVoucherHistory(${v.approval_id || 'null'}, 'Approval History - ${esc(v.voucher_no)}')">History</button>
-    </td></tr>`;
+    `)}</td></tr>`;
   el.innerHTML = `
     <div class="panel"><h3>My Expense Vouchers (${own.length})</h3>
       <div class="muted">Status at each stage of your own submitted vouchers - Management approval, then Accounts approval, then Mark Paid with a payment reference.</div>
@@ -9542,9 +9551,9 @@ PAGES['offer-options'] = async (el) => {
         <div style="margin-top:14px;">
         ${tableHTML(['Name', 'Application', 'Type Of System', 'Updated', ''], offerTemplates, t => `
           <tr><td>${esc(t.subject)||'-'}</td><td>${esc(t.application)||'-'}</td><td>${esc(t.type_of_system)||'-'}</td><td>${new Date(t.updated_at).toLocaleDateString()}</td>
-          <td><button class="btn small outline" onclick="useTemplate(${t.id}, '${esc(t.subject)}')">Create Offer from Template</button>
+          <td>${actionButtonsCell(`<button class="btn small outline" onclick="useTemplate(${t.id}, '${esc(t.subject)}')">Create Offer from Template</button>
           ${isAdmin ? `<button class="btn small outline" onclick="openOfferBuilder(${t.id})">Edit</button>
-          <button class="btn small red" onclick="deleteOfferTemplate(${t.id})">Delete</button>` : ''}</td></tr>`)}
+          <button class="btn small red" onclick="deleteOfferTemplate(${t.id})">Delete</button>` : ''}`)}</td></tr>`)}
         </div>
       `)}
     </div>
@@ -9574,8 +9583,8 @@ PAGES['offer-options'] = async (el) => {
           <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
           <td>${esc(s.offer_no)||'-'}</td>
           <td>${esc(s.suggested_by_name)||'-'}</td>
-          <td><button class="btn small green" onclick="approveSectionTitleSuggestion(${s.id})">Approve</button>
-          <button class="btn small red" onclick="rejectSectionTitleSuggestion(${s.id})">Reject</button></td>
+          <td>${actionButtonsCell(`<button class="btn small green" onclick="approveSectionTitleSuggestion(${s.id})">Approve</button>
+          <button class="btn small red" onclick="rejectSectionTitleSuggestion(${s.id})">Reject</button>`)}</td>
         </tr>`)}
     </div>` : ''}
     <div class="panel">
@@ -9606,8 +9615,8 @@ PAGES['offer-options'] = async (el) => {
           <td style="max-width:320px;"><textarea onblur="editClause(${c.id}, 'body', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(c.body)}</textarea></td>
           <td><input type="number" value="${c.sort_order}" onblur="editClause(${c.id}, 'sort_order', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
           <td>${c.active ? 'Yes' : 'No'}</td>
-          <td><button class="btn small outline" onclick="editClause(${c.id}, 'active', ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button>
-              <button class="btn small red" onclick="deleteClause(${c.id})">Delete</button></td>
+          <td>${actionButtonsCell(`<button class="btn small outline" onclick="editClause(${c.id}, 'active', ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button>
+              <button class="btn small red" onclick="deleteClause(${c.id})">Delete</button>`)}</td>
         </tr>`).join('') || '<tr><td colspan="5" class="empty">No clauses yet in this category.</td></tr>'}
       </tbody></table>
       <h4>Add Clause</h4>
@@ -10118,11 +10127,11 @@ PAGES['bg-dashboard'] = async (el) => {
       ${tableHTML(['BG No', 'Type', 'Value', 'Expiry', 'Reason', 'Step', 'Action'], [...reminders, ...verified], r => `
         <tr><td>${esc(r.bg_no || '#'+r.bg_id)}</td><td>${esc(r.bg_type)}</td><td>₹${fmt(r.value)}</td><td>${esc(r.validity_expiry)}</td><td>${esc(r.trigger_reason)}</td>
         <td>${badge(r.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           ${r.status === 'PendingReview' ? `<button class="btn small" onclick="verifyBGReminder(${r.id})">Verify</button>` : ''}
           ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
           <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
-        </td></tr>`)}
+        `)}</td></tr>`)}
     `)}` : ''}
 
     ${pendingChanges.length ? `<div class="panel"><h3>Pending BG Changes (${pendingChanges.length})</h3>
@@ -11388,10 +11397,9 @@ function focGroupRowHTML(lines, canApprove) {
     <tr><td>${esc(r.foc_no)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
     <td>${itemsCell}</td><td>₹${fmt(totalValue)}</td>
     <td>${esc(r.requested_by_name)}</td><td>${esc(r.fulfilling_department_name)||'-'}</td><td>${badge(r.status)}</td>
-    <td>${focActions(r, canApprove)}
+    <td>${actionButtonsCell(`${focActions(r, canApprove)}
       ${lines.length === 1 ? `<button class="btn small outline" type="button" onclick="toggleFOCAttachments(${r.id})">Attachments</button>` : ''}
-      ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}
-    </td></tr>
+      ${r.status === 'Approved' || r.status === 'Issued' ? `<button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/foc/${r.id}/pdf', '${esc(r.foc_no)}-Annexure.pdf')">Print Annexure</button>` : ''}`)}</td></tr>
     ${lines.length === 1 ? `<tr id="foc-att-row-${r.id}" style="display:none;"><td colspan="10"><div id="foc-attachments-${r.id}"></div></td></tr>` : ''}`;
   if (lines.length === 1) return groupRow;
   // Collapsed by default - each line gets its own editable cells and
@@ -11449,7 +11457,7 @@ function focActions(r, canApprove) {
     return `
       <select id="foc-dept-${r.id}" style="margin-bottom:4px;" onchange="document.getElementById('foc-approve-${r.id}').disabled = !this.value; document.getElementById('foc-reject-${r.id}').disabled = !this.value;">
         <option value="">-- Route to department --</option>${deptOptions}
-      </select><br>
+      </select>
       <button class="btn small green" id="foc-approve-${r.id}" disabled onclick="focAction(${r.id}, 'approve')">Approve</button>
       <button class="btn small red" id="foc-reject-${r.id}" disabled onclick="focAction(${r.id}, 'reject')">Reject</button>`;
   }
@@ -12049,12 +12057,12 @@ PAGES['sales-invoices'] = async (el) => {
       ${tableHTML(['Proforma No', 'Client', 'Order', 'Type', 'Milestone', 'Total', 'Status', ''], proformas, p => `
         <tr><td>${esc(p.proforma_no)}</td><td>${esc(p.client_name)}</td><td>${esc(p.order_no)}</td><td>${p.invoice_type === 'Advance' ? 'Advance' : 'Pre-Dispatch'}</td>
         <td>${esc(p.milestone_name)||'-'}</td><td>₹${fmt(p.total_value)}</td><td>${badge(p.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/proforma-invoices/${p.id}/pdf', '${esc(p.proforma_no).replace(/\//g,'-')}.pdf')">PDF</button>
           <button class="btn small outline" type="button" onclick="emailProforma(${p.id})">Email to Client</button>
           ${p.status === 'Draft' ? `<button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
           <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
-        </td></tr>`)}
+        `)}</td></tr>`)}
     `)}`;
   invoiceSOChanged();
 };
@@ -12240,12 +12248,12 @@ PAGES['purchase-invoices'] = async (el) => {
         <tr><td>${esc(i.invoice_no)}</td><td>${esc(i.vendor_name)}</td><td>${esc(i.vendor_invoice_no)}</td><td>${esc(i.po_no)||'-'}</td>
         <td>₹${fmt(i.taxable_value)}</td><td>₹${fmt(i.cgst + i.sgst + i.igst)}</td><td>₹${fmt(i.tds_amount)}</td>
         <td>₹${fmt(i.net_payable)}</td><td>₹${fmt(i.paid_amount)}</td><td>₹${fmt(i.due_amount)}</td><td>${badge(i.status)}</td>
-        <td>
+        <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="togglePIDetail(${i.id})">Details</button>
           ${['Approved', 'PartiallyPaid'].includes(i.status) ? `<button class="btn small" type="button" onclick="recordPIPayment(${i.id})">Record Payment</button>
           <button class="btn small outline" type="button" onclick="openCreditNoteForm(${i.id})">Credit Note</button>` : ''}
           ${!['PartiallyPaid', 'Paid', 'Cancelled'].includes(i.status) ? `<button class="btn small outline" type="button" onclick="cancelPurchaseInvoice(${i.id})">Cancel</button>` : ''}
-        </td></tr>
+        `)}</td></tr>
         <tr id="pi-detail-row-${i.id}" style="display:none;"><td colspan="12"><div id="pi-detail-${i.id}"></div></td></tr>`)}
     `)}
     ${collapsiblePanel('vendor-credit-notes-list', `Vendor Credit Notes (${creditNotes.length})`, `
@@ -12385,12 +12393,12 @@ PAGES.soa = async (el) => {
       ${tableHTML(['Client', 'Period', 'Closing Balance', 'Generated', 'Status', 'Action'], pending, p => `
         <tr><td>${esc(p.client_name)}</td><td>${p.period_start} to ${p.period_end}</td><td>₹${fmt(p.closing_balance)}</td>
         <td>${new Date(p.generated_at).toLocaleDateString()}</td><td>${badge(p.status)}</td>
-        <td>
-          <a href="#" onclick="downloadSoaPeriodPdf(${p.client_id}, '${p.period_start}', '${p.period_end}');return false;">PDF</a>
+        <td>${actionButtonsCell(`
+          <a class="btn small outline" href="#" onclick="downloadSoaPeriodPdf(${p.client_id}, '${p.period_start}', '${p.period_end}');return false;">PDF</a>
           ${p.status === 'PendingReview' ? `<button class="btn small" type="button" onclick="verifySoa(${p.id})">Verify</button>` : ''}
           ${p.status === 'Verified' ? `<button class="btn small green" type="button" onclick="sendSoaEmail(${p.id})" ${p.client_email ? '' : 'disabled title="No email on file"'}>Send Email</button>` : ''}
           <button class="btn small outline" type="button" onclick="dismissSoa(${p.id})">Dismiss</button>
-        </td></tr>`)}
+        `)}</td></tr>`)}
     </div>`;
 };
 window.saveSoaOrgSettings = async () => {
