@@ -290,7 +290,8 @@ router.get('/requests/:id/rfq', requirePermission('purchase_request.create', 'pu
   `);
   const emailsByRfq = db.prepare(`SELECT * FROM rfq_request_emails WHERE rfq_request_id = ? ORDER BY id`);
   res.json(requests.map(r => ({
-    ...r, item_ids: JSON.parse(r.item_ids || '[]'),
+    ...r, status: r.status, item_ids: JSON.parse(r.item_ids || '[]'),
+    vendor_ids: JSON.parse(r.vendor_ids || '[]'), extra_emails: JSON.parse(r.extra_emails || '[]'),
     vendors: vendorsByRfq.all(r.id), emails: emailsByRfq.all(r.id),
   })));
 });

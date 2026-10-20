@@ -6008,6 +6008,8 @@ async function renderPRQuotesPanel(prId) {
   RFQ_VENDOR_LOOKUP[prId] = vendorsWithEmail;
   RFQ_SELECTED_VENDORS[prId] = [];
   RFQ_SELECTED_EMAILS[prId] = [];
+  // The RFQ composer only appears once the PR is approved; earlier statuses keep just the manual quote grid.
+  const rfqAllowed = !!pr && ['Approved', 'OrderPlaced'].includes(pr.status);
   container.innerHTML = `
     <div class="panel">
       <h4 style="margin:0 0 8px;">Vendor Quotes ${pr ? '- ' + esc(pr.pr_no) : ''}</h4>
@@ -6041,7 +6043,7 @@ async function renderPRQuotesPanel(prId) {
       ${pr && pr.quotes_required ? `<button class="btn" type="button" onclick="submitPRForApproval(${prId})" ${canSubmit ? '' : 'disabled'}>Submit for Approval</button>
       ${!canSubmit && pr.status === 'PendingQuotes' ? `<span class="muted">Need at least 2 quotes (have ${quotes.length}).</span>` : ''}` : ''}
     </div>
-    <div class="panel">
+    ${!rfqAllowed ? '<div class="panel"><span class="muted">Requests for Quotation can be sent once this Purchase Request is approved.</span></div>' : `<div class="panel">
       <h4 style="margin:0 0 8px;">Request for Quotation (RFQ)</h4>
       <p class="muted">Select line items and vendors, then edit and send an RFQ email. A vendor's reply still comes back by phone/email outside the system - type it in as a quote above once you have it.</p>
       <div><b>Line Items</b></div>
@@ -6067,10 +6069,12 @@ async function renderPRQuotesPanel(prId) {
         <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
         <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10"></textarea></div>
       </div>
+      <button class="btn small outline" type="button" onclick="sendRFQ(${prId}, true)" ${!lines.length ? 'disabled' : ''}>Save as Draft</button>
       <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!lines.length ? 'disabled' : ''}>Send RFQ</button>
       <div id="rfq-send-result-${prId}"></div>
       <div id="rfq-history-${prId}"></div>
-    </div>`;
+    </div>`}`;
+  if (!rfqAllowed) return;
   renderRFQVendorList(prId);
   if (lines.length) loadRFQTemplate(prId);
   renderRFQHistory(prId);
@@ -6142,7 +6146,7 @@ window.loadRFQTemplate = (prId) => {
   document.getElementById('rfq-subject-' + prId).value = `Request for Quotation - PR ${pr ? pr.pr_no : ''}`;
   document.getElementById('rfq-body-' + prId).value = defaultRFQBody(pr, lines, selectedItemIds);
 };
-window.sendRFQ = async (prId) => {
+window.sendRFQ = async (prId, asDraft) => {
   const resultEl = document.getElementById('rfq-send-result-' + prId);
   resultEl.innerHTML = '';
   // A vendor picked in the dropdown or an email typed into the box but
@@ -6160,9 +6164,14 @@ window.sendRFQ = async (prId) => {
   const subject = val('rfq-subject-' + prId);
   const body = document.getElementById('rfq-body-' + prId).value;
   if (!itemIds.length) { alert('Select at least one line item.'); return; }
-  if (!vendorIds.length && !extraEmails.length) { alert('Add at least one vendor or email address.'); return; }
+  if (!asDraft && !vendorIds.length && !extraEmails.length) { alert('Add at least one vendor or email address, or save as Draft.'); return; }
   try {
-    const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, extra_emails: extraEmails, subject, body }) });
+    const result = await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify({ item_ids: itemIds, vendor_ids: vendorIds, extra_emails: extraEmails, subject, body, draft: !!asDraft }) });
+    if (asDraft) {
+      resultEl.innerHTML = '<div class="msg ok">Saved as Draft - send it from the RFQ History below.</div>';
+      renderRFQHistory(prId);
+      return;
+    }
     const anyFailed = result.results.some(r => r.email_status === 'Failed' || r.email_status === 'NoEmail');
     resultEl.innerHTML = `<div class="msg ${anyFailed ? 'err' : 'ok'}">
       ${result.results.map(r => `${esc(r.vendor_name || r.email)}: ${esc(r.email_status)}${r.email_error ? ' - ' + esc(r.email_error) : ''}`).join('<br>')}
@@ -6175,10 +6184,19 @@ async function renderRFQHistory(prId) {
   if (!el) return;
   const rfqs = await api(`/purchase/requests/${prId}/rfq`).catch(() => []);
   if (!rfqs.length) { el.innerHTML = ''; return; }
-  el.innerHTML = `<b>RFQ History</b>` + tableHTML(['Sent', 'Subject', 'Recipients', 'By'], rfqs, r => `
-    <tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.subject)}</td>
-    <td>${[...r.vendors.map(v => `${esc(v.vendor_name)} (${esc(v.email_status)})`), ...(r.emails||[]).map(e => `${esc(e.email)} (${esc(e.email_status)})`)].join(', ')}</td>
-    <td>${esc(r.created_by_name)||'-'}</td></tr>`);
+  el.innerHTML = `<b>RFQ History</b>` + tableHTML(['Created', 'Subject', 'Status', 'Recipients', 'By', ''], rfqs, r => {
+    const btns = [];
+    if (r.status === 'Draft') btns.push(`<button class="btn small" type="button" onclick="sendDraftRFQ(${r.id}, ${prId})">Send</button>`);
+    if (r.status === 'Draft') btns.push(`<button class="btn small outline" type="button" onclick="deleteDraftRFQ(${r.id}, ${prId})">Delete</button>`);
+    if (r.status === 'Sent') btns.push(`<button class="btn small outline" type="button" onclick="closeRFQ(${r.id}, ${prId})">Close</button>`);
+    if (r.status === 'Sent' || r.status === 'Closed') btns.push(`<button class="btn small green" type="button" onclick="openRFQComparison(${r.id})">Compare Quotes</button>`);
+    // A Draft has no send rows yet - show its saved targets instead.
+    const recips = r.status === 'Draft'
+      ? `${(r.vendor_ids || []).length + (r.extra_emails || []).length} saved recipient(s)`
+      : [...r.vendors.map(v => `${esc(v.vendor_name)} (${esc(v.email_status)})`), ...(r.emails||[]).map(e => `${esc(e.email)} (${esc(e.email_status)})`)].join(', ');
+    return `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.subject)}</td><td>${badge(r.status)}</td>
+    <td>${recips}</td><td>${esc(r.created_by_name)||'-'}</td><td>${actionButtonsCell(btns.join(''))}</td></tr>`;
+  });
 }
 window.addPRQuote = async (prId) => {
   try {
@@ -6952,16 +6970,11 @@ window.savePOTerms = async (id) => {
 // system-wide list of every RFQ ever created (Draft/Sent/Closed), backed by
 // GET /purchase/rfqs, plus a standalone "Create RFQ" flow that supports
 // saving a Draft before anything is actually emailed.
-const RFQD_LINES_CACHE = {}; // purchase_request_id -> its own line items, fetched once per PR pick
 let RFQD_VENDORS_CACHE = null;
 function rfqStatusBadge(s) { return badge(s); }
 PAGES['rfq-dashboard'] = async (el) => {
-  const [rfqs, prs] = await Promise.all([
-    api('/purchase/rfqs').catch(() => []),
-    api('/purchase/requests').catch(() => []),
-  ]);
+  const [rfqs] = await Promise.all([api('/purchase/rfqs').catch(() => []), loadRFQDVendors()]);
   window.__RFQD_CACHE = rfqs;
-  window.__RFQD_PRS = prs;
   const row = (r) => `<tr>
       <td>${esc(r.purchase_request_no) || '-'}</td>
       <td>${esc(r.subject)}</td>
@@ -6972,7 +6985,8 @@ PAGES['rfq-dashboard'] = async (el) => {
       <td>${actionButtonsCell(rfqDashboardActions(r))}</td>
     </tr>`;
   el.innerHTML = collapsiblePanel('rfq-dashboard-list', `RFQs (${rfqs.length})`, `
-    <button class="btn" type="button" onclick="openCreateRFQModal()" style="margin-bottom:10px;">+ Create RFQ</button>
+    <p class="muted">New RFQs are created from an approved Purchase Request (Purchase Requests &rarr; Quotes / RFQ). This list is the cross-request overview.</p>
+    <button class="btn small outline" type="button" onclick="navigate('purchase-requests')" style="margin-bottom:10px;">Go to Purchase Requests</button>
     ${renderListSearch('rfq-dashboard', rfqs, ['purchase_request_no', 'subject', 'status', 'created_by_name'], (rowsFiltered) => {
       const bodyEl = document.getElementById('rfq-dashboard-tbody');
       if (bodyEl) bodyEl.innerHTML = rowsFiltered.map(row).join('') || `<tr><td colspan="7" class="muted">No RFQs yet.</td></tr>`;
@@ -6988,7 +7002,7 @@ PAGES['rfq-dashboard'] = async (el) => {
 function rfqDashboardActions(r) {
   const btns = [];
   if (r.status === 'Draft') {
-    btns.push(`<button class="btn small outline" type="button" onclick="openEditRFQModal(${r.id})">Edit</button>`);
+    btns.push(`<button class="btn small outline" type="button" onclick="goToPRQuotes(${r.purchase_request_id})">Open in PR</button>`);
     btns.push(`<button class="btn small" type="button" onclick="sendDraftRFQ(${r.id})">Send Now</button>`);
     btns.push(`<button class="btn small outline" type="button" onclick="deleteDraftRFQ(${r.id})">Delete</button>`);
   } else if (r.status === 'Sent') {
@@ -7036,12 +7050,13 @@ window.viewRFQRecipients = (id) => {
     ? `<ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul>`
     : `<p class="muted">No recipients recorded${r.status === 'Draft' ? ' yet - this is still a Draft.' : '.'}</p>`);
 };
-window.closeRFQ = async (id) => {
+const afterRFQChange = (prId) => (prId ? renderRFQHistory(prId) : navigate('rfq-dashboard'));
+window.closeRFQ = async (id, prId) => {
   if (!confirm('Close this RFQ? No more quotes are expected against it once closed.')) return;
-  try { await api(`/purchase/rfqs/${id}/close`, { method: 'POST' }); navigate('rfq-dashboard'); }
+  try { await api(`/purchase/rfqs/${id}/close`, { method: 'POST' }); afterRFQChange(prId); }
   catch (e) { alert(e.message); }
 };
-window.sendDraftRFQ = async (id) => {
+window.sendDraftRFQ = async (id, prId) => {
   if (!confirm('Send this RFQ now? This will email every targeted vendor/address.')) return;
   try {
     const r = await api(`/purchase/rfqs/${id}/send`, { method: 'POST' });
@@ -7049,174 +7064,27 @@ window.sendDraftRFQ = async (id) => {
     alert(anyFailed
       ? 'Sent, but some recipients failed:\n' + r.results.map(x => `${x.vendor_name || x.email}: ${x.email_status}${x.email_error ? ' - ' + x.email_error : ''}`).join('\n')
       : 'RFQ sent to every recipient.');
-    navigate('rfq-dashboard');
+    afterRFQChange(prId);
   } catch (e) { alert(e.message); }
 };
-window.deleteDraftRFQ = async (id) => {
+window.deleteDraftRFQ = async (id, prId) => {
   if (!confirm('Delete this Draft RFQ? This cannot be undone.')) return;
-  try { await api(`/purchase/rfqs/${id}`, { method: 'DELETE' }); navigate('rfq-dashboard'); }
+  try { await api(`/purchase/rfqs/${id}`, { method: 'DELETE' }); afterRFQChange(prId); }
   catch (e) { alert(e.message); }
 };
 
-// ---- Create/Edit RFQ modal (shared by both flows - the only real
-// difference is whether an existing Draft's id is passed in) ----
-let RFQD_SELECTED_ITEMS = [];
-let RFQD_SELECTED_VENDORS = [];
-let RFQD_SELECTED_EMAILS = [];
 async function loadRFQDVendors() {
   if (!RFQD_VENDORS_CACHE) RFQD_VENDORS_CACHE = await api('/masters/vendors').catch(() => []);
   return RFQD_VENDORS_CACHE;
 }
-window.openCreateRFQModal = async () => {
-  await loadRFQDVendors();
-  RFQD_SELECTED_ITEMS = [];
-  RFQD_SELECTED_VENDORS = [];
-  RFQD_SELECTED_EMAILS = [];
-  const prs = window.__RFQD_PRS || [];
-  const catalog = await api('/admin/email-templates').catch(() => []);
-  const tpl = catalog.find(t => t.key === 'rfq_dispatch');
-  openAppModal('Create RFQ', `
-    <div class="form-grid">
-      <div><label>Purchase Request</label><select id="rfqd-pr" onchange="rfqdPRChanged()">
-        <option value="">- Select a Purchase Request -</option>
-        ${prs.map(p => `<option value="${p.id}">${esc(p.pr_no)} (${esc(p.status)})</option>`).join('')}
-      </select></div>
-    </div>
-    <div id="rfqd-items-wrap"></div>
-    ${rfqdVendorsAndEmailFormHTML(tpl ? tpl.subject.replace(/\{\{[^}]+\}\}/g, '').trim() : 'Request for Quotation', tpl ? tpl.body : '')}
-    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn small outline" id="rfqd-draft-btn" type="button" onclick="saveRFQD(true)">Save as Draft</button>
-      <button class="btn" id="rfqd-send-btn" type="button" onclick="saveRFQD(false)">Send Now</button>
-    </div>
-  `);
-  rfqdRenderRecipients();
-};
-// Shared Target Vendors + Email form fragment - both Create and Edit RFQ
-// modals render the identical fields, differing only in starting
-// subject/body text, so this is the one place either has to stay in sync
-// (previously duplicated inline, which had already let the two drift -
-// Edit's Body field was missing the {{vendor_name}} hint Create had).
-function rfqdVendorsAndEmailFormHTML(subjectValue, bodyValue) {
-  return `
-    <h4 style="margin-top:16px;margin-bottom:6px;">Target Vendors</h4>
-    <div class="form-grid">
-      <div><label>Add Vendor</label><select id="rfqd-vendor-add"></select></div>
-      <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddVendor()">+ Add Vendor</button></div>
-    </div>
-    <div class="form-grid">
-      <div><label>Or type an email not on file</label><input id="rfqd-email-add" placeholder="buyer@example.com"></div>
-      <div style="align-self:end;"><button class="btn small outline" type="button" onclick="rfqdAddEmail()">+ Add Email</button></div>
-    </div>
-    <div id="rfqd-recipients" style="margin:10px 0;"></div>
-    <h4 style="margin-top:16px;margin-bottom:6px;">Email</h4>
-    <div class="form-grid"><div><label>Subject</label><input id="rfqd-subject" value="${esc(subjectValue)}"></div></div>
-    <div class="form-grid"><div><label>Body <span class="muted">({{vendor_name}} personalizes each copy)</span></label>
-      <textarea id="rfqd-body" rows="6">${esc(bodyValue)}</textarea>
-    </div></div>
-    <div id="rfqd-err" class="msg err" style="display:none;margin-top:8px;"></div>
-  `;
-}
-window.openEditRFQModal = async (id) => {
-  const r = (window.__RFQD_CACHE || []).find(x => x.id === id);
-  if (!r) return;
-  await loadRFQDVendors();
-  RFQD_SELECTED_ITEMS = [...(r.item_ids || [])];
-  RFQD_SELECTED_VENDORS = [...(r.vendor_ids || [])];
-  RFQD_SELECTED_EMAILS = [...(r.extra_emails || [])];
-  const lines = await api(`/purchase/requests/${r.purchase_request_id}/items`).catch(() => []);
-  RFQD_LINES_CACHE[r.purchase_request_id] = lines;
-  openAppModal('Edit Draft RFQ — ' + esc(r.purchase_request_no || ''), `
-    <div id="rfqd-items-wrap">${rfqdItemsHTML(r.purchase_request_id, lines)}</div>
-    ${rfqdVendorsAndEmailFormHTML(r.subject, r.body)}
-    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn small outline" id="rfqd-draft-btn" type="button" onclick="saveRFQD(true, ${r.id})">Save Draft</button>
-      <button class="btn" id="rfqd-send-btn" type="button" onclick="saveRFQD(false, ${r.id})">Send Now</button>
-    </div>
-  `);
-  rfqdRenderRecipients();
-};
-function rfqdItemsHTML(prId, lines) {
-  if (!lines.length) return '<p class="muted">This request has no line items.</p>';
-  // Deliberately not a .form-grid wrapper - that class's generic
-  // `input{width:100%}` rule (meant for text/select/textarea fields) also
-  // catches a checkbox, stretching its hit-target across the full row width
-  // and visually detaching the native checkbox glyph from its own label
-  // text. Same plain block+margin shape the Access screens' own checkbox
-  // lists already use (`.access-item`/`.access-item input`).
-  return `<h4 style="margin-top:10px;margin-bottom:6px;">Line Items</h4>
-    <div>
-      ${lines.map(l => `<label style="display:block;font-weight:normal;padding:4px 0;">
-        <input type="checkbox" class="rfqd-item-cb" value="${l.id}" style="width:auto;margin-right:6px;vertical-align:middle;" ${RFQD_SELECTED_ITEMS.includes(l.id) ? 'checked' : ''}>
-        ${esc(l.item_name || l.item_text || 'Item')} - Qty ${l.quantity}${l.item_unit ? ' ' + esc(l.item_unit) : ''}</label>`).join('')}
-    </div>`;
-}
-window.rfqdPRChanged = async () => {
-  const prId = Number(val('rfqd-pr'));
-  const wrap = document.getElementById('rfqd-items-wrap');
-  if (!prId) { wrap.innerHTML = ''; return; }
-  if (!RFQD_LINES_CACHE[prId]) RFQD_LINES_CACHE[prId] = await api(`/purchase/requests/${prId}/items`).catch(() => []);
-  RFQD_SELECTED_ITEMS = [];
-  wrap.innerHTML = rfqdItemsHTML(prId, RFQD_LINES_CACHE[prId]);
-};
-function rfqdRenderRecipients() {
-  const addEl = document.getElementById('rfqd-vendor-add');
-  const listEl = document.getElementById('rfqd-recipients');
-  if (!addEl || !listEl) return;
-  const all = RFQD_VENDORS_CACHE || [];
-  const available = all.filter(v => !RFQD_SELECTED_VENDORS.includes(v.id));
-  addEl.innerHTML = available.length
-    ? `<option value="">- Select a vendor to add -</option>${available.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}`
-    : '<option value="">- No more vendors to add -</option>';
-  const chip = (label, onRemove) => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;background:#eee;border-radius:10px;font-size:var(--fs-sm);">${label} <a href="#" onclick="${onRemove};return false;" style="margin-left:4px;">✕</a></span>`;
-  const chips = [
-    ...RFQD_SELECTED_VENDORS.map(id => { const v = all.find(x => x.id === id); return chip(esc(v ? v.name : `Vendor #${id}`), `rfqdRemoveVendor(${id})`); }),
-    ...RFQD_SELECTED_EMAILS.map(e => chip(esc(e), `rfqdRemoveEmail('${esc(e).replace(/'/g, "\\'")}')`)),
-  ];
-  listEl.innerHTML = chips.length ? chips.join('') : '<span class="muted">No recipients added yet.</span>';
-}
-window.rfqdAddVendor = () => {
-  const addEl = document.getElementById('rfqd-vendor-add');
-  const vendorId = Number(addEl.value);
-  if (!vendorId) return;
-  RFQD_SELECTED_VENDORS = [...RFQD_SELECTED_VENDORS, vendorId];
-  rfqdRenderRecipients();
-};
-window.rfqdRemoveVendor = (id) => { RFQD_SELECTED_VENDORS = RFQD_SELECTED_VENDORS.filter(x => x !== id); rfqdRenderRecipients(); };
-window.rfqdAddEmail = () => {
-  const inputEl = document.getElementById('rfqd-email-add');
-  const email = inputEl.value.trim().toLowerCase();
-  if (!email) return;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { alert(`"${email}" doesn't look like a valid email address.`); return; }
-  if (RFQD_SELECTED_EMAILS.includes(email)) { inputEl.value = ''; return; }
-  RFQD_SELECTED_EMAILS = [...RFQD_SELECTED_EMAILS, email];
-  inputEl.value = '';
-  rfqdRenderRecipients();
-};
-window.rfqdRemoveEmail = (email) => { RFQD_SELECTED_EMAILS = RFQD_SELECTED_EMAILS.filter(e => e !== email); rfqdRenderRecipients(); };
-window.saveRFQD = async (asDraft, existingId) => {
-  const errEl = document.getElementById('rfqd-err');
-  errEl.style.display = 'none';
-  const itemIds = [...document.querySelectorAll('.rfqd-item-cb:checked')].map(cb => Number(cb.value));
-  const subject = val('rfqd-subject');
-  const body = document.getElementById('rfqd-body').value;
-  const prId = existingId ? (window.__RFQD_CACHE || []).find(x => x.id === existingId).purchase_request_id : Number(val('rfqd-pr'));
-  if (!prId) { errEl.textContent = 'Select a Purchase Request.'; errEl.style.display = 'block'; return; }
-  if (!itemIds.length) { errEl.textContent = 'Select at least one line item.'; errEl.style.display = 'block'; return; }
-  if (!asDraft && !RFQD_SELECTED_VENDORS.length && !RFQD_SELECTED_EMAILS.length) {
-    errEl.textContent = 'Add at least one vendor or email address, or save as Draft instead.';
-    errEl.style.display = 'block';
-    return;
-  }
-  const payload = { item_ids: itemIds, vendor_ids: RFQD_SELECTED_VENDORS, extra_emails: RFQD_SELECTED_EMAILS, subject, body, draft: asDraft };
-  try {
-    if (existingId) {
-      await api(`/purchase/rfqs/${existingId}`, { method: 'PUT', body: JSON.stringify(payload) });
-      if (!asDraft) await api(`/purchase/rfqs/${existingId}/send`, { method: 'POST' });
-    } else {
-      await api(`/purchase/requests/${prId}/rfq`, { method: 'POST', body: JSON.stringify(payload) });
-    }
-    confirmSavedThenClose(asDraft ? 'rfqd-draft-btn' : 'rfqd-send-btn', 'rfq-dashboard');
-  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+// Opens the Purchase Requests page with this PR's Quotes / RFQ accordion expanded.
+window.goToPRQuotes = (prId) => {
+  navigate('purchase-requests');
+  let tries = 0;
+  const t = setInterval(() => {
+    if (document.getElementById('pr-quotes-row-' + prId)) { clearInterval(t); togglePRQuotes(prId); }
+    else if (++tries > 30) clearInterval(t);
+  }, 150);
 };
 
 // ---- Store & Inventory ----
