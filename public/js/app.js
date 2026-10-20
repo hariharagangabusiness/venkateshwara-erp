@@ -7008,7 +7008,7 @@ window.openRFQComparison = async (id) => {
   const G = 'background:#dcfce7;font-weight:bold;';
   const vs = d.vendors;
   const head = vs.map(v => '<th style="min-width:130px;">' + esc(v.name) + (v.responded ? '' : '<br><span class="muted" style="font-weight:normal;">Awaiting response</span>') + '</th>').join('');
-  const rows = d.items.map(it => '<tr><td style="position:sticky;left:0;background:#fff;"><b>' + esc(it.name) + '</b><br><span class="muted">' + esc(it.quantity) + ' ' + esc(it.unit) + '</span></td>' +
+  const rows = d.items.map(it => '<tr><td style="position:sticky;left:0;background:#fff;"><b>' + esc(it.name) + '</b>' + (it.details ? '<br><small class="muted">(' + esc(it.details) + ')</small>' : '') + '<br><span class="muted">' + esc(it.quantity) + ' ' + esc(it.unit) + '</span></td>' +
     vs.map(v => {
       const l = v.lines[it.id];
       if (!l) return '<td class="muted">-</td>';

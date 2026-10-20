@@ -526,7 +526,7 @@ router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 
   if (!rfq) return res.status(404).json({ error: 'Not found' });
   const itemIds = JSON.parse(rfq.item_ids || '[]').map(Number);
   const items = itemIds.length ? db.prepare(`
-    SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.quantity, COALESCE(i.unit, 'Nos') as unit
+    SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
     WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...itemIds) : [];
