@@ -355,7 +355,9 @@
        PAGE never scrolls sideways, only the table does, with momentum
        scrolling on iOS. */
     table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;max-width:100%;}
-    thead,tbody,tr{display:table;width:100%;table-layout:auto;}
+    /* No thead/tbody/tr{display:table} here: that made every row its own table, so each
+       row sized its columns independently and headers drifted from data. With only the
+       table itself display:block, thead+tbody share one anonymous table and stay aligned. */
 
     /* Touch targets: minimum 48x48px clickable area with spacing, per
        WCAG 2.5.5 / Material Design guidance, for every interactive
