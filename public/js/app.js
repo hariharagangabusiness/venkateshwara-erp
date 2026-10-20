@@ -5781,7 +5781,7 @@ PAGES['purchase-requests'] = async (el) => {
     `),
     'new-request': collapsiblePanel('new-purchase-request', 'New Purchase Request', `
       <div class="form-grid">
-        <div><label>Project (optional)</label>${projectPickerHTML('pr-project', projects, '')}</div>
+        <div class="stock-input-group"><label>Project (optional)</label>${projectPickerHTML('pr-project', projects, '')}</div>
       </div>
       <div id="pr-lines"></div>
       <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
@@ -7377,11 +7377,11 @@ function renderReceiveTab(el) {
   const groups = window.__GROUPED_POS || [];
   el.innerHTML = `
     <div class="form-grid">
-      <div><label>Receive against PO (optional)</label>
+      <div class="stock-input-group"><label>Receive against PO (optional)</label>
         ${searchPickerHTML('st-po', groups, '', poGroupOptions, poGroupMatch, 'onchange="renderStockPoLines()"', 'Search by PO no, vendor, or item...')}
         ${!groups.length ? `<div class="muted" style="margin-top:4px;">No Purchase Orders are currently Open - once one is created and not yet fully received, it will show up here.</div>` : ''}
       </div>
-      <div><label>Vendor</label><input id="st-po-vendor" value="" disabled></div>
+      <div class="stock-input-group"><label>Vendor</label><input id="st-po-vendor" value="" disabled></div>
     </div>
     <div id="st-po-lines" style="margin-top:10px;"></div>
   `;
@@ -7434,8 +7434,8 @@ function renderStockPoLines() {
     const items = window.__STOCK_ITEMS || [];
     linesEl.innerHTML = `
       <div class="form-grid">
-        <div><label>Item</label>${itemPickerHTML('st-item', items, '', stockItemOptions)}</div>
-        <div><label>Quantity</label><input id="st-qty" type="number"></div>
+        <div class="stock-input-group"><label>Item</label>${itemPickerHTML('st-item', items, '', stockItemOptions)}</div>
+        <div class="stock-input-group"><label>Quantity</label><input id="st-qty" type="number"></div>
       </div>
       <button class="btn green" onclick="storeMove('receive')" ${!items.length ? 'disabled' : ''}>Receive (IN)</button>
     `;
@@ -7508,8 +7508,8 @@ function renderIssueLines() {
   if (!el) return;
   const items = window.__STOCK_ITEMS || [];
   el.innerHTML = gridLineTableHTML(ISSUE_LINES_GRID_COLS, ['Item', 'Quantity', ''], ISSUE_LINES, (l, i) => `
-      <div>${itemPickerHTML(`issue-item-${i}`, items, l.item_id, stockItemOptions, `onchange="ISSUE_LINES[${i}].item_id=this.value?Number(this.value):''"`)}</div>
-      <div><input type="number" value="${l.quantity}" onchange="ISSUE_LINES[${i}].quantity=Number(this.value)"></div>
+      <div class="stock-input-group">${itemPickerHTML(`issue-item-${i}`, items, l.item_id, stockItemOptions, `onchange="ISSUE_LINES[${i}].item_id=this.value?Number(this.value):''"`)}</div>
+      <div class="stock-input-group"><input type="number" value="${l.quantity}" onchange="ISSUE_LINES[${i}].quantity=Number(this.value)"></div>
       <div>${ISSUE_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="ISSUE_LINES.splice(${i},1);renderIssueLines()">✕</button>` : ''}</div>`);
 }
 window.addIssueLine = () => { ISSUE_LINES.push({ item_id: '', quantity: 1 }); renderIssueLines(); };
@@ -7530,11 +7530,11 @@ function renderIssueTab(el) {
   ISSUE_LINES = [{ item_id: '', quantity: 1 }];
   el.innerHTML = `
     <div class="form-grid">
-      <div><label>Department <span class="muted">(who is this being issued to?)</span></label>
+      <div class="stock-input-group"><label>Department <span class="muted">(who is this being issued to?)</span></label>
         <select id="st-department"><option value="">- Select department -</option>${departments.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
       </div>
       <div><label>Project (optional)</label>${projectPickerHTML('st-project', activeProjects, '')}</div>
-      <div><label>Customer (optional)</label>${clientPickerHTML('st-client', clients, '')}</div>
+      <div class="stock-input-group"><label>Customer (optional)</label>${clientPickerHTML('st-client', clients, '')}</div>
     </div>
     ${closedProjects.length ? collapsiblePanel('issue-closed-projects', `Closed Projects (${closedProjects.length}) <span class="muted" style="font-weight:normal;">- not offered above, every job card is Completed</span>`, `
       ${tableHTML(['Project Code', 'Title', 'Customer'], closedProjects, p => `

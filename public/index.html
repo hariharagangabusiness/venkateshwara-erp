@@ -207,6 +207,17 @@
      track list, declared once per table and applied identically to the
      header row and every data row, so a column's width is always exactly
      what's declared - see gridLineTableHTML() in app.js. */
+  /* Stock In/Out (Receive + Issue) fields: every picker search box, select and input shares one
+     height/padding/width so they line up; !important beats the pickers' inline sizing. The expanded
+     (size>1) listbox overlay is excluded so it can still grow. */
+  .stock-input-group{min-width:0;}
+  .stock-input-group input,.stock-input-group select:not([size]){width:100%!important;height:42px!important;padding:0 10px!important;font-size:14px!important;box-sizing:border-box!important;margin-bottom:0;}
+  .stock-input-group [data-resize-key]{width:100%!important;max-width:100%!important;resize:none!important;}
+  .stock-input-group [id$="-search"]{margin-bottom:4px!important;}
+  @media (max-width:768px){
+    .stock-input-group{width:100%;}
+    #stock-tab-content .form-grid{grid-template-columns:1fr!important;}
+  }
   .grid-line-table{border:1px solid var(--border);border-radius:8px;overflow:hidden;}
   .glt-row{display:grid;align-items:center;}
   .glt-row + .glt-row{border-top:1px solid #edf1f4;}
