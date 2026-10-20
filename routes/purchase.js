@@ -306,6 +306,26 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, bas
   const now = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   const fromIdentity = getDepartmentEmailIdentity('Purchase');
 
+  // Plain-text requirement list for {{items_table}}. Spec = the PR line's "Additional Details"
+  // (Item Master has no description column).
+  const rfqRow = db.prepare('SELECT item_ids FROM rfq_requests WHERE id = ?').get(rfqId);
+  const itemIds = JSON.parse((rfqRow && rfqRow.item_ids) || '[]').map(Number);
+  const itemRows = itemIds.length ? db.prepare(`
+    SELECT COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(i.unit, 'Nos') as unit
+    FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
+    WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
+  `).all(...itemIds) : [];
+  const itemsTableText = itemRows.map((r, n) =>
+    `${n + 1}. ${r.name || '-'}${r.details ? ` (${r.details})` : ''} - ${r.quantity} ${r.unit}`).join('\n');
+  // Fills {{items_table}}; if the token is absent, inserts the list above the portal-link footer
+  // (or at the end when there is no link). Recipients without a link still get the list.
+  const withItems = (text, footerMarker) => {
+    if (!itemsTableText) return text.split('{{items_table}}').join('');
+    if (text.includes('{{items_table}}')) return text.split('{{items_table}}').join(itemsTableText);
+    const at = footerMarker ? text.lastIndexOf(footerMarker) : -1;
+    return at >= 0 ? `${text.slice(0, at)}Items requested:\n${itemsTableText}\n\n${text.slice(at)}` : `${text}\n\nItems requested:\n${itemsTableText}`;
+  };
+
   const results = [];
   for (const vendor of vendors) {
     const rowId = insertVendorRow.run(rfqId, vendor.id).lastInsertRowid;
@@ -328,10 +348,10 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, bas
       if (prior) db.prepare('DELETE FROM rfq_tokens WHERE id = ?').run(prior.id);
       portalLink = `${baseUrl}/vendor.html?token=${issueRfqToken(rfqId, vendor.id)}`;
     }
-    if (personalizedBody.includes('{{portal_link}}')) personalizedBody = personalizedBody.split('{{portal_link}}').join(portalLink);
-    else if (portalLink) personalizedBody += `
-
-Submit your quotation online: ${portalLink}`;
+    const footer = portalLink ? `Submit your quotation online: ${portalLink}` : '';
+    // Items first (before the auto-appended footer exists), so the fallback list lands above it.
+    if (personalizedBody.includes('{{portal_link}}')) personalizedBody = withItems(personalizedBody, '{{portal_link}}').split('{{portal_link}}').join(portalLink);
+    else personalizedBody = withItems(personalizedBody, '') + (footer ? `\n\n${footer}` : '');
     const result = await sendMail({ to, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateVendorRow.run('Sent', null, now(), result.messageId || null, rowId);
@@ -344,7 +364,7 @@ Submit your quotation online: ${portalLink}`;
   for (const email of extraEmails) {
     const rowId = insertEmailRow.run(rfqId, email).lastInsertRowid;
     // No vendor name to personalize with for a manually-typed address.
-    const personalizedBody = body.split('{{vendor_name}}').join('').split('{{portal_link}}').join(''); // no vendor id -> no portal link
+    const personalizedBody = withItems(body.split('{{vendor_name}}').join(''), '{{portal_link}}').split('{{portal_link}}').join(''); // no vendor id -> no portal link
     const result = await sendMail({ to: email, subject: subject.trim(), text: personalizedBody, ...fromIdentity });
     if (result.sent) {
       updateEmailRow.run('Sent', null, now(), result.messageId || null, rowId);
