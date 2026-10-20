@@ -11790,6 +11790,7 @@ PAGES['company-settings'] = async (el) => {
     ${purchaseSettings ? collapsiblePanel('purchase-settings', 'Purchase Settings', `
       <div class="form-grid">
         <div><label>Vendor Quote Threshold (₹)</label><input id="ps-quote-threshold" type="number" value="${esc(purchaseSettings.quote_threshold)}"></div>
+        <div><label>RFQ Portal Link Validity (days)</label><input id="ps-rfq-expiry" type="number" min="1" max="365" value="${esc(purchaseSettings.rfq_default_expiry_days || 14)}"></div>
       </div>
       <label>Payment Terms Options <span class="muted">(one per line - feeds the Payment Terms dropdown on the Purchase Order form)</span></label>
       <textarea id="ps-payment-terms" rows="6" style="width:100%;">${esc((purchaseSettings.payment_terms_options||[]).join('\n'))}</textarea>
@@ -12094,7 +12095,7 @@ window.savePurchaseSettings = async () => {
     const poVisibleFields = {};
     document.querySelectorAll('.ps-po-vis').forEach(cb => { poVisibleFields[cb.dataset.key] = cb.checked; });
     await api('/settings/purchase', { method: 'PUT', body: JSON.stringify({
-      quote_threshold: val('ps-quote-threshold'), payment_terms_options: paymentTerms,
+      quote_threshold: val('ps-quote-threshold'), rfq_default_expiry_days: Number(val('ps-rfq-expiry')) || 14, payment_terms_options: paymentTerms,
       allow_pending_po_email: document.getElementById('ps-allow-pending-email').checked,
       default_po_terms: val('ps-default-po-terms'), delivery_guidelines: val('ps-delivery-guidelines'), po_visible_fields: poVisibleFields,
     })});

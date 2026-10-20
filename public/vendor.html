@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor Quotation Portal</title>
+<style>
+  :root{
+    --slate:#1e293b; --green:#16a34a; --green-dark:#15803d;
+    --border:#e2e8f0; --canvas:#f8fafc; --card:#ffffff;
+    --muted:#64748b; --danger:#b91c1c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--canvas);color:var(--slate);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:16px}
+  header.brand{background:var(--slate);color:#fff;border-radius:10px;padding:18px 20px;margin-bottom:16px}
+  header.brand h1{margin:0;font-size:22px;letter-spacing:.3px}
+  header.brand .sub{opacity:.75;font-size:13px;margin-top:2px}
+  .meta{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+  .meta div{background:rgba(255,255,255,.08);border-radius:8px;padding:10px 12px}
+  .meta label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;opacity:.7}
+  .meta b{font-size:15px;word-break:break-word}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
+  .card h2{margin:0 0 10px;font-size:16px}
+  /* grid "table": one declared column template shared by header and rows */
+  .grid-row{display:grid;grid-template-columns:minmax(150px,1.6fr) minmax(160px,2fr) 90px 70px 130px 120px;gap:8px;align-items:center;padding:8px 6px;border-bottom:1px solid var(--border)}
+  .grid-head{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600;border-bottom:2px solid var(--border)}
+  .grid-row:last-child{border-bottom:0}
+  .spec{color:var(--muted);font-size:13px}
+  input,textarea{width:100%;font:inherit;color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;background:#fff}
+  input:focus,textarea:focus{outline:2px solid var(--slate);outline-offset:-1px}
+  input.bad{border-color:var(--danger)}
+  textarea{min-height:110px;resize:vertical}
+  label.lbl{display:block;font-weight:600;margin-bottom:6px}
+  .actions{text-align:center;margin:8px 0 28px}
+  button.submit{background:var(--green);color:#fff;border:0;border-radius:8px;padding:14px 36px;font-size:17px;font-weight:600;cursor:pointer;transition:background .15s}
+  button.submit:hover{background:var(--green-dark)}
+  button.submit:disabled{opacity:.6;cursor:not-allowed}
+  .msg{display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:14px;text-align:left}
+  .msg.err{background:#fef2f2;color:var(--danger);border:1px solid #fecaca}
+  .msg.ok{background:#f0fdf4;color:var(--green-dark);border:1px solid #bbf7d0}
+  .state{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:48px 20px;text-align:center}
+  .state h2{margin:0 0 8px;font-size:24px}
+  .state.ok h2{color:var(--green)}
+  .state p{margin:0;color:var(--muted)}
+  .cell-lbl{display:none}
+  @media (max-width:760px){
+    .meta{grid-template-columns:1fr}
+    .grid-head{display:none}
+    .grid-row{grid-template-columns:1fr 1fr;border:1px solid var(--border);border-radius:8px;margin-bottom:10px}
+    .grid-row .item,.grid-row .spec{grid-column:1/-1}
+    .cell-lbl{display:block;font-size:11px;color:var(--muted);text-transform:uppercase}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="brand">
+    <h1>Venkateshwara Engineers</h1>
+    <div class="sub">Vendor Quotation Portal</div>
+    <div class="meta">
+      <div><label>RFQ Reference</label><b id="m-ref">-</b></div>
+      <div><label>Closing Date</label><b id="m-close">-</b></div>
+      <div><label>Client</label><b id="m-client">-</b></div>
+    </div>
+  </header>
+
+  <div id="canvas">
+  <div class="card">
+    <h2>Quote Matrix</h2>
+    <div class="grid-row grid-head" role="row">
+      <div>Item Name</div><div>Specifications</div><div>Required Qty</div><div>Unit</div><div>Quoted Unit Rate (₹)</div><div>Lead Time (Days)</div>
+    </div>
+    <div id="rows"></div>
+  </div>
+
+  <div class="card">
+    <label class="lbl" for="remarks">Commercial Terms / Exceptions / Remarks</label>
+    <textarea id="remarks" placeholder="Payment terms, validity, taxes, deviations from specification..."></textarea>
+  </div>
+
+  <div class="actions">
+    <button class="submit" id="submit" type="button">Submit Formal Quotation</button>
+    <div id="msg" class="msg" role="status"></div>
+  </div>
+  </div>
+  <div id="state" class="state" hidden></div>
+</div>
+
+<script>
+// Escapes text before it goes into innerHTML so URL-token or API data can't break the layout or inject markup.
+function esc(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+const token = new URLSearchParams(location.search).get('token') || '';
+let RFQ = { items: [] };
+
+function showState(kind, title, text) {
+  document.getElementById('canvas').hidden = true;
+  const st = document.getElementById('state');
+  st.className = 'state ' + kind; st.hidden = false;
+  st.innerHTML = `<h2>${esc(title)}</h2><p>${esc(text)}</p>`;
+}
+const GONE = ['Link unavailable', 'This request link has either been processed or is no longer accessible.'];
+
+function render() {
+  document.getElementById('m-ref').innerHTML = esc(RFQ.reference);
+  document.getElementById('m-close').innerHTML = esc(String(RFQ.closing_date || '-').slice(0, 10));
+  document.getElementById('m-client').innerHTML = esc(RFQ.client_name || '-');
+  document.getElementById('rows').innerHTML = RFQ.items.map((it, i) => `
+    <div class="grid-row" data-i="${i}">
+      <div class="item"><b>${esc(it.name)}</b></div>
+      <div class="spec">${esc(it.spec)}</div>
+      <div><span class="cell-lbl">Required Qty</span>${esc(it.quantity)}</div>
+      <div><span class="cell-lbl">Unit</span>${esc(it.unit)}</div>
+      <div><span class="cell-lbl">Quoted Rate (₹)</span><input class="rate" type="number" min="0.01" step="0.01" inputmode="decimal" aria-label="Quoted unit rate for ${esc(it.name)}"></div>
+      <div><span class="cell-lbl">Lead Time (Days)</span><input class="lead" type="number" min="0" max="365" step="1" inputmode="numeric" aria-label="Delivery lead time for ${esc(it.name)}"></div>
+    </div>`).join('');
+}
+
+function show(kind, text) {
+  const m = document.getElementById('msg');
+  m.className = 'msg ' + kind; m.style.display = 'block'; m.textContent = text;
+}
+
+async function init() {
+  if (!token) return showState('', ...GONE);
+  try {
+    const res = await fetch('/api/public/vendor-portal/rfq/' + encodeURIComponent(token));
+    if (!res.ok) return showState('', ...GONE);
+    RFQ = await res.json();
+  } catch (e) {
+    return showState('', 'Connection problem', 'We could not reach the server. Please refresh the page and try again.');
+  }
+  if (RFQ.already_submitted) return showState('', ...GONE);
+  render();
+}
+
+document.getElementById('submit').addEventListener('click', async () => {
+  let ok = true;
+  const lines = Array.from(document.querySelectorAll('#rows .grid-row')).map(row => {
+    const rate = row.querySelector('.rate'), lead = row.querySelector('.lead');
+    const r = Number(rate.value), d = Number(lead.value);
+    const rOk = rate.value !== '' && r > 0, dOk = lead.value !== '' && Number.isInteger(d) && d >= 0 && d <= 365;
+    rate.classList.toggle('bad', !rOk); lead.classList.toggle('bad', !dOk);
+    if (!rOk || !dOk) ok = false;
+    return { purchase_request_item_id: RFQ.items[row.dataset.i].id, unit_rate: r, lead_days: d };
+  });
+  if (!ok) return show('err', 'Enter a rate above 0 and a lead time of 0–365 days for every item.');
+  const btn = document.getElementById('submit');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/public/vendor-portal/rfq/' + encodeURIComponent(token) + '/submit', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lines, remarks: document.getElementById('remarks').value.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return showState('ok', 'Thank you.', 'Your commercial quotation has been securely logged into our ERP system.');
+    if (res.status === 404 || res.status === 409) return showState('', ...GONE);
+    show('err', data.error || 'Submission failed. Please try again.');
+  } catch (e) {
+    show('err', 'We could not reach the server. Please try again.');
+  }
+  btn.disabled = false;
+});
+
+init();
+</script>
+</body>
+</html>
