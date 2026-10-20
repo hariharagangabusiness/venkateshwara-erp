@@ -38,6 +38,137 @@ function canActOn(user, jc) {
   return isSupervisorOf(user, jc.stage) || jc.assigned_to === user.id;
 }
 
+// The four flow gates that can refuse a status change on a card - explicit
+// hand-off dependencies, the commercial PO-terms gate, the sequential
+// handover rule, and a parent with still-open children - extracted from
+// PATCH /job-cards/:id so this ONE helper decides both what that endpoint
+// actually enforces and what the Project Detail view shows as a disabled
+// button (GET /:id/job-cards), i.e. what the UI claims and what the server
+// does can never drift apart. Permission itself (HOD vs assignee) is
+// deliberately NOT part of this: PATCH keeps its own 403s for that, and the
+// eligibility payload ships can_act/is_supervisor for the same purpose.
+//
+// Returns { reason, summary }, or null when the transition is allowed:
+//   - reason  = the exact message PATCH has always returned (verbatim
+//               wording, same order of checks: deps -> PO terms ->
+//               handover -> open children), used as the disabled button's
+//               tooltip and as the 400 body when the PATCH is attempted.
+//   - summary = a one-line label (friendly stage names) for showing inline
+//               under the disabled button, where the full sentence would be
+//               too wide to read in a table cell.
+function jobCardFlowBlockReason(jc, targetStatus) {
+  if (!targetStatus) return null;
+
+  // Explicit hand-off dependencies (routed-in cards): can't start until
+  // every department this card depends on has completed its part.
+  if (targetStatus !== 'Pending') {
+    const openDeps = db.prepare(`
+      SELECT jc2.stage FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.depends_on_id
+      WHERE d.job_card_id = ? AND jc2.status NOT IN ('Completed', ?) LIMIT 1
+    `).get(jc.id, NOT_APPLICABLE);
+    if (openDeps) {
+      return {
+        reason: `Cannot start this yet - still waiting on hand-off from ${openDeps.stage}.`,
+        summary: `Waiting on hand-off from ${STAGE_LABELS_SERVER[openDeps.stage] || openDeps.stage}`,
+      };
+    }
+  }
+
+  // Commercial-terms gate (customer PO vs. the SO's own confirmed terms -
+  // see lib/poTerms.js): a not-yet-started stage can't begin while there's
+  // an unresolved mismatch between what the customer's PO says and what the
+  // order itself records. Deliberately narrow - only the Pending ->
+  // InProgress transition is blocked; a stage already InProgress runs to
+  // completion unaffected, since this is a commercial risk to catch before
+  // more work commits against the wrong terms, not something that should
+  // interrupt physical work already underway.
+  if (targetStatus === 'InProgress' && jc.status === 'Pending') {
+    const project = db.prepare('SELECT sales_order_id FROM projects WHERE id = ?').get(jc.project_id);
+    const so = project && project.sales_order_id
+      ? db.prepare('SELECT order_no, po_terms_status FROM sales_orders WHERE id = ?').get(project.sales_order_id)
+      : null;
+    if (so && so.po_terms_status === 'MismatchPending') {
+      return {
+        reason: `Cannot start this stage - Sales Order ${so.order_no}'s customer PO terms don't match the order's own commercial terms. Resolve this on the Sales Orders page (accept the PO's terms or acknowledge the mismatch) before starting new work.`,
+        summary: `Customer PO terms mismatch on ${so.order_no}`,
+      };
+    }
+  }
+
+  // Handover gate: within the same level, a stage can only start once every
+  // earlier one has finished - this is meant for genuinely sequential chains
+  // (top-level departments among themselves, or a department's own defined
+  // sub-processes among themselves, e.g. Manufacturing's Fitting must finish
+  // before Tacking starts). It must NOT apply to ad-hoc sub-assemblies
+  // (is_adhoc=1, created via "Add Sub-Assembly") - those are independent,
+  // parallel pieces of work an HOD hands out to different team members, not
+  // a fixed hand-off chain, and were previously getting wrongly blocked
+  // waiting on a sibling sub-assembly (reported as "waiting on handover from
+  // Design" when a second Design sub-assembly was started before the first
+  // one finished).
+  if (targetStatus !== 'Pending' && jc.sequence != null && !jc.is_adhoc) {
+    const blocking = db.prepare(`
+      SELECT stage FROM job_cards
+      WHERE project_id = ? AND sequence < ? AND status NOT IN ('Completed', ?) AND is_adhoc = 0
+        AND parent_job_card_id IS ${jc.parent_job_card_id == null ? 'NULL' : '?'}
+      ORDER BY sequence LIMIT 1
+    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence, NOT_APPLICABLE] : [jc.project_id, jc.sequence, NOT_APPLICABLE, jc.parent_job_card_id]));
+    if (blocking) {
+      return {
+        reason: `Cannot start this stage yet - waiting on handover from ${blocking.stage}.`,
+        summary: `Waiting on handover from ${STAGE_LABELS_SERVER[blocking.stage] || blocking.stage}`,
+      };
+    }
+  }
+
+  // A department with sub-processes (e.g. Manufacturing) can't be marked
+  // Completed until every one of its own sub-process/sub-assembly cards is.
+  if (targetStatus === 'Completed') {
+    const openChildren = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE parent_job_card_id = ? AND status NOT IN ('Completed', ?)`).get(jc.id, NOT_APPLICABLE).n;
+    if (openChildren > 0) {
+      return {
+        reason: `Cannot complete this stage yet - ${openChildren} sub-process(es)/sub-assembly(ies) still pending.`,
+        summary: `${openChildren} sub-process(es)/sub-assembly(ies) still open`,
+      };
+    }
+  }
+
+  return null;
+}
+
+// Per-viewer action eligibility for one card, computed server-side for the
+// Project Detail view: which status buttons this viewer may actually see
+// live, and - when a gate blocks one - the server's own reason to show
+// beside it. The frontend never infers handover/dependency/PO-terms state;
+// it only renders what this returns, so a row can't offer a "Start Work"
+// the PATCH would then refuse (and a sequential sub-process shows its
+// blocker up front instead of failing only after the click).
+function jobCardActionEligibility(user, jc) {
+  const is_supervisor = isSupervisorOf(user, jc.stage);
+  const can_act = canActOn(user, jc);
+  const act = (targetStatus) => {
+    // No permission, or a finished card, offers nothing: the viewer gets
+    // can_act/status for that decision (the UI falls back to Open only, or
+    // "Not assigned to you"), so there's no per-gate reason to show.
+    if (!can_act || jc.status === 'Completed') return { allowed: false, blocked_reason: null, blocked_summary: null };
+    const block = jobCardFlowBlockReason(jc, targetStatus);
+    return {
+      allowed: !block,
+      blocked_reason: block ? block.reason : null,
+      blocked_summary: block ? block.summary : null,
+    };
+  };
+  return {
+    can_act,
+    is_supervisor,
+    actions: {
+      start: act('InProgress'),    // Pending/OnHold -> InProgress
+      complete: act('Completed'),  // InProgress/OnHold -> Completed
+      hold: act('OnHold'),
+    },
+  };
+}
+
 router.get('/pipeline-stages', (req, res) => res.json(PIPELINE_STAGES));
 
 router.get('/', (req, res) => {
@@ -209,11 +340,32 @@ router.post('/:id/plan/preview', requirePermission('project.manage'), (req, res)
   res.json({ targetDate, departments });
 });
 
+// Handover-gate preview for the UI: same rule PATCH /job-cards/:id enforces
+// (earlier same-level sequential card not Completed/NotApplicable, is_adhoc=0),
+// so a button can be disabled up front instead of failing on click.
+const blockingStmt = db.prepare(`
+  SELECT stage, title FROM job_cards
+  WHERE project_id = ? AND sequence < ? AND status NOT IN ('Completed', ?) AND is_adhoc = 0
+    AND parent_job_card_id IS ? ORDER BY sequence LIMIT 1
+`);
+function withBlockedBy(cards) {
+  return cards.map(c => {
+    if (c.is_adhoc || c.sequence == null) return c;
+    const b = blockingStmt.get(c.project_id, c.sequence, NOT_APPLICABLE, c.parent_job_card_id ?? null);
+    return b ? { ...c, blocked_by: b.stage, blocked_by_task_name: b.title || b.stage } : c;
+  });
+}
+
 // ---- Job cards (per-department work items) ----
 // Top-level stage cards for a project, each with its children (sub-processes
 // and HOD-created sub-assemblies) nested under it - who allocated/started/
 // completed what, at a glance, from the project's own detail view, instead
 // of only being visible inside that department's own Job Cards workbench.
+// Every card (parent AND child) also carries its per-viewer action
+// eligibility (can_act/is_supervisor + actions.start/complete/hold with the
+// server's own blocked reason) so the Project Detail view can render
+// handover/dependency/PO-terms-aware disabled buttons instead of guessing -
+// see jobCardActionEligibility() above.
 router.get('/:id/job-cards', (req, res) => {
   const cards = db.prepare(`
     SELECT jc.*, u.full_name as assigned_to_name, c.name as client_name,
@@ -234,7 +386,15 @@ router.get('/:id/job-cards', (req, res) => {
   `).all(req.params.id);
   const byParent = {};
   children.forEach(c => { (byParent[c.parent_job_card_id] = byParent[c.parent_job_card_id] || []).push(c); });
-  res.json(cards.map(c => ({ ...c, children: byParent[c.id] || [] })));
+  // withBlockedBy first (blocked_by metadata), then this viewer's own action
+  // eligibility - both ride on the same payload: blocked_by says WHICH stage
+  // is ahead in the handover chain, actions.* says which buttons may be
+  // shown live for this particular viewer and why not when they can't.
+  const withEligibility = c => ({ ...c, ...jobCardActionEligibility(req.user, c) });
+  res.json(withBlockedBy(cards).map(c => ({
+    ...withEligibility(c),
+    children: withBlockedBy(byParent[c.id] || []).map(withEligibility),
+  })));
 });
 
 router.get('/job-cards/mine', (req, res) => {
@@ -261,7 +421,7 @@ router.get('/job-cards/mine', (req, res) => {
     WHERE (jc.stage IN (${placeholders}) OR jc.assigned_to = ?) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages, req.user.id);
-  const withPerms = cards.map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
+  const withPerms = withBlockedBy(cards).map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
   res.json(withPerms);
 });
 
@@ -297,7 +457,7 @@ router.get('/job-cards/by-stage/:stage', requirePermission('project.manage'), (r
     WHERE jc.stage IN (${placeholders}) AND jc.planned_start IS NOT NULL AND jc.status != 'NotApplicable'
     ORDER BY COALESCE(jc.sequence, jc.id) ASC
   `).all(...stages);
-  const withPerms = cards.map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
+  const withPerms = withBlockedBy(cards).map(c => ({ ...c, can_act: canActOn(req.user, c), is_supervisor: isSupervisorOf(req.user, c.stage) }));
   res.json(withPerms);
 });
 
@@ -707,68 +867,18 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
     return res.status(403).json({ error: `Only the ${jc.stage} HOD/Supervisor, or whoever this card is assigned to, can update its status.` });
   }
 
-  // Explicit hand-off dependencies (routed-in cards): can't start until
-  // every department this card depends on has completed its part.
-  if (status && status !== 'Pending') {
-    const openDeps = db.prepare(`
-      SELECT jc2.stage FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.depends_on_id
-      WHERE d.job_card_id = ? AND jc2.status NOT IN ('Completed', ?) LIMIT 1
-    `).get(jc.id, NOT_APPLICABLE);
-    if (openDeps) {
-      return res.status(400).json({ error: `Cannot start this yet - still waiting on hand-off from ${openDeps.stage}.` });
-    }
-  }
-
-  // Commercial-terms gate (customer PO vs. the SO's own confirmed terms -
-  // see lib/poTerms.js): a not-yet-started stage can't begin while there's
-  // an unresolved mismatch between what the customer's PO says and what the
-  // order itself records. Deliberately narrow - only the Pending ->
-  // InProgress transition is blocked; a stage already InProgress runs to
-  // completion unaffected, since this is a commercial risk to catch before
-  // more work commits against the wrong terms, not something that should
-  // interrupt physical work already underway.
-  if (status === 'InProgress' && jc.status === 'Pending') {
-    const project = db.prepare('SELECT sales_order_id FROM projects WHERE id = ?').get(jc.project_id);
-    const so = project && project.sales_order_id
-      ? db.prepare('SELECT order_no, po_terms_status FROM sales_orders WHERE id = ?').get(project.sales_order_id)
-      : null;
-    if (so && so.po_terms_status === 'MismatchPending') {
-      return res.status(400).json({
-        error: `Cannot start this stage - Sales Order ${so.order_no}'s customer PO terms don't match the order's own commercial terms. Resolve this on the Sales Orders page (accept the PO's terms or acknowledge the mismatch) before starting new work.`,
-      });
-    }
-  }
-
-  // Handover gate: within the same level, a stage can only start once every
-  // earlier one has finished - this is meant for genuinely sequential chains
-  // (top-level departments among themselves, or a department's own defined
-  // sub-processes among themselves, e.g. Manufacturing's Fitting must finish
-  // before Tacking starts). It must NOT apply to ad-hoc sub-assemblies
-  // (is_adhoc=1, created via "Add Sub-Assembly") - those are independent,
-  // parallel pieces of work an HOD hands out to different team members, not
-  // a fixed hand-off chain, and were previously getting wrongly blocked
-  // waiting on a sibling sub-assembly (reported as "waiting on handover from
-  // Design" when a second Design sub-assembly was started before the first
-  // one finished).
-  if (status && status !== 'Pending' && jc.sequence != null && !jc.is_adhoc) {
-    const blocking = db.prepare(`
-      SELECT stage FROM job_cards
-      WHERE project_id = ? AND sequence < ? AND status NOT IN ('Completed', ?) AND is_adhoc = 0
-        AND parent_job_card_id IS ${jc.parent_job_card_id == null ? 'NULL' : '?'}
-      ORDER BY sequence LIMIT 1
-    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence, NOT_APPLICABLE] : [jc.project_id, jc.sequence, NOT_APPLICABLE, jc.parent_job_card_id]));
-    if (blocking) {
-      return res.status(400).json({ error: `Cannot start this stage yet - waiting on handover from ${blocking.stage}.` });
-    }
-  }
-
-  // A department with sub-processes (e.g. Manufacturing) can't be marked
-  // Completed until every one of its own sub-process/sub-assembly cards is.
-  if (status === 'Completed') {
-    const openChildren = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE parent_job_card_id = ? AND status NOT IN ('Completed', ?)`).get(jc.id, NOT_APPLICABLE).n;
-    if (openChildren > 0) {
-      return res.status(400).json({ error: `Cannot complete this stage yet - ${openChildren} sub-process(es)/sub-assembly(ies) still pending.` });
-    }
+  // Flow gates (hand-off dependencies, the PO-terms gate, the sequential
+  // handover rule, open children) live in jobCardFlowBlockReason() - the
+  // SAME helper GET /:id/job-cards uses to compute the Project Detail
+  // view's per-row eligibility (actions.start/complete/hold), so what that
+  // view shows as a disabled button and what this endpoint actually
+  // refuses are one code path and can't drift apart. Order and wording of
+  // every message below are unchanged from the inline checks this
+  // replaces; the two permission checks above stay here because they're
+  // per-action 403s, not per-transition flow gates.
+  if (status) {
+    const blocked = jobCardFlowBlockReason(jc, status);
+    if (blocked) return res.status(400).json({ error: blocked.reason });
   }
 
   const updates = [];

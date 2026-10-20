@@ -2333,6 +2333,13 @@ async function renderApprovalDrilldown(key) {
             <td style="${qtyDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_qty != null ? g.vendor_invoiced_qty : 'Not yet on file'}</td>
             <td style="${rateDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_rate != null ? '₹' + fmt(g.vendor_invoiced_rate) : '-'}</td></tr>`)}
         ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
+        <h5 style="margin:8px 0 4px;">Document Verification</h5>
+        ${actionButtonsCell(`
+          <button class="btn small outline" type="button" onclick="downloadPoPdf(${Number(g.po_id)}, '${esc(g.po_no)}')">📄 View Original PO Copy</button>
+          ${g.invoice_attachment_path
+            ? `<a class="btn small green" href="${esc(g.invoice_attachment_path)}" target="_blank" rel="noopener">🧾 View Attached Vendor Invoice</a>`
+            : '<span class="muted" style="font-size:12px;">⚠️ No vendor invoice attached by receiving team</span>'}
+        `)}
       `;
     } else if (r.entity_type === 'todo') {
       const [t, hist] = await Promise.all([api(`/todos/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
@@ -4605,32 +4612,145 @@ window.addProject = async () => {
     navigate('projects');
   } catch (e) { alert(e.message); }
 };
-// Format a job card's own row, optionally indented as a child (sub-process
-// or HOD-created sub-assembly) so who's working what and its allocation/
-// start/completion timestamps are visible right from the project's own
-// pipeline view - not only inside that department's Job Cards workbench.
-function jobCardRowHTML(c, indent) {
-  const title = indent ? esc(c.title || STAGE_LABELS[c.stage] || c.stage) + (c.is_adhoc ? ' <span class="muted">(sub-assembly)</span>' : '') : esc(STAGE_LABELS[c.stage] || c.stage);
-  const fmtTs = t => t ? new Date(t).toLocaleString() : '-';
-  return `<tr${indent ? ' class="jc-child-row"' : ''}>
-    <td${indent ? ' style="padding-left:28px;"' : ''}>${indent ? '<span class="muted">↳</span> ' : ''}${title}</td>
-    <td>${esc(c.client_name)||'-'}</td><td>${c.planned_end || '-'}</td>
-    <td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
-    <td>${fmtTs(c.allocated_at)}</td><td>${fmtTs(c.started_at)}</td><td>${fmtTs(c.completed_at)}</td>
-    <td>${esc(c.notes)||''}</td></tr>`;
+// ---- Project Detail: pipeline with nested sub-processes / ad-hoc sub-assemblies ----
+// Each top-level department card renders as its own row, with its children
+// (the department's own defined sub-processes plus any HOD-created ad-hoc
+// sub-assemblies) nested underneath as indented child rows, collapsed by
+// default behind an explicit expand control - the same grouped-row shape
+// groupJobCardRows() already gives the Job Cards boards, applied here
+// straight from the server's parent/children payload.
+//
+// Which buttons a row gets is decided ENTIRELY by the server's per-card
+// eligibility payload (can_act + actions.start/complete/hold, each with the
+// server's own blocked reason + one-line summary, computed next to PATCH
+// /job-cards/:id's own gates in routes/projects.js) - the hand-over chain,
+// the PO-terms gate and the parent's open-children check only exist
+// server-side, so this view never guesses: a blocked action renders
+// disabled, with the server's full reason as its tooltip and the summary
+// shown inline under the buttons (2026-10-20).
+let PJ_VIEW = null; // { id, code, expanded:Set } - pipeline currently open on the Projects page
+const pjTimestamp = t => t ? new Date(t).toLocaleString() : '-';
+// Planned window (start -> end) when both ends were planned in the Targets
+// sheet, otherwise whichever single end exists - older cards only ever got
+// a planned_end, so don't invent a start for them.
+function pjWindowCell(c) {
+  const start = c.planned_start ? esc(String(c.planned_start).slice(0, 10)) : '';
+  const end = c.planned_end ? esc(String(c.planned_end).slice(0, 10)) : '';
+  if (start && end) return `<td>${start} &rarr; ${end}</td>`;
+  return `<td>${end || start || '-'}</td>`;
 }
+function pjActionsCell(c) {
+  const openBtn = `<button class="btn small outline" onclick="openJobCardDetail(${c.id})">Open</button>`;
+  if (c.status === 'Completed') return actionButtonsCell(openBtn);
+  if (!c.can_act) return actionButtonsCell(openBtn) + ' <span class="muted">Not assigned to you</span>';
+  const next = c.status === 'Pending' ? 'InProgress' : 'Completed';
+  const label = next === 'InProgress' ? 'Start Work' : 'Complete Work';
+  const main = c.actions[next === 'InProgress' ? 'start' : 'complete'];
+  const hold = c.actions.hold;
+  const mainBtn = main.allowed
+    ? `<button class="btn small green" onclick="pjAdvanceJobCard(${c.id}, '${next}')">${label}</button>`
+    : `<button class="btn small green" disabled title="${esc(main.blocked_reason || '')}" aria-label="${esc(label)}: ${esc(main.blocked_reason || '')}">${label}</button>`;
+  const holdBtn = hold.allowed
+    ? `<button class="btn small outline" onclick="pjHoldJobCard(${c.id})">Hold</button>`
+    : `<button class="btn small outline" disabled title="${esc(hold.blocked_reason || '')}" aria-label="Hold: ${esc(hold.blocked_reason || '')}">Hold</button>`;
+  const blocker = !main.allowed ? main : (!hold.allowed ? hold : null);
+  const note = blocker ? `<div class="pj-blocked" title="${esc(blocker.blocked_reason || '')}">${esc(blocker.blocked_summary || '')}</div>` : '';
+  return actionButtonsCell(openBtn + mainBtn + holdBtn) + note;
+}
+window.toggleProjectCardGroup = (parentId) => {
+  const rows = document.querySelectorAll('.pj-child-row-' + parentId);
+  const showing = rows.length && rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  const link = document.getElementById('pj-group-toggle-' + parentId);
+  if (link) link.textContent = (showing ? '▸ ' : '▾ ') + link.dataset.label;
+  // Remember the expansion across the in-place re-render that follows a
+  // Start/Complete/Hold, so acting on a card doesn't fold everything shut.
+  if (PJ_VIEW) { if (showing) PJ_VIEW.expanded.delete(parentId); else PJ_VIEW.expanded.add(parentId); }
+};
+function pjChildRowHTML(ch, parentId) {
+  const expanded = !!(PJ_VIEW && PJ_VIEW.expanded.has(parentId));
+  const kind = ch.is_adhoc ? 'ad-hoc sub-assembly' : 'sub-process';
+  const dur = ch.duration_days ? ` · ${ch.duration_days}d` : '';
+  return `<tr class="pj-child-row pj-child-row-${parentId}" style="${expanded ? '' : 'display:none;'}">
+    <td><span class="muted">&#8627;</span> ${esc(ch.title || STAGE_LABELS[ch.stage] || ch.stage)} <span class="pj-meta">(${kind}${dur})</span></td>
+    ${pjWindowCell(ch)}
+    <td>${badge(ch.status)}</td>
+    <td>${esc(ch.assigned_to_name) || '<span class="muted">Not allocated</span>'}</td>
+    <td>${pjTimestamp(ch.allocated_at)}</td>
+    <td>${pjTimestamp(ch.started_at)}</td>
+    <td>${pjTimestamp(ch.completed_at)}</td>
+    <td>${esc(ch.notes) || ''}</td>
+    <td>${pjActionsCell(ch)}</td>
+  </tr>`;
+}
+function pjParentRowHTML(c, children) {
+  const n = children.length;
+  const kindWord = !n ? ''
+    : children.every(ch => ch.is_adhoc) ? (n === 1 ? 'sub-assembly' : 'sub-assemblies')
+      : children.every(ch => !ch.is_adhoc) ? (n === 1 ? 'sub-process' : 'sub-processes')
+        : (n === 1 ? 'sub-item' : 'sub-items');
+  const expanded = !!(PJ_VIEW && PJ_VIEW.expanded.has(c.id));
+  const toggle = n ? ` <a href="#" id="pj-group-toggle-${c.id}" data-label="${n} ${kindWord}" onclick="toggleProjectCardGroup(${c.id});return false;" class="muted" style="font-size:12px;">${expanded ? '▾' : '▸'} ${n} ${kindWord}</a>` : '';
+  return `<tr>
+    <td>${esc(STAGE_LABELS[c.stage] || c.stage)}${toggle}</td>
+    ${pjWindowCell(c)}
+    <td>${badge(c.status)}</td>
+    <td>${esc(c.assigned_to_name) || '<span class="muted">Not allocated</span>'}</td>
+    <td>${pjTimestamp(c.allocated_at)}</td>
+    <td>${pjTimestamp(c.started_at)}</td>
+    <td>${pjTimestamp(c.completed_at)}</td>
+    <td>${esc(c.notes) || ''}</td>
+    <td>${pjActionsCell(c)}</td>
+  </tr>`;
+}
+// In-place re-render of whichever project's pipeline is open (after a
+// Start/Complete/Hold) rather than navigate(CURRENT_PAGE), which would
+// rebuild the whole Projects page and collapse the panel the user is
+// working in. Fresh server state comes back with the re-render, so badges,
+// timestamps AND every button's eligibility update together.
+async function pjRefreshPipeline() {
+  if (PJ_VIEW) await viewProjectCards(PJ_VIEW.id, PJ_VIEW.code);
+  else navigate(CURRENT_PAGE);
+}
+window.pjAdvanceJobCard = async (id, status) => {
+  try {
+    await api(`/projects/job-cards/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+  } catch (e) { alert(e.message); return; }
+  await pjRefreshPipeline();
+};
+window.pjHoldJobCard = async (id) => {
+  try {
+    await api(`/projects/job-cards/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'OnHold' }) });
+  } catch (e) { alert(e.message); return; }
+  await pjRefreshPipeline();
+};
 window.viewProjectCards = async (id, code) => {
   const cards = await api(`/projects/${id}/job-cards`);
+  // Re-clicking the same project keeps its expanded groups; opening a
+  // different one starts collapsed again (collapse-by-default, per the
+  // standing rule in CLAUDE.md).
+  PJ_VIEW = { id, code, expanded: PJ_VIEW && PJ_VIEW.id === id ? PJ_VIEW.expanded : new Set() };
   document.getElementById('pj-cards-panel').style.display = 'block';
   document.getElementById('pj-cards-title').textContent = 'Pipeline: ' + code;
   // Stages excluded from this project's flow (see the Targets sheet) are
   // hidden here entirely, same as everywhere else outside the Targets
   // sheet itself - this is a pipeline view, not a place to re-include one.
-  const rows = cards.filter(c => c.status !== 'NotApplicable')
-    .map(c => jobCardRowHTML(c, false) + (c.children || []).filter(ch => ch.status !== 'NotApplicable').map(ch => jobCardRowHTML(ch, true)).join('')).join('');
-  document.getElementById('pj-cards').innerHTML = `<table><thead><tr>
-    <th>Stage / Sub-Assembly</th><th>Customer</th><th>Target Completion</th><th>Status</th><th>Assigned To</th><th>Allocated</th><th>Started</th><th>Completed</th><th>Notes</th>
-  </tr></thead><tbody>${rows || '<tr><td colspan="9" class="muted">No job cards yet.</td></tr>'}</tbody></table>`;
+  // Rows: one top-level department card, then its own children nested
+  // directly beneath it (hidden by default - see pjChildRowHTML). The
+  // Customer column is gone on purpose: every row of this per-project
+  // panel shares one client, already shown in the Projects list above.
+  // tableHTML supplies the horizontal scroller and the empty state.
+  const rows = [];
+  cards.filter(c => c.status !== 'NotApplicable').forEach(c => {
+    const children = (c.children || []).filter(ch => ch.status !== 'NotApplicable');
+    rows.push({ card: c, children });
+    children.forEach(ch => rows.push({ card: ch, parentId: c.id }));
+  });
+  document.getElementById('pj-cards').innerHTML = tableHTML(
+    ['Stage / Item', 'Planned Window', 'Status', 'Assigned To', 'Allocated', 'Started', 'Completed', 'Notes', 'Action'],
+    rows,
+    row => (row.parentId !== undefined ? pjChildRowHTML(row.card, row.parentId) : pjParentRowHTML(row.card, row.children))
+  );
   document.getElementById('pj-cards-panel').scrollIntoView({ behavior: 'smooth' });
 };
 
@@ -4703,6 +4823,7 @@ window.loadProjectPlan = async () => {
   const activeCards = cards.filter(c => c.status !== 'NotApplicable');
   const excludedCards = cards.filter(c => c.status === 'NotApplicable');
   body.innerHTML = `
+    <div id="capacity-alert-banner" style="position:sticky;top:0;z-index:5;"></div>
     <p>${targetProject ? annexureLinkBannerHTML(targetProject) : ''}</p>
     <p class="muted">Set how many days each department needs and reorder rows (▲▼) to match the real handover sequence. By default each stage's start is the day after the previous stage ends, and a stage can't be started until every stage above it is completed. Tick "Run in parallel" on a row to have it start on the same day as the row above it instead — the next non-parallel row waits for whichever of that group finishes last. A department with sub-processes (marked below) is planned here as one row — its HOD breaks that window down further from their own Job Cards workbench. Doesn't need a department for this project at all? Exclude it below — it can be brought back any time.</p>
     <table><thead><tr><th style="width:36px;"></th><th>Department</th><th>Duration (days)</th><th>Run in parallel<br>with row above</th><th>Planned Start</th><th>Planned End</th><th>Status</th><th></th></tr></thead>
@@ -4742,6 +4863,7 @@ window.loadProjectPlan = async () => {
     <div id="pl-err" class="msg err" style="display:none;margin-top:10px;"></div>
     <div id="pl-comm-${projectId}" style="margin-top:16px;"></div>
   `;
+  refreshReorderButtons(document.getElementById('pl-rows'));
   renderProjectCommunications(projectId);
 };
 
@@ -4823,6 +4945,16 @@ function refreshParallelCheckboxRowZero(tbody) {
     if (i === 0) { cb.checked = false; cb.disabled = true; cb.title = 'The first row has nothing above it to run alongside.'; }
     else { cb.disabled = false; cb.title = ''; }
   });
+  refreshReorderButtons(tbody);
+}
+// ▲ is disabled on the first row, ▼ on the last.
+function refreshReorderButtons(tbody) {
+  const rows = Array.from(tbody.children);
+  rows.forEach((tr, i) => {
+    const [up, down] = tr.querySelectorAll('.reorder-actions button');
+    if (up) up.disabled = i === 0;
+    if (down) down.disabled = i === rows.length - 1;
+  });
 }
 function planFormStages() {
   const startDate = val('pl-start');
@@ -4869,6 +5001,8 @@ window.checkPlanCapacity = async (projectId) => {
 window.saveProjectPlan = async (projectId, confirmed) => {
   const errEl = document.getElementById('pl-err');
   errEl.style.display = 'none';
+  const banner = document.getElementById('capacity-alert-banner');
+  if (banner) banner.innerHTML = '';
   const { startDate, stages } = planFormStages();
   if (!startDate) { errEl.textContent = 'Pick a plan start date first.'; errEl.style.display = 'block'; return; }
   try {
@@ -4889,6 +5023,17 @@ window.saveProjectPlan = async (projectId, confirmed) => {
     // offer to proceed anyway instead of just showing an error.
     if (e.data && e.data.conflict) {
       const lines = e.data.conflicts.map(c => `${c.stageLabel}: would reach ${Math.max(...c.dates.map(d => d.existingCount)) + 1} projects on ${c.dates.length} day(s) (e.g. ${c.dates[0].date})`);
+      if (banner) {
+        // Window = earliest to latest conflicting day (days in between may be clear).
+        banner.innerHTML = `<div style="background:#fdecea;border:1px solid #e74c3c;border-left:5px solid #e74c3c;border-radius:6px;padding:10px 14px;margin-bottom:12px;">
+          <b>⚠️ Capacity Overlap</b>
+          <ul style="margin:6px 0 0 18px;">${e.data.conflicts.map(c => {
+            const ds = c.dates.map(d => d.date).sort();
+            const peak = Math.max(...c.dates.map(d => d.existingCount)) + 1;
+            return `<li>${esc(c.stageLabel)} department exceeds the 2-project limit (up to ${esc(peak)} projects) between ${esc(ds[0])} and ${esc(ds[ds.length - 1])} (${esc(ds.length)} day${ds.length > 1 ? 's' : ''} affected)</li>`;
+          }).join('')}</ul></div>`;
+        banner.scrollIntoView({ block: 'nearest' });
+      }
       if (confirm(`This plan would push the following department(s) over the 2-project cap:\n\n${lines.join('\n')}\n\nSave anyway?`)) {
         saveProjectPlan(projectId, true);
       }
@@ -5034,7 +5179,7 @@ function jobCardBoardRowHTML(c) {
   const toggleLabel = n + ' sub-assembl' + (n === 1 ? 'y' : 'ies');
   const groupToggle = n ? ` <a href="#" id="jc-group-toggle-${c.id}" data-label="${toggleLabel}" onclick="toggleJobCardGroup(${c.id});return false;" class="muted" style="font-size:12px;">▸ ${toggleLabel}</a>` : '';
   const rowAttrs = c.__isChild ? ` class="jc-child-row-${c.__parentId}" style="display:none;"` : '';
-  const itemCell = (c.__isChild ? '&nbsp;&nbsp;↳ ' : '') + esc(c.title || STAGE_LABELS[c.stage] || c.stage) + (c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : '') + groupToggle;
+  const itemCell = (c.__isChild ? '&nbsp;&nbsp;↳ ' : '') + esc(c.title || STAGE_LABELS[c.stage] || c.stage) + (c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : '') + (c.blocked_by ? ` <span class="muted" style="font-size:12px;" title="Waiting on handover from ${esc(STAGE_LABELS[c.blocked_by] || c.blocked_by_task_name)}">🔒 blocked</span>` : '') + groupToggle;
   return `<tr${rowAttrs}><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${itemCell}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
       <td>${jobCardActions(c)}</td></tr>`;
 }
@@ -5097,8 +5242,10 @@ function jobCardActions(c) {
   if (!c.can_act) return actionButtonsCell(openBtn) + ' <span class="muted">Not assigned to you</span>';
   const next = c.status === 'Pending' ? 'InProgress' : 'Completed';
   const label = next === 'InProgress' ? 'Start Work' : 'Complete Work';
-  return actionButtonsCell(`${openBtn}${subBtn}<button class="btn small green" onclick="advanceJobCard(${c.id}, '${next}')">${label}</button>
-    <button class="btn small outline" onclick="holdJobCard(${c.id})">Hold</button>`);
+  // Sequential handover gate (is_adhoc cards never carry blocked_by).
+  const blk = c.blocked_by ? ` disabled title="Waiting on handover from ${esc(STAGE_LABELS[c.blocked_by] || c.blocked_by_task_name)}"` : '';
+  return actionButtonsCell(`${openBtn}${subBtn}<button class="btn small green"${blk} onclick="advanceJobCard(${c.id}, '${next}')">${label}</button>
+    <button class="btn small outline"${blk} onclick="holdJobCard(${c.id})">Hold</button>`);
 }
 window.advanceJobCard = async (id, status) => {
   try {
@@ -5375,6 +5522,7 @@ window.openSubPlan = async (parentId, parentLabel) => {
       </div>` : ''}
     <div id="sp-err" class="msg err" style="display:none;margin-top:10px;"></div>
   `;
+  refreshReorderButtons(document.getElementById('sp-rows'));
 };
 window.excludeSubStage = async (jcId, parentId) => {
   if (!confirm("Exclude this sub-process from this project's flow? It can be brought back any time.")) return;

@@ -177,6 +177,26 @@
      column these live in. */
   .reorder-actions{display:grid;grid-template-columns:1fr;gap:2px;}
   .reorder-actions .btn.small{width:100%;padding:4px 2px;}
+  /* Project Detail nested child rows (2026-10-20) - a department card's own
+     sub-processes / HOD-created ad-hoc sub-assemblies render as indented
+     <tr>s directly under it, collapsed by default behind an explicit
+     expand control in the parent's first cell (same grouped-list
+     discipline as the Job Cards boards' jc-child-row-* rows). Hide/show
+     is an inline display style, so all this needs is the indent and a
+     faint background so a child row visually belongs to the one above
+     it, plus the same smaller indent on phones where every pixel of
+     width is already spoken for. */
+  .pj-child-row > td:first-child{padding-left:30px;}
+  .pj-child-row td{background:#fbfcfe;}
+  .pj-child-row .pj-meta{font-size:11px;color:var(--muted);}
+  @media (max-width:768px){.pj-child-row > td:first-child{padding-left:14px;}}
+  /* Server-computed blocked action (2026-10-20) - when the hand-over chain,
+     the PO-terms gate or an open sub-process stops a Start/Complete/Hold,
+     the button renders disabled and this line carries the server's
+     one-line reason right under the buttons, so the block is visible
+     without hovering (the button's own title tooltip still holds the
+     server's full message). */
+  .pj-blocked{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.35;}
   /* Grid-based line-item editing table (2026-10-14, New PO/PR/Edit PR/SO/FOC
      line items) - same root cause as .row-actions above, one level deeper:
      every column held a live input whose width was a hand-picked

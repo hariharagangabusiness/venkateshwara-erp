@@ -1451,7 +1451,8 @@ router.get('/store/grn-reconciliations/pending-count', (req, res) => {
 router.get('/store/grn-reconciliations/:id', (req, res) => {
   const g = db.prepare(`
     SELECT g.*, po.po_no, po.item_id, po.quantity as po_quantity, po.unit, po.hsn_code, po.gst_rate,
-      i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin, ${GRN_REJECTION_REASON_FIELDS}
+      i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin, ${GRN_REJECTION_REASON_FIELDS},
+      (SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_reconciliation' AND a.entity_id = g.id ORDER BY a.id DESC LIMIT 1) as invoice_attachment_path
     FROM grn_reconciliations g
     JOIN purchase_orders po ON po.id = g.po_id
     LEFT JOIN items i ON i.id = po.item_id
