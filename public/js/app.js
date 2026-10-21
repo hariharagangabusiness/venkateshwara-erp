@@ -7459,7 +7459,7 @@ function renderReceiveTab(el) {
 // just never applied here. One declared track list now, shared by the
 // header and every row, so a column's width is always exactly what's
 // declared rather than whatever one row's own input happened to force.
-const STOCK_RECEIVE_GRID_COLS = 'minmax(140px,1.4fr) 70px 70px 70px 100px 130px 115px 85px 90px minmax(170px,1fr)';
+const STOCK_RECEIVE_GRID_COLS = 'minmax(160px,1.6fr) 80px 80px 80px 110px 100px 100px minmax(120px,1fr)';
 // Re-renders just the part of the Receive tab below the PO picker: either
 // the selected PO's own line items (each with its own qty-to-receive input
 // and Receive button, for partial/per-line shipments) or, with no PO
@@ -7473,9 +7473,17 @@ function renderStockPoLines() {
   if (vendorInput) vendorInput.value = group ? group.vendor_name : '';
   if (group) {
     linesEl.innerHTML = `
-      <p class="muted">Compare against the vendor's own invoice before receiving - typing their invoiced qty/rate here sends it straight to the Store HOD/Supervisor to reconcile, alongside what the PO itself says.</p>
+      <div class="panel" style="margin:10px 0;">
+        <h4>🚛 Step 1: Attach Master Vendor Invoice Copy (Applies to all received lines)</h4>
+        <div class="form-grid">
+          <div class="stock-input-group"><label>Invoice File (required)</label><input id="st-batch-file" type="file" accept=".pdf,image/*"></div>
+          <div class="stock-input-group"><label>Vendor Invoice No</label><input id="st-batch-vinv" placeholder="optional"></div>
+          <div class="stock-input-group"><label>Invoice Date</label><input id="st-batch-vdate" type="date"></div>
+        </div>
+      </div>
+      <p class="muted">Step 2: enter Qty to Receive on each line (0 = skip). Vendor qty/rate go to the Store HOD/Supervisor to reconcile against the PO.</p>
       ${gridLineTableHTML(STOCK_RECEIVE_GRID_COLS,
-        ['Item', 'PO Rate', 'Ordered', 'Received', 'Qty to Receive', 'Vendor Invoice No', 'Invoice Date', 'Vendor Qty', 'Vendor Rate', ''],
+        ['Item', 'PO Rate', 'Ordered', 'Received', 'Qty to Receive', 'Vendor Qty', 'Vendor Rate', ''],
         group.lines, l => {
           const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
           return `
@@ -7484,15 +7492,13 @@ function renderStockPoLines() {
             <div>${l.quantity}</div>
             <div>${l.received_qty || 0}</div>
             <div><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0"></div>
-            <div><input id="st-po-line-vinv-${l.id}" placeholder="optional"></div>
-            <div><input id="st-po-line-vdate-${l.id}" type="date"></div>
             <div><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional"></div>
             <div><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional"></div>
             <div>${actionButtonsCell(`
-              <button class="btn small green" ${remaining <= 0 ? 'disabled' : ''} onclick="receivePoLine(${l.id})">Receive</button>
               <button class="btn small outline" type="button" onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button>
             `)}</div>`;
         })}
+      <button class="btn green" style="width:100%;padding:14px;font-size:16px;margin-top:12px;" onclick="receiveBatch()">Process Consolidated Batch Receipt</button>
     `;
   } else {
     const items = window.__STOCK_ITEMS || [];
@@ -7527,21 +7533,29 @@ async function refreshStockReceiveLines(doneMessage) {
     if (linesEl) linesEl.insertAdjacentHTML('afterbegin', `<div class="msg ok">${esc(doneMessage || 'No lines left open on that Purchase Order.')}</div>`);
   }
 }
-window.receivePoLine = async (lineId) => {
+// One submit for every line with Qty to Receive > 0 plus the single master
+// invoice file (mandatory) - POST /purchase/store/receive-batch, all-or-nothing.
+window.receiveBatch = async () => {
   try {
-    const qtyInput = document.getElementById(`st-po-line-qty-${lineId}`);
-    const qty = qtyInput ? qtyInput.value : 0;
-    let line = null;
-    for (const g of (window.__GROUPED_POS || [])) { line = g.lines.find(l => l.id === lineId); if (line) break; }
-    if (!line) return;
-    const body = {
-      item_id: line.item_id, po_id: line.id, quantity: qty,
-      vendor_invoice_no: val(`st-po-line-vinv-${lineId}`) || undefined,
-      vendor_invoice_date: val(`st-po-line-vdate-${lineId}`) || undefined,
-      vendor_invoiced_qty: val(`st-po-line-vqty-${lineId}`) || undefined,
-      vendor_invoiced_rate: val(`st-po-line-vrate-${lineId}`) || undefined,
-    };
-    await api('/purchase/store/receive', { method: 'POST', body: JSON.stringify(body) });
+    const group = (window.__GROUPED_POS || []).find(g => g.po_no === val('st-po'));
+    if (!group) return;
+    const file = document.getElementById('st-batch-file').files[0];
+    if (!file) { alert('Attach the master vendor invoice copy first (Step 1).'); return; }
+    const lines = group.lines
+      .map(l => ({
+        po_id: l.id,
+        quantity: val(`st-po-line-qty-${l.id}`),
+        vendor_invoiced_qty: val(`st-po-line-vqty-${l.id}`),
+        vendor_invoiced_rate: val(`st-po-line-vrate-${l.id}`),
+      }))
+      .filter(l => Number(l.quantity) > 0);
+    if (!lines.length) { alert('Enter a Qty to Receive greater than 0 on at least one line.'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('vendor_invoice_no', val('st-batch-vinv'));
+    fd.append('vendor_invoice_date', val('st-batch-vdate'));
+    fd.append('lines', JSON.stringify(lines));
+    await apiUpload('/purchase/store/receive-batch', fd, 'POST');
     await refreshStockReceiveLines('All lines on this Purchase Order are now fully received.');
   } catch (e) { alert(e.message); }
 };

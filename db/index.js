@@ -1384,6 +1384,17 @@ const MIGRATIONS = [
   // (routes/finance.js's poLineReconciledQty()) and the Stock In/Out page's
   // own per-line reconciliation-status lookup.
   `CREATE INDEX IF NOT EXISTS idx_grn_reconciliations_po_id ON grn_reconciliations(po_id)`,
+  // One consolidated receipt (2026-10-21): a single master vendor-invoice file
+  // shared by every GRN line received in the same submit.
+  `CREATE TABLE IF NOT EXISTS grn_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id INTEGER REFERENCES purchase_orders(id),
+    invoice_attachment_path TEXT NOT NULL,
+    uploaded_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `ALTER TABLE grn_reconciliations ADD COLUMN grn_batch_id INTEGER REFERENCES grn_batches(id)`,
+  `ALTER TABLE stock_movements ADD COLUMN grn_batch_id INTEGER REFERENCES grn_batches(id)`,
   // Performance fix (2026-10-13): GET /orders (routes/purchase.js) computes
   // every PO line's received_qty via a correlated subquery on
   // stock_movements.reference ('PO#'+id) - with no index on that column,
