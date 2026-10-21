@@ -1967,6 +1967,47 @@ function approvalRowHTML(r) {
     ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
     <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>`;
 }
+// GRN lines received in one consolidated batch (same non-null grn_batch_id)
+// collapse into ONE parent card with the shared invoice metadata; the
+// individual lines sit in an expandable inner list, each keeping its own
+// approval/actions (one approval per GRN row is unchanged server-side).
+function approvalRowsWithGrnBatches(rows) {
+  const batches = {};
+  rows.forEach(r => { if (r.entity_type === 'grn_reconciliation' && r.grn_batch_id) (batches[r.grn_batch_id] = batches[r.grn_batch_id] || []).push(r); });
+  const done = new Set();
+  return rows.map(r => {
+    const lines = batches[r.grn_batch_id];
+    if (!(r.entity_type === 'grn_reconciliation' && r.grn_batch_id && lines.length > 1)) return approvalRowHTML(r);
+    if (done.has(r.grn_batch_id)) return '';
+    done.add(r.grn_batch_id);
+    return grnBatchCardHTML(r.grn_batch_id, lines);
+  }).join('');
+}
+function grnBatchCardHTML(batchId, lines) {
+  const f = lines[0];
+  const ids = lines.map(l => l.id).join(',');
+  const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const inner = lines.map(l => `<tr><td>${esc(l.grn_item_name) || '-'}</td><td>${esc(l.grn_received_qty)}</td><td>₹${fmt(l.grn_po_rate)}</td>
+      <td>${l.grn_vendor_qty != null ? esc(l.grn_vendor_qty) : '-'}</td><td>${l.grn_vendor_rate != null ? '₹' + fmt(l.grn_vendor_rate) : '-'}</td>
+      <td>${actionButtonsCell(approvalActionCell(l))}</td></tr>`).join('');
+  return `<tr style="background:#fbfcfe;"><td>${esc(f.grn_po_no)} <span class="badge">Batch #${esc(batchId)}</span></td>
+    <td><strong>${lines.length} lines</strong> from ${esc(f.grn_vendor_name) || 'vendor'}<br><span class="muted">Invoice ${esc(f.grn_invoice_no) || '(no. not entered)'}${f.grn_invoice_date ? ' dated ' + esc(f.grn_invoice_date) : ''}</span></td>
+    <td>${esc(f.raised_by_name) || '-'}</td><td>₹${fmt(total)}</td><td>${f.current_step ?? '-'}</td>
+    <td>${new Date(f.created_at).toLocaleString()}</td>
+    <td>${actionButtonsCell(`<button class="btn small green" onclick="actOnGrnBatch([${ids}], 'Approved')">Approve All</button>
+      <button class="btn small red" onclick="actOnGrnBatch([${ids}], 'Rejected')">Reject All</button>
+      <button class="btn small outline" type="button" onclick="var r=document.getElementById('grn-batch-${esc(batchId)}');r.style.display=r.style.display==='none'?'':'none'">Lines</button>`)}</td></tr>
+    <tr id="grn-batch-${esc(batchId)}" style="display:none;"><td colspan="7"><table><thead><tr><th>Item</th><th>Received</th><th>PO Rate</th><th>Vendor Qty</th><th>Vendor Rate</th><th>Action</th></tr></thead><tbody>${inner}</tbody></table></td></tr>`;
+}
+window.actOnGrnBatch = async (ids, action) => {
+  const comment = action === 'Rejected' ? prompt('Reason for rejecting all lines (optional):') : null;
+  if (action === 'Rejected' && comment === null) return;
+  if (!confirm(`${action === 'Approved' ? 'Approve' : 'Reject'} all ${ids.length} lines of this receipt?`)) return;
+  try {
+    for (const id of ids) await api(`/approvals/${id}/act`, { method: 'POST', body: JSON.stringify({ action, comment }) });
+  } catch (e) { alert(e.message); }
+  navigate('approvals');
+};
 // Button-grid alignment (2026-10-16 follow-up to PR #172/the 2026-10-14
 // Offers-rollup fix) - this page used to call tableHTML() once per
 // chain x department bucket, each producing its own independent <table>.
@@ -2009,7 +2050,7 @@ PAGES.approvals = async (el) => {
           <span id="${bid}-chev">&#9654;</span> ${esc(dept)} <span class="muted" style="text-transform:none;letter-spacing:normal;font-weight:normal;">(${byDept[dept].length})</span>
         </td>
       </tr></tbody>
-      <tbody id="${bid}-body" style="display:none;">${byDept[dept].map(approvalRowHTML).join('')}</tbody>`;
+      <tbody id="${bid}-body" style="display:none;">${approvalRowsWithGrnBatches(byDept[dept])}</tbody>`;
     }).join('');
     return chainHeader + deptSections;
   }).join('');
