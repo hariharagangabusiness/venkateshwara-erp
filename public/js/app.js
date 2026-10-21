@@ -810,8 +810,8 @@ function esc(s) { return (s === null || s === undefined) ? '' : String(s).replac
 // rules live on the .row-actions CSS class in public/index.html; this just
 // applies it. Use for any <td> content that's more than 1-2 same-length
 // buttons - a single button needs no wrapper.
-function actionButtonsCell(buttonsHtml) {
-  return `<div class="row-actions">${buttonsHtml}</div>`;
+function actionButtonsCell(buttonsHtml, extraClass) {
+  return `<div class="row-actions${extraClass ? ' ' + extraClass : ''}">${buttonsHtml}</div>`;
 }
 // Customer Group rollup (2026-10-14) - shared by the Offers and Sales
 // Orders lists, since a business group commonly spans several separate
@@ -1963,7 +1963,7 @@ function approvalActionCell(r) {
 function approvalRowHTML(r) {
   return `<tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
     <td>${new Date(r.created_at).toLocaleString()}</td>
-    <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(r.source) + '-' + esc(r.id) + '\')">Details</button>')}</td></tr>
+    <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(r.source) + '-' + esc(r.id) + '\')">Details</button>', 'approval-actions')}</td></tr>
     ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
     <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>`;
 }

@@ -168,6 +168,12 @@
      status...", "Route to department") is far wider than the 80px
      minimum column, and squeezing it into one column would clip it. */
   .row-actions select{width:100%;grid-column:1/-1;}
+  /* My Approvals: primary decisions (green/red/blue) are bolder and taller;
+     secondary actions (outline: Ask for More Info, Details) span a full row
+     beneath them so the pair of primaries stays visually balanced. */
+  .approval-actions .btn.small{min-height:34px;}
+  .approval-actions .btn.small.green,.approval-actions .btn.small.red,.approval-actions .btn.small.blue{font-weight:600;}
+  .approval-actions .btn.small.outline{grid-column:1/-1;}
   /* Reorder (up/down) control pair - its own single-column grid. The
      reorder column is a fixed 36px (see the <th style="width:36px"> on
      the Project Plan / Sub-Plan tables), so two arrows side by side
@@ -359,6 +365,9 @@
        stay aligned - the same invariant the desktop grid guarantees. */
     .row-actions,.po-actions{grid-template-columns:minmax(80px,1fr);}
     .row-actions .btn.small,.po-actions .btn.small{width:100%;}
+    /* Approve/Reject side by side on phones; fixed 2 tracks keep every row aligned. */
+    .approval-actions{grid-template-columns:repeat(2,minmax(80px,1fr));}
+    .approval-actions .btn.small{min-height:40px;}
 
     /* Tables are the main horizontal-scroll risk on mobile. Rather than
        compressing every column illegibly, let each table scroll
