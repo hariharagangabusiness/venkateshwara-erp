@@ -1987,9 +1987,15 @@ function grnBatchCardHTML(batchId, lines) {
   const f = lines[0];
   const ids = lines.map(l => l.id).join(',');
   const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  // Each line gets its own Details button + hidden drilldown row, same as a
+  // standalone (non-batched) row's own approvalRowHTML() already does - a
+  // batched line was previously missing this entirely, so there was no way
+  // to reach the PO-vs-vendor-invoice comparison/attachments/history view
+  // for a line once it was grouped into a batch.
   const inner = lines.map(l => `<tr><td>${esc(l.grn_item_name) || '-'}</td><td>${esc(l.grn_received_qty)}</td><td>₹${fmt(l.grn_po_rate)}</td>
       <td>${l.grn_vendor_qty != null ? esc(l.grn_vendor_qty) : '-'}</td><td>${l.grn_vendor_rate != null ? '₹' + fmt(l.grn_vendor_rate) : '-'}</td>
-      <td>${actionButtonsCell(approvalActionCell(l))}</td></tr>`).join('');
+      <td>${actionButtonsCell(approvalActionCell(l) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(l.source) + '-' + esc(l.id) + '\')">Details</button>')}</td></tr>
+      <tr id="appr-drill-row-${esc(l.source)}-${esc(l.id)}" style="display:none;"><td colspan="6"><div id="appr-drill-${esc(l.source)}-${esc(l.id)}"></div></td></tr>`).join('');
   return `<tr style="background:#fbfcfe;"><td>${esc(f.grn_po_no)} <span class="badge">Batch #${esc(batchId)}</span></td>
     <td><strong>${lines.length} lines</strong> from ${esc(f.grn_vendor_name) || 'vendor'}<br><span class="muted">Invoice ${esc(f.grn_invoice_no) || '(no. not entered)'}${f.grn_invoice_date ? ' dated ' + esc(f.grn_invoice_date) : ''}</span></td>
     <td>${esc(f.raised_by_name) || '-'}</td><td>₹${fmt(total)}</td><td>${f.current_step ?? '-'}</td>
