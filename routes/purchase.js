@@ -217,6 +217,108 @@ router.get('/items/:itemId/price-history', requirePermission('purchase_order.man
   res.json({ item: { id: item.id, name: item.name, item_code: item.item_code, unit: item.unit }, from, to, rows });
 });
 
+// ---- Purchase Velocity Dashboard ----
+// One row per po_no (a multi-line PO is several rows sharing it). Clocks:
+// PR->PO = PR created to first PO row; PO->Approval = latest approval's
+// submit to its final Approved action (Draft time excluded); PO->GRN = that
+// approval to first IN receipt, plus to full receipt (all live lines Received).
+const VELOCITY_SQL = `
+  WITH g AS (
+    SELECT po.po_no, MIN(po.created_at) po_created, MIN(po.purchase_request_id) pr_id, MIN(po.vendor_id) vendor_id,
+      COUNT(*) total_lines, SUM(po.status = 'Received') received_lines,
+      SUM(po.status IN ('Open','PartiallyReceived','PendingApproval')) open_lines
+    FROM purchase_orders po
+    WHERE po.po_no IS NOT NULL AND po.status NOT IN ('Draft','Cancelled','Rejected')
+    GROUP BY po.po_no),
+  la AS (
+    SELECT po.po_no, MAX(a.id) approval_id FROM approvals a
+    JOIN purchase_orders po ON a.entity_type = 'purchase_order' AND a.entity_id = po.id
+    GROUP BY po.po_no),
+  ap AS (
+    SELECT la.po_no, a.created_at submitted_at, a.status ap_status,
+      (SELECT MAX(x.acted_at) FROM approval_actions x WHERE x.approval_id = a.id AND x.action = 'Approved' AND a.status = 'Approved') approved_at
+    FROM la JOIN approvals a ON a.id = la.approval_id),
+  gr AS (
+    SELECT po.po_no, MIN(sm.moved_at) first_grn, MAX(sm.moved_at) last_grn FROM purchase_orders po
+    JOIN stock_movements sm ON sm.reference = 'PO#' || po.id AND sm.movement_type = 'IN'
+    GROUP BY po.po_no),
+  r AS (
+    SELECT g.po_no, v.name vendor_name, pr.pr_no, pr.created_at pr_created, g.po_created, g.open_lines,
+      ap.submitted_at, ap.ap_status, ap.approved_at, gr.first_grn,
+      CASE WHEN g.received_lines = g.total_lines THEN gr.last_grn END full_grn
+    FROM g LEFT JOIN vendors v ON v.id = g.vendor_id
+      LEFT JOIN purchase_requests pr ON pr.id = g.pr_id
+      LEFT JOIN ap ON ap.po_no = g.po_no LEFT JOIN gr ON gr.po_no = g.po_no
+    WHERE date(g.po_created) BETWEEN date(?) AND date(?))
+  SELECT r.*,
+    julianday(po_created) - julianday(pr_created) d_pr_po,
+    julianday(approved_at) - julianday(submitted_at) d_approval,
+    julianday(first_grn) - julianday(approved_at) d_grn,
+    julianday(full_grn) - julianday(approved_at) d_full,
+    julianday('now') - julianday(submitted_at) w_approval,
+    julianday('now') - julianday(approved_at) w_grn
+  FROM r`;
+
+function velocityRange(q) {
+  const ok = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+  const to = ok(q.to) ? q.to : new Date().toISOString().slice(0, 10);
+  const from = ok(q.from) ? q.from : new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  return { from, to };
+}
+// "In flight" = started but the end event hasn't happened yet.
+const VELOCITY_INFLIGHT = {
+  po_approval: (r) => r.submitted_at && !r.approved_at && ['Pending', 'InfoRequested'].includes(r.ap_status),
+  po_grn: (r) => r.approved_at && !r.first_grn && r.open_lines > 0,
+};
+const VELOCITY_KEYS = { pr_po: 'd_pr_po', po_approval: 'd_approval', po_grn: 'd_grn' };
+const VELOCITY_WAIT = { po_approval: 'w_approval', po_grn: 'w_grn' };
+// Approved PRs with no PO of any status yet (the PR->PO in-flight set).
+const PR_WAITING_SQL = `
+  SELECT pr.pr_no, pr.created_at, julianday('now') - julianday(pr.created_at) wait_days FROM purchase_requests pr
+  WHERE pr.status = 'Approved' AND date(pr.created_at) BETWEEN date(?) AND date(?)
+    AND NOT EXISTS (SELECT 1 FROM purchase_orders po WHERE po.purchase_request_id = pr.id)
+  ORDER BY wait_days DESC`;
+
+function velocityStats(vals) {
+  const v = vals.filter((x) => x != null);
+  return { count: v.length, avg: v.length ? v.reduce((s, x) => s + x, 0) / v.length : null, max: v.length ? Math.max(...v) : null };
+}
+
+router.get('/velocity', requirePermission('purchase_order.manage'), (req, res) => {
+  const { from, to } = velocityRange(req.query);
+  const rows = db.prepare(VELOCITY_SQL).all(from, to);
+  const metrics = {};
+  for (const m of Object.keys(VELOCITY_KEYS)) {
+    metrics[m] = velocityStats(rows.map((r) => r[VELOCITY_KEYS[m]]));
+    metrics[m].in_flight = m === 'pr_po'
+      ? db.prepare(PR_WAITING_SQL).all(from, to).length
+      : rows.filter(VELOCITY_INFLIGHT[m]).length;
+  }
+  metrics.po_grn.full = velocityStats(rows.map((r) => r.d_full));
+  res.json({ from, to, metrics });
+});
+
+router.get('/velocity/drill', requirePermission('purchase_order.manage'), (req, res) => {
+  const m = req.query.metric;
+  if (!VELOCITY_KEYS[m]) return res.status(400).json({ error: 'metric must be pr_po, po_approval or po_grn' });
+  const { from, to } = velocityRange(req.query);
+  const rows = db.prepare(VELOCITY_SQL).all(from, to);
+  const startEnd = {
+    pr_po: (r) => [r.pr_created, r.po_created],
+    po_approval: (r) => [r.submitted_at, r.approved_at],
+    po_grn: (r) => [r.approved_at, r.first_grn],
+  }[m];
+  const done = rows.filter((r) => r[VELOCITY_KEYS[m]] != null).map((r) => {
+    const [start, end] = startEnd(r);
+    return { ref: r.po_no, vendor_name: r.vendor_name, pr_no: r.pr_no, start, end, days: r[VELOCITY_KEYS[m]], full_days: m === 'po_grn' ? r.d_full : undefined };
+  }).sort((a, b) => b.days - a.days);
+  const inFlight = m === 'pr_po'
+    ? db.prepare(PR_WAITING_SQL).all(from, to).map((p) => ({ ref: p.pr_no, start: p.created_at, days: p.wait_days }))
+    : rows.filter(VELOCITY_INFLIGHT[m]).map((r) => ({ ref: r.po_no, vendor_name: r.vendor_name, pr_no: r.pr_no, start: startEnd(r)[0], days: r[VELOCITY_WAIT[m]] }))
+      .sort((a, b) => b.days - a.days);
+  res.json({ from, to, metric: m, done, in_flight: inFlight });
+});
+
 // ---- Multi-vendor quotes for a Purchase Request (Round 13) ----
 router.get('/requests/:id/quotes', (req, res) => {
   res.json(db.prepare(`
