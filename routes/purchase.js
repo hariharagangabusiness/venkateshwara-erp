@@ -1587,6 +1587,61 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
   res.json({ ok: true, grn_id: grnId });
 });
 
+// Consolidated multi-line receipt (2026-10-21): one mandatory master vendor-
+// invoice file + shared invoice no/date, N PO lines. All-or-nothing in one
+// transaction; each line still gets its own movement, GRN row and approval
+// (so billing/ledger logic downstream is unchanged), all tagged with the same
+// grn_batch_id. The file is also attached to every GRN row so the Store HOD
+// sees it in the existing drilldown attachments widget.
+const uploadGrnInvoice = makeUpload('attachments', 15);
+router.post('/store/receive-batch', requirePermission('store.manage'), uploadGrnInvoice.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Attach the vendor invoice copy - it is mandatory for a batch receipt.' });
+  const fail = (msg) => { try { fs.unlinkSync(req.file.path); } catch (e) { /* best effort */ } return res.status(400).json({ error: msg }); };
+  let lines;
+  try { lines = JSON.parse(req.body.lines || '[]'); } catch (e) { return fail('Invalid lines payload.'); }
+  lines = (Array.isArray(lines) ? lines : []).filter(l => Number(l.quantity) > 0);
+  if (!lines.length) return fail('Enter a Qty to Receive greater than 0 on at least one line.');
+  const invNo = (req.body.vendor_invoice_no || '').trim() || null;
+  const invDate = req.body.vendor_invoice_date || null;
+  const num = (v) => (v !== undefined && v !== null && v !== '' ? Number(v) : null);
+  const seen = new Set();
+  const prepared = [];
+  for (const l of lines) {
+    const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(l.po_id);
+    if (!po) return fail('A Purchase Order line no longer exists - refresh the page and try again.');
+    if (seen.has(po.id)) return fail('The same PO line appears twice in this batch.');
+    seen.add(po.id);
+    if (['Draft', 'PendingApproval', 'Rejected', 'Received', 'Cancelled', 'Closed'].includes(po.status)) {
+      return fail(`${po.item_name || 'A line'} is ${po.status} and cannot receive stock.`);
+    }
+    prepared.push({ po, qty: Number(l.quantity), vqty: num(l.vendor_invoiced_qty), vrate: num(l.vendor_invoiced_rate) });
+  }
+  const filePath = '/uploads/attachments/' + req.file.filename;
+  const grnIds = db.transaction(() => {
+    const batchId = db.prepare('INSERT INTO grn_batches (po_id, invoice_attachment_path, uploaded_by) VALUES (?,?,?)')
+      .run(prepared[0].po.id, filePath, req.user.id).lastInsertRowid;
+    return prepared.map(({ po, qty, vqty, vrate }) => {
+      const mv = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, moved_by, grn_batch_id) VALUES (?, 'IN', ?, ?, ?, ?)`)
+        .run(po.item_id, qty, 'PO#' + po.id, req.user.id, batchId);
+      db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = ?').run(qty, po.item_id);
+      db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?')
+        .run(poReceivedQty(po.id) >= po.quantity ? 'Received' : 'PartiallyReceived', po.id);
+      const grnId = db.prepare(`
+        INSERT INTO grn_reconciliations (po_id, stock_movement_id, received_qty, po_rate, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, created_by, grn_batch_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+      `).run(po.id, mv.lastInsertRowid, qty, po.rate, invNo, invDate, vqty, vrate, req.user.id, batchId).lastInsertRowid;
+      db.prepare(`INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES ('grn_reconciliation', ?, ?, ?, ?, 'VendorInvoice')`)
+        .run(grnId, filePath, req.file.originalname, req.user.id);
+      return grnId;
+    });
+  })();
+  for (const grnId of grnIds) {
+    const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', grnId, 0, req.user.id);
+    db.prepare('UPDATE grn_reconciliations SET approval_id = ? WHERE id = ?').run(approvalId, grnId);
+  }
+  res.json({ ok: true, grn_ids: grnIds });
+});
+
 // GRN reconciliation - the Store HOD's review queue needs the full PO-vs-
 // vendor-invoice comparison (see My Approvals' grn_reconciliation drilldown,
 // routes/approvals.js), and the Stock In/Out page itself shows every line's
