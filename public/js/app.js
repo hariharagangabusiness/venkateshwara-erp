@@ -1992,18 +1992,45 @@ function grnBatchCardHTML(batchId, lines) {
   // batched line was previously missing this entirely, so there was no way
   // to reach the PO-vs-vendor-invoice comparison/attachments/history view
   // for a line once it was grouped into a batch.
-  const inner = lines.map(l => `<tr><td>${esc(l.grn_item_name) || '-'}</td><td>${esc(l.grn_received_qty)}</td><td>₹${fmt(l.grn_po_rate)}</td>
-      <td>${l.grn_vendor_qty != null ? esc(l.grn_vendor_qty) : '-'}</td><td>${l.grn_vendor_rate != null ? '₹' + fmt(l.grn_vendor_rate) : '-'}</td>
-      <td>${actionButtonsCell(approvalActionCell(l) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(l.source) + '-' + esc(l.id) + '\')">Details</button>')}</td></tr>
-      <tr id="appr-drill-row-${esc(l.source)}-${esc(l.id)}" style="display:none;"><td colspan="6"><div id="appr-drill-${esc(l.source)}-${esc(l.id)}"></div></td></tr>`).join('');
-  return `<tr style="background:#fbfcfe;"><td>${esc(f.grn_po_no)} <span class="badge">Batch #${esc(batchId)}</span></td>
+  //
+  // The inner Lines list is a genuine CSS grid (same .grid-line-table
+  // component gridLineTableHTML() uses), not a plain <table> - every batch
+  // card used to render its own independent <table>, whose column widths
+  // auto-computed purely from that one batch's own content, so the Action
+  // column (and its button grid) ended up a different width per batch -
+  // the same "N independent auto-layout tables" root cause already fixed
+  // elsewhere in this app (PR #172, the Offers/Sales Orders rollups, this
+  // very page's own chain/department buckets). A declared
+  // grid-template-columns gives every batch's inner list the same column
+  // widths regardless of its own content.
+  const COLS = '2fr 90px 90px 90px 90px 170px';
+  const inner = lines.map(l => `
+    <div class="glt-row" style="grid-template-columns:${COLS};">
+      <div>${esc(l.grn_item_name) || '-'}</div><div>${esc(l.grn_received_qty)}</div><div>₹${fmt(l.grn_po_rate)}</div>
+      <div>${l.grn_vendor_qty != null ? esc(l.grn_vendor_qty) : '-'}</div><div>${l.grn_vendor_rate != null ? '₹' + fmt(l.grn_vendor_rate) : '-'}</div>
+      <div>${actionButtonsCell(approvalActionCell(l) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(l.source) + '-' + esc(l.id) + '\')">Details</button>')}</div>
+    </div>
+    <div id="appr-drill-row-${esc(l.source)}-${esc(l.id)}" style="display:none;"><div id="appr-drill-${esc(l.source)}-${esc(l.id)}"></div></div>
+  `).join('');
+  // The PO copy is the same document for every line in the batch (they
+  // share one po_no) - shown once here at the batch header, not repeated
+  // inside each line's own Details drilldown (see the grn_reconciliation
+  // branch of renderApprovalDrilldown(), which hides its own copy of this
+  // button once a line is part of a batch, for exactly this reason).
+  return `<tr style="background:#fbfcfe;"><td>${esc(f.grn_po_no)} <span class="badge">Batch #${esc(batchId)}</span>
+      ${f.grn_po_id ? `<br><button class="btn small outline" type="button" style="margin-top:4px;" onclick="downloadPoPdf(${Number(f.grn_po_id)}, '${esc(f.grn_po_no)}')">📄 View Original PO Copy</button>` : ''}</td>
     <td><strong>${lines.length} lines</strong> from ${esc(f.grn_vendor_name) || 'vendor'}<br><span class="muted">Invoice ${esc(f.grn_invoice_no) || '(no. not entered)'}${f.grn_invoice_date ? ' dated ' + esc(f.grn_invoice_date) : ''}</span></td>
     <td>${esc(f.raised_by_name) || '-'}</td><td>₹${fmt(total)}</td><td>${f.current_step ?? '-'}</td>
     <td>${new Date(f.created_at).toLocaleString()}</td>
     <td>${actionButtonsCell(`<button class="btn small green" onclick="actOnGrnBatch([${ids}], 'Approved')">Approve All</button>
       <button class="btn small red" onclick="actOnGrnBatch([${ids}], 'Rejected')">Reject All</button>
       <button class="btn small outline" type="button" onclick="var r=document.getElementById('grn-batch-${esc(batchId)}');r.style.display=r.style.display==='none'?'':'none'">Lines</button>`)}</td></tr>
-    <tr id="grn-batch-${esc(batchId)}" style="display:none;"><td colspan="7"><table><thead><tr><th>Item</th><th>Received</th><th>PO Rate</th><th>Vendor Qty</th><th>Vendor Rate</th><th>Action</th></tr></thead><tbody>${inner}</tbody></table></td></tr>`;
+    <tr id="grn-batch-${esc(batchId)}" style="display:none;"><td colspan="7">
+      <div class="grid-line-table" style="overflow-x:auto;">
+        <div class="glt-row glt-head" style="grid-template-columns:${COLS};"><div>Item</div><div>Received</div><div>PO Rate</div><div>Vendor Qty</div><div>Vendor Rate</div><div>Action</div></div>
+        ${inner}
+      </div>
+    </td></tr>`;
 }
 window.actOnGrnBatch = async (ids, action) => {
   const comment = action === 'Rejected' ? prompt('Reason for rejecting all lines (optional):') : null;
@@ -2383,11 +2410,12 @@ async function renderApprovalDrilldown(key) {
         ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
         <h5 style="margin:8px 0 4px;">Document Verification</h5>
         ${actionButtonsCell(`
-          <button class="btn small outline" type="button" onclick="downloadPoPdf(${Number(g.po_id)}, '${esc(g.po_no)}')">📄 View Original PO Copy</button>
+          ${g.grn_batch_id ? '' : `<button class="btn small outline" type="button" onclick="downloadPoPdf(${Number(g.po_id)}, '${esc(g.po_no)}')">📄 View Original PO Copy</button>`}
           ${g.invoice_attachment_path
             ? `<a class="btn small green" href="${esc(g.invoice_attachment_path)}" target="_blank" rel="noopener">🧾 View Attached Vendor Invoice</a>`
             : '<span class="muted" style="font-size:12px;">⚠️ No vendor invoice attached by receiving team</span>'}
         `)}
+        ${g.grn_batch_id ? '<p class="muted" style="font-size:12px;">This receipt\'s PO copy is shown once on the batch card above.</p>' : ''}
       `;
     } else if (r.entity_type === 'todo') {
       const [t, hist] = await Promise.all([api(`/todos/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
