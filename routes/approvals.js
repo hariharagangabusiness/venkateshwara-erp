@@ -229,6 +229,11 @@ function describeEntity(entityType, entityId) {
         ref: `${r.po_no} / ${r.item_name || 'item'}`,
         summary: `${r.received_qty} received @ PO rate ₹${r.po_rate} from ${r.vendor_name || 'vendor'}${variance}`,
         department_id: r.department_id, department_name: r.department_name, raised_by_name: r.raised_by_name,
+        // Lets My Approvals collapse lines of one consolidated receipt into a single card.
+        grn_batch_id: r.grn_batch_id, grn_item_name: r.item_name, grn_vendor_name: r.vendor_name,
+        grn_received_qty: r.received_qty, grn_po_rate: r.po_rate, grn_po_no: r.po_no,
+        grn_invoice_no: r.vendor_invoice_no, grn_invoice_date: r.vendor_invoice_date,
+        grn_vendor_qty: r.vendor_invoiced_qty, grn_vendor_rate: r.vendor_invoiced_rate,
       };
     }
     default:
