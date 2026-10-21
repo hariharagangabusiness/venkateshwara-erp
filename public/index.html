@@ -171,7 +171,11 @@
   /* My Approvals: primary decisions (green/red/blue) are bolder and taller;
      secondary actions (outline: Ask for More Info, Details) span a full row
      beneath them so the pair of primaries stays visually balanced. */
-  .approval-actions .btn.small{min-height:34px;}
+  /* One fixed 130px track, every button identical in size, so the right edge
+     of the Action column is a straight vertical line on every row/card. */
+  .approval-actions{grid-template-columns:130px;width:130px;gap:6px;}
+  .approval-actions .btn.small{box-sizing:border-box;width:130px;min-height:34px;padding:6px 8px;font-size:13px;border-radius:6px;text-align:center;}
+  .approval-actions .btn.small.outline{grid-column:auto;}
   .approval-actions .btn.small.green,.approval-actions .btn.small.red,.approval-actions .btn.small.blue{font-weight:600;}
   .approval-actions .btn.small.outline{grid-column:1/-1;}
   /* Reorder (up/down) control pair - its own single-column grid. The
@@ -365,9 +369,9 @@
        stay aligned - the same invariant the desktop grid guarantees. */
     .row-actions,.po-actions{grid-template-columns:minmax(80px,1fr);}
     .row-actions .btn.small,.po-actions .btn.small{width:100%;}
-    /* Approve/Reject side by side on phones; fixed 2 tracks keep every row aligned. */
-    .approval-actions{grid-template-columns:repeat(2,minmax(80px,1fr));}
-    .approval-actions .btn.small{min-height:40px;}
+    /* Same fixed 130px track on phones (table scrolls horizontally); larger tap target. */
+    .approval-actions{grid-template-columns:130px;}
+    .approval-actions .btn.small{width:130px;min-height:40px;}
 
     /* Tables are the main horizontal-scroll risk on mobile. Rather than
        compressing every column illegibly, let each table scroll
