@@ -6991,7 +6991,6 @@ async function renderItemMasterSheet(el) {
     'add-item': `
     <div class="panel"><h3>Add Item Master</h3>
       <div class="form-grid">
-        <div><label>Item Code</label><input id="it-code"></div>
         <div><label>Name</label><input id="it-name"></div>
         <div><label>Unit</label><input id="it-unit" value="Nos"></div>
         <div><label>Category</label><input id="it-cat"></div>
@@ -7000,7 +6999,7 @@ async function renderItemMasterSheet(el) {
         <div><label>Reorder Level</label><input id="it-reorder" type="number" value="0"></div>
       </div>
       <button class="btn" onclick="addItem()">Add Item</button>
-      <div class="muted" style="margin-top:8px;">A unique barcode (EAN-13, internal-use 20-prefix range) is generated automatically for every item.</div>
+      <div class="muted" style="margin-top:8px;">Item Code and barcode (EAN-13, internal-use 20-prefix range) are both generated automatically for every item.</div>
     </div>`,
     'pending-review': pendingItems.length ? collapsiblePanel('pending-item-review', `Pending Item Master Review (${pendingItems.length})`, `
       <p class="muted">These were typed freehand on a Purchase Request instead of picked from the master. Complete the details and Approve - typically while receiving the goods - to add them to the permanent Item Master (a barcode is generated at that point).</p>
@@ -7118,10 +7117,11 @@ window.approvePendingItem = async (id) => {
 };
 window.addItem = async () => {
   try {
-    await api('/masters/items', { method: 'POST', body: JSON.stringify({
-      item_code: val('it-code'), name: val('it-name'), unit: val('it-unit'), category: val('it-cat'),
+    const r = await api('/masters/items', { method: 'POST', body: JSON.stringify({
+      name: val('it-name'), unit: val('it-unit'), category: val('it-cat'),
       hsn_code: val('it-hsn'), location: val('it-loc'), reorder_level: val('it-reorder')
     })});
+    alert(`Item added - assigned Item Code ${r.item_code}.`);
     navigate('store');
   } catch (e) { alert(e.message); }
 };

@@ -412,13 +412,34 @@ router.get('/items/by-barcode/:code', (req, res) => {
   if (!item) return res.status(404).json({ error: 'No item matches that barcode.' });
   res.json(item);
 });
+// Item Code auto-assignment (2026-10-21) - the interactive Add Item Master
+// form used to leave this as a free-typed field with only a UNIQUE
+// constraint behind it; a blank submission sent an empty string (not null),
+// so two blank entries collided and surfaced a confusing "item code already
+// exists" error even though the user never typed one. Now auto-generated,
+// "I-" plus the next number after whatever's already on file (derived from
+// the live data each time, not a stored counter, so it self-heals around
+// any gap and never needs its own migration) - zero-padded to the same
+// 5-digit width the existing codes already use (e.g. "I-08037"), growing
+// past 5 digits once the sequence does. Bulk upload/migration imports keep
+// supplying their own `item_code` from legacy data, untouched by this.
+function nextItemCode() {
+  const rows = db.prepare(`SELECT item_code FROM items WHERE item_code LIKE 'I-%'`).all();
+  let max = 8036; // one below the confirmed next-expected code (8037) at the time this was built
+  for (const r of rows) {
+    const m = /^I-(\d+)$/.exec(r.item_code || '');
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return 'I-' + String(max + 1).padStart(5, '0');
+}
 router.post('/items', requirePermission('item.manage'), (req, res) => {
-  const { item_code, name, unit, category, reorder_level, hsn_code, location } = req.body;
+  const { name, unit, category, reorder_level, hsn_code, location } = req.body;
+  const item_code = String(req.body.item_code || '').trim() || nextItemCode();
   const info = db.prepare(`INSERT INTO items (item_code, name, unit, category, reorder_level, hsn_code, location) VALUES (?,?,?,?,?,?,?)`)
     .run(item_code, name, unit || 'Nos', category, reorder_level || 0, hsn_code || null, location || null);
   const barcode = generateItemBarcode(info.lastInsertRowid);
   db.prepare('UPDATE items SET barcode = ? WHERE id = ?').run(barcode, info.lastInsertRowid);
-  res.json({ id: info.lastInsertRowid, barcode });
+  res.json({ id: info.lastInsertRowid, item_code, barcode });
 });
 
 // An item typed freehand on a Purchase Request (no Item Master pick) lands
@@ -428,11 +449,18 @@ router.put('/items/:id/review', requirePermission('item.manage', 'store.manage')
   const existing = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const { item_code, name, unit, category, hsn_code, location, reorder_level, approve } = req.body;
+  // Approving into the permanent Item Master with no code typed auto-assigns
+  // one too, same as the interactive Add form - a catalog item approved
+  // with no code at all was the pre-existing gap here (stored as NULL,
+  // never a collision, but permanently codeless).
+  const resolvedCode = item_code !== undefined
+    ? (String(item_code || '').trim() || (approve ? nextItemCode() : null))
+    : existing.item_code;
   db.prepare(`
     UPDATE items SET item_code=?, name=?, unit=?, category=?, hsn_code=?, location=?, reorder_level=?, status=?
     WHERE id=?
   `).run(
-    item_code !== undefined ? (item_code || null) : existing.item_code,
+    resolvedCode,
     name !== undefined ? name : existing.name,
     unit !== undefined ? (unit || 'Nos') : existing.unit,
     category !== undefined ? category : existing.category,
