@@ -2008,7 +2008,7 @@ function grnBatchCardHTML(batchId, lines) {
     <div class="glt-row" style="grid-template-columns:${COLS};">
       <div>${esc(l.grn_item_name) || '-'}</div><div>${esc(l.grn_received_qty)}</div><div>₹${fmt(l.grn_po_rate)}</div>
       <div>${l.grn_vendor_qty != null ? esc(l.grn_vendor_qty) : '-'}</div><div>${l.grn_vendor_rate != null ? '₹' + fmt(l.grn_vendor_rate) : '-'}</div>
-      <div>${actionButtonsCell(approvalActionCell(l) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(l.source) + '-' + esc(l.id) + '\')">Details</button>')}</div>
+      <div>${actionButtonsCell(approvalActionCell(l) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(l.source) + '-' + esc(l.id) + '\')">Details</button>', 'approval-actions')}</div>
     </div>
     <div id="appr-drill-row-${esc(l.source)}-${esc(l.id)}" style="display:none;"><div id="appr-drill-${esc(l.source)}-${esc(l.id)}"></div></div>
   `).join('');
@@ -2024,7 +2024,7 @@ function grnBatchCardHTML(batchId, lines) {
     <td>${new Date(f.created_at).toLocaleString()}</td>
     <td>${actionButtonsCell(`<button class="btn small green" onclick="actOnGrnBatch([${ids}], 'Approved')">Approve All</button>
       <button class="btn small red" onclick="actOnGrnBatch([${ids}], 'Rejected')">Reject All</button>
-      <button class="btn small outline" type="button" onclick="var r=document.getElementById('grn-batch-${esc(batchId)}');r.style.display=r.style.display==='none'?'':'none'">Lines</button>`)}</td></tr>
+      <button class="btn small outline" type="button" onclick="var r=document.getElementById('grn-batch-${esc(batchId)}');r.style.display=r.style.display==='none'?'':'none'">Lines</button>`, 'approval-actions')}</td></tr>
     <tr id="grn-batch-${esc(batchId)}" style="display:none;"><td colspan="7">
       <div class="grid-line-table" style="overflow-x:auto;">
         <div class="glt-row glt-head" style="grid-template-columns:${COLS};"><div>Item</div><div>Received</div><div>PO Rate</div><div>Vendor Qty</div><div>Vendor Rate</div><div>Action</div></div>
