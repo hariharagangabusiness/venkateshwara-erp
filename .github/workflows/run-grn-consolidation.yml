@@ -1,0 +1,56 @@
+name: Run historical GRN consolidation
+
+# One-off, manually-triggered run of scripts/consolidate-historical-grn.js
+# against the production database, over the same SSH path deploy.yml
+# already uses (same DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY/DEPLOY_PORT/
+# DEPLOY_PATH secrets - no new credentials needed).
+#
+# Defaults to a dry run (mode=dry-run) so the output can be reviewed in
+# the Action log before anyone runs mode=apply, which actually writes to
+# erp.db. The real DB path is discovered from the running erp.service's
+# own environment rather than hardcoded, since this repo doesn't commit
+# the production DATA_DIR value.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (default, writes nothing) or apply (writes to the real database)'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH in and run the consolidation script
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ secrets.DEPLOY_PATH }}"
+            # Discover DATA_DIR the same way erp.service actually runs with it,
+            # rather than guessing - falls back to the app dir's own db/
+            # folder (db/index.js's own default) if erp.service sets none.
+            DATA_DIR=$(sudo systemctl show erp.service -p Environment --value | tr ' ' '\n' | sed -n 's/^DATA_DIR=//p' | tail -1)
+            if [ -z "$DATA_DIR" ]; then DATA_DIR="$APP_DIR/db"; fi
+            DB_PATH="$DATA_DIR/erp.db"
+            echo "==> Using database: $DB_PATH"
+            if [ ! -f "$DB_PATH" ]; then echo "erp.db not found at $DB_PATH - aborting." >&2; exit 1; fi
+            if [ "${{ inputs.mode }}" = "apply" ]; then
+              BACKUP="$DATA_DIR/erp.db.pre-grn-consolidation.$(date +%Y%m%d%H%M%S).bak"
+              echo "==> Backing up to $BACKUP"
+              sudo -u erp cp "$DB_PATH" "$BACKUP"
+              echo "==> Running with --apply"
+              sudo -u erp node "$APP_DIR/scripts/consolidate-historical-grn.js" "$DB_PATH" --apply
+            else
+              echo "==> Running dry run (no changes)"
+              sudo -u erp node "$APP_DIR/scripts/consolidate-historical-grn.js" "$DB_PATH"
+            fi
