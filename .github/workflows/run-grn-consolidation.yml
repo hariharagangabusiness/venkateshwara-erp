@@ -7,20 +7,22 @@ name: Run historical GRN consolidation
 #
 # Defaults to a dry run (mode=dry-run) so the output can be reviewed in
 # the Action log before anyone runs mode=apply, which actually writes to
-# erp.db. The real DB path is discovered from the running erp.service's
-# own environment rather than hardcoded, since this repo doesn't commit
-# the production DATA_DIR value.
+# erp.db. mode=find-db is a pure diagnostic (no sudo beyond the sudo -u
+# erp pattern deploy.sh already proves works) that just locates erp.db -
+# use it first if dry-run/apply ever can't find the database, rather than
+# guessing again at broader sudo rights the deploy user may not have.
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry-run (default, writes nothing) or apply (writes to the real database)'
+        description: 'dry-run (default, writes nothing), apply (writes to the real database), or find-db (diagnostic only)'
         required: true
         default: 'dry-run'
         type: choice
         options:
           - dry-run
           - apply
+          - find-db
 
 jobs:
   run-script:
@@ -36,25 +38,35 @@ jobs:
           script: |
             set -euo pipefail
             APP_DIR="${{ secrets.DEPLOY_PATH }}"
-            # Discover DATA_DIR straight from the running erp.service process's
-            # own /proc/<pid>/environ - works regardless of whether it was set
-            # via Environment= or EnvironmentFile= (systemctl show -p
-            # Environment only ever reflects the former, which is why the
-            # first run of this workflow failed to find it). Falls back to
-            # the app dir's own db/ folder (db/index.js's own default) only
-            # if the running process genuinely has no DATA_DIR set.
-            MAIN_PID=$(sudo systemctl show erp.service -p MainPID --value)
-            DATA_DIR=$(sudo cat "/proc/$MAIN_PID/environ" | tr '\0' '\n' | sed -n 's/^DATA_DIR=//p')
+            MODE="${{ inputs.mode }}"
+
+            if [ "$MODE" = "find-db" ]; then
+              echo "==> whoami / sudo -u erp whoami"
+              whoami
+              sudo -u erp whoami
+              echo "==> Looking for a .env file under $APP_DIR"
+              sudo -u erp sh -c "cat '$APP_DIR/.env' 2>/dev/null | grep -i DATA_DIR" || echo "(no DATA_DIR line found in $APP_DIR/.env, or no .env there)"
+              echo "==> Searching for erp.db under $APP_DIR (depth 4)"
+              sudo -u erp find "$APP_DIR" -maxdepth 4 -iname 'erp.db' 2>&1 || true
+              echo "==> Searching more broadly for erp.db (depth 6 from /, may take a moment)"
+              sudo -u erp find / -maxdepth 6 -iname 'erp.db' 2>/dev/null || true
+              exit 0
+            fi
+
+            # Discover DATA_DIR from a .env file in the app dir (the
+            # EnvironmentFile= a systemd service like this one typically
+            # points at) - read via sudo -u erp, the only sudo pattern
+            # deploy.sh already proves this account can use; sudo
+            # systemctl show/cat on arbitrary paths is NOT assumed to work.
+            DATA_DIR=$(sudo -u erp sh -c "cat '$APP_DIR/.env' 2>/dev/null | sed -n 's/^DATA_DIR=//p'" | tail -1)
             if [ -z "$DATA_DIR" ]; then DATA_DIR="$APP_DIR/db"; fi
             DB_PATH="$DATA_DIR/erp.db"
             echo "==> Using database: $DB_PATH"
             if [ ! -f "$DB_PATH" ]; then
-              echo "erp.db not found at $DB_PATH - aborting." >&2
-              echo "Diagnostic: searching for erp.db under $APP_DIR..." >&2
-              sudo find "$APP_DIR" -maxdepth 3 -iname 'erp.db' 2>&1 >&2 || true
+              echo "erp.db not found at $DB_PATH - aborting. Re-run this workflow with mode=find-db to locate it." >&2
               exit 1
             fi
-            if [ "${{ inputs.mode }}" = "apply" ]; then
+            if [ "$MODE" = "apply" ]; then
               BACKUP="$DATA_DIR/erp.db.pre-grn-consolidation.$(date +%Y%m%d%H%M%S).bak"
               echo "==> Backing up to $BACKUP"
               sudo -u erp cp "$DB_PATH" "$BACKUP"
