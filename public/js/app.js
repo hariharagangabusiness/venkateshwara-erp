@@ -528,6 +528,7 @@ const NAV = [
     { id: 'purchase-requests', label: 'Purchase Requests' },
     { id: 'purchase-orders', label: 'Purchase Orders' },
     { id: 'rfq-dashboard', label: 'RFQ Dashboard' },
+    { id: 'purchase-velocity', label: 'Purchase Velocity' },
     { id: 'vendors', label: 'Vendors' },
   ]},
   { group: 'Sales & Marketing', items: [
@@ -6998,6 +6999,69 @@ PAGES['rfq-dashboard'] = async (el) => {
     </table>
     </div>
   `);
+};
+// Purchase Velocity: stat-card matrix, each card drills into its per-record
+// rows (lazy-loaded once, collapsed by default).
+const PV_CARDS = [
+  { key: 'pr_po', title: 'PR → PO', sub: 'Purchase Request raised to first PO created', waiting: 'approved PRs with no PO yet' },
+  { key: 'po_approval', title: 'PO → Approval', sub: 'PO submitted to final approval', waiting: 'POs awaiting approval' },
+  { key: 'po_grn', title: 'PO → GRN', sub: 'PO approved to first receipt', waiting: 'approved POs with nothing received' },
+];
+const pvDays = (d) => (d == null ? '-' : Number(d).toFixed(1) + ' d');
+PAGES['purchase-velocity'] = async (el) => {
+  const r = window.__PV_RANGE || {};
+  const d = await api('/purchase/velocity' + (r.from ? `?from=${r.from}&to=${r.to}` : ''));
+  window.__PV_RANGE = { from: d.from, to: d.to };
+  const cards = PV_CARDS.map((c) => {
+    const m = d.metrics[c.key];
+    const full = c.key === 'po_grn' ? `<div class="muted">Full receipt: ${pvDays(m.full.avg)} avg (${m.full.count} PO${m.full.count === 1 ? '' : 's'})</div>` : '';
+    return `<div class="panel" style="cursor:pointer;margin:0;" tabindex="0" role="button" onclick="togglePvDrill('${c.key}')" onkeydown="if(event.key==='Enter')togglePvDrill('${c.key}')">
+      <div class="muted">${c.title}</div>
+      <div style="font-size:30px;font-weight:600;">${pvDays(m.avg)}</div>
+      <div class="muted">${esc(c.sub)}</div>
+      <div>${m.count} completed · slowest ${pvDays(m.max)}</div>
+      ${full}
+      <div>${m.in_flight} in flight <span class="muted">(${esc(c.waiting)})</span></div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="panel">
+    <div class="form-grid">
+      <div><label>From</label><input type="date" id="pv-from" value="${d.from}"></div>
+      <div><label>To</label><input type="date" id="pv-to" value="${d.to}"></div>
+    </div>
+    <button class="btn small" type="button" onclick="applyPvRange()">Apply</button>
+    <p class="muted">Per PO number (not per line). Draft, Cancelled and Rejected POs are excluded. Click a card for the underlying records.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px;">${cards}</div>
+  ${PV_CARDS.map((c) => `<div id="pv-drill-${c.key}" style="display:none;"></div>`).join('')}`;
+};
+window.applyPvRange = () => {
+  window.__PV_RANGE = { from: document.getElementById('pv-from').value, to: document.getElementById('pv-to').value };
+  navigate('purchase-velocity');
+};
+window.togglePvDrill = async (key) => {
+  const box = document.getElementById('pv-drill-' + key);
+  if (!box) return;
+  const open = box.style.display === 'none';
+  box.style.display = open ? '' : 'none';
+  if (!open || box.dataset.built) return;
+  box.dataset.built = '1';
+  box.innerHTML = '<div class="panel muted">Loading...</div>';
+  try {
+    const { from, to } = window.__PV_RANGE;
+    const x = await api(`/purchase/velocity/drill?metric=${key}&from=${from}&to=${to}`);
+    const day = (s) => (s ? esc(String(s).slice(0, 10)) : '-');
+    const rows = (list, withFull) => list.map((i) => `<tr><td>${esc(i.ref)}</td><td>${esc(i.vendor_name) || '-'}</td><td>${esc(i.pr_no) || '-'}</td><td>${day(i.start)}</td><td>${day(i.end)}</td><td>${pvDays(i.days)}</td>${withFull ? `<td>${pvDays(i.full_days)}</td>` : ''}</tr>`).join('');
+    const head = (withFull) => `<thead><tr><th>Ref</th><th>Vendor</th><th>PR</th><th>Start</th><th>End</th><th>Days</th>${withFull ? '<th>To full receipt</th>' : ''}</tr></thead>`;
+    const withFull = key === 'po_grn';
+    box.innerHTML = `<div class="panel"><h3>${esc(PV_CARDS.find((c) => c.key === key).title)} — completed (slowest first)</h3>
+      <div style="overflow-x:auto;"><table>${head(withFull)}<tbody>${rows(x.done, withFull) || '<tr><td colspan="7" class="muted">None in range.</td></tr>'}</tbody></table></div>
+      <h3>In flight (waiting longest first)</h3>
+      <div style="overflow-x:auto;"><table>${head(false)}<tbody>${rows(x.in_flight, false) || '<tr><td colspan="6" class="muted">None.</td></tr>'}</tbody></table></div></div>`;
+  } catch (e) {
+    box.dataset.built = '';
+    box.innerHTML = `<div class="panel">Could not load: ${esc(e.message)}</div>`;
+  }
 };
 function rfqDashboardActions(r) {
   const btns = [];
