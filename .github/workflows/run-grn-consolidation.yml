@@ -36,14 +36,24 @@ jobs:
           script: |
             set -euo pipefail
             APP_DIR="${{ secrets.DEPLOY_PATH }}"
-            # Discover DATA_DIR the same way erp.service actually runs with it,
-            # rather than guessing - falls back to the app dir's own db/
-            # folder (db/index.js's own default) if erp.service sets none.
-            DATA_DIR=$(sudo systemctl show erp.service -p Environment --value | tr ' ' '\n' | sed -n 's/^DATA_DIR=//p' | tail -1)
+            # Discover DATA_DIR straight from the running erp.service process's
+            # own /proc/<pid>/environ - works regardless of whether it was set
+            # via Environment= or EnvironmentFile= (systemctl show -p
+            # Environment only ever reflects the former, which is why the
+            # first run of this workflow failed to find it). Falls back to
+            # the app dir's own db/ folder (db/index.js's own default) only
+            # if the running process genuinely has no DATA_DIR set.
+            MAIN_PID=$(sudo systemctl show erp.service -p MainPID --value)
+            DATA_DIR=$(sudo cat "/proc/$MAIN_PID/environ" | tr '\0' '\n' | sed -n 's/^DATA_DIR=//p')
             if [ -z "$DATA_DIR" ]; then DATA_DIR="$APP_DIR/db"; fi
             DB_PATH="$DATA_DIR/erp.db"
             echo "==> Using database: $DB_PATH"
-            if [ ! -f "$DB_PATH" ]; then echo "erp.db not found at $DB_PATH - aborting." >&2; exit 1; fi
+            if [ ! -f "$DB_PATH" ]; then
+              echo "erp.db not found at $DB_PATH - aborting." >&2
+              echo "Diagnostic: searching for erp.db under $APP_DIR..." >&2
+              sudo find "$APP_DIR" -maxdepth 3 -iname 'erp.db' 2>&1 >&2 || true
+              exit 1
+            fi
             if [ "${{ inputs.mode }}" = "apply" ]; then
               BACKUP="$DATA_DIR/erp.db.pre-grn-consolidation.$(date +%Y%m%d%H%M%S).bak"
               echo "==> Backing up to $BACKUP"
