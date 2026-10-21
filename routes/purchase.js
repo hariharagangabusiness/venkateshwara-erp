@@ -1567,14 +1567,19 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
       const receivedSoFar = poReceivedQty(po_id);
       const newStatus = receivedSoFar >= po.quantity ? 'Received' : 'PartiallyReceived';
       db.prepare(`UPDATE purchase_orders SET status = ? WHERE id = ?`).run(newStatus, po_id);
+      const invNo = (vendor_invoice_no && String(vendor_invoice_no).trim()) || null;
+      // Single-row placeholder batch so the invoice no/date always live on a grn_batches header.
+      const batchId = db.prepare(`INSERT INTO grn_batches (po_id, invoice_attachment_path, uploaded_by, is_placeholder, vendor_invoice_no, vendor_invoice_date) VALUES (?,?,?,1,?,?)`)
+        .run(po_id, 'PLACEHOLDER - vendor invoice not yet received', req.user.id, invNo, vendor_invoice_date || null).lastInsertRowid;
+      db.prepare('UPDATE stock_movements SET grn_batch_id = ? WHERE id = ?').run(batchId, moveInfo.lastInsertRowid);
       const grnInfo = db.prepare(`
-        INSERT INTO grn_reconciliations (po_id, stock_movement_id, received_qty, po_rate, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT INTO grn_reconciliations (po_id, stock_movement_id, received_qty, po_rate, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, created_by, grn_batch_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
       `).run(po_id, moveInfo.lastInsertRowid, qty, po.rate,
-        (vendor_invoice_no && String(vendor_invoice_no).trim()) || null, vendor_invoice_date || null,
+        invNo, vendor_invoice_date || null,
         vendor_invoiced_qty !== undefined && vendor_invoiced_qty !== '' ? Number(vendor_invoiced_qty) : null,
         vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
-        req.user.id);
+        req.user.id, batchId);
       grnId = grnInfo.lastInsertRowid;
     }
     return grnId;
@@ -1591,8 +1596,8 @@ router.post('/store/receive', requirePermission('store.manage'), (req, res) => {
 // invoice file + shared invoice no/date, N PO lines. All-or-nothing in one
 // transaction; each line still gets its own movement, GRN row and approval
 // (so billing/ledger logic downstream is unchanged), all tagged with the same
-// grn_batch_id. The file is also attached to every GRN row so the Store HOD
-// sees it in the existing drilldown attachments widget.
+// grn_batch_id. The file is attached once to the batch; routes/attachments.js maps a
+// GRN line id to its parent batch so the drilldown widget still finds it.
 const uploadGrnInvoice = makeUpload('attachments', 15);
 router.post('/store/receive-batch', requirePermission('store.manage'), uploadGrnInvoice.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Attach the vendor invoice copy - it is mandatory for a batch receipt.' });
@@ -1618,8 +1623,11 @@ router.post('/store/receive-batch', requirePermission('store.manage'), uploadGrn
   }
   const filePath = '/uploads/attachments/' + req.file.filename;
   const grnIds = db.transaction(() => {
-    const batchId = db.prepare('INSERT INTO grn_batches (po_id, invoice_attachment_path, uploaded_by) VALUES (?,?,?)')
-      .run(prepared[0].po.id, filePath, req.user.id).lastInsertRowid;
+    const batchId = db.prepare('INSERT INTO grn_batches (po_id, invoice_attachment_path, uploaded_by, vendor_invoice_no, vendor_invoice_date) VALUES (?,?,?,?,?)')
+      .run(prepared[0].po.id, filePath, req.user.id, invNo, invDate).lastInsertRowid;
+    // The scanned master invoice is attached ONCE, to the batch header.
+    db.prepare(`INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES ('grn_batches', ?, ?, ?, ?, 'VendorInvoice')`)
+      .run(batchId, filePath, req.file.originalname, req.user.id);
     return prepared.map(({ po, qty, vqty, vrate }) => {
       const mv = db.prepare(`INSERT INTO stock_movements (item_id, movement_type, quantity, reference, moved_by, grn_batch_id) VALUES (?, 'IN', ?, ?, ?, ?)`)
         .run(po.item_id, qty, 'PO#' + po.id, req.user.id, batchId);
@@ -1630,8 +1638,6 @@ router.post('/store/receive-batch', requirePermission('store.manage'), uploadGrn
         INSERT INTO grn_reconciliations (po_id, stock_movement_id, received_qty, po_rate, vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, created_by, grn_batch_id)
         VALUES (?,?,?,?,?,?,?,?,?,?)
       `).run(po.id, mv.lastInsertRowid, qty, po.rate, invNo, invDate, vqty, vrate, req.user.id, batchId).lastInsertRowid;
-      db.prepare(`INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES ('grn_reconciliation', ?, ?, ?, ?, 'VendorInvoice')`)
-        .run(grnId, filePath, req.file.originalname, req.user.id);
       return grnId;
     });
   })();
@@ -1689,7 +1695,8 @@ router.get('/store/grn-reconciliations/:id', (req, res) => {
   const g = db.prepare(`
     SELECT g.*, po.po_no, po.item_id, po.quantity as po_quantity, po.unit, po.hsn_code, po.gst_rate,
       i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin, ${GRN_REJECTION_REASON_FIELDS},
-      (SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_reconciliation' AND a.entity_id = g.id ORDER BY a.id DESC LIMIT 1) as invoice_attachment_path
+      COALESCE((SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_batches' AND a.entity_id = g.grn_batch_id ORDER BY a.id DESC LIMIT 1),
+        (SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_reconciliation' AND a.entity_id = g.id ORDER BY a.id DESC LIMIT 1)) as invoice_attachment_path
     FROM grn_reconciliations g
     JOIN purchase_orders po ON po.id = g.po_id
     LEFT JOIN items i ON i.id = po.item_id
@@ -1733,6 +1740,10 @@ router.patch('/store/grn-reconciliations/:id', (req, res) => {
     vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
     existing.id
   );
+  if (existing.grn_batch_id) {
+    db.prepare('UPDATE grn_batches SET vendor_invoice_no = ?, vendor_invoice_date = ? WHERE id = ? AND is_placeholder = 1')
+      .run((vendor_invoice_no && String(vendor_invoice_no).trim()) || null, vendor_invoice_date || null, existing.grn_batch_id);
+  }
   // A fresh approval, not a resume of the rejected one - same shape as a
   // rejected Purchase Request's own POST /requests/:id/resubmit, so the
   // Rejected approval and its reason stay on file as permanent history

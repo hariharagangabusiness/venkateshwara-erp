@@ -1394,6 +1394,9 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
   `ALTER TABLE grn_batches ADD COLUMN is_placeholder INTEGER DEFAULT 0`,
+  // Invoice no/date live once on the batch header (2026-10-22); line-level copies stay for unbatched legacy rows.
+  `ALTER TABLE grn_batches ADD COLUMN vendor_invoice_no TEXT`,
+  `ALTER TABLE grn_batches ADD COLUMN vendor_invoice_date TEXT`,
   `ALTER TABLE grn_reconciliations ADD COLUMN grn_batch_id INTEGER REFERENCES grn_batches(id)`,
   `ALTER TABLE stock_movements ADD COLUMN grn_batch_id INTEGER REFERENCES grn_batches(id)`,
   // Performance fix (2026-10-13): GET /orders (routes/purchase.js) computes
