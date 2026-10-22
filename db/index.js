@@ -1442,6 +1442,23 @@ const MIGRATIONS = [
   // with no further change needed there.
   `ALTER TABLE offer_items ADD COLUMN unit TEXT DEFAULT 'Nos'`,
   `ALTER TABLE offer_items ADD COLUMN discount_amount REAL DEFAULT 0`,
+  // Offer Builder additions (2026-10-22): a free-text customer reference
+  // (their email/RFQ no) printed under the addressee's GSTIN; a per-line
+  // Remarks (Spares-format only, shown only when at least one line has one,
+  // same column-level gating as discount_amount); and offer_annexures, an
+  // Excel-pasted appendix grid printed as the offer PDF's last page. Separate
+  // from the post-order Annexure .docx (annexure_reviews), which is unrelated.
+  `ALTER TABLE offers ADD COLUMN customer_reference TEXT`,
+  `ALTER TABLE offer_items ADD COLUMN remarks TEXT`,
+  `CREATE TABLE IF NOT EXISTS offer_annexures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_id INTEGER NOT NULL REFERENCES offers(id),
+    description TEXT,
+    qty TEXT,
+    unit TEXT,
+    remarks TEXT,
+    sort_order INTEGER DEFAULT 0
+  )`,
   // Sales Invoice: editable buyer details defaulting from the order/client
   // master (2026-10-17) - sales_invoices previously had buyer_gstin/
   // buyer_state only, with name/contact/address/phone always joined live
@@ -1601,7 +1618,7 @@ migrateUserDashboardLayoutToPageLayout();
 // migrateOffersClientIdNullable() above, which has to drop every trigger
 // referencing `offers` before rebuilding that table and recreate them
 // afterward in the same transaction.
-const OFFER_CHILD_LOCK_TABLES = ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references'];
+const OFFER_CHILD_LOCK_TABLES = ['offer_items', 'offer_tech_specs', 'offer_bought_out_items', 'offer_terms', 'offer_equipment_references', 'offer_annexures'];
 function createOfferChildLockTriggers() {
   for (const table of OFFER_CHILD_LOCK_TABLES) {
     raw.exec(`
@@ -1831,6 +1848,11 @@ for (const col of ['application', 'type_of_system', 'material_of_construction'])
       SELECT DISTINCT '${col}', ${col} FROM offers WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''
     `);
   } catch (e) {}
+}
+// Admin-managed Unit list for Spares offer lines (2026-10-22), seeded with
+// the same three presets the Purchase Order unit picker offers.
+for (const [i, u] of ['Nos', 'KGS', 'Meters'].entries()) {
+  try { raw.prepare(`INSERT OR IGNORE INTO offer_field_options (field_name, value, sort_order) VALUES ('unit', ?, ?)`).run(u, i); } catch (e) {}
 }
 
 // Round 24: every pre-existing single-item purchase_requests row becomes its

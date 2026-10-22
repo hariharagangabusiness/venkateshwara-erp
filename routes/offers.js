@@ -98,7 +98,7 @@ function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summ
 // master template control, not a Sales function, per Round 40's RBAC
 // tightening) - Sales still reads the active list via offerPerm() below to
 // pick a value when building an offer.
-const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction'];
+const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction', 'unit'];
 
 router.get('/field-options/:field', offerPerm(), (req, res) => {
   if (!OFFER_OPTION_FIELDS.includes(req.params.field)) return res.status(404).json({ error: 'Unknown field' });
@@ -112,7 +112,7 @@ router.get('/field-options', requireRole('Admin'), (req, res) => {
 });
 router.post('/field-options', requireRole('Admin'), (req, res) => {
   const { field_name, value, sort_order } = req.body;
-  if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, or material_of_construction' });
+  if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, material_of_construction, or unit' });
   if (!String(value || '').trim()) return res.status(400).json({ error: 'Enter a value.' });
   try {
     const info = db.prepare(`INSERT INTO offer_field_options (field_name, value, sort_order) VALUES (?,?,?)`)
@@ -455,7 +455,8 @@ function getFullOffer(id) {
   const boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const terms = db.prepare('SELECT * FROM offer_terms WHERE offer_id = ? ORDER BY sort_order, id').all(id);
   const equipmentReferences = db.prepare('SELECT * FROM offer_equipment_references WHERE offer_id = ? ORDER BY sort_order, id').all(id);
-  return { offer, client, items, techSpecs, boughtOut, terms, equipmentReferences };
+  const annexures = db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(id);
+  return { offer, client, items, techSpecs, boughtOut, terms, equipmentReferences, annexures };
 }
 
 router.get('/:id', (req, res) => {
@@ -612,8 +613,8 @@ function cloneOfferContent(source, opts) {
         promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
         abg_required, abg_percentage, abg_amount, abg_validity_days,
         pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
-        is_template, offer_format, created_by)
-      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?,?)
+        is_template, offer_format, customer_reference, created_by)
+      VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?,?,?)
     `).run(offerNo, opts.client_id || null, opts.lead_id || null, opts.contact_person || null, opts.contact_phone || null, opts.contact_email || null, opts.subject || source.subject,
       source.drawing_no, source.application, source.type_of_system, source.material_of_construction,
       source.inclusions, source.exclusions, source.utilities_requirement, source.instrument_air_supply,
@@ -621,16 +622,19 @@ function cloneOfferContent(source, opts) {
       source.promised_delivery_date, source.ld_percentage, source.ld_cap_percentage, source.ld_trigger_notes,
       source.abg_required, source.abg_percentage, source.abg_amount, source.abg_validity_days,
       source.pbg_required, source.pbg_percentage, source.pbg_amount, source.pbg_validity_days, source.bg_terms_notes,
-      opts.is_template ? 1 : 0, source.offer_format || 'Standard', opts.created_by);
+      opts.is_template ? 1 : 0, source.offer_format || 'Standard', opts.is_template ? null : source.customer_reference, opts.created_by);
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
-      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, total_price, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     items.forEach(it => {
-      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.total_price, it.sort_order);
+      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order);
     });
+    const annStmt = db.prepare(`INSERT INTO offer_annexures (offer_id, description, qty, unit, remarks, sort_order) VALUES (?,?,?,?,?,?)`);
+    db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(source.id)
+      .forEach(a => annStmt.run(newId, a.description, a.qty, a.unit, a.remarks, a.sort_order));
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
     techSpecs.forEach(s => specStmt.run(newId, s.spec_key, s.spec_value, s.sort_order));
     const boStmt = db.prepare(`INSERT INTO offer_bought_out_items (offer_id, component, make, sort_order) VALUES (?,?,?,?)`);
@@ -717,7 +721,7 @@ router.put('/:id', offerPerm(), (req, res) => {
     UPDATE offers SET subject=?, contact_person=?, contact_phone=?, contact_email=?,
       application=?, type_of_system=?, material_of_construction=?, drawing_no=?,
       inclusions=?, exclusions=?, utilities_requirement=?, instrument_air_supply=?,
-      show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?, offer_format=?,
+      show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?, offer_format=?, customer_reference=?,
       status=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=?
   `).run(f.subject, f.contact_person, f.contact_phone, f.contact_email,
@@ -727,6 +731,7 @@ router.put('/:id', offerPerm(), (req, res) => {
     f.show_bought_out !== undefined ? (f.show_bought_out ? 1 : 0) : existing.show_bought_out,
     f.show_inclusions_exclusions !== undefined ? (f.show_inclusions_exclusions ? 1 : 0) : existing.show_inclusions_exclusions,
     f.offer_format !== undefined ? (f.offer_format === 'Spares' ? 'Spares' : 'Standard') : existing.offer_format,
+    f.customer_reference !== undefined ? (String(f.customer_reference || '').trim() || null) : existing.customer_reference,
     forked ? 'Draft' : (f.status || existing.status || 'Draft'), targetId);
   res.json({ ok: true, newVersion: forked, id: targetId });
 });
@@ -734,7 +739,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   // Unit + flat Discount Amount (2026-10-15, Spares-format offers only on
@@ -752,9 +757,9 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
-    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, total_price, sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, taxable, sort_order || 0);
+    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0);
   if (!section_title_id) {
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: info.lastInsertRowid, title: section_title,
@@ -765,7 +770,7 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const discount = Math.max(0, Number(discount_amount || 0));
   const taxable = Math.max(0, q * rate - discount);
@@ -795,9 +800,9 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     }
   }
   db.prepare(`
-    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, total_price=?, sort_order=?
+    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?
     WHERE id=?
-  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, taxable, sort_order || existing.sort_order, targetItemId);
+  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, targetItemId);
   if (!section_title_id) {
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: targetItemId, title: section_title,
@@ -890,6 +895,21 @@ router.put('/:id/terms', offerPerm(), (req, res) => {
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
+// Offer annexure appendix (Excel-pasted grid) - full replace, same shape as
+// the other bulk-replace sheets. Rows: [{description, qty, unit, remarks}].
+router.put('/:id/annexures', offerPerm(), (req, res) => {
+  const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
+  const rows = (Array.isArray(req.body.rows) ? req.body.rows : [])
+    .map(r => ({ description: String(r.description || '').trim(), qty: String(r.qty || '').trim(), unit: String(r.unit || '').trim(), remarks: String(r.remarks || '').trim() }))
+    .filter(r => r.description || r.qty || r.unit || r.remarks);
+  db.transaction(() => {
+    db.prepare('DELETE FROM offer_annexures WHERE offer_id = ?').run(version.id);
+    const stmt = db.prepare('INSERT INTO offer_annexures (offer_id, description, qty, unit, remarks, sort_order) VALUES (?,?,?,?,?,?)');
+    rows.forEach((r, i) => stmt.run(version.id, r.description, r.qty, r.unit, r.remarks, i));
+  })();
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
+});
+
 // ===================== PDF generation =====================
 
 // Puppeteer renders from an HTML string with no access to this server's own
@@ -920,7 +940,7 @@ router.get('/:id/pdf', async (req, res) => {
   const itemsForPdf = await Promise.all(full.items.map(withImageDataUri));
   const equipmentReferencesForPdf = await Promise.all(full.equipmentReferences.map(withImageDataUri));
   try {
-    const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms, equipmentReferencesForPdf);
+    const gen = await generateOfferPdf(full.offer, full.client, itemsForPdf, full.techSpecs, full.boughtOut, full.terms, equipmentReferencesForPdf, full.annexures);
     const filename = buildDownloadFilename({
       docType: 'Offer',
       reference: full.offer.offer_no,

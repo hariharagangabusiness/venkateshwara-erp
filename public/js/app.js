@@ -4009,6 +4009,7 @@ window.createOffer = async () => {
 
 window.openOfferBuilder = async (id) => {
   CURRENT_OFFER_ID = id;
+  OFFER_FLAG_OVERRIDES = {};
   const panel = document.getElementById('offer-builder-panel') || (() => {
     const p = document.createElement('div'); p.className = 'panel'; p.id = 'offer-builder-panel';
     document.getElementById('content').appendChild(p); return p;
@@ -4053,6 +4054,7 @@ async function renderOfferBuilder(panel) {
     ['commercial', 'Commercial Terms'],
     ['equipment-ref', 'Reference Equipment'],
     ['attachments', 'Attachments (GA Drawing / CAD)'],
+    ['annexure', 'Annexure' + (data.annexures && data.annexures.length ? ` (${data.annexures.length})` : '')],
   ];
   panel.innerHTML = `
     <h3>${o.is_template ? 'Standard Template' : 'Offer Builder'} &mdash; ${esc(o.offer_no)} v${o.version} <span class="badge ${esc(o.status)}">${esc(o.status)}</span>${o.locked ? ' <span class="badge red">Locked</span>' : ''}${o.is_template ? ' <span class="badge">TEMPLATE</span>' : ''}</h3>
@@ -4074,7 +4076,8 @@ async function renderOfferBuilder(panel) {
       ${o.is_template ? '' : `
       <div><label>Contact Person</label><input id="ob-contact" value="${esc(o.contact_person)}"></div>
       <div><label>Contact Phone</label><input id="ob-phone" value="${esc(o.contact_phone)}"></div>
-      <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>`}
+      <div><label>Contact Email</label><input id="ob-email" value="${esc(o.contact_email)}"></div>
+      <div><label>Reference (Email/RFQ)</label><input id="ob-ref" value="${esc(o.customer_reference)}" placeholder="Customer's email / RFQ no"></div>`}
       <div><label>Drawing No</label><input id="ob-drawing" value="${esc(o.drawing_no)}"></div>
       <div><label>Application</label>${offerFieldSelect('ob-application', applicationOpts, o.application)}</div>
       <div><label>Type Of System</label>${offerFieldSelect('ob-type', typeOpts, o.type_of_system)}</div>
@@ -4099,9 +4102,15 @@ async function renderOfferBuilder(panel) {
 // The three "Include in generated PDF" checkboxes each live inside their own
 // offer-builder tab now, so at most one is mounted in the DOM at a time -
 // falls back to the last-saved server value for whichever tab isn't active.
+// Unsaved show_* flag changes made by the Spares hook (offerFormatChanged) -
+// the checkboxes live inside tabs that aren't mounted, so the pending values
+// are held here until Save Header persists them (cleared in openOfferBuilder).
+let OFFER_FLAG_OVERRIDES = {};
+const OFFER_FLAG_FIELDS = { 'ob-show-tech': 'show_tech_specs', 'ob-show-boughtout': 'show_bought_out', 'ob-show-inclexcl': 'show_inclusions_exclusions' };
 function offerShowFlag(id, currentValue) {
   const el = document.getElementById(id);
-  return el ? (el.checked ? 1 : 0) : currentValue;
+  if (el) return el.checked ? 1 : 0;
+  return id in OFFER_FLAG_OVERRIDES ? OFFER_FLAG_OVERRIDES[id] : currentValue;
 }
 window.saveOfferHeader = async () => {
   try {
@@ -4123,6 +4132,7 @@ window.saveOfferHeader = async () => {
       show_bought_out: offerShowFlag('ob-show-boughtout', data.offer.show_bought_out),
       show_inclusions_exclusions: offerShowFlag('ob-show-inclexcl', data.offer.show_inclusions_exclusions),
       offer_format: val('ob-format'),
+      customer_reference: document.getElementById('ob-ref') ? val('ob-ref') : undefined,
     })});
     await afterOfferMutation({ newVersion: r.newVersion, offerId: r.id }, 'Header saved');
   } catch (e) { alert(e.message); }
@@ -4196,6 +4206,12 @@ window.switchOfferTab = async (tab) => {
 // own data (items etc. haven't changed) and re-renders the active tab.
 window.offerFormatChanged = async () => {
   if (!CURRENT_OFFER_ID) return;
+  // Choosing Spares un-selects the full-offer sections (tech specs, bought-out
+  // makes, inclusions/exclusions) - held as pending overrides, still freely
+  // re-tickable on their own tabs before Save Header.
+  if (val('ob-format') === 'Spares') {
+    Object.keys(OFFER_FLAG_FIELDS).forEach(id => { OFFER_FLAG_OVERRIDES[id] = 0; });
+  }
   const data = await api('/offers/' + CURRENT_OFFER_ID);
   renderOfferTab(data);
 };
@@ -4208,6 +4224,14 @@ function renderOfferTab(data) {
   // both render correctly without requiring Save Header first.
   const fmtEl = document.getElementById('ob-format');
   if (fmtEl) data = Object.assign({}, data, { offer: Object.assign({}, data.offer, { offer_format: fmtEl.value }) });
+  // Apply pending Spares-hook flag overrides; a checkbox still mounted from the
+  // previous render carries any manual re-tick, so capture that first.
+  Object.keys(OFFER_FLAG_OVERRIDES).forEach(id => { const c = document.getElementById(id); if (c) OFFER_FLAG_OVERRIDES[id] = c.checked ? 1 : 0; });
+  if (Object.keys(OFFER_FLAG_OVERRIDES).length) {
+    const patch = {};
+    Object.entries(OFFER_FLAG_OVERRIDES).forEach(([id, v]) => { patch[OFFER_FLAG_FIELDS[id]] = v; });
+    data = Object.assign({}, data, { offer: Object.assign({}, data.offer, patch) });
+  }
   if (CURRENT_OFFER_TAB === 'scope') return renderScopeTab(el, data);
   if (CURRENT_OFFER_TAB === 'tech') return renderKvTab(el, data.techSpecs, 'spec_key', 'spec_value', 'tech-specs', 'Specification', 'Value', undefined, data.offer.show_tech_specs === 0, { id: 'ob-show-tech', field: 'show_tech_specs', label: 'Technical Specifications', checked: data.offer.show_tech_specs !== 0 });
   if (CURRENT_OFFER_TAB === 'boughtout') return renderKvTab(el, data.boughtOut, 'component', 'make', 'bought-out', 'Component', 'Make', undefined, data.offer.show_bought_out === 0, { id: 'ob-show-boughtout', field: 'show_bought_out', label: 'Make of Bought-Out Items', checked: data.offer.show_bought_out !== 0 });
@@ -4216,7 +4240,78 @@ function renderOfferTab(data) {
   if (CURRENT_OFFER_TAB === 'commercial') return renderOfferCommercialTab(el, data.offer);
   if (CURRENT_OFFER_TAB === 'equipment-ref') return renderEquipmentReferenceTab(el, data);
   if (CURRENT_OFFER_TAB === 'attachments') return renderAttachmentsWidget('offer', data.offer.id, el, ['GADrawing', 'CADFile', 'Other']);
+  if (CURRENT_OFFER_TAB === 'annexure') return renderOfferAnnexureTab(el, data);
 }
+
+// ---- Annexure tab: paste straight from Excel (TSV on the clipboard) ----
+let OFFER_ANNEXURE_ROWS = [];
+function renderOfferAnnexureTab(el, data) {
+  OFFER_ANNEXURE_ROWS = (data.annexures || []).map(a => ({ description: a.description || '', qty: a.qty || '', unit: a.unit || '', remarks: a.remarks || '' }));
+  el.innerHTML = `
+    <p class="muted">Printed as the last page of the offer PDF (only when it has rows). Copy cells in Excel and paste (Ctrl+V) into the box below - columns: <b>S.No</b> (optional), <b>Description</b>, <b>Qty</b>, <b>Unit</b>, <b>Remarks</b>. A header row is detected automatically; rows are appended and stay editable.</p>
+    <textarea id="an-paste" rows="3" placeholder="Click here, then press Ctrl+V to paste from Excel" style="width:100%;padding:8px;border:2px dashed var(--border);border-radius:6px;font-family:inherit;" onpaste="pasteOfferAnnexure(event)"></textarea>
+    <div id="an-rows" style="margin-top:10px;"></div>
+    <div style="margin-top:8px;">
+      <button class="btn small outline" type="button" onclick="addOfferAnnexureRow()">+ Add Row</button>
+      <button class="btn small outline" type="button" onclick="clearOfferAnnexure()">Clear All</button>
+      <button class="btn" type="button" onclick="saveOfferAnnexure()">Save Annexure</button>
+    </div>`;
+  renderOfferAnnexureRows();
+}
+function renderOfferAnnexureRows() {
+  const wrap = document.getElementById('an-rows');
+  if (!wrap) return;
+  const inp = (i, k, w) => `<input value="${esc(OFFER_ANNEXURE_ROWS[i][k])}" oninput="OFFER_ANNEXURE_ROWS[${i}].${k}=this.value" style="width:${w};padding:5px;border:1px solid var(--border);border-radius:4px;">`;
+  wrap.innerHTML = `<table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Remarks</th><th></th></tr></thead><tbody>
+    ${OFFER_ANNEXURE_ROWS.map((r, i) => `<tr><td>${i + 1}</td><td style="min-width:240px;">${inp(i, 'description', '100%')}</td><td>${inp(i, 'qty', '70px')}</td><td>${inp(i, 'unit', '70px')}</td><td style="min-width:160px;">${inp(i, 'remarks', '100%')}</td>
+      <td><button class="btn small red" type="button" onclick="removeOfferAnnexureRow(${i})">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">No annexure rows yet.</td></tr>'}
+  </tbody></table>`;
+}
+// Parses an Excel/TSV clipboard dump into annexure rows. With a header row
+// (any cell reading Description) columns are mapped by name; otherwise 5+
+// columns are read as S.No/Description/Qty/Unit/Remarks and fewer as
+// Description/Qty/Unit/Remarks.
+function parseAnnexureTsv(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
+  if (!lines.length) return [];
+  let grid = lines.map(l => l.split('\t').map(c => c.trim()));
+  let map = null;
+  const hdr = grid[0].map(c => c.toLowerCase());
+  if (hdr.some(c => c.startsWith('desc'))) {
+    map = {
+      description: hdr.findIndex(c => c.startsWith('desc')),
+      qty: hdr.findIndex(c => c === 'qty' || c.startsWith('quant')),
+      unit: hdr.findIndex(c => c === 'unit' || c === 'uom'),
+      remarks: hdr.findIndex(c => c.startsWith('remark')),
+    };
+    grid = grid.slice(1);
+  } else {
+    const off = grid[0].length >= 5 ? 1 : 0;
+    map = { description: off, qty: off + 1, unit: off + 2, remarks: off + 3 };
+  }
+  const at = (row, i) => (i >= 0 && i < row.length ? row[i] : '');
+  return grid.map(r => ({ description: at(r, map.description), qty: at(r, map.qty), unit: at(r, map.unit), remarks: at(r, map.remarks) }))
+    .filter(r => r.description || r.qty || r.unit || r.remarks);
+}
+window.pasteOfferAnnexure = (ev) => {
+  const text = (ev.clipboardData || window.clipboardData).getData('text');
+  ev.preventDefault();
+  const rows = parseAnnexureTsv(text);
+  if (!rows.length) { alert('Nothing to paste - copy a range of cells in Excel first.'); return; }
+  OFFER_ANNEXURE_ROWS = OFFER_ANNEXURE_ROWS.concat(rows);
+  renderOfferAnnexureRows();
+};
+window.addOfferAnnexureRow = () => { OFFER_ANNEXURE_ROWS.push({ description: '', qty: '', unit: '', remarks: '' }); renderOfferAnnexureRows(); };
+window.removeOfferAnnexureRow = (i) => { OFFER_ANNEXURE_ROWS.splice(i, 1); renderOfferAnnexureRows(); };
+window.clearOfferAnnexure = () => { if (OFFER_ANNEXURE_ROWS.length && !confirm('Clear all annexure rows? (Not saved until you press Save Annexure.)')) return; OFFER_ANNEXURE_ROWS = []; renderOfferAnnexureRows(); };
+window.saveOfferAnnexure = async () => {
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/annexures`, { method: 'PUT', body: JSON.stringify({ rows: OFFER_ANNEXURE_ROWS, revision_reason: reason || null }) });
+    await afterOfferMutation(r, 'Annexure saved');
+  } catch (e) { alert(e.message); }
+};
 
 // Delivery/LD/BG terms on the offer itself - what we're proposing to commit
 // to, reusing the exact fields/UI already used for a Sales Order's own
@@ -4252,11 +4347,20 @@ window.saveOfferCommercialTerms = async () => {
   renderOfferCommercialTab(document.getElementById('offer-tab-content'), data.offer);
 };
 
+// Plain Unit dropdown over the Admin-managed 'unit' Offer Field Options; keeps a
+// retired/legacy value selectable so editing an old line doesn't silently change it.
+function offerUnitSelectHTML(id, options, current) {
+  const vals = options.map(o => o.value);
+  if (current && !vals.includes(current)) vals.unshift(current);
+  return `<select id="${id}">${vals.map(v => `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+}
 async function renderScopeTab(el, data) {
   const items = data.items;
   const equipmentRefs = data.equipmentReferences || [];
   const sectionTitles = await api('/offers/section-titles').catch(() => []);
   window.__SECTION_TITLES = sectionTitles;
+  // Admin-managed Unit list (Offer Field Options) - Spares lines only.
+  const unitOpts = data.offer.offer_format === 'Spares' ? await api('/offers/field-options/unit').catch(() => []) : [];
   // Unit of Measurement + flat Discount Amount per line (2026-10-15) -
   // Spares-format offers only, matching the owner's locked scope (a full
   // machinery offer's Scope Of Supply stays exactly as it was). Spares mode
@@ -4269,15 +4373,18 @@ async function renderScopeTab(el, data) {
   // in for any line is dead weight on the table, not just a blank cell.
   const hasDiscount = items.some(it => Number(it.discount_amount) > 0);
   const hasPicture = items.some(it => it.image_path);
+  // Remarks: same column-level gating as Discount - shown only once some line has one.
+  const hasRemarks = items.some(it => it.remarks && String(it.remarks).trim());
   const colsBeforeTaxable = 5 + (hasDiscount ? 1 : 0);
-  const totalCols = colsBeforeTaxable + 1 + (hasPicture ? 1 : 0) + 1;
+  const totalCols = colsBeforeTaxable + 1 + (hasRemarks ? 1 : 0) + (hasPicture ? 1 : 0) + 1;
   const listTable = isSpares ? `
-    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th>${hasDiscount ? '<th>Discount (₹)</th>' : ''}<th>Taxable</th>${hasPicture ? '<th>Picture</th>' : ''}<th></th></tr></thead>
+    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th>${hasDiscount ? '<th>Discount (₹)</th>' : ''}<th>Taxable</th>${hasRemarks ? '<th>Remarks</th>' : ''}${hasPicture ? '<th>Picture</th>' : ''}<th></th></tr></thead>
     <tbody>${items.map((it, i) => `
       <tr>
         <td>${i + 1}</td>
         <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
         <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td>${hasDiscount ? `<td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td>` : ''}<td>₹${fmt(it.total_price)}</td>
+        ${hasRemarks ? `<td style="white-space:pre-wrap;max-width:160px;">${esc(it.remarks)}</td>` : ''}
         ${hasPicture ? `<td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>` : ''}
         <td>${actionButtonsCell(`
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
@@ -4310,13 +4417,14 @@ async function renderScopeTab(el, data) {
       <div><label>Or type a new Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
       <div><label>Qty</label><input id="it-qty" type="number" value="1"></div>
       <div><label>Unit Price (₹)</label><input id="it-price" type="number" value="0"></div>
-      ${isSpares ? `<div><label>Unit</label>${unitPickerHTML('it-unit', 'Nos', null)}</div>
-      <div><label>Discount Amount (₹)</label><input id="it-discount" type="number" value="0"></div>` : ''}
+      ${isSpares ? `<div><label>Unit</label>${unitOpts.length ? offerUnitSelectHTML('it-unit', unitOpts, 'Nos') : unitPickerHTML('it-unit', 'Nos', null)}</div>
+      <div><label>Discount Amount (₹)</label><input id="it-discount" type="number" value="0"></div>
+      <div><label>Remarks <span class="muted">(printed only if filled)</span></label><input id="it-remarks" maxlength="300"></div>` : ''}
       <div><label>Picture (optional, overrides the library picture)</label><input id="it-image" type="file" accept="image/*"></div>
     </div>
     <div id="it-image-preview" style="margin:6px 0;"></div>
     <label>Description</label>
-    <textarea id="it-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+    <textarea id="it-desc" rows="3" style="width:90%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
     <label>Equipment Description Summary <span class="muted">(shown next to the picture on the PDF's Equipment Description page - optional)</span></label>
     <textarea id="it-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
     <div style="margin-top:8px;">
@@ -4394,7 +4502,11 @@ window.editOfferItem = async (itemId) => {
   // picker, not rebuilt per edit (same reasoning as every other "fill an
   // existing form" editXxx function in this file).
   const unitSel = document.getElementById('it-unit');
-  if (unitSel) {
+  if (unitSel && !document.getElementById('it-unit-other')) {
+    // Managed-list <select> (no Other... box) - add a legacy value if needed.
+    if (it.unit && ![...unitSel.options].some(o => o.value === it.unit)) unitSel.add(new Option(it.unit, it.unit));
+    unitSel.value = it.unit || 'Nos';
+  } else if (unitSel) {
     const isPreset = PO_UNIT_PRESETS.includes(it.unit);
     unitSel.value = isPreset ? (it.unit || 'Nos') : 'Other';
     toggleUnitOther('it-unit');
@@ -4402,6 +4514,8 @@ window.editOfferItem = async (itemId) => {
   }
   const discountEl = document.getElementById('it-discount');
   if (discountEl) discountEl.value = it.discount_amount || 0;
+  const remarksEl = document.getElementById('it-remarks');
+  if (remarksEl) remarksEl.value = it.remarks || '';
   document.getElementById('it-form-title').textContent = 'Edit Machinery / Scope Line';
   document.getElementById('it-submit-btn').textContent = 'Update Line';
   document.getElementById('it-cancel-btn').style.display = '';
@@ -4424,6 +4538,7 @@ window.addOfferItem = async () => {
     fd.append('unit_price', val('it-price'));
     if (document.getElementById('it-unit')) fd.append('unit', unitPickerValue('it-unit'));
     if (document.getElementById('it-discount')) fd.append('discount_amount', val('it-discount'));
+    if (document.getElementById('it-remarks')) fd.append('remarks', val('it-remarks'));
     fd.append('revision_reason', reason || '');
     if (val('it-section-select')) fd.append('section_title_id', val('it-section-select'));
     const fileInput = document.getElementById('it-image');
@@ -9690,7 +9805,7 @@ window.toggleExpTrackerCategory = async (id, active) => {
 */
 
 // ---- Offer Field Options (Application / Type of System / Material of Construction) ----
-const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction']];
+const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction'], ['unit', 'Unit']];
 let OFFER_OPTIONS_TAB = 'application';
 // ---- Offer Clause Library categories - ids must match routes/offers.js's CLAUSE_CATEGORIES ----
 const CLAUSE_CATEGORIES = [['term', 'Terms & Conditions'], ['inclusion', 'Inclusions'], ['exclusion', 'Exclusions'], ['utilities', 'Utilities Requirement'], ['instrument_air', 'Instrument Air Supply']];
