@@ -7275,8 +7275,21 @@ async function renderItemMasterSheet(el) {
       <button class="btn" onclick="uploadItemTemplate()" style="margin-top:6px;">Upload Filled Template</button>
       <div id="it-upload-result" style="margin-top:10px;"></div>
     </div>`,
-    'list': collapsiblePanel('item-master-list', `Item Master (${approvedItems.length})`, `
-      ${tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode', 'Status', ''], approvedItems, i => `
+    'list': collapsiblePanel('item-master-list', `<span id="im-count">Item Master (${approvedItems.length})</span>`, `
+      ${renderListSearch('item-master', approvedItems, ['item_code', 'name', 'unit', 'category', 'location', 'barcode', 'hsn_code', 'status'], (rows) => {
+        document.getElementById('im-table-wrap').innerHTML = itemMasterRowsHTML(rows);
+        document.getElementById('im-count').textContent = 'Item Master (' + rows.length + ')';
+      }, 'Search items by code, name, category, location, barcode...')}
+      <div id="im-table-wrap">${itemMasterRowsHTML(approvedItems)}</div>
+    `),
+  };
+  const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
+  const itemOrder = await fetchPanelOrder('store', Object.keys(itemPanels));
+  el.innerHTML = reorderablePanelsHTML('store', itemPanels, itemOrder, itemLabels);
+  if (pendingItems.length) renderPendingItemsPanel(pendingItems);
+}
+function itemMasterRowsHTML(rows) {
+  return tableHTML(['Code', 'Name', 'Unit', 'Category', 'Location', 'Stock', 'Reorder Level', 'Barcode', 'Status', ''], rows, i => `
         <tr><td>${esc(i.item_code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${esc(i.category)||'-'}</td><td>${esc(i.location)||'-'}</td>
           <td>${i.current_stock}${i.current_stock <= i.reorder_level ? ' ⚠️' : ''}</td><td>${i.reorder_level}</td>
           <td><span class="mono" style="letter-spacing:1px;">${esc(i.barcode)||'-'}</span></td>
@@ -7285,13 +7298,7 @@ async function renderItemMasterSheet(el) {
             ? (ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reactivateItem(${i.id})">Reactivate</button>` : '')
             : `<button class="btn small outline" type="button" onclick="openEditItem(${i.id})">Edit</button>
                <button class="btn small outline" type="button" onclick="deleteItem(${i.id})">Delete</button>`)
-               + `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${i.id})">Price History</button>`)}</td></tr>`)}
-    `),
-  };
-  const itemLabels = { 'add-item': 'Add Item Master', 'pending-review': 'Pending Item Master Review', 'pending-changes': 'Pending Item Changes', 'bulk-upload': 'Bulk Upload via Excel Template', 'list': 'Item Master List' };
-  const itemOrder = await fetchPanelOrder('store', Object.keys(itemPanels));
-  el.innerHTML = reorderablePanelsHTML('store', itemPanels, itemOrder, itemLabels);
-  if (pendingItems.length) renderPendingItemsPanel(pendingItems);
+               + `<button class="btn small outline" type="button" onclick="showItemPriceHistory(${i.id})">Price History</button>`)}</td></tr>`);
 }
 window.approveItemChange = async (id) => {
   try { await api('/masters/items/pending-changes/' + id + '/approve', { method: 'POST' }); navigate('store'); }
