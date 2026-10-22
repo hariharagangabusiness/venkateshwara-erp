@@ -615,15 +615,15 @@ async function notifyApproversPending(approval) {
     const info = describeEntity(approval.entity_type, approval.entity_id);
     const ref = info.ref || ('#' + approval.entity_id);
     const tpl = getEmailTemplate('action_pending');
-    for (const u of approvers) {
-      const { subject, body } = renderTemplate(tpl, {
-        approver_name: u.full_name,
-        entity_label: label,
-        ref,
-        summary: info.summary ? ' (' + info.summary + ')' : '',
-      });
-      await sendMail({ to: u.email, subject, text: body });
-    }
+    const approverName = approvers.length === 1 ? approvers[0].full_name : 'Team';
+    const { subject, body } = renderTemplate(tpl, {
+      approver_name: approverName,
+      entity_label: label,
+      ref,
+      summary: info.summary ? ' (' + info.summary + ')' : '',
+    });
+    const emails = approvers.map(u => u.email);
+    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body });
   } catch (e) { /* best-effort - never let a notification failure affect the approval itself */ }
 }
 
