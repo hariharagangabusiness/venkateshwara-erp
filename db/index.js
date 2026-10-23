@@ -1450,6 +1450,11 @@ const MIGRATIONS = [
   // from the post-order Annexure .docx (annexure_reviews), which is unrelated.
   `ALTER TABLE offers ADD COLUMN customer_reference TEXT`,
   `ALTER TABLE offer_items ADD COLUMN remarks TEXT`,
+  // FG Dispatch post-departure info (2026-10-23): vehicle_no / transporter_name
+  // / eway_bill_no already exist on fg_dispatches and are reused as-is; only
+  // the externally-issued invoice number and the insurance reference are new.
+  `ALTER TABLE fg_dispatches ADD COLUMN invoice_number TEXT`,
+  `ALTER TABLE fg_dispatches ADD COLUMN insurance_number TEXT`,
   `CREATE TABLE IF NOT EXISTS offer_annexures (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     offer_id INTEGER NOT NULL REFERENCES offers(id),

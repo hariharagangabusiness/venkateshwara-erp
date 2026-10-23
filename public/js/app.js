@@ -3167,7 +3167,10 @@ PAGES['fg-dispatches'] = async (el) => {
         <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
           <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">PDF</a>
-          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">Request Vehicle</button>` : ''}
+          <a class="btn small outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'covering-letter')">Covering Letter</a>
+          <a class="btn small outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">Print Envelope</a>
+          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">Request Vehicle</button>
+          <button class="btn small outline" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">Update Dispatch Info</button>` : ''}
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
@@ -3196,7 +3199,7 @@ window.toggleDispatchDetail = async (id) => {
   box.innerHTML = `
     <div class="panel">
       ${dispatch.payment_override_note ? `<p class="msg err">${esc(dispatch.payment_override_note)}</p>` : ''}
-      <p><b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp; <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'}</p>
+      <p><b>Vehicle:</b> ${esc(dispatch.vehicle_no)||'-'} &nbsp; <b>Transporter:</b> ${esc(dispatch.transporter_name)||'-'} &nbsp; <b>E-Way Bill:</b> ${esc(dispatch.eway_bill_no)||'-'} &nbsp; <b>Invoice:</b> ${esc(dispatch.invoice_number)||'-'} &nbsp; <b>Insurance:</b> ${esc(dispatch.insurance_number)||'-'}</p>
       ${tableHTML(['Description', 'Qty', 'Unit', 'HSN'], items, it => `<tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${esc(it.hsn_code)||'-'}</td></tr>`)}
     </div>`;
 };
@@ -3211,6 +3214,41 @@ window.downloadDispatchPdf = async (ev, id) => {
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
   return false;
+};
+// GET-and-download for the covering letter / envelope PDFs (auth header needed, so not a plain link).
+window.downloadDispatchDoc = async (ev, id, kind) => {
+  ev.preventDefault();
+  try {
+    const res = await fetch(`/api/sales/dispatches/${id}/${kind}`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a'); a.href = url; a.download = `dispatch-${id}-${kind}.pdf`; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+  return false;
+};
+window.openUpdateDispatchInfo = async (id, dispatchNo) => {
+  try {
+    const { dispatch: d } = await api(`/sales/dispatches/${id}`);
+    openAppModal('Update Dispatch Info - ' + dispatchNo, `
+      <div class="form-grid">
+        <div><label>Invoice Number</label><input id="udi-invoice" value="${esc(d.invoice_number)}"></div>
+        <div><label>E-Way Bill Number</label><input id="udi-eway" value="${esc(d.eway_bill_no)}"></div>
+        <div><label>Vehicle Number</label><input id="udi-vehicle" value="${esc(d.vehicle_no)}"></div>
+        <div><label>Transporter Name</label><input id="udi-transporter" value="${esc(d.transporter_name)}"></div>
+        <div><label>Insurance Number</label><input id="udi-insurance" value="${esc(d.insurance_number)}"></div>
+      </div>
+      <div style="margin-top:12px;"><button class="btn" id="udi-save" onclick="saveDispatchInfo(${id})">Save</button></div>`);
+  } catch (e) { alert(e.message); }
+};
+window.saveDispatchInfo = async (id) => {
+  try {
+    await api(`/sales/dispatches/${id}/finalize-logistics`, { method: 'POST', body: JSON.stringify({
+      invoice_number: val('udi-invoice'), eway_bill_no: val('udi-eway'), vehicle_no: val('udi-vehicle'),
+      transporter_name: val('udi-transporter'), insurance_number: val('udi-insurance'),
+    })});
+    confirmSavedThenClose('udi-save', 'fg-dispatches');
+  } catch (e) { alert(e.message); }
 };
 window.openRequestVehicle = (id, dispatchNo) => {
   openAppModal('Request Vehicle - ' + dispatchNo, `

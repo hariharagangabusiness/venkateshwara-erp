@@ -9,7 +9,7 @@ const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
-const { generateFgDispatchPdf, generateTransporterRequestPdf } = require('../lib/fgDispatchPdf');
+const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const router = express.Router();
 router.use(authRequired);
@@ -769,6 +769,50 @@ router.get('/dispatches/:id/pdf', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// The dispatch's customer plus the address to deliver to: their default
+// Shipping address, else the client's main address.
+function dispatchParty(dispatch) {
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(dispatch.client_id);
+  const ship = client && db.prepare(`SELECT * FROM client_addresses WHERE client_id = ? AND address_type = 'Shipping' ORDER BY is_default DESC, id LIMIT 1`).get(client.id);
+  const shipTo = ship
+    ? [ship.line1, ship.line2, [ship.city, ship.state, ship.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
+    : (client && client.address) || '';
+  return { client, shipTo };
+}
+// Post-departure logistics + invoice info - freely re-editable on any
+// dispatch that isn't Cancelled/Rejected (typo / vehicle-replacement fixes).
+router.post('/dispatches/:id/finalize-logistics', requirePermission('sales_order.manage'), (req, res) => {
+  const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(req.params.id);
+  if (!dispatch) return res.status(404).json({ error: 'Not found' });
+  if (['Cancelled', 'Rejected'].includes(dispatch.status)) {
+    return res.status(400).json({ error: `This dispatch is ${dispatch.status} and cannot be updated.` });
+  }
+  const t = (k) => String((req.body && req.body[k]) || '').trim() || null;
+  db.prepare(`UPDATE fg_dispatches SET invoice_number = ?, eway_bill_no = ?, vehicle_no = ?, transporter_name = ?, insurance_number = ? WHERE id = ?`)
+    .run(t('invoice_number'), t('eway_bill_no'), t('vehicle_no'), t('transporter_name'), t('insurance_number'), dispatch.id);
+  res.json({ ok: true });
+});
+// Shared by the covering letter and envelope downloads.
+function streamDispatchDoc(generator, suffix) {
+  return async (req, res) => {
+    const bundle = dispatchBundle(req.params.id);
+    if (!bundle) return res.status(404).json({ error: 'Not found' });
+    const { client, shipTo } = dispatchParty(bundle.dispatch);
+    let gen;
+    try {
+      gen = await generator({ dispatch: bundle.dispatch, items: bundle.items, client, shipTo, company: getCompanySettings() });
+      res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-${suffix}.pdf`, () => {
+        fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+}
+router.get('/dispatches/:id/covering-letter', streamDispatchDoc(generateCustomerCoveringLetterPdf, 'covering-letter'));
+router.get('/dispatches/:id/envelope', streamDispatchDoc(generateEnvelopePdf, 'envelope'));
+
 // Vehicle Request to Transporter - POST (not GET) since it takes the
 // operator's pick-up date; streams the PDF straight back. Ship-To address
 // (default one first) falls back to the client's main address.
@@ -780,11 +824,7 @@ router.post('/dispatches/:id/request-vehicle', requirePermission('report.view_al
   }
   const pickupDate = String((req.body && req.body.pickupDate) || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) return res.status(400).json({ error: 'Enter the date of pick-up to be arranged.' });
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(bundle.dispatch.client_id);
-  const ship = client && db.prepare(`SELECT * FROM client_addresses WHERE client_id = ? AND address_type = 'Shipping' ORDER BY is_default DESC, id LIMIT 1`).get(client.id);
-  const shipTo = ship
-    ? [ship.line1, ship.line2, [ship.city, ship.state, ship.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
-    : (client && client.address) || '';
+  const { client, shipTo } = dispatchParty(bundle.dispatch);
   let gen;
   try {
     gen = await generateTransporterRequestPdf(bundle.dispatch, bundle.items, client, shipTo, getCompanySettings(), pickupDate);
