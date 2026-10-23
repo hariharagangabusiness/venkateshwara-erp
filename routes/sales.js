@@ -9,7 +9,7 @@ const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
-const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf } = require('../lib/fgDispatchPdf');
+const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const router = express.Router();
 router.use(authRequired);
@@ -811,6 +811,42 @@ function streamDispatchDoc(generator, suffix) {
   };
 }
 router.get('/dispatches/:id/covering-letter', streamDispatchDoc(generateCustomerCoveringLetterPdf, 'covering-letter'));
+// Single consolidated customer PDF: covering letter, then the uploaded
+// E-Way Bill, Invoice, Transporter Receipt, Insurance Copy and Packing List
+// (each slot's latest upload; empty/unreadable slots are skipped and listed
+// in the X-Bundle-Skipped response header).
+const BUNDLE_SLOTS = [
+  ['E-Way Bill', 'eway_bill_file'], ['Invoice', 'invoice_file'], ['Transporter Receipt', 'transporter_receipt_file'],
+  ['Insurance Copy', 'insurance_file'], ['Packing List', 'packing_list_file'],
+];
+router.get('/dispatches/:id/customer-bundle', async (req, res) => {
+  const bundle = dispatchBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const { client, shipTo } = dispatchParty(bundle.dispatch);
+  let gen;
+  try {
+    gen = await generateCustomerCoveringLetterPdf({ dispatch: bundle.dispatch, items: bundle.items, client, shipTo, company: getCompanySettings() });
+    const cover = fs.readFileSync(gen.outPath);
+    const slots = BUNDLE_SLOTS.map(([label, tag]) => {
+      const row = db.prepare(`SELECT file_path FROM attachments WHERE entity_type = 'fg_dispatch' AND entity_id = ? AND document_type = ? ORDER BY id DESC LIMIT 1`).get(bundle.dispatch.id, tag);
+      return { label, file: row ? resolveUploadPath(row.file_path) : null };
+    });
+    const out = await assembleCustomerBundle(cover, slots);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-customer-bundle.pdf"`,
+      'X-Bundle-Included': out.included.join(', '),
+      'X-Bundle-Skipped': out.skipped.map(s => `${s.label} (${s.reason})`).join(', '),
+      'Access-Control-Expose-Headers': 'X-Bundle-Included, X-Bundle-Skipped',
+    });
+    res.send(out.buffer);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (gen) fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+  }
+});
 router.get('/dispatches/:id/envelope', streamDispatchDoc(generateEnvelopePdf, 'envelope'));
 
 // Vehicle Request to Transporter - POST (not GET) since it takes the

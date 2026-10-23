@@ -10,6 +10,9 @@ const multer = require('multer');
 const { db } = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { makeUpload } = require('../lib/upload');
+const { resolveUploadPath } = require('../lib/paths');
+const { compressUploadedImageFile } = require('../lib/imageCompress');
+const { PDFDocument } = require('pdf-lib');
 const router = express.Router();
 router.use(authRequired);
 
@@ -24,7 +27,29 @@ const VALID_TYPES = new Set([
 // (Payment Advice, Bill of Entry, Bill of Lading, Vendor Invoice, Proforma
 // Invoice, Other) - every other entity type leaves this NULL and just
 // doesn't show a category, same as before this column existed.
-const VALID_DOCUMENT_TYPES = new Set(['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'GADrawing', 'CADFile', 'CustomerPO', 'Other']);
+const VALID_DOCUMENT_TYPES = new Set(['PaymentAdvice', 'BillOfEntry', 'BillOfLading', 'VendorInvoice', 'ProformaInvoice', 'GADrawing', 'CADFile', 'CustomerPO', 'Other',
+  ...['invoice_file', 'insurance_file', 'eway_bill_file', 'transporter_receipt_file', 'packing_list_file']]);
+
+// FG Dispatch document slots (2026-10-23): one live file per slot per dispatch -
+// a new upload under the same tag replaces the previous one - and the file is
+// compressed on the way in (images via sharp, PDFs via a pdf-lib re-save,
+// whichever is smaller). Only meaningful against entity_type 'fg_dispatch'.
+const FG_DOC_TAGS = new Set(['invoice_file', 'insurance_file', 'eway_bill_file', 'transporter_receipt_file', 'packing_list_file']);
+
+// Best-effort: never throws, leaves the file untouched if it can't help.
+async function compressUploadedFile(file) {
+  const ext = path.extname(file.path).toLowerCase();
+  if (ext === '.pdf') {
+    try {
+      const original = fs.readFileSync(file.path);
+      const saved = Buffer.from(await (await PDFDocument.load(original, { ignoreEncryption: true })).save({ useObjectStreams: true }));
+      if (saved.length < original.length) fs.writeFileSync(file.path, saved);
+    } catch (e) { /* keep original */ }
+    return path.basename(file.path);
+  }
+  if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return compressUploadedImageFile(file.path);
+  return path.basename(file.path);
+}
 
 // A GRN line that belongs to a batch shares the batch's single vendor-invoice
 // file, so map the line id to its parent batch instead of duplicating per line.
@@ -45,15 +70,34 @@ router.get('/:entityType/:entityId', (req, res) => {
   res.json(rows);
 });
 
-router.post('/:entityType/:entityId', upload.single('file'), (req, res) => {
+router.post('/:entityType/:entityId', upload.single('file'), async (req, res) => {
   const { entityType, entityId } = resolveEntity(req.params.entityType, req.params.entityId);
   if (!VALID_TYPES.has(entityType)) return res.status(400).json({ error: 'Unknown entity type' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const documentType = req.body.document_type && VALID_DOCUMENT_TYPES.has(req.body.document_type) ? req.body.document_type : null;
-  const filePath = '/uploads/attachments/' + req.file.filename;
-  const info = db.prepare(`
-    INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES (?,?,?,?,?,?)
-  `).run(entityType, entityId, filePath, req.file.originalname, req.user.id, documentType);
+  const isFgDoc = FG_DOC_TAGS.has(documentType);
+  if (isFgDoc && entityType !== 'fg_dispatch') {
+    try { fs.unlinkSync(req.file.path); } catch (e) { /* best effort */ }
+    return res.status(400).json({ error: 'That document category only applies to a dispatch.' });
+  }
+  let filename = req.file.filename;
+  if (isFgDoc) filename = await compressUploadedFile(req.file);
+  const filePath = '/uploads/attachments/' + filename;
+  // Insert the new row and retire the old one(s) for the same slot together.
+  const stale = [];
+  const info = db.transaction(() => {
+    if (isFgDoc) {
+      for (const old of db.prepare('SELECT id, file_path FROM attachments WHERE entity_type = ? AND entity_id = ? AND document_type = ?').all(entityType, entityId, documentType)) {
+        stale.push(old.file_path);
+        db.prepare('DELETE FROM attachments WHERE id = ?').run(old.id);
+      }
+    }
+    return db.prepare(`
+      INSERT INTO attachments (entity_type, entity_id, file_path, original_name, uploaded_by, document_type) VALUES (?,?,?,?,?,?)
+    `).run(entityType, entityId, filePath, req.file.originalname, req.user.id, documentType);
+  })();
+  // Files only go once the DB swap committed (and never the one just saved).
+  stale.filter(f => f !== filePath).forEach(f => { try { fs.unlinkSync(resolveUploadPath(f)); } catch (e) { /* already gone */ } });
   res.json({ id: info.lastInsertRowid, file_path: filePath, document_type: documentType });
 });
 

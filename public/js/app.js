@@ -3165,12 +3165,12 @@ PAGES['fg-dispatches'] = async (el) => {
       ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
         <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
         <td>${actionButtonsCell(`
+          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
+          <button class="btn small" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
+          <a class="btn small green" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'customer-bundle')">3. Customer Bundle PDF</a>` : ''}
+          <a class="btn small dark-outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">4. Print Envelope</a>
+          <a href="/api/sales/dispatches/${d.id}/pdf" style="font-size:12px;" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
-          <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">PDF</a>
-          <a class="btn small outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'covering-letter')">Covering Letter</a>
-          <a class="btn small outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">Print Envelope</a>
-          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">Request Vehicle</button>
-          <button class="btn small outline" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">Update Dispatch Info</button>` : ''}
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
@@ -3221,25 +3221,60 @@ window.downloadDispatchDoc = async (ev, id, kind) => {
   try {
     const res = await fetch(`/api/sales/dispatches/${id}/${kind}`, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
+    const skipped = res.headers.get('X-Bundle-Skipped');
     const url = URL.createObjectURL(await res.blob());
     const a = document.createElement('a'); a.href = url; a.download = `dispatch-${id}-${kind}.pdf`; a.click();
     URL.revokeObjectURL(url);
+    if (skipped) alert('Customer bundle downloaded without: ' + skipped);
   } catch (e) { alert(e.message); }
   return false;
 };
+const DISPATCH_DOC_SLOTS = [
+  { tag: 'invoice_file', btn: 'Upload Invoice PDF', fields: [['udi-invoice', 'Invoice Number', 'invoice_number']] },
+  { tag: 'insurance_file', btn: 'Upload Insurance Copy', fields: [['udi-insurance', 'Insurance Number', 'insurance_number']] },
+  { tag: 'eway_bill_file', btn: 'Upload E-Way Bill PDF', fields: [['udi-eway', 'E-Way Bill Number', 'eway_bill_no']] },
+  { tag: 'transporter_receipt_file', btn: 'Upload Transporter Receipt', fields: [['udi-transporter', 'Transporter Name', 'transporter_name'], ['udi-vehicle', 'Vehicle Number', 'vehicle_no']] },
+  { tag: 'packing_list_file', btn: 'Upload Final Packing List', fields: [] },
+];
+function dispatchDocStatusHTML(a) {
+  return a ? `<span style="color:var(--green);font-weight:600;">&#10003; ${esc(a.original_name)}</span>` : '<span class="muted">No file yet</span>';
+}
 window.openUpdateDispatchInfo = async (id, dispatchNo) => {
   try {
-    const { dispatch: d } = await api(`/sales/dispatches/${id}`);
+    const [{ dispatch: d }, atts] = await Promise.all([api(`/sales/dispatches/${id}`), api(`/attachments/fg_dispatch/${id}`)]);
+    const latest = (tag) => atts.find(a => a.document_type === tag);
+    const row = (slot) => `
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 14px;align-items:end;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div class="form-grid" style="margin:0;">
+          ${slot.fields.map(([fid, label, key]) => `<div><label>${label}</label><input id="${fid}" value="${esc(d[key])}"></div>`).join('') || `<div><label>Final Packing List</label><span class="muted">Document only</span></div>`}
+        </div>
+        <div style="min-width:190px;">
+          <label class="btn small outline" style="display:block;text-align:center;margin:0 0 4px;cursor:pointer;">${slot.btn}
+            <input type="file" accept="application/pdf,image/*" style="display:none;" onchange="uploadDispatchDoc(${id}, '${slot.tag}', this)"></label>
+          <div id="udi-ok-${slot.tag}" style="font-size:12px;word-break:break-all;">${dispatchDocStatusHTML(latest(slot.tag))}</div>
+        </div>
+      </div>`;
     openAppModal('Update Dispatch Info - ' + dispatchNo, `
-      <div class="form-grid">
-        <div><label>Invoice Number</label><input id="udi-invoice" value="${esc(d.invoice_number)}"></div>
-        <div><label>E-Way Bill Number</label><input id="udi-eway" value="${esc(d.eway_bill_no)}"></div>
-        <div><label>Vehicle Number</label><input id="udi-vehicle" value="${esc(d.vehicle_no)}"></div>
-        <div><label>Transporter Name</label><input id="udi-transporter" value="${esc(d.transporter_name)}"></div>
-        <div><label>Insurance Number</label><input id="udi-insurance" value="${esc(d.insurance_number)}"></div>
-      </div>
+      <p class="muted">Documents upload as soon as you pick them (a new file replaces the previous one for that slot). Use Save for the text fields.</p>
+      ${DISPATCH_DOC_SLOTS.map(row).join('')}
       <div style="margin-top:12px;"><button class="btn" id="udi-save" onclick="saveDispatchInfo(${id})">Save</button></div>`);
   } catch (e) { alert(e.message); }
+};
+window.uploadDispatchDoc = async (id, tag, input) => {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('udi-ok-' + tag);
+  status.innerHTML = '<span class="muted">Uploading...</span>';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('document_type', tag);
+    await apiUpload(`/attachments/fg_dispatch/${id}`, fd, 'POST');
+    status.innerHTML = dispatchDocStatusHTML({ original_name: file.name });
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+  input.value = '';
 };
 window.saveDispatchInfo = async (id) => {
   try {
