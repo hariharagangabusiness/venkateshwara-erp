@@ -3167,6 +3167,7 @@ PAGES['fg-dispatches'] = async (el) => {
         <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
           <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">PDF</a>
+          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">Request Vehicle</button>` : ''}
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
@@ -3210,6 +3211,23 @@ window.downloadDispatchPdf = async (ev, id) => {
     URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
   return false;
+};
+window.openRequestVehicle = (id, dispatchNo) => {
+  openAppModal('Request Vehicle - ' + dispatchNo, `
+    <div class="form-grid"><div><label>Date of Pick-up to be Arranged</label><input id="rv-date" type="date"></div></div>
+    <div style="margin-top:12px;"><button class="btn" onclick="submitRequestVehicle(${id})">Generate Request</button></div>`);
+};
+window.submitRequestVehicle = async (id) => {
+  const pickupDate = val('rv-date');
+  if (!pickupDate) { alert('Pick the date of pick-up to be arranged.'); return; }
+  try {
+    const res = await fetch(`/api/sales/dispatches/${id}/request-vehicle`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }, body: JSON.stringify({ pickupDate }) });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Request failed'); }
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a'); a.href = url; a.download = `vehicle-request-${id}.pdf`; a.click();
+    URL.revokeObjectURL(url);
+    closeAppModal();
+  } catch (e) { alert(e.message); }
 };
 window.cancelDispatch = async (id) => {
   if (!confirm('Cancel this dispatch? This cannot be undone.')) return;

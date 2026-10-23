@@ -9,7 +9,7 @@ const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
-const { generateFgDispatchPdf } = require('../lib/fgDispatchPdf');
+const { generateFgDispatchPdf, generateTransporterRequestPdf } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const router = express.Router();
 router.use(authRequired);
@@ -762,6 +762,33 @@ router.get('/dispatches/:id/pdf', async (req, res) => {
   try {
     gen = await generateFgDispatchPdf(bundle.dispatch, bundle.items, client, getCompanySettings());
     res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}.pdf`, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+// Vehicle Request to Transporter - POST (not GET) since it takes the
+// operator's pick-up date; streams the PDF straight back. Ship-To address
+// (default one first) falls back to the client's main address.
+router.post('/dispatches/:id/request-vehicle', requirePermission('report.view_all', 'sales_order.manage'), async (req, res) => {
+  const bundle = dispatchBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  if (['Cancelled', 'Rejected'].includes(bundle.dispatch.status)) {
+    return res.status(400).json({ error: `This dispatch is ${bundle.dispatch.status} - no vehicle can be requested for it.` });
+  }
+  const pickupDate = String((req.body && req.body.pickupDate) || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) return res.status(400).json({ error: 'Enter the date of pick-up to be arranged.' });
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(bundle.dispatch.client_id);
+  const ship = client && db.prepare(`SELECT * FROM client_addresses WHERE client_id = ? AND address_type = 'Shipping' ORDER BY is_default DESC, id LIMIT 1`).get(client.id);
+  const shipTo = ship
+    ? [ship.line1, ship.line2, [ship.city, ship.state, ship.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
+    : (client && client.address) || '';
+  let gen;
+  try {
+    gen = await generateTransporterRequestPdf(bundle.dispatch, bundle.items, client, shipTo, getCompanySettings(), pickupDate);
+    res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-vehicle-request.pdf`, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
