@@ -24,6 +24,23 @@ router.use(authRequired);
 const uploadQuote = makeUpload('purchase-quotes', 15);
 
 // ---- Purchase Requests ----
+// Dashboard widget: vendors onboarded vs. vendors with a live, unanswered RFQ
+// portal link. An already-Active vendor is never counted as "developing", so
+// totalTracked is a true unique-vendor count.
+router.get('/dashboard/vendor-analytics', requirePermission('purchase_order.manage'), (req, res) => {
+  const onboardedCount = db.prepare("SELECT COUNT(*) AS n FROM vendors WHERE status = 'Active'").get().n;
+  const developingCount = db.prepare(`
+    SELECT COUNT(DISTINCT t.vendor_id) AS n
+    FROM rfq_tokens t
+    JOIN vendors v ON v.id = t.vendor_id
+    JOIN rfq_requests r ON r.id = t.rfq_request_id
+    LEFT JOIN vendor_responses vr ON vr.rfq_token_id = t.id
+    WHERE t.revoked = 0 AND t.expires_at > datetime('now') AND r.status = 'Sent'
+      AND vr.id IS NULL AND COALESCE(v.status, 'Active') != 'Active'
+  `).get().n;
+  res.json({ success: true, onboardedCount, developingCount, totalTracked: onboardedCount + developingCount });
+});
+
 router.get('/requests', (req, res) => {
   res.json(db.prepare(`
     SELECT pr.*, i.name as item_name, i.status as item_master_status, p.project_code, u.full_name as raised_by_name, d.name as department_name,

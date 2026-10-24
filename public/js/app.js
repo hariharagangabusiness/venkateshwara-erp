@@ -1566,6 +1566,7 @@ PAGES.dashboard = async (el) => {
         ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
       </div>
       <div id="stat-detail"></div>
+      <div id="dash-vendor-analytics-widget"></div>
       <div id="dash-followups-widget"></div>
     `,
     customMetrics: `
@@ -1633,6 +1634,8 @@ PAGES.dashboard = async (el) => {
   const order = await fetchPanelOrder('dashboard', Object.keys(panels));
   el.innerHTML = reorderablePanelsHTML('dashboard', panels, order, DASHBOARD_WIDGET_LABELS);
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
+  // Not awaited: a slow or failing analytics call must never hold up the rest of the dashboard.
+  loadVendorAnalyticsWidget();
   await renderDashboardCustomMetrics();
   renderDashboardCharts(d, ws);
 };
@@ -3011,6 +3014,30 @@ function followupsTableHTML(items) {
       <td>${esc(a.activity_type)}</td><td>${esc(a.notes) || '-'}</td><td>${esc(a.owner_name) || '-'}</td>
       <td><button class="btn small outline" onclick="completeLeadActivity(${a.lead_id}, ${a.id})">Mark Done</button></td></tr>`);
 }
+// ---- Vendor Development Analytics (dashboard) ----
+function canSeeVendorAnalytics() {
+  return has('purchase_order.manage') && (!ALLOWED_PAGES || ALLOWED_PAGES.has('purchase-orders'));
+}
+function renderVendorAnalyticsWidgetHTML(data) {
+  const card = (label, n, color) => `<div style="flex:1 1 200px;min-width:0;border:1px solid var(--border,#ddd);border-left:4px solid ${color};border-radius:6px;padding:12px 14px;">
+      <div class="muted" style="font-size:12px;">${label}</div>
+      <div style="font-size:28px;font-weight:700;color:${color};">${n}</div></div>`;
+  return `<div class="panel">
+    <div class="toolbar"><h3 style="margin:0;">Vendor Development (${data.totalTracked} tracked)</h3></div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;">
+      ${card('Onboarded Vendors', data.onboardedCount, '#1a7f37')}
+      ${card('Vendors in Development', data.developingCount, '#1f6feb')}
+    </div></div>`;
+}
+async function loadVendorAnalyticsWidget() {
+  const box = document.getElementById('dash-vendor-analytics-widget');
+  if (!box || !canSeeVendorAnalytics()) return;
+  try {
+    const data = await api('/purchase/dashboard/vendor-analytics');
+    if (data && data.success) box.innerHTML = renderVendorAnalyticsWidgetHTML(data);
+  } catch (e) { box.innerHTML = ''; }
+}
+
 async function dashboardFollowupsWidgetHTML() {
   try {
     const items = await api('/sales/leads/followups');
