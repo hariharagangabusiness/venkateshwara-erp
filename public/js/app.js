@@ -3165,13 +3165,13 @@ PAGES['fg-dispatches'] = async (el) => {
       ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
         <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
         <td>${actionButtonsCell(`
-          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
-          <button class="btn small" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
-          <a class="btn small green" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'customer-bundle')">3. Customer Bundle PDF</a>` : ''}
-          <a class="btn small dark-outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">4. Print Envelope</a>
-          <a href="/api/sales/dispatches/${d.id}/pdf" style="font-size:12px;" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
-          <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
-          ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
+          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
+          <button class="btn small" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
+          <a class="btn small green" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'customer-bundle')">3. Customer Bundle PDF</a>` : ''}
+          <a class="btn small dark-outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">4. Print Envelope</a>
+          <a href="/api/sales/dispatches/${d.id}/pdf" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
+          <button class="btn small outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
+          ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
     `)}`;
@@ -3244,11 +3244,11 @@ window.openUpdateDispatchInfo = async (id, dispatchNo) => {
     const [{ dispatch: d }, atts] = await Promise.all([api(`/sales/dispatches/${id}`), api(`/attachments/fg_dispatch/${id}`)]);
     const latest = (tag) => atts.find(a => a.document_type === tag);
     const row = (slot) => `
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 14px;align-items:end;padding:10px 0;border-bottom:1px solid var(--border);">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,200px);gap:12px 14px;align-items:end;padding:10px 0;border-bottom:1px solid var(--border);">
         <div class="form-grid" style="margin:0;">
           ${slot.fields.map(([fid, label, key]) => `<div><label>${label}</label><input id="${fid}" value="${esc(d[key])}"></div>`).join('') || `<div><label>Final Packing List</label><span class="muted">Document only</span></div>`}
         </div>
-        <div style="min-width:190px;">
+        <div style="display:flex;flex-direction:column;gap:4px;">
           <label class="btn small outline" style="display:block;text-align:center;margin:0 0 4px;cursor:pointer;">${slot.btn}
             <input type="file" accept="application/pdf,image/*" style="display:none;" onchange="uploadDispatchDoc(${id}, '${slot.tag}', this)"></label>
           <div id="udi-ok-${slot.tag}" style="font-size:12px;word-break:break-all;">${dispatchDocStatusHTML(latest(slot.tag))}</div>
