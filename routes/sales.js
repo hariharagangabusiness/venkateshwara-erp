@@ -253,7 +253,9 @@ router.delete('/targets/:id', requirePermission('sales_order.manage', 'report.vi
 router.get('/orders', (req, res) => {
   res.json(db.prepare(`
     SELECT so.*, c.name as client_name, c.group_id as group_id, cg.name as group_name,
-      c.gstin as client_gstin, c.phone as client_phone, c.contact_person as client_contact_person, c.address as client_address
+      c.gstin as client_gstin, c.phone as client_phone, c.contact_person as client_contact_person, c.address as client_address,
+      (SELECT state FROM client_addresses WHERE client_id = c.id AND address_type = 'Billing' ORDER BY is_default DESC, id LIMIT 1) as client_billing_state,
+      (SELECT state_code FROM client_addresses WHERE client_id = c.id AND address_type = 'Billing' ORDER BY is_default DESC, id LIMIT 1) as client_billing_state_code
     FROM sales_orders so JOIN clients c ON c.id = so.client_id LEFT JOIN client_groups cg ON cg.id = c.group_id
     ORDER BY so.id DESC
   `).all());

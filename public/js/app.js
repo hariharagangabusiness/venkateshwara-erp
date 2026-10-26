@@ -12669,7 +12669,7 @@ PAGES['sales-invoices'] = async (el) => {
     <div class="panel"><h3>Generate Proforma Invoice (Advance / Pre-Dispatch)</h3>
       <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
       <div class="form-grid">
-        <div><label>Sales Order</label><select id="pf-so" onchange="loadPFMilestones()">${(orders||[]).map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.description||'')}</option>`).join('')}</select></div>
+        <div><label>Sales Order</label>${salesOrderPickerHTML('pf-so', window.__INV_ORDERS, null, 'onchange="pfSOChanged()"')}</div>
         <div><label>Type</label><select id="pf-type"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
         <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
         <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
@@ -12691,6 +12691,7 @@ PAGES['sales-invoices'] = async (el) => {
         `)}</td></tr>`)}
     `)}`;
   invoiceSOChanged();
+  pfSOChanged();
 };
 window.loadPFMilestones = async () => {
   const sel = document.getElementById('pf-milestone');
@@ -12742,11 +12743,28 @@ window.invoiceSOChanged = () => {
   const soId = Number(val('inv-so'));
   const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
   if (!o) return;
+  document.getElementById('inv-buyer-state').value = o.client_billing_state || '';
   document.getElementById('inv-buyer-gstin').value = o.client_gstin || '';
   document.getElementById('inv-buyer-name').value = o.client_name || '';
   document.getElementById('inv-buyer-contact').value = o.client_contact_person || '';
   document.getElementById('inv-buyer-address').value = o.client_address || '';
   document.getElementById('inv-buyer-phone').value = o.client_phone || '';
+};
+// Same searchable-picker + auto-fill pattern as Generate Invoice's own
+// invoiceSOChanged() above (2026-10-26) - Proforma previously used a plain
+// unsearchable <select> with no auto-fill at all. Both forms share one
+// already-fetched `window.__INV_ORDERS` array (GET /sales/orders), which
+// now also carries the client's own Billing-address state (clients itself
+// has no state column - only its billing address does), so State can be
+// auto-filled here for the first time, not just GSTIN.
+window.pfSOChanged = () => {
+  const soId = Number(val('pf-so'));
+  const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
+  if (o) {
+    document.getElementById('pf-buyer-state').value = o.client_billing_state || '';
+    document.getElementById('pf-buyer-gstin').value = o.client_gstin || '';
+  }
+  loadPFMilestones();
 };
 window.generateInvoice = async () => {
   const errEl = document.getElementById('inv-err'); errEl.style.display = 'none';
