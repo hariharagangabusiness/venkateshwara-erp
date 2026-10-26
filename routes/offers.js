@@ -8,6 +8,7 @@ const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
+const { autoCompleteSystemTodos } = require('../lib/systemTodos');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
 const { offerVisibilityWhere, canSeeOffer } = require('../lib/offerVisibility');
 const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
@@ -211,6 +212,7 @@ router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req
   }
   db.prepare(`UPDATE section_title_suggestions SET status = 'Approved', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(req.user.id, suggestion.id);
+  autoCompleteSystemTodos('SECTION_TITLE_SUGGESTION', suggestion.id);
   res.json({ ok: true });
 });
 router.post('/section-title-suggestions/:id/reject', requireRole('Admin'), (req, res) => {
@@ -220,6 +222,7 @@ router.post('/section-title-suggestions/:id/reject', requireRole('Admin'), (req,
   if (suggestion.image_path) fs.unlink(resolveUploadPath(suggestion.image_path), () => {});
   db.prepare(`UPDATE section_title_suggestions SET status = 'Rejected', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(req.user.id, suggestion.id);
+  autoCompleteSystemTodos('SECTION_TITLE_SUGGESTION', suggestion.id);
   res.json({ ok: true });
 });
 
