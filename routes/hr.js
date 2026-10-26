@@ -350,6 +350,44 @@ router.get('/leave-requests', (req, res) => {
     ORDER BY lr.id DESC
   `).all());
 });
+// Department-wise "who's on leave today" summary for the Attendance page
+// widget - every Approved leave_requests row whose date range covers today.
+router.get('/leaves/today-summary', (req, res) => {
+  const rows = db.prepare(`
+    SELECT
+      d.id AS dept_id,
+      COALESCE(d.name, 'Unassigned') AS department_name,
+      e.id AS employee_id,
+      e.full_name AS employee_name,
+      lt.name AS leave_type,
+      l.from_date,
+      l.to_date,
+      l.days,
+      l.reason
+    FROM leave_requests l
+    JOIN employees e ON l.employee_id = e.id
+    LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+    LEFT JOIN departments d ON e.department_id = d.id
+    WHERE l.status = 'Approved'
+      AND DATE('now') BETWEEN DATE(l.from_date) AND DATE(l.to_date)
+    ORDER BY d.name, e.full_name
+  `).all();
+  const departments = [];
+  const byDept = {};
+  rows.forEach(r => {
+    const key = r.dept_id == null ? 'unassigned' : r.dept_id;
+    if (!byDept[key]) {
+      byDept[key] = { dept_id: r.dept_id, department_name: r.department_name, employees: [] };
+      departments.push(byDept[key]);
+    }
+    byDept[key].employees.push({
+      employee_id: r.employee_id, employee_name: r.employee_name, leave_type: r.leave_type,
+      from_date: r.from_date, to_date: r.to_date, days: r.days, reason: r.reason,
+    });
+  });
+  res.json({ total: rows.length, departments });
+});
+
 router.post('/leave-requests', (req, res) => {
   const { employee_id, leave_type_id, from_date, to_date, days, reason } = req.body;
   const employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(employee_id);
