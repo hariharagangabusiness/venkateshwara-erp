@@ -388,6 +388,39 @@ router.get('/leaves/today-summary', (req, res) => {
   res.json({ total: rows.length, departments });
 });
 
+// Next-4-weeks planning view (2026-10-26) - every Approved or Pending
+// leave_requests row whose own date range overlaps the next 28 days
+// (today through today+27 inclusive), so a leave that's already in
+// progress or starts any day in that window shows up. Returns a flat row
+// list (not pre-grouped) so the frontend can toggle between "by
+// department" and "by week" layouts from the one fetch, each row
+// carrying its own `status` so the UI can badge Approved vs Pending
+// distinctly per the owner's locked scope.
+router.get('/leaves/upcoming-summary', (req, res) => {
+  const rows = db.prepare(`
+    SELECT
+      d.id AS dept_id,
+      COALESCE(d.name, 'Unassigned') AS department_name,
+      e.id AS employee_id,
+      e.full_name AS employee_name,
+      lt.name AS leave_type,
+      l.from_date,
+      l.to_date,
+      l.days,
+      l.reason,
+      l.status
+    FROM leave_requests l
+    JOIN employees e ON l.employee_id = e.id
+    LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+    LEFT JOIN departments d ON e.department_id = d.id
+    WHERE l.status IN ('Approved', 'Pending')
+      AND DATE(l.from_date) <= DATE('now', '+27 days')
+      AND DATE(l.to_date) >= DATE('now')
+    ORDER BY l.from_date, d.name, e.full_name
+  `).all();
+  res.json({ total: rows.length, rows });
+});
+
 router.post('/leave-requests', (req, res) => {
   const { employee_id, leave_type_id, from_date, to_date, days, reason } = req.body;
   const employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(employee_id);

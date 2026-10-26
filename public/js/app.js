@@ -5735,29 +5735,50 @@ window.uploadJobCardFile = async (id) => {
     openJobCardDetail(id);
   } catch (e) { alert(e.message); }
 };
+// Multi-item Request Material modal (2026-10-26, replacing the original
+// one-item-at-a-time form) - same "+ Add Line Item" shape as
+// ISSUE_LINES/FOC_LINES, through gridLineTableHTML so the item/qty/notes
+// columns stay aligned regardless of line count.
+let RM_LINES = [];
+const RM_LINES_GRID_COLS = 'minmax(220px,1.8fr) 100px minmax(160px,1.4fr) 44px';
+function rmItemOptions(selectedId, items) {
+  return `<option value="">- pick an item -</option>` + items.map(i =>
+    `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)} (${esc(i.unit||'Nos')})</option>`).join('');
+}
+function renderRMLines() {
+  const el = document.getElementById('rm-lines');
+  if (!el) return;
+  const items = window.__RM_ITEMS || [];
+  el.innerHTML = gridLineTableHTML(RM_LINES_GRID_COLS, ['Item', 'Quantity', 'Notes (optional)', ''], RM_LINES, (l, i) => `
+      <div>${itemPickerHTML(`rm-item-${i}`, items, l.item_id, rmItemOptions, `onchange="RM_LINES[${i}].item_id=this.value?Number(this.value):''"`)}</div>
+      <div><input type="number" step="0.01" value="${l.quantity_requested}" onchange="RM_LINES[${i}].quantity_requested=Number(this.value)"></div>
+      <div><input value="${esc(l.request_notes||'')}" placeholder="e.g. urgent" onchange="RM_LINES[${i}].request_notes=this.value"></div>
+      <div>${RM_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="RM_LINES.splice(${i},1);renderRMLines()">✕</button>` : ''}</div>`);
+}
+window.addRMLine = () => { RM_LINES.push({ item_id: '', quantity_requested: 1, request_notes: '' }); renderRMLines(); };
 window.openRequestMaterialModal = async (jobCardId) => {
   let items;
   try { items = await api('/masters/items'); } catch (e) { alert(e.message); return; }
   window.__RM_ITEMS = items.filter(i => !['Pending', 'Discontinued'].includes(i.status));
+  RM_LINES = [{ item_id: '', quantity_requested: 1, request_notes: '' }];
   openAppModal('Request Material', `
-    <div class="form-grid">
-      <div style="flex:0 0 auto;">${itemPickerHTML('rm-item', window.__RM_ITEMS, null, (sel, list) =>
-        `<option value="">- pick an item -</option>` + list.map(i => `<option value="${i.id}" ${i.id===sel?'selected':''}>${esc(i.name)} (${esc(i.unit||'Nos')})</option>`).join(''))}</div>
-      <div><label>Quantity</label><input id="rm-qty" type="number" step="0.01"></div>
-      <div style="grid-column:1/-1;"><label>Notes (optional)</label><input id="rm-notes" placeholder="e.g. urgent, required for welding today"></div>
-    </div>
+    <div id="rm-lines"></div>
+    <button class="btn small outline" type="button" onclick="addRMLine()">+ Add Line Item</button>
     <div id="rm-err" class="msg err" style="display:none;margin-top:8px;"></div>
     <button class="btn" style="margin-top:10px;" onclick="submitRequestMaterial(${jobCardId})">Submit Request</button>
   `);
+  renderRMLines();
 };
 window.submitRequestMaterial = async (jobCardId) => {
   const errEl = document.getElementById('rm-err');
-  const itemId = val('rm-item');
-  const qty = val('rm-qty');
-  if (!itemId) { errEl.textContent = 'Pick an item.'; errEl.style.display = 'block'; return; }
-  if (!qty || Number(qty) <= 0) { errEl.textContent = 'Enter a quantity greater than 0.'; errEl.style.display = 'block'; return; }
+  for (let i = 0; i < RM_LINES.length; i++) {
+    const l = RM_LINES[i];
+    const prefix = RM_LINES.length > 1 ? `Line ${i + 1}: ` : '';
+    if (!l.item_id) { errEl.textContent = prefix + 'Pick an item.'; errEl.style.display = 'block'; return; }
+    if (!l.quantity_requested || Number(l.quantity_requested) <= 0) { errEl.textContent = prefix + 'Enter a quantity greater than 0.'; errEl.style.display = 'block'; return; }
+  }
   try {
-    await api(`/projects/job-cards/${jobCardId}/request-material`, { method: 'POST', body: JSON.stringify({ item_id: itemId, quantity_requested: qty, request_notes: val('rm-notes') }) });
+    await api(`/projects/job-cards/${jobCardId}/request-material`, { method: 'POST', body: JSON.stringify({ lines: RM_LINES }) });
     closeAppModal();
     openJobCardDetail(jobCardId);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
@@ -9380,15 +9401,94 @@ function renderTodayLeavesSummaryHTML(summary) {
   return collapsiblePanel('today-leaves-summary', `Today's Leave Status (${today()}) - ${total} on leave`, cards);
 }
 
+// Next-4-weeks planning view (2026-10-26) - toggles between a by-department
+// and a by-week grouping of the same already-fetched flat row list, rather
+// than two separate fetches; the owner explicitly asked for both layouts
+// with a toggle, not one or the other.
+let UPCOMING_LEAVES_VIEW = 'department';
+window.__UPCOMING_LEAVES_ROWS = [];
+function dateAddDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function upcomingLeaveRowHTML(r) {
+  return `<tr>
+    <td>${esc(r.department_name)}</td>
+    <td>${esc(r.employee_name)}</td>
+    <td>${badge(r.leave_type || '-')}</td>
+    <td>${r.from_date} to ${r.to_date} (${r.days}d)</td>
+    <td>${badge(r.status)}</td>
+    <td>${esc(r.reason || '-')}</td>
+  </tr>`;
+}
+function renderUpcomingLeavesByDepartment(rows) {
+  const byDept = {};
+  const order = [];
+  rows.forEach(r => {
+    const key = r.dept_id == null ? 'unassigned' : r.dept_id;
+    if (!byDept[key]) { byDept[key] = { department_name: r.department_name, rows: [] }; order.push(key); }
+    byDept[key].rows.push(r);
+  });
+  return order.map(key => {
+    const d = byDept[key];
+    return `<div class="panel" style="margin-bottom:10px;">
+      <strong>${esc(d.department_name)}</strong> <span class="muted">(${d.rows.length} upcoming)</span>
+      <table style="margin-top:8px;"><thead><tr><th>Department</th><th>Employee</th><th>Leave Type</th><th>Duration</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+        ${d.rows.map(upcomingLeaveRowHTML).join('')}
+      </tbody></table>
+    </div>`;
+  }).join('');
+}
+function renderUpcomingLeavesByWeek(rows) {
+  const start = today();
+  const weeks = [0, 1, 2, 3].map(i => ({
+    label: `Week ${i + 1} (${dateAddDays(start, i * 7)} to ${dateAddDays(start, i * 7 + 6)})`,
+    from: dateAddDays(start, i * 7), to: dateAddDays(start, i * 7 + 6), rows: [],
+  }));
+  rows.forEach(r => {
+    const w = weeks.find(w => r.from_date <= w.to && r.to_date >= w.from);
+    if (w) w.rows.push(r);
+  });
+  return weeks.map(w => `
+    <div class="panel" style="margin-bottom:10px;">
+      <strong>${esc(w.label)}</strong> <span class="muted">(${w.rows.length} out)</span>
+      ${w.rows.length ? `<table style="margin-top:8px;"><thead><tr><th>Department</th><th>Employee</th><th>Leave Type</th><th>Duration</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+        ${w.rows.map(upcomingLeaveRowHTML).join('')}
+      </tbody></table>` : '<p class="muted" style="margin-top:6px;">Nobody out this week.</p>'}
+    </div>`).join('');
+}
+window.switchUpcomingLeavesView = (view) => {
+  UPCOMING_LEAVES_VIEW = view;
+  const body = document.getElementById('upcoming-leaves-body');
+  if (body) body.innerHTML = renderUpcomingLeavesBody(window.__UPCOMING_LEAVES_ROWS);
+};
+function renderUpcomingLeavesBody(rows) {
+  const toggle = `<div style="margin-bottom:10px;">
+    <button class="btn small ${UPCOMING_LEAVES_VIEW === 'department' ? '' : 'outline'}" type="button" onclick="switchUpcomingLeavesView('department')">By Department</button>
+    <button class="btn small ${UPCOMING_LEAVES_VIEW === 'week' ? '' : 'outline'}" type="button" onclick="switchUpcomingLeavesView('week')">By Week</button>
+  </div>`;
+  if (!rows.length) return toggle + '<p class="muted">No approved or pending leave in the next 4 weeks.</p>';
+  return toggle + (UPCOMING_LEAVES_VIEW === 'week' ? renderUpcomingLeavesByWeek(rows) : renderUpcomingLeavesByDepartment(rows));
+}
+function renderUpcomingLeavesSummaryHTML(summary) {
+  const rows = (summary && summary.rows) || [];
+  window.__UPCOMING_LEAVES_ROWS = rows;
+  const total = (summary && summary.total) || 0;
+  return collapsiblePanel('upcoming-leaves-summary', `Next 4 Weeks - Leave Planning (${total})`, `<div id="upcoming-leaves-body">${renderUpcomingLeavesBody(rows)}</div>`);
+}
+
 PAGES.attendance = async (el) => {
-  const [emps, records, leaveToday] = await Promise.all([
+  const [emps, records, leaveToday, leaveUpcoming] = await Promise.all([
     api('/hr/employees'),
     api('/hr/attendance?month=' + thisMonth()),
     api('/hr/leaves/today-summary'),
+    api('/hr/leaves/upcoming-summary'),
   ]);
   const recMap = {}; records.forEach(r => { recMap[r.employee_id] = recMap[r.employee_id] || {}; recMap[r.employee_id][r.work_date] = r.status; });
   el.innerHTML = `
     ${renderTodayLeavesSummaryHTML(leaveToday)}
+    ${renderUpcomingLeavesSummaryHTML(leaveUpcoming)}
     <div class="panel"><h3>Mark Attendance</h3>
       <div class="form-grid">
         <div><label>Employee</label><select id="at-emp">${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select></div>

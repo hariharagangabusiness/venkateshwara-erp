@@ -782,21 +782,43 @@ router.get('/job-cards/:id/material-requests', (req, res) => {
     WHERE smr.job_card_id = ? ORDER BY smr.id DESC
   `).all(req.params.id));
 });
+// Accepts either the original single-item shape or a `lines: [...]` array
+// (2026-10-26, per the owner's ask for multiple items per request) - same
+// dual-shape convention POST /orders, POST /foc and POST /store/issue
+// already use. Every line is validated before anything is written, so a
+// bad line in a multi-item request 400s the whole thing rather than
+// creating a partial set of rows.
 router.post('/job-cards/:id/request-material', requirePermission('job_card.manage'), (req, res) => {
   const jc = db.prepare('SELECT * FROM job_cards WHERE id = ?').get(req.params.id);
   if (!jc) return res.status(404).json({ error: 'Not found' });
   if (!canActOn(req.user, jc)) return res.status(403).json({ error: 'Not authorized for this job card.' });
-  const { item_id, quantity_requested, request_notes } = req.body;
-  if (!item_id) return res.status(400).json({ error: 'Pick an item from Item Master.' });
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
-  if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh and pick an item again.' });
-  const qty = Number(quantity_requested);
-  if (!qty || qty <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
-  const info = db.prepare(`
+  const lines = Array.isArray(req.body.lines) ? req.body.lines
+    : [{ item_id: req.body.item_id, quantity_requested: req.body.quantity_requested, request_notes: req.body.request_notes }];
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one line item.' });
+  const resolved = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const prefix = lines.length > 1 ? `Line ${i + 1}: ` : '';
+    if (!l.item_id) return res.status(400).json({ error: `${prefix}pick an item from Item Master.` });
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(l.item_id);
+    if (!item) return res.status(400).json({ error: `${prefix}that item no longer exists - refresh and pick an item again.` });
+    const qty = Number(l.quantity_requested);
+    if (!qty || qty <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
+    resolved.push({ item, qty, notes: l.request_notes || null });
+  }
+  const insert = db.prepare(`
     INSERT INTO store_material_requests (job_card_id, project_id, department_id, item_id, item_name, quantity_requested, unit, requested_by, request_notes)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(jc.id, jc.project_id || null, jc.department_id || null, item.id, item.name, qty, item.unit || 'Nos', req.user.id, request_notes || null);
-  res.json({ id: info.lastInsertRowid });
+  `);
+  const ids = [];
+  const tx = db.transaction(() => {
+    resolved.forEach(r => {
+      const info = insert.run(jc.id, jc.project_id || null, jc.department_id || null, r.item.id, r.item.name, r.qty, r.item.unit || 'Nos', req.user.id, r.notes);
+      ids.push(info.lastInsertRowid);
+    });
+  });
+  tx();
+  res.json({ ids });
 });
 
 // ---- Comments / handover notes ----
