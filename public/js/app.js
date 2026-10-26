@@ -1243,6 +1243,20 @@ function bulkUploadPanelHTML(fileInputId) {
 // hardcoded at the call site) now that the server names generated documents
 // itself (lib/downloadFilename.js); the real, current name always wins when
 // the server sends one.
+// Opens a fetched file either as an in-browser preview (PDFs, which every
+// modern browser can render natively in a new tab) or as a forced download
+// (anything else - .docx/.xlsx/.tar.gz have no in-browser viewer, so a
+// preview attempt would just trigger the same save-as prompt anyway).
+function openOrDownloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  if (/\.pdf$/i.test(filename || '') || blob.type === 'application/pdf') {
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } else {
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+}
 async function downloadTemplateFile(apiPath, filename) {
   try {
     const res = await fetch('/api' + apiPath, { headers: { Authorization: 'Bearer ' + TOKEN } });
@@ -1250,9 +1264,7 @@ async function downloadTemplateFile(apiPath, filename) {
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : filename; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, match ? match[1] : filename);
   } catch (e) { alert(e.message); }
 }
 async function uploadTemplateFile(apiPath, fileInputId, resultElId, afterSuccess) {
@@ -3253,23 +3265,20 @@ window.downloadDispatchPdf = async (ev, id) => {
     const res = await fetch(`/api/sales/dispatches/${id}/pdf`, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `dispatch-${id}.pdf`; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, `dispatch-${id}.pdf`);
   } catch (e) { alert(e.message); }
   return false;
 };
-// GET-and-download for the covering letter / envelope PDFs (auth header needed, so not a plain link).
+// GET-and-preview for the covering letter / envelope PDFs (auth header needed, so not a plain link).
 window.downloadDispatchDoc = async (ev, id, kind) => {
   ev.preventDefault();
   try {
     const res = await fetch(`/api/sales/dispatches/${id}/${kind}`, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
     const skipped = res.headers.get('X-Bundle-Skipped');
-    const url = URL.createObjectURL(await res.blob());
-    const a = document.createElement('a'); a.href = url; a.download = `dispatch-${id}-${kind}.pdf`; a.click();
-    URL.revokeObjectURL(url);
-    if (skipped) alert('Customer bundle downloaded without: ' + skipped);
+    const blob = await res.blob();
+    openOrDownloadBlob(blob, `dispatch-${id}-${kind}.pdf`);
+    if (skipped) alert('Customer bundle opened without: ' + skipped);
   } catch (e) { alert(e.message); }
   return false;
 };
@@ -3340,9 +3349,7 @@ window.submitRequestVehicle = async (id) => {
   try {
     const res = await fetch(`/api/sales/dispatches/${id}/request-vehicle`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }, body: JSON.stringify({ pickupDate }) });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Request failed'); }
-    const url = URL.createObjectURL(await res.blob());
-    const a = document.createElement('a'); a.href = url; a.download = `vehicle-request-${id}.pdf`; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(await res.blob(), `vehicle-request-${id}.pdf`);
     closeAppModal();
   } catch (e) { alert(e.message); }
 };
@@ -4279,9 +4286,7 @@ window.downloadOfferVersionPdf = async (offerId) => {
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer-v' + offerId + '.pdf'; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, match ? match[1] : 'offer-v' + offerId + '.pdf');
   } catch (e) { alert(e.message); }
 };
 window.downloadOfferPdf = async () => {
@@ -4291,9 +4296,7 @@ window.downloadOfferPdf = async () => {
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'offer.pdf'; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, match ? match[1] : 'offer.pdf');
   } catch (e) { alert(e.message); }
 };
 window.confirmOffer = async () => {
@@ -8192,9 +8195,7 @@ window.downloadChallanPdf = async (id, challanNo) => {
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : (challanNo || 'challan') + '.pdf'; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, match ? match[1] : (challanNo || 'challan') + '.pdf');
   } catch (e) { alert(e.message); }
 };
 window.printChallan = async (id) => {
@@ -8855,9 +8856,7 @@ window.downloadSvcReportPdf = async (srId) => {
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = match ? match[1] : 'service-report-' + srId + '.pdf'; a.click();
-    URL.revokeObjectURL(url);
+    openOrDownloadBlob(blob, match ? match[1] : 'service-report-' + srId + '.pdf');
   } catch (e) { alert(e.message); }
 };
 const SVC_REQUIRED_FIELDS = [
