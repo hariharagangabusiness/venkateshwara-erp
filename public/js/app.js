@@ -1044,7 +1044,15 @@ function searchPickerHTML(pickerId, records, selectedValue, renderOptions, match
   if (widthStorageKey) {
     let savedWidth = '260px';
     try { savedWidth = localStorage.getItem(widthStorageKey) || '260px'; } catch (e) { /* ignore - private window / blocked storage */ }
-    wrapperStyle = `position:relative;width:${savedWidth};min-width:160px;max-width:640px;resize:horizontal;overflow:hidden;padding-bottom:3px;${containerStyle || ''}`;
+    // `widthStorageKey` is a single key shared across every page a given
+    // picker type appears on (e.g. itemPickerHTML's 'erp_item_picker_width')
+    // - a width the user drags on a wide page (New Purchase Order) persists
+    // and gets reapplied on a much narrower one (a popup modal), where the
+    // saved px value can exceed the picker's actual grid column, pushing the
+    // whole wrapper outside its cell and smashing into neighboring columns.
+    // `min(...,100%)` keeps the saved/dragged width as the preference but
+    // never lets it exceed whatever room the current container actually has.
+    wrapperStyle = `position:relative;width:min(${savedWidth},100%);min-width:160px;max-width:min(640px,100%);resize:horizontal;overflow:hidden;padding-bottom:3px;${containerStyle || ''}`;
   } else {
     wrapperStyle = `width:100%;position:relative;${containerStyle || ''}`;
   }
