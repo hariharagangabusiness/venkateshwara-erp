@@ -12,6 +12,7 @@ const { authRequired } = require('../middleware/auth');
 const { makeUpload } = require('../lib/upload');
 const { resolveUploadPath } = require('../lib/paths');
 const { compressUploadedImageFile } = require('../lib/imageCompress');
+const { autoCompleteSystemTodos } = require('../lib/systemTodos');
 const { PDFDocument } = require('pdf-lib');
 const router = express.Router();
 router.use(authRequired);
@@ -98,6 +99,9 @@ router.post('/:entityType/:entityId', upload.single('file'), async (req, res) =>
   })();
   // Files only go once the DB swap committed (and never the one just saved).
   stale.filter(f => f !== filePath).forEach(f => { try { fs.unlinkSync(resolveUploadPath(f)); } catch (e) { /* already gone */ } });
+  // A Bill of Entry upload against a Foreign Payment is exactly the event the
+  // FP_BOE_DUE system To-Do (lib/foreignPaymentBoeScan.js) exists to wait for.
+  if (entityType === 'foreign_payment' && documentType === 'BillOfEntry') autoCompleteSystemTodos('FP_BOE_DUE', entityId);
   res.json({ id: info.lastInsertRowid, file_path: filePath, document_type: documentType });
 });
 

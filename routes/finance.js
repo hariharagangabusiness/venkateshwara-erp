@@ -8,6 +8,7 @@ const approvals = require('../lib/approvals');
 const { generateInvoicePdf } = require('../lib/invoicePdf');
 const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
 const { generateFocAnnexurePdf } = require('../lib/focAnnexurePdf');
+const { autoCompleteSystemTodos } = require('../lib/systemTodos');
 const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
@@ -449,6 +450,8 @@ router.post('/foc/:id/issue', (req, res) => {
   if (!allowed) return res.status(403).json({ error: 'Only the department this was routed to (or Admin) can mark it issued.' });
   db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = CURRENT_TIMESTAMP WHERE foc_no = ? AND status = 'Approved'`)
     .run(req.user.id, existing.foc_no);
+  const groupIds = db.prepare('SELECT id FROM foc_requests WHERE foc_no = ?').all(existing.foc_no).map(r => r.id);
+  autoCompleteSystemTodos('FOC_ROUTED', groupIds);
   res.json({ ok: true });
 });
 
