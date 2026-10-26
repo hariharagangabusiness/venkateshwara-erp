@@ -2408,6 +2408,15 @@ async function renderApprovalDrilldown(key) {
       attachType = 'grn_reconciliation';
       const qtyDiff = g.vendor_invoiced_qty != null && Number(g.vendor_invoiced_qty) !== Number(g.received_qty);
       const rateDiff = g.vendor_invoiced_rate != null && Number(g.vendor_invoiced_rate) !== Number(g.po_rate);
+      // A batch of exactly 1 line renders as a plain standalone row on the
+      // list (grnBatchCardHTML only kicks in once a batch has >1 line - see
+      // approvalRowsWithGrnBatches()) - so gating this drilldown on bare
+      // grn_batch_id truthiness alone hid the PO copy button and pointed at
+      // a "batch card above" that was never actually rendered, making the
+      // PO unreachable for a single-line batch. batch_line_count (from
+      // GET /store/grn-reconciliations/:id) makes this match the list's
+      // own real grouping decision instead of just checking for a batch id.
+      const inMultiLineBatch = g.grn_batch_id && Number(g.batch_line_count) > 1;
       extraHtml = `
         <h5 style="margin:8px 0 4px;">PO vs Vendor Invoice</h5>
         <p style="font-size:13px;margin:0 0 8px;">
@@ -2421,12 +2430,12 @@ async function renderApprovalDrilldown(key) {
         ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
         <h5 style="margin:8px 0 4px;">Document Verification</h5>
         ${actionButtonsCell(`
-          ${g.grn_batch_id ? '' : `<button class="btn small outline" type="button" onclick="downloadPoPdf(${Number(g.po_id)}, '${esc(g.po_no)}')">📄 View Original PO Copy</button>`}
+          ${inMultiLineBatch ? '' : `<button class="btn small outline" type="button" onclick="downloadPoPdf(${Number(g.po_id)}, '${esc(g.po_no)}')">📄 View Original PO Copy</button>`}
           ${g.invoice_attachment_path
             ? `<a class="btn small green" href="${esc(g.invoice_attachment_path)}" target="_blank" rel="noopener">🧾 View Attached Vendor Invoice</a>`
             : '<span class="muted" style="font-size:12px;">⚠️ No vendor invoice attached by receiving team</span>'}
         `)}
-        ${g.grn_batch_id ? '<p class="muted" style="font-size:12px;">This receipt\'s PO copy is shown once on the batch card above.</p>' : ''}
+        ${inMultiLineBatch ? '<p class="muted" style="font-size:12px;">This receipt\'s PO copy is shown once on the batch card above.</p>' : ''}
       `;
     } else if (r.entity_type === 'todo') {
       const [t, hist] = await Promise.all([api(`/todos/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
