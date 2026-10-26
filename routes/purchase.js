@@ -1836,6 +1836,60 @@ router.post('/store/issue', requirePermission('store.manage'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Store Q: job-card material requisitions raised via POST
+// /projects/job-cards/:id/request-material, reviewed/issued here. No
+// approval chain - same "Store acts directly" shape as /store/issue above;
+// Issue actually moves stock (same atomic decrement+stock_movements
+// pattern as /store/issue, one line at a time since a requisition is
+// already one item), tagged with the request's own job_card_id/project_id/
+// department_id so project costing can read consumption straight off the
+// movement.
+router.get('/store/material-requests', requirePermission('store.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT smr.*, jc.stage as job_card_stage, p.project_code, p.title as project_title,
+      d.name as department_name, i.unit as item_master_unit,
+      ur.full_name as requested_by_name, ui.full_name as issued_by_name
+    FROM store_material_requests smr
+    JOIN job_cards jc ON jc.id = smr.job_card_id
+    LEFT JOIN projects p ON p.id = smr.project_id
+    LEFT JOIN departments d ON d.id = smr.department_id
+    LEFT JOIN items i ON i.id = smr.item_id
+    LEFT JOIN users ur ON ur.id = smr.requested_by
+    LEFT JOIN users ui ON ui.id = smr.issued_by
+    ORDER BY (smr.status = 'Pending') DESC, smr.id DESC
+  `).all());
+});
+router.post('/store/material-requests/:id/action', requirePermission('store.manage'), (req, res) => {
+  const reqRow = db.prepare('SELECT * FROM store_material_requests WHERE id = ?').get(req.params.id);
+  if (!reqRow) return res.status(404).json({ error: 'Not found' });
+  if (reqRow.status !== 'Pending') return res.status(400).json({ error: 'This request has already been actioned.' });
+  const action = req.body.action;
+  if (action !== 'Issue' && action !== 'Reject') return res.status(400).json({ error: "action must be 'Issue' or 'Reject'." });
+  const notes = req.body.notes || null;
+  if (action === 'Reject') {
+    db.prepare(`UPDATE store_material_requests SET status = 'Rejected', issued_by = ?, decision_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(req.user.id, notes, reqRow.id);
+    return res.json({ ok: true });
+  }
+  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(reqRow.item_id);
+  if (!item) return res.status(400).json({ error: 'That item no longer exists in Item Master.' });
+  if (item.current_stock < reqRow.quantity_requested) {
+    return res.status(400).json({ error: `Insufficient stock for ${item.name} - only ${item.current_stock} ${item.unit || ''} available, ${reqRow.quantity_requested} requested.` });
+  }
+  const tx = db.transaction(() => {
+    const moveInfo = db.prepare(`
+      INSERT INTO stock_movements (item_id, movement_type, quantity, reference, project_id, department_id, moved_by)
+      VALUES (?, 'OUT', ?, ?, ?, ?, ?)
+    `).run(reqRow.item_id, reqRow.quantity_requested, 'JobCard#' + reqRow.job_card_id, reqRow.project_id || null, reqRow.department_id || null, req.user.id);
+    db.prepare('UPDATE items SET current_stock = current_stock - ? WHERE id = ?').run(reqRow.quantity_requested, reqRow.item_id);
+    db.prepare(`
+      UPDATE store_material_requests SET status = 'Issued', issued_by = ?, decision_notes = ?, stock_movement_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).run(req.user.id, notes, moveInfo.lastInsertRowid, reqRow.id);
+  });
+  tx();
+  res.json({ ok: true });
+});
+
 // reference stores 'PO#'+id (an internal row id, see POST /store/receive) -
 // on its own it's meaningless to a user searching by the PO number they
 // actually know (po_no). Resolve it back to the real PO No (IN movements)

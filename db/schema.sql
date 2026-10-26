@@ -488,6 +488,33 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   moved_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- A shop-floor department's request for raw material against a specific
+-- job card, routed to Store for direct issue (no approval chain - the same
+-- permission-gated "Store acts directly" shape as the Issue tab's own
+-- POST /store/issue, just request-then-issue instead of issue-only).
+-- project_id is denormalized from job_cards.project_id at request time so
+-- an issued request's stock_movements row can carry it even if the job
+-- card itself is later deleted/reassigned - project costing reads it off
+-- the movement, not by re-joining through the job card.
+CREATE TABLE IF NOT EXISTS store_material_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_card_id INTEGER NOT NULL REFERENCES job_cards(id),
+  project_id INTEGER REFERENCES projects(id),
+  department_id INTEGER REFERENCES departments(id),
+  item_id INTEGER NOT NULL REFERENCES items(id),
+  item_name TEXT NOT NULL,
+  quantity_requested REAL NOT NULL,
+  unit TEXT DEFAULT 'Nos',
+  status TEXT DEFAULT 'Pending',      -- Pending, Issued, Rejected
+  requested_by INTEGER REFERENCES users(id),
+  issued_by INTEGER REFERENCES users(id),
+  request_notes TEXT,
+  decision_notes TEXT,
+  stock_movement_id INTEGER REFERENCES stock_movements(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ===================== SERVICE & SPARE PARTS =====================
 
 CREATE TABLE IF NOT EXISTS service_requests (

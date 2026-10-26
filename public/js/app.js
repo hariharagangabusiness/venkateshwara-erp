@@ -5575,9 +5575,12 @@ window.openJobCardDetail = async (id) => {
   panel.style.display = 'block';
   body.innerHTML = '<span class="muted">Loading...</span>';
   panel.scrollIntoView({ behavior: 'smooth' });
-  let data;
+  let data, materialRequests;
   try {
-    data = await api(`/projects/job-cards/${id}/detail`);
+    [data, materialRequests] = await Promise.all([
+      api(`/projects/job-cards/${id}/detail`),
+      api(`/projects/job-cards/${id}/material-requests`),
+    ]);
   } catch (e) { body.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; return; }
   const { jobCard: c, children, attachments, comments, dependsOn, routedTo, plannedSequence, canAct, isSupervisor } = data;
   title.textContent = `${c.title || STAGE_LABELS[c.stage] || c.stage} — ${badge(c.status)}`;
@@ -5619,6 +5622,13 @@ window.openJobCardDetail = async (id) => {
   const annexureHTML = c.so_annexure_path ? `
     <p><b>Sales Order Annexure</b> (${esc(c.so_order_no)||'-'}, read-only): <a href="#" onclick="return downloadAnnexure(event, ${c.so_id})">Download</a></p>
   ` : '';
+
+  const materialHTML = `
+    <h4>Material Requests ${canAct ? `<button class="btn small outline" onclick="openRequestMaterialModal(${c.id})">Request Material</button>` : ''}</h4>
+    ${materialRequests.length ? tableHTML(['Item', 'Qty', 'Status', 'Requested By', 'Notes'], materialRequests, r => `
+      <tr><td>${esc(r.item_master_name || r.item_name)}</td><td>${r.quantity_requested} ${esc(r.unit||'')}</td><td>${badge(r.status)}</td><td>${esc(r.requested_by_name)||'-'}</td><td>${esc(r.request_notes)||'-'}${r.decision_notes ? `<br><span class="muted">${esc(r.decision_notes)}</span>` : ''}</td></tr>`)
+    : '<div class="empty">No material requests yet.</div>'}
+  `;
 
   const attachHTML = `
     ${annexureHTML}
@@ -5702,6 +5712,7 @@ window.openJobCardDetail = async (id) => {
     ${depsHTML}${routedHTML}
     ${actionsHTML}
     ${childrenHTML}
+    ${materialHTML}
     ${attachHTML}
     ${commentsHTML}
     ${hodToolsHTML}
@@ -5723,6 +5734,33 @@ window.uploadJobCardFile = async (id) => {
     await apiUpload(`/projects/job-cards/${id}/attachments`, fd, 'POST');
     openJobCardDetail(id);
   } catch (e) { alert(e.message); }
+};
+window.openRequestMaterialModal = async (jobCardId) => {
+  let items;
+  try { items = await api('/masters/items'); } catch (e) { alert(e.message); return; }
+  window.__RM_ITEMS = items.filter(i => !['Pending', 'Discontinued'].includes(i.status));
+  openAppModal('Request Material', `
+    <div class="form-grid">
+      <div style="flex:0 0 auto;">${itemPickerHTML('rm-item', window.__RM_ITEMS, null, (sel, list) =>
+        `<option value="">- pick an item -</option>` + list.map(i => `<option value="${i.id}" ${i.id===sel?'selected':''}>${esc(i.name)} (${esc(i.unit||'Nos')})</option>`).join(''))}</div>
+      <div><label>Quantity</label><input id="rm-qty" type="number" step="0.01"></div>
+      <div style="grid-column:1/-1;"><label>Notes (optional)</label><input id="rm-notes" placeholder="e.g. urgent, required for welding today"></div>
+    </div>
+    <div id="rm-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    <button class="btn" style="margin-top:10px;" onclick="submitRequestMaterial(${jobCardId})">Submit Request</button>
+  `);
+};
+window.submitRequestMaterial = async (jobCardId) => {
+  const errEl = document.getElementById('rm-err');
+  const itemId = val('rm-item');
+  const qty = val('rm-qty');
+  if (!itemId) { errEl.textContent = 'Pick an item.'; errEl.style.display = 'block'; return; }
+  if (!qty || Number(qty) <= 0) { errEl.textContent = 'Enter a quantity greater than 0.'; errEl.style.display = 'block'; return; }
+  try {
+    await api(`/projects/job-cards/${jobCardId}/request-material`, { method: 'POST', body: JSON.stringify({ item_id: itemId, quantity_requested: qty, request_notes: val('rm-notes') }) });
+    closeAppModal();
+    openJobCardDetail(jobCardId);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.postJobCardComment = async (id) => {
   const text = val('jc-comment');
@@ -7658,10 +7696,10 @@ async function renderStockInOutSheet(el) {
   // Previously 4 sequential awaits (6 total round trips once fetchPanelOrder's
   // own read is counted) - total wait time was their SUM, not their MAX. Same
   // fix already applied to Purchase Requests/Orders on 2026-10-04.
-  const [itemsRaw, movements, posRaw, projects, departments, clients, grns] = await Promise.all([
+  const [itemsRaw, movements, posRaw, projects, departments, clients, grns, materialRequests] = await Promise.all([
     api('/masters/items'), api('/purchase/store/movements'), api('/purchase/orders'),
     api('/projects'), api('/masters/departments'), api('/masters/clients'),
-    api('/purchase/store/grn-reconciliations'),
+    api('/purchase/store/grn-reconciliations'), api('/purchase/store/material-requests'),
   ]);
   const items = itemsRaw.filter(i => !['Pending', 'Discontinued'].includes(i.status));
   const openPOs = posRaw.filter(o => ['Open', 'PartiallyReceived'].includes(o.status));
@@ -7718,8 +7756,19 @@ async function renderStockInOutSheet(el) {
           <tr id="grn-attach-row-${g.id}" style="display:none;"><td colspan="9"><div id="grn-attach-${g.id}"></div></td></tr>`;
       })}
     `),
+    'material-requests': collapsiblePanel('material-requests', `Store Q — Job Card Material Requests (${materialRequests.filter(m => m.status === 'Pending').length} pending)`, `
+      <p class="muted">Material requisitions raised against a Job Card ("Request Material" button in the Job Card detail view). Issuing one decrements stock and logs a stock movement tagged against that job card's own project, same as a normal Issue.</p>
+      ${tableHTML(['Job Card', 'Project', 'Department', 'Item', 'Qty', 'Requested By', 'Notes', 'Status', ''], materialRequests, r => `
+        <tr><td>${esc(r.job_card_stage)||'-'} #${r.job_card_id}</td><td>${esc(r.project_code)||'-'}</td><td>${esc(r.department_name)||'-'}</td>
+          <td>${esc(r.item_master_name || r.item_name)}</td><td>${r.quantity_requested} ${esc(r.unit || r.item_master_unit || '')}</td>
+          <td>${esc(r.requested_by_name)||'-'}</td><td>${esc(r.request_notes)||'-'}</td><td>${badge(r.status)}</td>
+          <td>${actionButtonsCell(r.status === 'Pending' ? `
+            <button class="btn small green" type="button" onclick="actionMaterialRequest(${r.id}, 'Issue')">Issue</button>
+            <button class="btn small red" type="button" onclick="actionMaterialRequest(${r.id}, 'Reject')">Reject</button>
+          ` : (r.decision_notes ? esc(r.decision_notes) : ''))}</td></tr>`)}
+    `),
   };
-  const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements', 'grn-reconciliation': 'GRN Reconciliation' };
+  const stockLabels = { 'scan-barcode': 'Scan Barcode', 'stock-in-out': 'Stock In / Out', 'bulk-upload': 'Bulk Upload via Excel Template', 'recent-movements': 'Recent Movements', 'grn-reconciliation': 'GRN Reconciliation', 'material-requests': 'Store Q - Material Requests' };
   const stockOrder = await fetchPanelOrder('stock-in-out', Object.keys(stockPanels));
   el.innerHTML = reorderablePanelsHTML('stock-in-out', stockPanels, stockOrder, stockLabels);
   renderStockTabBody();
@@ -7958,6 +8007,14 @@ window.storeMove = async (type) => {
   try {
     const body = { item_id: val('st-item'), quantity: val('st-qty') };
     await api('/purchase/store/' + type, { method: 'POST', body: JSON.stringify(body) });
+    navigate('stock-in-out');
+  } catch (e) { alert(e.message); }
+};
+window.actionMaterialRequest = async (reqId, action) => {
+  if (action === 'Reject' && !confirm('Reject this material request?')) return;
+  const notes = prompt(action === 'Issue' ? 'Issue notes (optional):' : 'Reason for rejecting (optional):') || '';
+  try {
+    await api(`/purchase/store/material-requests/${reqId}/action`, { method: 'POST', body: JSON.stringify({ action, notes }) });
     navigate('stock-in-out');
   } catch (e) { alert(e.message); }
 };
@@ -9302,12 +9359,36 @@ function renderSalaryReport(report) {
 }
 
 // ---- Attendance ----
+function renderTodayLeavesSummaryHTML(summary) {
+  const departments = (summary && summary.departments) || [];
+  const total = (summary && summary.total) || 0;
+  if (!total) {
+    return `<div class="panel"><h3>Today's Leave Status (${today()})</h3><p class="muted">Nobody is on approved leave today.</p></div>`;
+  }
+  const cards = departments.map(d => `
+    <div class="panel" style="margin-bottom:10px;">
+      <strong>${esc(d.department_name)}</strong> <span class="muted">(${d.employees.length} on leave)</span>
+      <table style="margin-top:8px;"><thead><tr><th>Employee</th><th>Leave Type</th><th>Duration</th><th>Reason</th></tr></thead><tbody>
+        ${d.employees.map(e => `<tr>
+          <td>${esc(e.employee_name)}</td>
+          <td>${badge(e.leave_type || '-')}</td>
+          <td>${e.from_date} to ${e.to_date} (${e.days}d)</td>
+          <td>${esc(e.reason || '-')}</td>
+        </tr>`).join('')}
+      </tbody></table>
+    </div>`).join('');
+  return collapsiblePanel('today-leaves-summary', `Today's Leave Status (${today()}) - ${total} on leave`, cards);
+}
+
 PAGES.attendance = async (el) => {
-  const emps = await api('/hr/employees');
-  const month = thisMonth();
-  const records = await api('/hr/attendance?month=' + month);
+  const [emps, records, leaveToday] = await Promise.all([
+    api('/hr/employees'),
+    api('/hr/attendance?month=' + thisMonth()),
+    api('/hr/leaves/today-summary'),
+  ]);
   const recMap = {}; records.forEach(r => { recMap[r.employee_id] = recMap[r.employee_id] || {}; recMap[r.employee_id][r.work_date] = r.status; });
   el.innerHTML = `
+    ${renderTodayLeavesSummaryHTML(leaveToday)}
     <div class="panel"><h3>Mark Attendance</h3>
       <div class="form-grid">
         <div><label>Employee</label><select id="at-emp">${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select></div>

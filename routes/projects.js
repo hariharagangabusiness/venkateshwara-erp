@@ -766,6 +766,39 @@ router.delete('/job-cards/:id/attachments/:attachmentId', requirePermission('job
   res.json({ ok: true });
 });
 
+// ---- Material Requisition (Store Q) ----
+// A shop-floor department's request for raw material against this job card,
+// routed to Store for direct issue - same "Store acts directly, no approval
+// chain" shape as the Issue tab's own POST /store/issue, just request-then-
+// issue instead of issue-only. project_id/department_id are denormalized
+// from the job card at request time so an issued request's stock_movements
+// row carries them regardless of what happens to the job card afterward.
+router.get('/job-cards/:id/material-requests', (req, res) => {
+  res.json(db.prepare(`
+    SELECT smr.*, i.name as item_master_name, i.unit as item_master_unit, u.full_name as requested_by_name
+    FROM store_material_requests smr
+    LEFT JOIN items i ON i.id = smr.item_id
+    LEFT JOIN users u ON u.id = smr.requested_by
+    WHERE smr.job_card_id = ? ORDER BY smr.id DESC
+  `).all(req.params.id));
+});
+router.post('/job-cards/:id/request-material', requirePermission('job_card.manage'), (req, res) => {
+  const jc = db.prepare('SELECT * FROM job_cards WHERE id = ?').get(req.params.id);
+  if (!jc) return res.status(404).json({ error: 'Not found' });
+  if (!canActOn(req.user, jc)) return res.status(403).json({ error: 'Not authorized for this job card.' });
+  const { item_id, quantity_requested, request_notes } = req.body;
+  if (!item_id) return res.status(400).json({ error: 'Pick an item from Item Master.' });
+  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
+  if (!item) return res.status(400).json({ error: 'That item no longer exists - refresh and pick an item again.' });
+  const qty = Number(quantity_requested);
+  if (!qty || qty <= 0) return res.status(400).json({ error: 'Enter a quantity greater than 0.' });
+  const info = db.prepare(`
+    INSERT INTO store_material_requests (job_card_id, project_id, department_id, item_id, item_name, quantity_requested, unit, requested_by, request_notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(jc.id, jc.project_id || null, jc.department_id || null, item.id, item.name, qty, item.unit || 'Nos', req.user.id, request_notes || null);
+  res.json({ id: info.lastInsertRowid });
+});
+
 // ---- Comments / handover notes ----
 router.get('/job-cards/:id/comments', (req, res) => {
   res.json(db.prepare(`
