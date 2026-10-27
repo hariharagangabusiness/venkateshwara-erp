@@ -2470,6 +2470,17 @@ async function renderApprovalDrilldown(key) {
             : '<span class="muted" style="font-size:12px;">⚠️ No vendor invoice attached by receiving team</span>'}
         `)}
         ${inMultiLineBatch ? '<p class="muted" style="font-size:12px;">This receipt\'s PO copy is shown once on the batch card above.</p>' : ''}
+        ${['PendingApproval', 'InfoRequested'].includes(g.status) && isStoreApprover() ? `
+        <h5 style="margin:8px 0 4px;">Additional Charges <span class="muted" style="font-weight:normal;">(saved before you Approve; flow into the Purchase Invoice when Accounts bills this GRN)</span></h5>
+        <div class="form-grid">
+          <div><label>Transportation (₹)</label><input id="grn-transport-${r.entity_id}" type="number" step="any" value="${g.transportation_amount || ''}"></div>
+          <div><label>Packing &amp; Forwarding (₹)</label><input id="grn-pf-${r.entity_id}" type="number" step="any" value="${g.packing_forwarding_amount || ''}"></div>
+        </div>
+        <button class="btn small outline" type="button" id="grn-charges-save-${r.entity_id}" onclick="saveGrnCharges(${r.entity_id})" style="margin-top:6px;">Save Charges</button>
+        ` : (g.transportation_amount || g.packing_forwarding_amount ? `
+        <h5 style="margin:8px 0 4px;">Additional Charges</h5>
+        <p style="font-size:13px;margin:0;">Transportation: ₹${fmt(g.transportation_amount||0)} &nbsp; Packing &amp; Forwarding: ₹${fmt(g.packing_forwarding_amount||0)}</p>
+        ` : '')}
       `;
     } else if (r.entity_type === 'todo') {
       const [t, hist] = await Promise.all([api(`/todos/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
@@ -7012,6 +7023,7 @@ function renderSinglePORow(o) {
     ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
     ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
     ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
+    ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
@@ -7051,7 +7063,8 @@ function renderMultiLinePOGroup(lines) {
       ${o.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPOForApproval(${o.id})">Submit</button>` : ''}
       ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
       ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
-      ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}`)}</td>
+      ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
+      ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}`)}</td>
     </tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
@@ -7172,6 +7185,19 @@ window.closeShortShip = async (id) => {
   if (!reason.trim()) { alert('A reason is required.'); return; }
   try {
     await api(`/purchase/orders/${id}/close-short-ship`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+// Admin-only recovery for a line Short Ship closed by mistake (2026-10-27) -
+// e.g. the exact root-caused scenario where the real receive was never
+// submitted before Short Ship was clicked. Reopens back to Open/
+// PartiallyReceived (derived live from what's actually been received).
+window.reopenClosedPO = async (id) => {
+  const reason = prompt('Reason for reopening this closed line (required):');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('A reason is required.'); return; }
+  try {
+    await api(`/purchase/orders/${id}/reopen-closed`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };
@@ -7910,7 +7936,7 @@ function renderReceiveTab(el) {
 // just never applied here. One declared track list now, shared by the
 // header and every row, so a column's width is always exactly what's
 // declared rather than whatever one row's own input happened to force.
-const STOCK_RECEIVE_GRID_COLS = 'minmax(160px,1.6fr) 80px 80px 80px 110px 100px 100px minmax(120px,1fr)';
+const STOCK_RECEIVE_GRID_COLS = 'minmax(150px,1.4fr) 70px 70px 90px 70px 80px 100px 90px 90px minmax(110px,1fr)';
 // Re-renders just the part of the Receive tab below the PO picker: either
 // the selected PO's own line items (each with its own qty-to-receive input
 // and Receive button, for partial/per-line shipments) or, with no PO
@@ -7932,21 +7958,26 @@ function renderStockPoLines() {
           <div class="stock-input-group"><label>Invoice Date</label><input id="st-batch-vdate" type="date"></div>
         </div>
       </div>
-      <p class="muted">Step 2: enter Qty to Receive on each line (0 = skip). Vendor qty/rate go to the Store HOD/Supervisor to reconcile against the PO.</p>
+      <p class="muted">Step 2: enter Qty to Receive on each line (0 = skip). Vendor qty/rate go to the Store HOD/Supervisor to reconcile against the PO.
+        "Short Ship" is disabled while this line's own Qty to Receive is non-zero - receive it first (or clear the box to 0), then Short Ship the remainder, so an unsubmitted quantity can never be silently discarded.</p>
       ${gridLineTableHTML(STOCK_RECEIVE_GRID_COLS,
-        ['Item', 'PO Rate', 'Ordered', 'Received', 'Qty to Receive', 'Vendor Qty', 'Vendor Rate', ''],
+        ['Item', 'PO Rate', 'Disc %', 'After-Disc. Rate', 'Ordered', 'Received', 'Qty to Receive', 'Vendor Qty', 'Vendor Rate', ''],
         group.lines, l => {
           const remaining = Math.max(0, l.quantity - (l.received_qty || 0));
+          const discountPct = Number(l.discount_percent) || 0;
+          const afterDiscRate = Number(l.rate) * (1 - discountPct / 100);
           return `
             <div>${esc(l.item_name) || '-'}</div>
             <div>₹${fmt(l.rate)}</div>
+            <div>${discountPct}%</div>
+            <div><b>₹${fmt(afterDiscRate)}</b></div>
             <div>${l.quantity}</div>
             <div>${l.received_qty || 0}</div>
-            <div><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0"></div>
+            <div><input id="st-po-line-qty-${l.id}" type="number" value="${remaining}" min="0" oninput="updateShortShipAvailability(${l.id})"></div>
             <div><input id="st-po-line-vqty-${l.id}" type="number" placeholder="optional"></div>
             <div><input id="st-po-line-vrate-${l.id}" type="number" placeholder="optional"></div>
             <div>${actionButtonsCell(`
-              <button class="btn small outline" type="button" onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button>
+              <button class="btn small outline" type="button" id="ss-btn-${l.id}" ${remaining > 0 ? 'disabled' : ''} onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button>
             `)}</div>`;
         })}
       <button class="btn green" style="width:100%;padding:14px;font-size:16px;margin-top:12px;" onclick="receiveBatch()">Process Consolidated Batch Receipt</button>
@@ -8010,17 +8041,32 @@ window.receiveBatch = async () => {
     await refreshStockReceiveLines('All lines on this Purchase Order are now fully received.');
   } catch (e) { alert(e.message); }
 };
+// Grey out a line's Short Ship button the moment its own Qty to Receive
+// stops being 0 (2026-10-27) - root-caused as the actual cause of a line
+// closing at "received 0" despite the user having typed a real quantity:
+// Short Ship never read that box, so whatever was typed there was silently
+// discarded. Disabling it up front, rather than only rejecting after a
+// click, is the main fix; the backend call below still sends pending_qty
+// as defense in depth.
+window.updateShortShipAvailability = (lineId) => {
+  const btn = document.getElementById('ss-btn-' + lineId);
+  if (!btn) return;
+  const pending = Number(val('st-po-line-qty-' + lineId)) || 0;
+  btn.disabled = pending > 0;
+};
 // Explicit "stop expecting more" for a line that's Open or PartiallyReceived
 // (2026-10-16) - distinct from an outright Cancel, which reads as "this
 // never happened" even once real stock has already come in against it.
 // Already-received stock/GRN records are untouched; only the line's own
 // status changes, so it drops out of the Receive picker going forward.
 window.closeShortShipReceiveLine = async (lineId) => {
+  const pendingQty = Number(val('st-po-line-qty-' + lineId)) || 0;
+  if (pendingQty > 0) { alert(`There is still an unreceived Qty to Receive (${pendingQty}) on this line - receive it first (or clear the box to 0) before closing the rest as short-shipped.`); return; }
   const reason = prompt('Reason for closing this line as short-shipped (required):');
   if (reason === null) return;
   if (!reason.trim()) { alert('A reason is required.'); return; }
   try {
-    await api(`/purchase/orders/${lineId}/close-short-ship`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+    await api(`/purchase/orders/${lineId}/close-short-ship`, { method: 'POST', body: JSON.stringify({ reason: reason.trim(), pending_qty: pendingQty }) });
     await refreshStockReceiveLines('Line closed as short-shipped - any remaining lines on this Purchase Order are still open above.');
   } catch (e) { alert(e.message); }
 };
@@ -8115,11 +8161,13 @@ window.toggleGrnAttachments = (grnId) => {
     renderAttachmentsWidget('grn_reconciliation', grnId, document.getElementById('grn-attach-' + grnId));
   }
 };
-// Edit + resubmit a Rejected GRN reconciliation (2026-10-16) - scoped to
-// just the vendor-invoice fields the clerk typed off the vendor's own
-// bill; received_qty/po_rate aren't editable here since they're a snapshot
-// of what's already been physically received, see the backend route's own
-// comment for why.
+// Edit + resubmit a Rejected GRN reconciliation (2026-10-16, extended
+// 2026-10-27) - originally scoped to just the vendor-invoice fields the
+// clerk typed off the vendor's own bill. Received Qty / PO Rate are now
+// also editable here (a clerk can mistype what was actually received), set
+// apart visually since correcting them also adjusts the real linked stock
+// movement and the item's current stock by the exact delta - see the
+// backend route's own comment for why that's necessary rather than optional.
 window.openEditGrn = (grnId) => {
   const g = (window.__STOCK_GRNS || []).find(x => x.id === grnId);
   if (!g) return;
@@ -8131,6 +8179,13 @@ window.openEditGrn = (grnId) => {
       <div><label>Vendor Invoiced Qty</label><input id="geg-invqty" type="number" step="any" value="${g.vendor_invoiced_qty != null ? g.vendor_invoiced_qty : ''}"></div>
       <div><label>Vendor Invoiced Rate</label><input id="geg-invrate" type="number" step="any" value="${g.vendor_invoiced_rate != null ? g.vendor_invoiced_rate : ''}"></div>
     </div>
+    <div class="box" style="margin-top:12px;border-color:#e6b800;background:#fff6e5;">
+      <b>Correct what was actually received</b> - changing this also adjusts the item's real stock-on-hand by the difference. Only use this for a genuine data-entry error.
+      <div class="form-grid" style="margin-top:8px;">
+        <div><label>Received Qty</label><input id="geg-recqty" type="number" step="any" value="${g.received_qty != null ? g.received_qty : ''}"></div>
+        <div><label>PO Rate</label><input id="geg-porate" type="number" step="any" value="${g.po_rate != null ? g.po_rate : ''}"></div>
+      </div>
+    </div>
     <button class="btn" id="geg-save-btn-${grnId}" onclick="saveEditGrn(${grnId})" style="margin-top:10px;">Save & Resubmit for Approval</button>
   `);
 };
@@ -8139,8 +8194,23 @@ window.saveEditGrn = async (grnId) => {
     await api(`/purchase/store/grn-reconciliations/${grnId}`, { method: 'PATCH', body: JSON.stringify({
       vendor_invoice_no: val('geg-invno'), vendor_invoice_date: val('geg-invdate'),
       vendor_invoiced_qty: val('geg-invqty'), vendor_invoiced_rate: val('geg-invrate'),
+      received_qty: val('geg-recqty'), po_rate: val('geg-porate'),
     })});
     confirmSavedThenClose(`geg-save-btn-${grnId}`, 'stock-in-out');
+  } catch (e) { alert(e.message); }
+};
+// Transportation / Packing & Forwarding, entered by the Store approver on
+// the My Approvals GRN drilldown before Approving (2026-10-27) - saved via
+// its own small route rather than folded into the generic approve/reject
+// action, so the figures are on file the moment Approve is actually clicked.
+window.saveGrnCharges = async (grnId) => {
+  try {
+    await api(`/purchase/store/grn-reconciliations/${grnId}/charges`, { method: 'PATCH', body: JSON.stringify({
+      transportation_amount: val(`grn-transport-${grnId}`) || 0,
+      packing_forwarding_amount: val(`grn-pf-${grnId}`) || 0,
+    })});
+    const btn = document.getElementById(`grn-charges-save-${grnId}`);
+    if (btn) { btn.textContent = 'Saved ✓'; btn.disabled = true; setTimeout(() => { btn.textContent = 'Save Charges'; btn.disabled = false; }, 1200); }
   } catch (e) { alert(e.message); }
 };
 window.downloadStockTemplate = () => downloadTemplateFile('/purchase/store/movements/template', 'stock_in_out_upload_template.xlsx');
@@ -12872,25 +12942,38 @@ window.loadBillablePOLines = async () => {
   PI_LINES = [];
   if (!poNo) { box.innerHTML = ''; return; }
   try {
-    const lines = await api('/finance/purchase-invoices/billable-po-lines?po_no=' + encodeURIComponent(poNo));
-    if (!lines.length) {
+    // Item lines and any still-billable Transportation/Packing & Forwarding
+    // charges (2026-10-27, entered by the Store HOD/Supervisor while
+    // approving the GRN) load together so both can be included in the same
+    // invoice - a separate, additive endpoint from billable-po-lines so that
+    // route's own existing response/behavior is untouched.
+    const [lines, charges] = await Promise.all([
+      api('/finance/purchase-invoices/billable-po-lines?po_no=' + encodeURIComponent(poNo)),
+      api('/finance/purchase-invoices/billable-charges?po_no=' + encodeURIComponent(poNo)),
+    ]);
+    if (!lines.length && !charges.length) {
       box.innerHTML = '<p class="muted">Nothing on this PO is currently billable - either nothing has been received yet, or everything received has already been invoiced.</p>';
       return;
     }
     PI_LINES = lines.map(l => ({
       purchase_order_line_id: l.id, item_id: l.item_id, item_name: l.item_name, hsn_code: l.hsn_code || '',
       gst_rate: l.gst_rate || 18, billable_qty: l.billable_qty, quantity: l.billable_qty, rate: l.rate,
-    }));
+    })).concat(charges.map(c => ({
+      source_grn_id: c.source_grn_id, charge_type: c.charge_type, item_name: c.description,
+      hsn_code: '', gst_rate: 18, billable_qty: c.amount, quantity: 1, rate: c.amount,
+    })));
     renderPILines();
   } catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
 };
 function renderPILines() {
   const box = document.getElementById('pi-lines-box');
   if (!box) return;
-  box.innerHTML = tableHTML(['Item', 'Billable Qty', 'Bill Qty', 'Rate (₹)', 'HSN', 'GST %'], PI_LINES, (l, i) => `
-    <tr><td>${esc(l.item_name)||'-'}</td><td>${fmt(l.billable_qty)}</td>
-      <td><input type="number" value="${l.quantity}" max="${l.billable_qty}" min="0" onchange="PI_LINES[${i}].quantity=Number(this.value)" style="width:90px;"></td>
-      <td><input type="number" value="${l.rate}" onchange="PI_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
+  box.innerHTML = tableHTML(['Item / Charge', 'Billable', 'Bill Qty / Include', 'Rate (₹) / Amount (₹)', 'HSN', 'GST %'], PI_LINES, (l, i) => `
+    <tr><td>${esc(l.item_name)||'-'}</td><td>${l.charge_type ? '₹' + fmt(l.billable_qty) : fmt(l.billable_qty)}</td>
+      <td>${l.charge_type
+        ? `<label><input type="checkbox" checked onchange="PI_LINES[${i}].quantity=this.checked?1:0"> Include</label>`
+        : `<input type="number" value="${l.quantity}" max="${l.billable_qty}" min="0" onchange="PI_LINES[${i}].quantity=Number(this.value)" style="width:90px;">`}</td>
+      <td><input type="number" value="${l.rate}" ${l.charge_type ? `max="${l.billable_qty}"` : ''} onchange="PI_LINES[${i}].rate=Number(this.value)" style="width:100px;"></td>
       <td><input value="${esc(l.hsn_code)}" onchange="PI_LINES[${i}].hsn_code=this.value" style="width:90px;"></td>
       <td><input type="number" value="${l.gst_rate}" onchange="PI_LINES[${i}].gst_rate=Number(this.value)" style="width:70px;"></td></tr>`);
 }
