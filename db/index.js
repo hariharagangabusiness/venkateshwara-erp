@@ -1528,6 +1528,24 @@ const MIGRATIONS = [
     unit_rate REAL NOT NULL,
     lead_days INTEGER NOT NULL
   )`,
+  // Proforma Invoice redesign (2026-10-27): Ship To (auto-resolved from the
+  // client's default Shipping address, same lookup routes/sales.js's own
+  // dispatchParty() uses for FG Dispatch - snapshotted as text at creation
+  // time rather than a live join, same "don't let a later client-master
+  // edit silently change what was already printed" reasoning sales_invoices'
+  // buyer_* columns already use), Packing & Forwarding (% and/or a flat ₹
+  // override), and Advance Received (a deduction against the total payable).
+  `ALTER TABLE proforma_invoices ADD COLUMN ship_to_address TEXT`,
+  `ALTER TABLE proforma_invoices ADD COLUMN packing_forwarding_percent REAL DEFAULT 0`,
+  `ALTER TABLE proforma_invoices ADD COLUMN packing_forwarding_amount REAL DEFAULT 0`,
+  `ALTER TABLE proforma_invoices ADD COLUMN advance_received REAL DEFAULT 0`,
+  // Line items gain real quantity/unit/rate (mirroring sales_invoice_items)
+  // instead of only a flat taxable_value, so the PDF can print Units/Unit
+  // Price as their own columns rather than folding the quantity into the
+  // Description text.
+  `ALTER TABLE proforma_invoice_items ADD COLUMN quantity REAL DEFAULT 1`,
+  `ALTER TABLE proforma_invoice_items ADD COLUMN unit TEXT DEFAULT 'Nos'`,
+  `ALTER TABLE proforma_invoice_items ADD COLUMN rate REAL DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
