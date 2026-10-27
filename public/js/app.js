@@ -852,10 +852,43 @@ function groupByCustomerGroup(rows) {
 // their own toggleable <tbody> - a <table> can hold several <tbody>
 // elements, each independently shown/hidden, same as the single <div>
 // wrapper this replaced.
-function customerGroupedHTML(rows, idPrefix, columns, rowHTML) {
+// `sortOpts`, when given ({ containerId, sortKey, fields: [field-or-null per
+// column] }), makes every column with a non-null field clickable to sort
+// (2026-10-27, Offers list) - sorts the flat `rows` array BEFORE grouping, so
+// rows within a Customer Group rollup sort correctly and groups themselves
+// still render in their natural first-seen order; omitting `sortOpts`
+// entirely (every other caller, e.g. Sales Orders) leaves this function's
+// behavior completely unchanged. `sortKey` is a separate key from `idPrefix`
+// (the grouping-id prefix, e.g. gid='of-grp-0') specifically so the two never
+// collide when stored/looked-up.
+const CGT_SORT_STATE = {};
+function customerGroupedHTML(rows, idPrefix, columns, rowHTML, sortOpts) {
   if (!rows.length) return '<div class="empty">No records yet.</div>';
+  if (sortOpts) {
+    const prevSt = CGT_SORT_STATE[sortOpts.sortKey] && CGT_SORT_STATE[sortOpts.sortKey].st;
+    CGT_SORT_STATE[sortOpts.sortKey] = { rows, idPrefix, columns, rowHTML, ...sortOpts, st: prevSt || { field: null, dir: 'asc' } };
+  }
+  const st = sortOpts ? CGT_SORT_STATE[sortOpts.sortKey].st : null;
+  if (st && st.field) {
+    rows = [...rows].sort((a, b) => {
+      let av = a[st.field], bv = b[st.field];
+      av = (av === null || av === undefined) ? '' : String(av).toLowerCase();
+      bv = (bv === null || bv === undefined) ? '' : String(bv).toLowerCase();
+      if (av < bv) return st.dir === 'asc' ? -1 : 1;
+      if (av > bv) return st.dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
   const groups = groupByCustomerGroup(rows);
-  if (groups.every(g => g.rows.length === 1)) return tableHTML(columns, rows, rowHTML);
+  const headerRow = columns.map((c, i) => {
+    const field = sortOpts && sortOpts.fields[i];
+    if (!field) return `<th>${c}</th>`;
+    const arrow = st && st.field === field ? (st.dir === 'asc' ? ' &#9650;' : ' &#9660;') : '';
+    return `<th style="cursor:pointer;user-select:none;" onclick="toggleCGTSort('${sortOpts.sortKey}','${field}')">${c}${arrow}</th>`;
+  }).join('');
+  if (groups.every(g => g.rows.length === 1)) {
+    return `<div style="overflow-x:auto;"><table><thead><tr>${headerRow}</tr></thead><tbody>${rows.map(rowHTML).join('')}</tbody></table></div>`;
+  }
   const colCount = columns.length;
   const body = groups.map((g, i) => {
     if (g.rows.length === 1) return g.rows.map(rowHTML).join('');
@@ -867,8 +900,16 @@ function customerGroupedHTML(rows, idPrefix, columns, rowHTML) {
       </tr></tbody>
       <tbody id="${gid}-body" style="display:none;">${g.rows.map(rowHTML).join('')}</tbody>`;
   }).join('');
-  return `<div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead>${body}</table></div>`;
+  return `<div style="overflow-x:auto;"><table><thead><tr>${headerRow}</tr></thead>${body}</table></div>`;
 }
+window.toggleCGTSort = (sortKey, field) => {
+  const entry = CGT_SORT_STATE[sortKey];
+  if (!entry) return;
+  entry.st.dir = (entry.st.field === field && entry.st.dir === 'asc') ? 'desc' : 'asc';
+  entry.st.field = field;
+  const container = document.getElementById(entry.containerId);
+  if (container) container.innerHTML = customerGroupedHTML(entry.rows, entry.idPrefix, entry.columns, entry.rowHTML, entry);
+};
 window.toggleCustomerGroupRollup = (gid) => {
   const body = document.getElementById(gid + '-body');
   const chev = document.getElementById(gid + '-chev');
@@ -1182,15 +1223,19 @@ function projectPickerHTML(pickerId, projects, selectedId, placeholder) {
     '', 'Search project by code or title...');
 }
 // Client/customer picker - searches by name (clients have no separate code).
+// Alphabetical (case-insensitive) regardless of the caller's own array order
+// (2026-10-27) - every client picker in the app shares this one function, so
+// sorting here covers all of them with no per-caller change.
 function clientOptions(selectedId, clients, placeholder) {
+  const sorted = [...clients].sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
   return `<option value="">${esc(placeholder || '- No customer -')}</option>` +
-    clients.map(c => `<option value="${c.id}" ${selectedId && Number(selectedId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    sorted.map(c => `<option value="${c.id}" ${selectedId && Number(selectedId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
 }
-function clientPickerHTML(pickerId, clients, selectedId, placeholder) {
+function clientPickerHTML(pickerId, clients, selectedId, placeholder, selectAttrs) {
   return searchPickerHTML(pickerId, clients, selectedId,
     (sel, list) => clientOptions(sel, list, placeholder),
     (c, q) => (c.name || '').toLowerCase().includes(q),
-    '', 'Search customer by name...');
+    selectAttrs || '', 'Search customer by name...');
 }
 // Sales Order picker for the Generate Invoice form (2026-10-17) - the plain
 // dropdown it replaces listed every order with no way to search it down.
@@ -3254,13 +3299,13 @@ PAGES['fg-dispatches'] = async (el) => {
       ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
         <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
         <td>${actionButtonsCell(`
-          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
-          <button class="btn small" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
-          <a class="btn small green" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'customer-bundle')">3. Customer Bundle PDF</a>` : ''}
-          <a class="btn small dark-outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">4. Print Envelope</a>
-          <a href="/api/sales/dispatches/${d.id}/pdf" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
-          <button class="btn small outline" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
-          ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" style="width:160px;height:36px;padding:6px 12px;border-radius:6px;font-size:var(--fs-xs);" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
+          ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
+          <button class="btn small" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
+          <a class="btn small green" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'customer-bundle')">3. Customer Bundle PDF</a>` : ''}
+          <a class="btn small dark-outline" href="#" onclick="return downloadDispatchDoc(event, ${d.id}, 'envelope')">4. Print Envelope</a>
+          <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
+          <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
+          ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
     `)}`;
@@ -3537,6 +3582,12 @@ PAGES.orders = async (el) => {
         <div><label>Description</label><textarea id="so-desc" rows="1"></textarea></div>
         <div><label>Promised Delivery Date</label><input id="so-delivery" type="date"></div>
       </div>
+      <div class="form-grid">
+        <div><label>Customer PO Number <span class="muted">(optional)</span></label><input id="so-po-number"></div>
+        <div><label>Customer PO Date</label><input id="so-po-date" type="date"></div>
+        <div><label>Advance (%) <span class="muted">(used to default an Advance Proforma's amount)</span></label><input id="so-advance-pct" type="number" min="0" max="100" step="0.01"></div>
+        <div><label>Payment Before Dispatch (%) <span class="muted">(used to default a Pre-Dispatch Proforma's amount)</span></label><input id="so-predispatch-pct" type="number" min="0" max="100" step="0.01"></div>
+      </div>
       <h4>Line Items <span class="muted">(optional - leave empty and set Order Value manually for a simple order with no dispatch tracking)</span></h4>
       <div id="so-lines"></div>
       <button class="btn small outline" type="button" onclick="addSOLine()">+ Add Line Item</button>
@@ -3753,6 +3804,8 @@ window.addOrder = async () => {
   try {
     const r = await api('/sales/orders', { method: 'POST', body: JSON.stringify({
       client_id: val('so-client'), lead_id: val('so-lead') || null, order_value: val('so-value'), description: val('so-desc'),
+      po_number: val('so-po-number'), po_date: val('so-po-date') || null,
+      advance_percent: val('so-advance-pct') || 0, predispatch_percent: val('so-predispatch-pct') || 0,
       lines,
     })});
     // Commercial terms aren't accepted by the create endpoint (kept
@@ -4007,7 +4060,7 @@ PAGES.offers = async (el) => {
   el.innerHTML = `
     <div class="panel"><h3>New Offer</h3>
       <div class="form-grid">
-        <div><label>Client</label><select id="nf-client" onchange="prefillOfferContactFromClient()">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div><label>Client</label>${clientPickerHTML('nf-client', clients, '', null, 'onchange="prefillOfferContactFromClient()"')}</div>
         <div><label>Linked Enquiry / RFQ (optional)</label><select id="nf-lead">
           <option value="">-- None --</option>
           ${leads.map(l => `<option value="${l.id}">${esc(l.client_name)} - ${esc(l.product_interest || l.enquiry_details || ('Lead #' + l.id))}</option>`).join('')}
@@ -4023,10 +4076,10 @@ PAGES.offers = async (el) => {
     <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
     ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
       ${renderListSearch('offers', offers, ['offer_no', 'client_name', 'group_name', 'subject', 'status', 'lead_enquiry_details'], (rows) => {
-        document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', OFFER_LIST_COLUMNS, offerRowHTML);
+        document.getElementById('of-table-wrap').innerHTML = customerGroupedHTML(rows, 'of', OFFER_LIST_COLUMNS, offerRowHTML, OFFER_SORT_OPTS);
         document.getElementById('of-count').textContent = 'All Offers (' + rows.length + ')';
       }, 'Search by offer no, client, subject, status...')}
-      <div id="of-table-wrap">${customerGroupedHTML(offers, 'of', OFFER_LIST_COLUMNS, offerRowHTML)}</div>
+      <div id="of-table-wrap">${customerGroupedHTML(offers, 'of', OFFER_LIST_COLUMNS, offerRowHTML, OFFER_SORT_OPTS)}</div>
     `)}
     <div class="panel" id="offer-copy-panel" style="display:none;">
       <h3>Copy Offer to Another Customer</h3>
@@ -4073,6 +4126,9 @@ window.prefillOfferContactFromClient = () => {
 // own comment for why (one shared <table> per list instead of one per
 // Customer Group rollup, so column widths line up across every group).
 const OFFER_LIST_COLUMNS = ['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Date', 'Status', ''];
+// Click-to-sort column headers on the All Offers list (2026-10-27) - every
+// column sortable except the trailing Action column (field: null there).
+const OFFER_SORT_OPTS = { containerId: 'of-table-wrap', sortKey: 'of-sort', fields: ['offer_no', 'client_name', 'lead_enquiry_details', 'subject', 'offer_date', 'status', null] };
 function offerRowHTML(o) {
   return `<tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
     <td>${actionButtonsCell(`
@@ -4419,8 +4475,12 @@ let OFFER_ANNEXURE_ROWS = [];
 function renderOfferAnnexureTab(el, data) {
   OFFER_ANNEXURE_ROWS = (data.annexures || []).map(a => ({ description: a.description || '', qty: a.qty || '', unit: a.unit || '', remarks: a.remarks || '' }));
   el.innerHTML = `
-    <p class="muted">Printed as the last page of the offer PDF (only when it has rows). Copy cells in Excel and paste (Ctrl+V) into the box below - columns: <b>S.No</b> (optional), <b>Description</b>, <b>Qty</b>, <b>Unit</b>, <b>Remarks</b>. A header row is detected automatically; rows are appended and stay editable.</p>
+    <p class="muted">Printed as the last page of the offer PDF (only when it has rows). Copy cells in Excel and paste (Ctrl+V) into the box below, or upload the file itself - columns: <b>S.No</b> (optional), <b>Description</b>, <b>Qty</b>, <b>Unit</b>, <b>Remarks</b>. A header row is detected automatically; rows are appended and stay editable either way.</p>
     <textarea id="an-paste" rows="3" placeholder="Click here, then press Ctrl+V to paste from Excel" style="width:100%;padding:8px;border:2px dashed var(--border);border-radius:6px;font-family:inherit;" onpaste="pasteOfferAnnexure(event)"></textarea>
+    <div style="margin-top:8px;">
+      <label>Or upload an Annexure file (.xlsx/.csv) to read its rows in:</label>
+      <input id="an-upload-file" type="file" accept=".xlsx,.xls,.csv" onchange="uploadOfferAnnexure(this)">
+    </div>
     <div id="an-rows" style="margin-top:10px;"></div>
     <div style="margin-top:8px;">
       <button class="btn small outline" type="button" onclick="addOfferAnnexureRow()">+ Add Row</button>
@@ -4464,6 +4524,23 @@ function parseAnnexureTsv(text) {
   return grid.map(r => ({ description: at(r, map.description), qty: at(r, map.qty), unit: at(r, map.unit), remarks: at(r, map.remarks) }))
     .filter(r => r.description || r.qty || r.unit || r.remarks);
 }
+// Upload-and-parse an Excel/CSV Annexure file (2026-10-27) - server-side
+// parsing (same column-detection rules as the paste box, routes/offers.js's
+// parseAnnexureGrid()) since this app has no client-side XLSX library;
+// returned rows are appended into the same editable grid a paste produces,
+// nothing is saved until Save Annexure is clicked.
+window.uploadOfferAnnexure = async (inputEl) => {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await apiUpload(`/offers/${CURRENT_OFFER_ID}/annexures/parse-upload`, fd, 'POST');
+    OFFER_ANNEXURE_ROWS = OFFER_ANNEXURE_ROWS.concat(r.rows);
+    renderOfferAnnexureRows();
+  } catch (e) { alert(e.message); }
+  inputEl.value = '';
+};
 window.pasteOfferAnnexure = (ev) => {
   const text = (ev.clipboardData || window.clipboardData).getData('text');
   ev.preventDefault();
@@ -12794,7 +12871,7 @@ PAGES['sales-invoices'] = async (el) => {
       <p class="muted">Not a tax invoice - a payment request document for an advance or pre-dispatch payment term.</p>
       <div class="form-grid">
         <div><label>Sales Order</label>${salesOrderPickerHTML('pf-so', window.__INV_ORDERS, null, 'onchange="pfSOChanged()"')}</div>
-        <div><label>Type</label><select id="pf-type"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
+        <div><label>Type</label><select id="pf-type" onchange="pfPrefillAmountFromPercent()"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
         <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
         <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
         <div><label>Item Description</label><input id="pf-desc" placeholder="Defaults to order description (ignored if a milestone is picked)"></div>
@@ -12897,6 +12974,23 @@ window.pfSOChanged = () => {
     document.getElementById('pf-buyer-gstin').value = o.client_gstin || '';
   }
   loadPFMilestones();
+  pfPrefillAmountFromPercent();
+};
+// Advance %/Payment Before Dispatch % (2026-10-27, captured on the Sales
+// Order itself) pre-fill the Amount field here the same way the backend
+// falls back to them when no amount is sent - this is purely a visible,
+// still-freely-editable default, not a lock, so Accounts can always type a
+// different figure before booking. Only overwrites the Amount box when a
+// milestone isn't driving the amount instead (the milestone dropdown's own
+// onchange - see loadPFMilestones() - already fills/clears this field for
+// that case).
+window.pfPrefillAmountFromPercent = () => {
+  const soId = Number(val('pf-so'));
+  const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
+  const amountEl = document.getElementById('pf-amount');
+  if (!o || !amountEl || val('pf-milestone')) return;
+  const pct = val('pf-type') === 'Advance' ? Number(o.advance_percent) || 0 : Number(o.predispatch_percent) || 0;
+  amountEl.value = pct > 0 ? Math.round((pct / 100 * (Number(o.order_value) || 0)) * 100) / 100 : '';
 };
 window.generateInvoice = async () => {
   const errEl = document.getElementById('inv-err'); errEl.style.display = 'none';

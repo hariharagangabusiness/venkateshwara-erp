@@ -1153,10 +1153,15 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
   if (!items) {
     // Default to the milestone's own amount/percentage, or the request body's
     // flat amount, so a milestone-linked proforma needs no manual line items.
+    // Advance %/Payment-Before-Dispatch % (2026-10-27, captured on the Sales
+    // Order itself) default this line's amount when neither a milestone nor
+    // an explicit amount was given - still a default, not a lock: the caller
+    // can always override by sending its own `amount`.
+    const soPercent = invoice_type === 'Advance' ? Number(so.advance_percent) || 0 : Number(so.predispatch_percent) || 0;
     const amount = milestone
       ? (milestone.amount || (Number(milestone.percentage) || 0) / 100 * (Number(so.order_value) || 0))
-      : Number(req.body.amount) || 0;
-    if (!amount) return res.status(400).json({ error: 'Give an amount, or pick a milestone that has one.' });
+      : (Number(req.body.amount) || (soPercent / 100 * (Number(so.order_value) || 0)));
+    if (!amount) return res.status(400).json({ error: 'Give an amount, pick a milestone that has one, or set this order\'s Advance %/Payment Before Dispatch % first.' });
     // Item Description (2026-10-27) - same "blank field, server defaults to
     // the order's own description" pattern as Generate Invoice's own
     // inv-desc field: a milestone still drives its own name (it's the more

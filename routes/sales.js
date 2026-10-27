@@ -266,7 +266,7 @@ router.get('/orders', (req, res) => {
 // of trusting whatever the caller passed for it, same "derive, don't trust
 // a duplicate" reasoning as every other computed total in this codebase.
 router.post('/orders', requirePermission('sales_order.manage'), async (req, res) => {
-  const { lead_id, client_id, description, order_value } = req.body;
+  const { lead_id, client_id, description, order_value, po_number, po_date } = req.body;
   const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
@@ -276,10 +276,19 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   }
   const computedValue = lines.length ? lines.reduce((s, l) => s + Number(l.quantity) * Number(l.rate), 0) : order_value;
   const orderNo = 'SO-' + Date.now();
+  // Customer PO (2026-10-27) - New Sales Order can now capture this at
+  // creation time too, writing the same po_number/po_date/po_status columns
+  // the post-creation "Customer PO" panel (PUT /orders/:id/po) already uses -
+  // a PO typed here can still be edited/cleared later via that same panel.
+  const poNumber = po_number && String(po_number).trim();
+  const advancePercent = Math.min(100, Math.max(0, Number(req.body.advance_percent) || 0));
+  const predispatchPercent = Math.min(100, Math.max(0, Number(req.body.predispatch_percent) || 0));
   const info = db.prepare(`
-    INSERT INTO sales_orders (order_no, lead_id, client_id, description, order_value, created_by)
-    VALUES (?,?,?,?,?,?)
-  `).run(orderNo, lead_id || null, client_id, description, computedValue, req.user.id);
+    INSERT INTO sales_orders (order_no, lead_id, client_id, description, order_value, created_by,
+      po_status, po_number, po_date, advance_percent, predispatch_percent)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `).run(orderNo, lead_id || null, client_id, description, computedValue, req.user.id,
+    poNumber ? 'Received' : 'Pending', poNumber || null, poNumber ? (po_date || null) : null, advancePercent, predispatchPercent);
   if (lines.length) {
     const insertItem = db.prepare(`
       INSERT INTO sales_order_items (sales_order_id, item_id, description, hsn_code, quantity, unit, rate, value, gst_rate, sort_order)

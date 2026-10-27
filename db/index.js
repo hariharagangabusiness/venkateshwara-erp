@@ -1562,6 +1562,16 @@ const MIGRATIONS = [
   // item quantity (see grnChargeBillable() in routes/finance.js).
   `ALTER TABLE purchase_invoice_items ADD COLUMN source_grn_id INTEGER REFERENCES grn_reconciliations(id)`,
   `ALTER TABLE purchase_invoice_items ADD COLUMN charge_type TEXT`,
+  // New Sales Order follow-up (2026-10-27): Advance % / Payment-Before-
+  // Dispatch % captured once on the order itself, so generating either
+  // Proforma type can default its amount to order_value * the matching
+  // percent instead of Accounts retyping a figure that was already agreed at
+  // order time - still fully editable before booking, this is a default, not
+  // a lock. po_number/po_date already existed (the post-creation "Customer
+  // PO" panel) - New Sales Order just gained its own fields writing the same
+  // columns at creation time, no new columns needed for those two.
+  `ALTER TABLE sales_orders ADD COLUMN advance_percent REAL DEFAULT 0`,
+  `ALTER TABLE sales_orders ADD COLUMN predispatch_percent REAL DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
