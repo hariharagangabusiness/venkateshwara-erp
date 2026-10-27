@@ -14,7 +14,8 @@ const { offerVisibilityWhere, canSeeOffer } = require('../lib/offerVisibility');
 const { getOfferPdfTemplate, setOfferPdfTemplate, DEFAULT_OFFER_PDF_TEMPLATE, getOfferGovernanceSettings, setOfferGovernanceSettings, getOfferPdfLayout, setOfferPdfLayoutPiece, getCompanySettings } = require('../lib/settings');
 const { compressImage, compressUploadedImageFile } = require('../lib/imageCompress');
 
-const { makeUpload } = require('../lib/upload');
+const { makeUpload, uploadMemory } = require('../lib/upload');
+const XLSX = require('xlsx');
 const router = express.Router();
 router.use(authRequired);
 
@@ -940,6 +941,47 @@ router.put('/:id/terms', offerPerm(), (req, res) => {
   const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
   bulkReplace('offer_terms', version.id, req.body.rows || [], 'term_key', 'term_value');
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
+});
+
+// Parse an uploaded Excel/CSV Annexure file into the same row shape the
+// paste-from-Excel box already produces (2026-10-27) - read-only, nothing is
+// saved here; the frontend appends the returned rows into its own editable
+// grid exactly like a paste, so the Save Annexure button still owns the
+// actual commit. Column detection mirrors parseAnnexureTsv() client-side: a
+// header row naming "Description" maps by column name, otherwise 5+ columns
+// are read as S.No/Description/Qty/Unit/Remarks and fewer as Description/
+// Qty/Unit/Remarks.
+function parseAnnexureGrid(grid) {
+  if (!grid.length) return [];
+  let rows = grid.map(r => r.map(c => (c === null || c === undefined) ? '' : String(c).trim()));
+  const hdr = rows[0].map(c => c.toLowerCase());
+  let map;
+  if (hdr.some(c => c.startsWith('desc'))) {
+    map = {
+      description: hdr.findIndex(c => c.startsWith('desc')),
+      qty: hdr.findIndex(c => c === 'qty' || c.startsWith('quant')),
+      unit: hdr.findIndex(c => c === 'unit' || c === 'uom'),
+      remarks: hdr.findIndex(c => c.startsWith('remark')),
+    };
+    rows = rows.slice(1);
+  } else {
+    const off = rows[0].length >= 5 ? 1 : 0;
+    map = { description: off, qty: off + 1, unit: off + 2, remarks: off + 3 };
+  }
+  const at = (row, i) => (i >= 0 && i < row.length ? row[i] : '');
+  return rows.map(r => ({ description: at(r, map.description), qty: at(r, map.qty), unit: at(r, map.unit), remarks: at(r, map.remarks) }))
+    .filter(r => r.description || r.qty || r.unit || r.remarks);
+}
+router.post('/:id/annexures/parse-upload', offerPerm(), uploadMemory.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  let wb;
+  try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+  catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel/CSV workbook.' }); }
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).filter(r => r.some(c => String(c).trim() !== ''));
+  const rows = parseAnnexureGrid(grid);
+  if (!rows.length) return res.status(400).json({ error: 'No usable rows found in that file.' });
+  res.json({ rows });
 });
 
 // Offer annexure appendix (Excel-pasted grid) - full replace, same shape as
