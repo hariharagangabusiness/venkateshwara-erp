@@ -1224,7 +1224,10 @@ router.post('/proforma-invoices/:id/cancel', requirePermission('sales_order.mana
   res.json({ ok: true });
 });
 router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manage'), async (req, res) => {
-  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  const pf = db.prepare(`
+    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date
+    FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
+  `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
   const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
@@ -1258,7 +1261,10 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
   }
 });
 router.get('/proforma-invoices/:id/pdf', async (req, res) => {
-  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  const pf = db.prepare(`
+    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date
+    FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
+  `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
   const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
