@@ -4547,6 +4547,8 @@ async function renderScopeTab(el, data) {
         ${hasRemarks ? `<td style="white-space:pre-wrap;max-width:160px;">${esc(it.remarks)}</td>` : ''}
         ${hasPicture ? `<td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : ''}</td>` : ''}
         <td>${actionButtonsCell(`
+          <button class="btn small outline" onclick="moveOfferItem(${it.id},'up')" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn small outline" onclick="moveOfferItem(${it.id},'down')" ${i === items.length - 1 ? 'disabled' : ''}>↓</button>
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
         `)}</td>
@@ -4554,7 +4556,7 @@ async function renderScopeTab(el, data) {
     <tr><td colspan="${colsBeforeTaxable}" class="right"><b>Grand Total</b></td><td colspan="${totalCols - colsBeforeTaxable}"><b>₹${fmt(grandTotal)}</b></td></tr>
     </tbody></table>` : `
     <table><thead><tr><th>Item</th><th>Section</th><th>Description</th><th>Picture</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
-    <tbody>${items.map(it => `
+    <tbody>${items.map((it, i) => `
       <tr>
         <td>${esc(it.item_code)}</td>
         <td>${esc(it.section_title)}</td>
@@ -4562,6 +4564,8 @@ async function renderScopeTab(el, data) {
         <td>${it.image_path ? `<img src="${it.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
         <td>${it.qty}</td><td>₹${fmt(it.unit_price)}</td><td>₹${fmt(it.total_price)}</td>
         <td>${actionButtonsCell(`
+          <button class="btn small outline" onclick="moveOfferItem(${it.id},'up')" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn small outline" onclick="moveOfferItem(${it.id},'down')" ${i === items.length - 1 ? 'disabled' : ''}>↓</button>
           <button class="btn small" onclick="editOfferItem(${it.id})">Edit</button>
           <button class="btn small red" onclick="deleteOfferItem(${it.id})">Delete</button>
         `)}</td>
@@ -4600,12 +4604,16 @@ async function renderEquipmentReferenceTab(el, data) {
   el.innerHTML = `
     <p class="muted">Shows a library item's picture and summary on the PDF's Equipment Description page for the customer's reference - not priced, not part of Scope of Supply. Use this for a related product the customer would recognize even though it isn't being quoted here.</p>
     <table><thead><tr><th>Picture</th><th>Title</th><th>Summary</th><th></th></tr></thead>
-    <tbody>${equipmentRefs.map(r => `
+    <tbody>${equipmentRefs.map((r, i) => `
       <tr>
         <td>${r.image_path ? `<img src="${r.image_path}" style="max-width:60px;max-height:60px;">` : '-'}</td>
         <td>${esc(r.title)}</td>
         <td style="white-space:pre-wrap;max-width:260px;">${esc(r.summary)||'-'}</td>
-        <td><button class="btn small red" onclick="deleteEquipmentReference(${r.id})">Remove</button></td>
+        <td>${actionButtonsCell(`
+          <button class="btn small outline" onclick="moveEquipmentReference(${r.id},'up')" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn small outline" onclick="moveEquipmentReference(${r.id},'down')" ${i === equipmentRefs.length - 1 ? 'disabled' : ''}>↓</button>
+          <button class="btn small red" onclick="deleteEquipmentReference(${r.id})">Remove</button>
+        `)}</td>
       </tr>`).join('') || '<tr><td colspan="4" class="empty">No reference equipment added.</td></tr>'}
     </tbody></table>
     <div class="form-grid" style="margin-top:8px;">
@@ -4621,6 +4629,14 @@ window.addEquipmentReference = async () => {
     const reason = confirmOfferRevision(CURRENT_OFFER);
     if (reason === null) return;
     const r = await api(`/offers/${CURRENT_OFFER_ID}/equipment-references`, { method: 'POST', body: JSON.stringify({ section_title_library_id: id, revision_reason: reason || null }) });
+    await afterOfferMutation(r);
+  } catch (e) { alert(e.message); }
+};
+window.moveEquipmentReference = async (refId, direction) => {
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/equipment-references/${refId}/move`, { method: 'POST', body: JSON.stringify({ direction, revision_reason: reason || null }) });
     await afterOfferMutation(r);
   } catch (e) { alert(e.message); }
 };
@@ -4710,6 +4726,14 @@ window.addOfferItem = async () => {
     } else {
       r = await apiUpload(`/offers/${CURRENT_OFFER_ID}/items`, fd, 'POST');
     }
+    await afterOfferMutation(r);
+  } catch (e) { alert(e.message); }
+};
+window.moveOfferItem = async (itemId, direction) => {
+  try {
+    const reason = confirmOfferRevision(CURRENT_OFFER);
+    if (reason === null) return;
+    const r = await api(`/offers/${CURRENT_OFFER_ID}/items/${itemId}/move`, { method: 'POST', body: JSON.stringify({ direction, revision_reason: reason || null }) });
     await afterOfferMutation(r);
   } catch (e) { alert(e.message); }
 };

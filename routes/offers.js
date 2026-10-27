@@ -832,6 +832,33 @@ router.delete('/:id/items/:itemId', offerPerm(), (req, res) => {
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
+// Reorder (2026-10-27) - sort_order was already a real column on every
+// offer child table (set via Add/Edit, never exposed in any UI), but a
+// brand-new line always lands at sort_order=0 like every sibling, so
+// ORDER BY sort_order, id has only ever actually meant "insertion order"
+// in practice. Rather than compute one adjacent swap value (which would
+// leave ties/drift the moment two rows ever shared a sort_order), every
+// move renumbers the WHOLE list to its new 0..N-1 positions in one
+// transaction - self-healing, and safe to call on an offer that's never
+// had sort_order touched before.
+router.post('/:id/items/:itemId/move', offerPerm(), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_items WHERE id = ?').get(req.params.itemId);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const direction = req.body && req.body.direction;
+  if (direction !== 'up' && direction !== 'down') return res.status(400).json({ error: 'direction must be up or down' });
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason, req.user.role_name === 'Admin');
+  const targetItemId = version.itemIdMap.get(existing.id);
+  const rows = db.prepare('SELECT id FROM offer_items WHERE offer_id = ? ORDER BY sort_order, id').all(version.id);
+  const idx = rows.findIndex(r => r.id === targetItemId);
+  const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+  if (idx === -1 || swapWith < 0 || swapWith >= rows.length) return res.status(400).json({ error: 'Already at that end of the list.' });
+  [rows[idx], rows[swapWith]] = [rows[swapWith], rows[idx]];
+  db.transaction(() => {
+    rows.forEach((r, i) => db.prepare('UPDATE offer_items SET sort_order = ? WHERE id = ?').run(i, r.id));
+  })();
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
+});
+
 // ===================== Equipment Description references (customer-reference
 // pictures/summaries, decoupled from pricing - see db/index.js's
 // offer_equipment_references comment) =====================
@@ -859,6 +886,23 @@ router.delete('/:id/equipment-references/:refId', offerPerm(), (req, res) => {
     fs.unlink(resolveUploadPath(existing.image_path), () => {});
   }
   db.prepare('DELETE FROM offer_equipment_references WHERE id = ?').run(targetRefId);
+  res.json({ ok: true, newVersion: version.forked, offerId: version.id });
+});
+router.post('/:id/equipment-references/:refId/move', offerPerm(), (req, res) => {
+  const existing = db.prepare('SELECT * FROM offer_equipment_references WHERE id = ?').get(req.params.refId);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const direction = req.body && req.body.direction;
+  if (direction !== 'up' && direction !== 'down') return res.status(400).json({ error: 'direction must be up or down' });
+  const version = ensureEditableVersion(existing.offer_id, req.user.id, req.body && req.body.revision_reason, req.user.role_name === 'Admin');
+  const targetRefId = version.equipmentRefIdMap.get(existing.id);
+  const rows = db.prepare('SELECT id FROM offer_equipment_references WHERE offer_id = ? ORDER BY sort_order, id').all(version.id);
+  const idx = rows.findIndex(r => r.id === targetRefId);
+  const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+  if (idx === -1 || swapWith < 0 || swapWith >= rows.length) return res.status(400).json({ error: 'Already at that end of the list.' });
+  [rows[idx], rows[swapWith]] = [rows[swapWith], rows[idx]];
+  db.transaction(() => {
+    rows.forEach((r, i) => db.prepare('UPDATE offer_equipment_references SET sort_order = ? WHERE id = ?').run(i, r.id));
+  })();
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });
 
