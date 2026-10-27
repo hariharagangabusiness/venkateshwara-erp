@@ -1396,11 +1396,23 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
 // interactive action on a live order before this. Every already-received
 // stock_movements/grn_reconciliations row is left completely untouched -
 // only the line's own status changes.
+// Root cause of a line closing at "received 0" despite the user believing
+// they'd just entered a received quantity (2026-10-27 investigation): the
+// Receive tab's "Qty to Receive" input sits right next to this action's own
+// button, but typing a number into it does nothing until "Process
+// Consolidated Batch Receipt" is clicked - Short Ship never reads it. The
+// frontend now sends whatever's currently sitting in that box as
+// pending_qty so this route can refuse the same way the UI's own greyed-out
+// button already does, as defense in depth for any other caller of this API.
 router.post('/orders/:id/close-short-ship', requirePermission('purchase_order.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (!['Open', 'PartiallyReceived'].includes(existing.status)) {
     return res.status(400).json({ error: `This line is ${existing.status} and cannot be closed as short-shipped.` });
+  }
+  const pendingQty = Number(req.body && req.body.pending_qty) || 0;
+  if (pendingQty > 0) {
+    return res.status(400).json({ error: `There is still an unreceived Qty to Receive (${pendingQty}) entered on this line. Receive it first (or clear the box to 0) before closing the rest as short-shipped.` });
   }
   const reason = req.body && req.body.reason && String(req.body.reason).trim();
   if (!reason) return res.status(400).json({ error: 'A reason is required to close a line as short-shipped.' });
@@ -1408,6 +1420,31 @@ router.post('/orders/:id/close-short-ship', requirePermission('purchase_order.ma
   const receivedSoFar = poReceivedQty(existing.id);
   poAuditLog(req.user.id, 'po_close_short_shipped', existing.id, `${reason} (received ${receivedSoFar} of ${existing.quantity})`);
   res.json({ ok: true });
+});
+
+// Admin-only recovery for a line closed as short-shipped by mistake
+// (2026-10-27) - e.g. the exact scenario above, where Short Ship was
+// clicked with real stock still sitting unsubmitted in "Qty to Receive".
+// Reopens back to Open/PartiallyReceived (derived live from what's actually
+// been received, never hand-picked) so the line drops back into the
+// Receive tab's picker and can be received/short-shipped again correctly.
+// Every already-recorded stock_movements/grn_reconciliations row is left
+// completely untouched - this only changes the line's own status, same
+// "don't touch history" principle close-short-ship itself already follows.
+router.post('/orders/:id/reopen-closed', requirePermission('purchase_order.manage'), (req, res) => {
+  if (req.user.role_name !== 'Admin') return res.status(403).json({ error: 'Admin only.' });
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Closed') {
+    return res.status(400).json({ error: 'Only a line currently Closed (short-shipped) can be reopened.' });
+  }
+  const reason = req.body && req.body.reason && String(req.body.reason).trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to reopen this line.' });
+  const receivedSoFar = poReceivedQty(existing.id);
+  const newStatus = receivedSoFar >= existing.quantity ? 'Received' : (receivedSoFar > 0 ? 'PartiallyReceived' : 'Open');
+  db.prepare(`UPDATE purchase_orders SET status = ? WHERE id = ?`).run(newStatus, existing.id);
+  poAuditLog(req.user.id, 'po_reopen_closed', existing.id, `${reason} (reopened as ${newStatus}, ${receivedSoFar} of ${existing.quantity} received)`);
+  res.json({ ok: true, status: newStatus });
 });
 
 router.get('/orders/:id/audit-log', (req, res) => {
@@ -1724,14 +1761,17 @@ router.get('/store/grn-reconciliations/:id', (req, res) => {
   if (!g) return res.status(404).json({ error: 'Not found' });
   res.json(g);
 });
-// Edit + resubmit a Rejected GRN reconciliation (2026-10-16) - the only way
-// out of a Reject before this was a dead end (no edit route existed at
-// all). Deliberately scoped to the vendor-invoice fields the clerk typed
-// off the vendor's own bill (what a reconciliation mismatch is actually
-// about) - NOT received_qty/po_rate, which are a snapshot of what's
-// already been physically received and fed into stock_movements/the
-// item's stock count at receive time; correcting those would mean also
-// adjusting the linked stock movement, a materially different change.
+// Edit + resubmit a Rejected GRN reconciliation (2026-10-16, extended
+// 2026-10-27) - the only way out of a Reject before 2026-10-16 was a dead
+// end (no edit route existed at all). Originally scoped to only the
+// vendor-invoice fields the clerk typed off the vendor's own bill, since
+// received_qty/po_rate are a snapshot of what's already been physically
+// received and fed into stock_movements/the item's stock count at receive
+// time - correcting those also means adjusting the linked stock movement,
+// confirmed with the owner (2026-10-27) as the correct behavior rather than
+// leaving the GRN's own number and real stock-on-hand to silently drift
+// apart. received_qty/po_rate are therefore now optional in the body too;
+// omitting them leaves the stock position untouched exactly as before.
 // Gated the same "owner or approver" way every other edit action in this
 // app already is - the original receiver, or an Admin/Management/Store
 // HOD - and applies to ANY row currently sitting at Rejected, including
@@ -1747,20 +1787,57 @@ router.patch('/store/grn-reconciliations/:id', (req, res) => {
   if (existing.status !== 'Rejected') {
     return res.status(400).json({ error: 'Only a rejected reconciliation can be edited and resubmitted.' });
   }
-  const { vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate } = req.body;
-  db.prepare(`
-    UPDATE grn_reconciliations SET vendor_invoice_no = ?, vendor_invoice_date = ?, vendor_invoiced_qty = ?, vendor_invoiced_rate = ?
-    WHERE id = ?
-  `).run(
-    (vendor_invoice_no && String(vendor_invoice_no).trim()) || null,
-    vendor_invoice_date || null,
-    vendor_invoiced_qty !== undefined && vendor_invoiced_qty !== '' ? Number(vendor_invoiced_qty) : null,
-    vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
-    existing.id
-  );
-  if (existing.grn_batch_id) {
-    db.prepare('UPDATE grn_batches SET vendor_invoice_no = ?, vendor_invoice_date = ? WHERE id = ? AND is_placeholder = 1')
-      .run((vendor_invoice_no && String(vendor_invoice_no).trim()) || null, vendor_invoice_date || null, existing.grn_batch_id);
+  const { vendor_invoice_no, vendor_invoice_date, vendor_invoiced_qty, vendor_invoiced_rate, received_qty, po_rate } = req.body;
+  const newReceivedQty = received_qty !== undefined && received_qty !== '' ? Number(received_qty) : existing.received_qty;
+  const newPoRate = po_rate !== undefined && po_rate !== '' ? Number(po_rate) : existing.po_rate;
+  if (!(newReceivedQty >= 0)) return res.status(400).json({ error: 'Received quantity cannot be negative.' });
+  if (!(newPoRate >= 0)) return res.status(400).json({ error: 'Rate cannot be negative.' });
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(existing.po_id);
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE grn_reconciliations SET vendor_invoice_no = ?, vendor_invoice_date = ?, vendor_invoiced_qty = ?, vendor_invoiced_rate = ?,
+        received_qty = ?, po_rate = ?
+      WHERE id = ?
+    `).run(
+      (vendor_invoice_no && String(vendor_invoice_no).trim()) || null,
+      vendor_invoice_date || null,
+      vendor_invoiced_qty !== undefined && vendor_invoiced_qty !== '' ? Number(vendor_invoiced_qty) : null,
+      vendor_invoiced_rate !== undefined && vendor_invoiced_rate !== '' ? Number(vendor_invoiced_rate) : null,
+      newReceivedQty, newPoRate,
+      existing.id
+    );
+    if (existing.grn_batch_id) {
+      db.prepare('UPDATE grn_batches SET vendor_invoice_no = ?, vendor_invoice_date = ? WHERE id = ? AND is_placeholder = 1')
+        .run((vendor_invoice_no && String(vendor_invoice_no).trim()) || null, vendor_invoice_date || null, existing.grn_batch_id);
+    }
+    // The GRN's received_qty is a 1:1 snapshot of its own linked
+    // stock_movements row (see routes/purchase.js's receive/receive-batch
+    // routes, which always create the two together) - a qty correction here
+    // has to adjust that same movement and items.current_stock by the exact
+    // delta, or the item's real stock position would silently drift away
+    // from what this reconciliation now says was received.
+    const qtyDelta = newReceivedQty - existing.received_qty;
+    if (qtyDelta !== 0 && existing.stock_movement_id) {
+      db.prepare('UPDATE stock_movements SET quantity = ? WHERE id = ?').run(newReceivedQty, existing.stock_movement_id);
+      db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = (SELECT item_id FROM stock_movements WHERE id = ?)')
+        .run(qtyDelta, existing.stock_movement_id);
+    }
+    // Recompute the PO line's own status from the corrected total, same
+    // Open/PartiallyReceived/Received rollup every receive route already
+    // uses - but only when the line is still in one of those three states;
+    // a Closed (short-shipped) or Cancelled line's own status is a
+    // deliberate, separate decision and is never silently reopened here.
+    if (qtyDelta !== 0 && po && ['Open', 'PartiallyReceived', 'Received'].includes(po.status)) {
+      const totalReceived = poReceivedQty(po.id);
+      const newStatus = totalReceived >= po.quantity ? 'Received' : (totalReceived > 0 ? 'PartiallyReceived' : 'Open');
+      db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?').run(newStatus, po.id);
+    }
+  });
+  tx();
+  const qtyDeltaForLog = newReceivedQty - existing.received_qty;
+  if (qtyDeltaForLog) {
+    poAuditLog(req.user.id, 'grn_received_qty_corrected', existing.po_id,
+      `GRN #${existing.id}: received qty corrected from ${existing.received_qty} to ${newReceivedQty} (stock adjusted by ${qtyDeltaForLog >= 0 ? '+' : ''}${qtyDeltaForLog})`);
   }
   // A fresh approval, not a resume of the rejected one - same shape as a
   // rejected Purchase Request's own POST /requests/:id/resubmit, so the
@@ -1769,6 +1846,31 @@ router.patch('/store/grn-reconciliations/:id', (req, res) => {
   const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', existing.id, 0, req.user.id);
   db.prepare(`UPDATE grn_reconciliations SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, existing.id);
   res.json({ ok: true });
+});
+
+// Transportation / Packing & Forwarding as separate charges, entered by the
+// Store HOD/Supervisor at the point of reviewing a GRN - before they
+// Approve it, not after (2026-10-27). Deliberately its own small route
+// rather than threading extra fields through the generic approval-action
+// engine (lib/approvals.js's startApproval/act, shared by ~15 entity types)
+// - the amounts are saved here first, Approve then just reads whatever was
+// last saved, same two-step shape as attaching a vendor invoice before
+// deciding. Editable right up until a decision is made; once Approved or
+// Rejected the amounts are part of that decision's own historical record.
+router.patch('/store/grn-reconciliations/:id/charges', requirePermission('store.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM grn_reconciliations WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (!isStoreApprover(req.user)) {
+    return res.status(403).json({ error: 'Only an approver (Store HOD/Management/Admin) can set these charges.' });
+  }
+  if (!['PendingApproval', 'InfoRequested'].includes(existing.status)) {
+    return res.status(400).json({ error: 'Charges can only be set while this reconciliation is still awaiting a decision.' });
+  }
+  const { transportation_amount, packing_forwarding_amount } = req.body;
+  const t = Math.max(0, Number(transportation_amount) || 0);
+  const p = Math.max(0, Number(packing_forwarding_amount) || 0);
+  db.prepare('UPDATE grn_reconciliations SET transportation_amount = ?, packing_forwarding_amount = ? WHERE id = ?').run(t, p, existing.id);
+  res.json({ ok: true, transportation_amount: t, packing_forwarding_amount: p });
 });
 
 // Accepts either the original single-item shape (item_id/quantity at the

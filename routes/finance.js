@@ -766,6 +766,29 @@ function poLineBillableQty(poLineId) {
   `).get(poLineId).n;
   return reconciled - invoiced;
 }
+// "Still billable" for a GRN's own Transportation/Packing & Forwarding
+// charge (2026-10-27) - the flat amount the Store HOD/Supervisor entered at
+// GRN-approval time, minus whatever's already been invoiced against this
+// exact GRN+charge pair (across any non-cancelled/non-rejected invoice), so
+// the same charge can never be billed twice even if the PO line itself ends
+// up split across two invoices. Mirrors poLineBillableQty()'s own
+// not-already-invoiced-twice reasoning, just keyed by source_grn_id/
+// charge_type instead of purchase_order_line_id.
+function grnChargeBillable(grnId, chargeType) {
+  const grn = db.prepare('SELECT * FROM grn_reconciliations WHERE id = ?').get(grnId);
+  if (!grn) return 0;
+  let total = 0;
+  if (chargeType === 'Transportation') total = Number(grn.transportation_amount || 0);
+  else if (chargeType === 'PackingForwarding') total = Number(grn.packing_forwarding_amount || 0);
+  else return 0;
+  if (total <= 0) return 0;
+  const invoiced = db.prepare(`
+    SELECT COALESCE(SUM(pii.taxable_value), 0) as n
+    FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+    WHERE pii.source_grn_id = ? AND pii.charge_type = ? AND pi.status != 'Cancelled' AND pi.status != 'Rejected'
+  `).get(grnId, chargeType).n;
+  return Math.max(0, total - invoiced);
+}
 function purchaseInvoicePaidAmount(invoiceId) {
   return db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as n FROM finance_ledger WHERE reference_table = 'purchase_invoices' AND reference_id = ?
@@ -806,6 +829,28 @@ router.get('/purchase-invoices/billable-po-lines', requirePermission('purchase_i
     WHERE po.po_no = ? AND po.status != 'Cancelled'
   `).all(poNo);
   res.json(lines.map(l => ({ ...l, received_qty: poReceivedQty(l.id), reconciled_qty: poLineReconciledQty(l.id), billable_qty: poLineBillableQty(l.id) })).filter(l => l.billable_qty > 0));
+});
+// Transportation / Packing & Forwarding charges (2026-10-27) still billable
+// against this PO's Approved GRNs - a separate, additive endpoint rather
+// than folding these into billable-po-lines above, so that existing,
+// already-tested response shape is left completely untouched. The New
+// Purchase Invoice form offers these as extra, item-less lines the same way
+// it already offers real item lines.
+router.get('/purchase-invoices/billable-charges', requirePermission('purchase_invoice.manage'), (req, res) => {
+  const poNo = req.query.po_no;
+  if (!poNo) return res.status(400).json({ error: 'po_no is required.' });
+  const grns = db.prepare(`
+    SELECT g.* FROM grn_reconciliations g JOIN purchase_orders po ON po.id = g.po_id
+    WHERE po.po_no = ? AND g.status = 'Approved'
+  `).all(poNo);
+  const charges = [];
+  for (const g of grns) {
+    const t = grnChargeBillable(g.id, 'Transportation');
+    if (t > 0) charges.push({ source_grn_id: g.id, charge_type: 'Transportation', description: `Transportation (GRN #${g.id})`, amount: t });
+    const p = grnChargeBillable(g.id, 'PackingForwarding');
+    if (p > 0) charges.push({ source_grn_id: g.id, charge_type: 'PackingForwarding', description: `Packing & Forwarding (GRN #${g.id})`, amount: p });
+  }
+  res.json(charges);
 });
 // "Ready to Bill" queue (2026-10-13) - every Approved GRN reconciliation
 // still carrying billable quantity, with the vendor's own invoice
@@ -858,6 +903,20 @@ router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), 
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     const prefix = lines.length > 1 ? `Line ${i + 1}: ` : '';
+    // A Transportation/Packing & Forwarding charge line (2026-10-27) is
+    // always qty 1 at a flat ₹ rate - validated against grnChargeBillable()
+    // instead of poLineBillableQty(), since it bills a GRN's own charge
+    // amount, not an item quantity.
+    if (l.charge_type) {
+      if (!['Transportation', 'PackingForwarding'].includes(l.charge_type)) return res.status(400).json({ error: `${prefix}invalid charge type.` });
+      if (!l.source_grn_id) return res.status(400).json({ error: `${prefix}a charge line must reference the GRN it came from.` });
+      if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter an amount greater than 0.` });
+      const billableCharge = grnChargeBillable(l.source_grn_id, l.charge_type);
+      if (Number(l.rate) > billableCharge) {
+        return res.status(400).json({ error: `${prefix}only ₹${billableCharge} of this charge is still billable against that GRN.` });
+      }
+      continue;
+    }
     if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
     if (l.purchase_order_line_id) {
@@ -871,7 +930,8 @@ router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), 
   const sameState = vendor.state && company.state && vendor.state.trim().toLowerCase() === company.state.trim().toLowerCase();
   let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
   const lineRows = lines.map((l, i) => {
-    const qty = Number(l.quantity), rate = Number(l.rate);
+    const qty = l.charge_type ? 1 : Number(l.quantity);
+    const rate = Number(l.rate);
     const taxable = qty * rate;
     const gstRate = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : (company.default_gst_rate || 18);
     taxableTotal += taxable;
@@ -879,8 +939,10 @@ router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), 
     if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
     return {
       purchase_order_line_id: l.purchase_order_line_id || null, item_id: l.item_id || null,
-      description: l.description || l.item_name || 'Item', hsn_code: l.hsn_code || null,
+      description: l.description || l.item_name || (l.charge_type === 'Transportation' ? 'Transportation' : l.charge_type === 'PackingForwarding' ? 'Packing & Forwarding' : 'Item'),
+      hsn_code: l.hsn_code || null,
       quantity: qty, unit: l.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i,
+      source_grn_id: l.charge_type ? (l.source_grn_id || null) : null, charge_type: l.charge_type || null,
     };
   });
   const totalValue = taxableTotal + cgst + sgst + igst;
@@ -896,10 +958,10 @@ router.post('/purchase-invoices', requirePermission('purchase_invoice.manage'), 
     `).run(invoiceNo, po_no || null, vendor_id, String(vendor_invoice_no).trim(), vendor_invoice_date, vendor.gstin || null, vendor.state || null,
       taxableTotal, cgst, sgst, igst, totalValue, tdsRate, tdsAmount, netPayable, req.user.id);
     const insertItem = db.prepare(`
-      INSERT INTO purchase_invoice_items (invoice_id, purchase_order_line_id, item_id, description, hsn_code, quantity, unit, rate, taxable_value, gst_rate, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO purchase_invoice_items (invoice_id, purchase_order_line_id, item_id, description, hsn_code, quantity, unit, rate, taxable_value, gst_rate, sort_order, source_grn_id, charge_type)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
-    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.purchase_order_line_id, r.item_id, r.description, r.hsn_code, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order));
+    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.purchase_order_line_id, r.item_id, r.description, r.hsn_code, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order, r.source_grn_id, r.charge_type));
     return info.lastInsertRowid;
   });
   const id = tx();

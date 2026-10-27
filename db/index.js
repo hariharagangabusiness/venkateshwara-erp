@@ -1546,6 +1546,22 @@ const MIGRATIONS = [
   `ALTER TABLE proforma_invoice_items ADD COLUMN quantity REAL DEFAULT 1`,
   `ALTER TABLE proforma_invoice_items ADD COLUMN unit TEXT DEFAULT 'Nos'`,
   `ALTER TABLE proforma_invoice_items ADD COLUMN rate REAL DEFAULT 0`,
+  // GRN follow-up round (2026-10-27):
+  // (1) Transportation/Packing & Forwarding as separate charges, entered by
+  // the Store HOD/Supervisor on a GRN still PendingApproval (before they
+  // Approve it) via PATCH /store/grn-reconciliations/:id/charges, and
+  // surfaced for Accounts to add as their own line items when booking a
+  // Purchase Invoice (see purchase_invoice_items.source_grn_id below).
+  `ALTER TABLE grn_reconciliations ADD COLUMN transportation_amount REAL DEFAULT 0`,
+  `ALTER TABLE grn_reconciliations ADD COLUMN packing_forwarding_amount REAL DEFAULT 0`,
+  // (2) A Purchase Invoice line can now represent one of the above charges
+  // instead of an item - source_grn_id + charge_type identify which GRN and
+  // which of the two charges it bills, so "how much of this GRN's
+  // Transportation charge is still billable" can be computed the same
+  // not-already-invoiced-twice way poLineBillableQty() already does for
+  // item quantity (see grnChargeBillable() in routes/finance.js).
+  `ALTER TABLE purchase_invoice_items ADD COLUMN source_grn_id INTEGER REFERENCES grn_reconciliations(id)`,
+  `ALTER TABLE purchase_invoice_items ADD COLUMN charge_type TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
