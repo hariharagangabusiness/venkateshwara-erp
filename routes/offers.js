@@ -1178,6 +1178,7 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     const annex = await generateAnnexureDocx({
       salesOrder, client: full.client, offer: full.offer,
       items: full.items, techSpecs: full.techSpecs, boughtOut: full.boughtOut,
+      company: getCompanySettings(),
     });
     db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, result.salesOrderId);
     result.annexureFile = annex.fileName;

@@ -54,7 +54,7 @@ async function ensureAnnexureForOrder(salesOrder) {
       WHERE soi.sales_order_id = ? ORDER BY soi.sort_order, soi.id
     `).all(salesOrder.id);
   }
-  const annex = await generateAnnexureDocx({ salesOrder, client, offer, items, techSpecs, boughtOut });
+  const annex = await generateAnnexureDocx({ salesOrder, client, offer, items, techSpecs, boughtOut, company: getCompanySettings() });
   db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, salesOrder.id);
   return annex;
 }
