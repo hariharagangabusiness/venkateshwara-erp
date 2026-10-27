@@ -12727,9 +12727,14 @@ PAGES['sales-invoices'] = async (el) => {
         <div><label>Type</label><select id="pf-type"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
         <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
         <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
+        <div><label>Item Description</label><input id="pf-desc" placeholder="Defaults to order description (ignored if a milestone is picked)"></div>
         <div><label>Buyer State</label><input id="pf-buyer-state" placeholder="e.g. Haryana"></div>
         <div><label>Buyer GSTIN</label><input id="pf-buyer-gstin"></div>
+        <div><label>Packing &amp; Forwarding (%)</label><input id="pf-pf-percent" type="number" placeholder="e.g. 2.5"></div>
+        <div><label>Packing &amp; Forwarding (₹, overrides %)</label><input id="pf-pf-amount" type="number" placeholder="Flat amount, optional"></div>
+        <div><label>Advance Received (₹)</label><input id="pf-advance" type="number" placeholder="Deducted from the total payable"></div>
       </div>
+      <p class="muted" style="margin-top:4px;">Ship To is picked up automatically from the client's own Shipping address (Clients → Edit → Bill-to/Ship-to Addresses) and printed on the document.</p>
       <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
       <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
@@ -12764,7 +12769,10 @@ window.generateProforma = async () => {
   try {
     const r = await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
       invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null, amount: val('pf-amount') || undefined,
+      description: val('pf-desc'),
       buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
+      packing_forwarding_percent: val('pf-pf-percent') || undefined, packing_forwarding_amount: val('pf-pf-amount') || undefined,
+      advance_received: val('pf-advance') || undefined,
     })});
     // Doesn't block creation (Finance may legitimately need to invoice
     // before the bank paperwork clears) - just surfaces the gap loudly

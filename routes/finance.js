@@ -1095,36 +1095,79 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
       ? (milestone.amount || (Number(milestone.percentage) || 0) / 100 * (Number(so.order_value) || 0))
       : Number(req.body.amount) || 0;
     if (!amount) return res.status(400).json({ error: 'Give an amount, or pick a milestone that has one.' });
-    // Use the order's own description, not its number, as the fallback
-    // label - the order number alone doesn't tell the reader what's being
-    // paid for. Falls back to the order number only if the order itself
-    // has no description on file.
-    items = [{ description: milestone ? milestone.milestone_name : `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`, taxable_value: amount, gst_rate: company.default_gst_rate || 18 }];
+    // Item Description (2026-10-27) - same "blank field, server defaults to
+    // the order's own description" pattern as Generate Invoice's own
+    // inv-desc field: a milestone still drives its own name (it's the more
+    // specific label), but a manual-amount line now honors a typed
+    // description, falling back to the order's description (not its
+    // number, which alone doesn't tell the reader what's being paid for)
+    // only when nothing was typed.
+    const typedDesc = req.body.description && String(req.body.description).trim();
+    items = [{
+      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`),
+      quantity: 1, unit: 'Nos', rate: amount, gst_rate: company.default_gst_rate || 18,
+    }];
   }
   const buyerState = buyer_state || '';
   const buyerGstin = buyer_gstin || client.gstin || '';
   const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
 
+  // Ship To (2026-10-27) - resolved and snapshotted as text the same way
+  // routes/sales.js's dispatchParty() resolves FG Dispatch's own Ship-To:
+  // the client's default Shipping address, falling back to their plain
+  // `address` field when none is on file. Snapshotted at creation time, not
+  // joined live, so a later edit to the client's address book can't
+  // silently change what this document already printed.
+  const shipAddr = db.prepare(`SELECT * FROM client_addresses WHERE client_id = ? AND address_type = 'Shipping' ORDER BY is_default DESC, id LIMIT 1`).get(client.id);
+  const shipToAddress = shipAddr
+    ? [shipAddr.line1, shipAddr.line2, [shipAddr.city, shipAddr.state, shipAddr.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
+    : (client.address || '');
+
   let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
   const lineRows = items.map((it, i) => {
-    const taxable = Number(it.taxable_value) || 0;
+    const qty = Number(it.quantity) || 1;
+    const rate = Number(it.rate != null ? it.rate : it.taxable_value) || 0;
+    const taxable = qty * rate;
     const gstRate = Number(it.gst_rate) || company.default_gst_rate || 18;
     taxableTotal += taxable;
     const taxAmt = taxable * gstRate / 100;
     if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
-    return { description: it.description, taxable_value: taxable, gst_rate: gstRate, sort_order: i };
+    return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i };
   });
-  const total = taxableTotal + cgst + sgst + igst;
+
+  // Packing & Forwarding (2026-10-27) - part of the GST taxable value (same
+  // treatment GST law gives any packing/forwarding charge billed alongside
+  // the goods - Section 15 CGST Act), taxed at the first line's own GST
+  // rate (Proforma is effectively always a single line in practice, same as
+  // Generate Invoice). A caller-given flat ₹ amount wins over the
+  // percentage when both are sent; the percentage alone is also accepted
+  // and computed off the items' own taxable total.
+  const pfPercent = Math.max(0, Number(req.body.packing_forwarding_percent) || 0);
+  const pfRate = lineRows[0] ? lineRows[0].gst_rate : (company.default_gst_rate || 18);
+  const pfAmountGiven = req.body.packing_forwarding_amount !== undefined && req.body.packing_forwarding_amount !== '' && req.body.packing_forwarding_amount !== null;
+  const packingAmount = Math.max(0, pfAmountGiven ? (Number(req.body.packing_forwarding_amount) || 0) : taxableTotal * pfPercent / 100);
+  const packingTax = packingAmount * pfRate / 100;
+  if (sameState) { cgst += packingTax / 2; sgst += packingTax / 2; } else { igst += packingTax; }
+
+  // Advance Received (2026-10-27) - a deduction Finance types in against
+  // what's already come in for this order, reducing what's actually payable
+  // on THIS document (most useful on a Pre-Dispatch proforma raised after an
+  // earlier Advance proforma's payment has already landed). A plain
+  // deduction, not derived from any other Advance proforma's own status.
+  const advanceReceived = Math.max(0, Number(req.body.advance_received) || 0);
+  const total = taxableTotal + packingAmount + cgst + sgst + igst - advanceReceived;
   const proformaNo = nextProformaNo();
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO proforma_invoices (proforma_no, sales_order_id, client_id, milestone_id, invoice_type,
-        place_of_supply, buyer_gstin, buyer_state, taxable_value, cgst, sgst, igst, total_value, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        place_of_supply, buyer_gstin, buyer_state, ship_to_address, taxable_value, cgst, sgst, igst,
+        packing_forwarding_percent, packing_forwarding_amount, advance_received, total_value, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(proformaNo, so.id, client.id, milestone_id || null, invoice_type,
-      buyerState || company.default_place_of_supply, buyerGstin, buyerState, taxableTotal, cgst, sgst, igst, total, 'Draft', req.user.id);
-    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, taxable_value, gst_rate, sort_order) VALUES (?,?,?,?,?)`);
-    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.taxable_value, r.gst_rate, r.sort_order));
+      buyerState || company.default_place_of_supply, buyerGstin, buyerState, shipToAddress, taxableTotal, cgst, sgst, igst,
+      pfPercent, packingAmount, advanceReceived, total, 'Draft', req.user.id);
+    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order) VALUES (?,?,?,?,?,?,?,?)`);
+    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order));
     // The tax-invoice pipeline uses 'Invoiced' for this same transition -
     // one consistent status regardless of which document triggered it.
     if (milestone) db.prepare(`UPDATE payment_milestones SET status = 'Invoiced' WHERE id = ?`).run(milestone.id);
