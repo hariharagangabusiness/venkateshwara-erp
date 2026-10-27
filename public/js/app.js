@@ -3428,7 +3428,6 @@ window.submitRequestVehicle = async (id) => {
     const res = await fetch(`/api/sales/dispatches/${id}/request-vehicle`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }, body: JSON.stringify({ pickupDate }) });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Request failed'); }
     openOrDownloadBlob(await res.blob(), `vehicle-request-${id}.pdf`);
-    closeAppModal();
   } catch (e) { alert(e.message); }
 };
 window.cancelDispatch = async (id) => {
