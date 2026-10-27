@@ -1247,16 +1247,38 @@ function bulkUploadPanelHTML(fileInputId) {
 // modern browser can render natively in a new tab) or as a forced download
 // (anything else - .docx/.xlsx/.tar.gz have no in-browser viewer, so a
 // preview attempt would just trigger the same save-as prompt anyway).
+// A PDF offers the user an explicit choice - Preview (opens in a new tab,
+// the browser's own viewer) or Download (the old forced-save behavior) -
+// rather than deciding for them. Anything else (xlsx/tar.gz/.docx) has no
+// in-browser viewer to offer a choice between, so it still just downloads.
+let PENDING_DOC_PREVIEW = null;
 function openOrDownloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
-  if (/\.pdf$/i.test(filename || '') || blob.type === 'application/pdf') {
-    window.open(url, '_blank');
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } else {
+  if (!(/\.pdf$/i.test(filename || '') || blob.type === 'application/pdf')) {
     const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
+    return;
   }
+  PENDING_DOC_PREVIEW = { url, filename };
+  openAppModal('Open Document', `
+    <p class="muted">${esc(filename)}</p>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn" onclick="previewPendingDoc()">Preview (new tab)</button>
+      <button class="btn outline" onclick="downloadPendingDoc()">Download</button>
+    </div>
+  `);
+  setTimeout(() => { if (PENDING_DOC_PREVIEW && PENDING_DOC_PREVIEW.url === url) { URL.revokeObjectURL(url); PENDING_DOC_PREVIEW = null; } }, 120000);
 }
+window.previewPendingDoc = () => {
+  if (PENDING_DOC_PREVIEW) window.open(PENDING_DOC_PREVIEW.url, '_blank');
+  closeAppModal();
+};
+window.downloadPendingDoc = () => {
+  if (PENDING_DOC_PREVIEW) {
+    const a = document.createElement('a'); a.href = PENDING_DOC_PREVIEW.url; a.download = PENDING_DOC_PREVIEW.filename; a.click();
+  }
+  closeAppModal();
+};
 async function downloadTemplateFile(apiPath, filename) {
   try {
     const res = await fetch('/api' + apiPath, { headers: { Authorization: 'Bearer ' + TOKEN } });
