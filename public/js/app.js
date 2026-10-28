@@ -10337,7 +10337,7 @@ function renderSectionTitleRows(rows, isAdmin) {
     ${rows.map(s => `<tr>
       <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onblur="editSectionTitle(${s.id}, 'title', this.value)" style="width:100%;min-width:160px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
       <td style="max-width:220px;">${isAdmin ? `<textarea onblur="editSectionTitle(${s.id}, 'description', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
-      <td style="max-width:180px;">${isAdmin ? `<input type="text" value="${esc(s.summary)}" onblur="editSectionTitle(${s.id}, 'summary', this.value)" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;">` : (esc(s.summary)||'-')}</td>
+      <td style="max-width:220px;">${isAdmin ? `<textarea onblur="editSectionTitle(${s.id}, 'summary', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
       <td>
         ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
         ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSectionTitleImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
@@ -10404,7 +10404,7 @@ PAGES['offer-options'] = async (el) => {
         <tr>
           <td>${esc(s.title)}</td>
           <td style="white-space:pre-wrap;max-width:200px;">${esc(s.description)||'-'}</td>
-          <td style="max-width:160px;">${esc(s.summary)||'-'}</td>
+          <td style="white-space:pre-wrap;max-width:200px;">${esc(s.summary)||'-'}</td>
           <td>${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;">` : '-'}</td>
           <td>${esc(s.offer_no)||'-'}</td>
           <td>${esc(s.suggested_by_name)||'-'}</td>
@@ -10422,11 +10422,12 @@ PAGES['offer-options'] = async (el) => {
         ${isAdmin ? `<h4>Add Section Title</h4>
         <div class="form-grid">
           <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
-          <div><label>Summary</label><input id="stl-summary" placeholder="Short reference note"></div>
           <div><label>Picture (optional)</label><input id="stl-image" type="file" accept="image/*"></div>
         </div>
         <label>Description</label>
         <textarea id="stl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+        <label>Summary</label>
+        <textarea id="stl-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;" placeholder="Short reference note"></textarea>
         <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
         <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
       `)}
