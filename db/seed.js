@@ -50,7 +50,7 @@ const permissionCodes = [
   'advance.request', 'advance.approve',
   'service_request.manage',
   'report.view_all',
-  'admin.access_control',
+  'admin.access_control', 'data.export',
   'foc.request', 'foc.approve',
   'asset.manage', 'ticket.manage',
   'service_center.manage',
