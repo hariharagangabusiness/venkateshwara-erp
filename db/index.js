@@ -2220,6 +2220,33 @@ function bootstrapPurchaseApproverGrants() {
   } catch (e) { console.error('[db] Purchase approver permission grant backfill failed:', e.message); }
 }
 
+// Full Data Export (routes/reports.js's GET /export/tables, /export/:table)
+// was hardcoded requireRole('Admin') with no permission-code path at all -
+// Management's own "admin module" access (User Access page visibility) had
+// no effect on it, since page visibility and backend route gating are two
+// separate mechanisms. Owner's explicit, narrowed ask (2026-10-28): open
+// Full Data Export only to Management - not Backups, not Data Import, and
+// not User Access/Role Permissions, all of which stay requireRole('Admin')
+// exactly as before - and auto-grant it to Management now rather than just
+// making it available for an Admin to tick on. Backfills the 'data.export'
+// permission code row itself first (the bg.manage lesson - a grant without
+// first inserting the code row silently no-ops forever on a database where
+// the code wasn't seeded), then grants it. Idempotent INSERT OR IGNORE,
+// same pattern as every other bootstrap grant in this file - safe on every
+// boot, and still freely revocable afterward via the Role Permissions screen
+// since the code is in lib/permissionCatalog.js's catalog.
+function bootstrapDataExportGrant() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('data.export')`);
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT (SELECT id FROM roles WHERE name = 'Management'), (SELECT id FROM permissions WHERE code = 'data.export')
+      WHERE (SELECT id FROM roles WHERE name = 'Management') IS NOT NULL
+        AND (SELECT id FROM permissions WHERE code = 'data.export') IS NOT NULL
+    `);
+  } catch (e) { console.error('[db] data.export permission grant backfill failed:', e.message); }
+}
+
 // Accounts Payable: booking a Purchase Invoice (vendor bill) starts this
 // chain immediately, same shape as ExpenseVoucher - step 1 is the Accounts
 // department's own HOD (always required), step 2 is Management above a
@@ -2444,7 +2471,7 @@ function issueRfqToken(rfqId, vendorId, expiresAt) {
 module.exports = {
   db, isNew, issueRfqToken, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
-  bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, repairCorruptedEmployeeNumericFields,
+  bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
   bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission,
 };

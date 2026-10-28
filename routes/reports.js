@@ -1,20 +1,23 @@
 const express = require('express');
 const { db } = require('../db');
-const { authRequired, requireRole } = require('../middleware/auth');
+const { authRequired, requirePermission } = require('../middleware/auth');
 const { combinedStagesForRole } = require('../lib/pipeline');
 const { listExportableTables, exportTableXlsx } = require('../lib/tableExport');
 const router = express.Router();
 router.use(authRequired);
 
-// ===================== Full-field table export (Admin only) =====================
+// ===================== Full-field table export =====================
 // Every raw column of any whitelisted table, straight to xlsx, for external
 // deep-dive analysis (Power BI, Python/pandas) - see lib/tableExport.js for
-// what's excluded and why. Admin-only: a raw dump includes internal FKs and
-// audit columns not normally shown on any screen.
-router.get('/export/tables', requireRole('Admin'), (req, res) => {
+// what's excluded and why. Admin-only by default (a raw dump includes
+// internal FKs and audit columns not normally shown on any screen), but
+// gated by a real permission code (not a hardcoded role) so Admin can
+// extend it to another role - e.g. Management - via Role Permissions,
+// same as every other admin-grantable permission in this app.
+router.get('/export/tables', requirePermission('data.export'), (req, res) => {
   res.json(listExportableTables());
 });
-router.get('/export/:table', requireRole('Admin'), (req, res) => {
+router.get('/export/:table', requirePermission('data.export'), (req, res) => {
   exportTableXlsx(res, req.params.table);
 });
 
