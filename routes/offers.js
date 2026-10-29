@@ -636,9 +636,9 @@ function cloneOfferContent(source, opts) {
     items.forEach(it => {
       itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order);
     });
-    const annStmt = db.prepare(`INSERT INTO offer_annexures (offer_id, description, qty, unit, remarks, sort_order) VALUES (?,?,?,?,?,?)`);
+    const annStmt = db.prepare(`INSERT INTO offer_annexures (offer_id, item_code, hsn_code, description, qty, unit, rate, amount, remarks, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)`);
     db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(source.id)
-      .forEach(a => annStmt.run(newId, a.description, a.qty, a.unit, a.remarks, a.sort_order));
+      .forEach(a => annStmt.run(newId, a.item_code, a.hsn_code, a.description, a.qty, a.unit, a.rate || 0, a.amount || 0, a.remarks, a.sort_order));
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
     techSpecs.forEach(s => specStmt.run(newId, s.spec_key, s.spec_value, s.sort_order));
     const boStmt = db.prepare(`INSERT INTO offer_bought_out_items (offer_id, component, make, sort_order) VALUES (?,?,?,?)`);
@@ -944,13 +944,17 @@ router.put('/:id/terms', offerPerm(), (req, res) => {
 });
 
 // Parse an uploaded Excel/CSV Annexure file into the same row shape the
-// paste-from-Excel box already produces (2026-10-27) - read-only, nothing is
-// saved here; the frontend appends the returned rows into its own editable
-// grid exactly like a paste, so the Save Annexure button still owns the
-// actual commit. Column detection mirrors parseAnnexureTsv() client-side: a
-// header row naming "Description" maps by column name, otherwise 5+ columns
-// are read as S.No/Description/Qty/Unit/Remarks and fewer as Description/
-// Qty/Unit/Remarks.
+// paste-from-Excel box already produces - read-only, nothing is saved here;
+// the frontend appends the returned rows into its own editable grid exactly
+// like a paste, so the Save Annexure button still owns the actual commit.
+// Column detection mirrors parseAnnexureTsv() client-side: a header row
+// naming "Description" maps every recognized column by name (any subset/
+// order); otherwise falls back by column count to the real-world 9-column
+// template (S.No/Item Code/HSN Code/Description/Qty/Unit/Rate/Amount/
+// Remarks, confirmed 2026-10-29 against the owner's own sample file -
+// PR #229's original format) for 8+ columns, or the older 5-column shape
+// (S.No/Description/Qty/Unit/Remarks) for fewer, so an already-saved
+// 5-column annexure/paste habit keeps working unchanged.
 function parseAnnexureGrid(grid) {
   if (!grid.length) return [];
   let rows = grid.map(r => r.map(c => (c === null || c === undefined) ? '' : String(c).trim()));
@@ -958,19 +962,28 @@ function parseAnnexureGrid(grid) {
   let map;
   if (hdr.some(c => c.startsWith('desc'))) {
     map = {
+      itemCode: hdr.findIndex(c => c.includes('item code') || c.includes('item_code')),
+      hsnCode: hdr.findIndex(c => c.includes('hsn')),
       description: hdr.findIndex(c => c.startsWith('desc')),
       qty: hdr.findIndex(c => c === 'qty' || c.startsWith('quant')),
       unit: hdr.findIndex(c => c === 'unit' || c === 'uom'),
+      rate: hdr.findIndex(c => c.startsWith('rate')),
+      amount: hdr.findIndex(c => c.startsWith('amount')),
       remarks: hdr.findIndex(c => c.startsWith('remark')),
     };
     rows = rows.slice(1);
+  } else if (rows[0].length >= 8) {
+    // S.No, Item Code, HSN Code, Description, Qty, Uom, Rate, Amount, Remarks
+    map = { itemCode: 1, hsnCode: 2, description: 3, qty: 4, unit: 5, rate: 6, amount: 7, remarks: 8 };
   } else {
     const off = rows[0].length >= 5 ? 1 : 0;
     map = { description: off, qty: off + 1, unit: off + 2, remarks: off + 3 };
   }
-  const at = (row, i) => (i >= 0 && i < row.length ? row[i] : '');
-  return rows.map(r => ({ description: at(r, map.description), qty: at(r, map.qty), unit: at(r, map.unit), remarks: at(r, map.remarks) }))
-    .filter(r => r.description || r.qty || r.unit || r.remarks);
+  const at = (row, i) => (i !== undefined && i >= 0 && i < row.length ? row[i] : '');
+  return rows.map(r => ({
+    item_code: at(r, map.itemCode), hsn_code: at(r, map.hsnCode), description: at(r, map.description),
+    qty: at(r, map.qty), unit: at(r, map.unit), rate: at(r, map.rate), remarks: at(r, map.remarks),
+  })).filter(r => r.description || r.qty || r.unit || r.remarks || r.item_code || r.hsn_code || r.rate);
 }
 router.post('/:id/annexures/parse-upload', offerPerm(), uploadMemory.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
@@ -984,17 +997,29 @@ router.post('/:id/annexures/parse-upload', offerPerm(), uploadMemory.single('fil
   res.json({ rows });
 });
 
-// Offer annexure appendix (Excel-pasted grid) - full replace, same shape as
-// the other bulk-replace sheets. Rows: [{description, qty, unit, remarks}].
+// Offer annexure appendix (Excel-pasted/uploaded grid) - full replace, same
+// shape as the other bulk-replace sheets. Rows:
+// [{item_code, hsn_code, description, qty, unit, rate, remarks}]. Amount is
+// always server-computed as Qty x Rate (locked 2026-10-29 answer - not a
+// separately user-editable value) rather than trusted from the client, so
+// it can never drift from the two numbers it's derived from.
 router.put('/:id/annexures', offerPerm(), (req, res) => {
   const version = ensureEditableVersion(req.params.id, req.user.id, req.body.revision_reason, req.user.role_name === 'Admin');
   const rows = (Array.isArray(req.body.rows) ? req.body.rows : [])
-    .map(r => ({ description: String(r.description || '').trim(), qty: String(r.qty || '').trim(), unit: String(r.unit || '').trim(), remarks: String(r.remarks || '').trim() }))
-    .filter(r => r.description || r.qty || r.unit || r.remarks);
+    .map(r => ({
+      item_code: String(r.item_code || '').trim(), hsn_code: String(r.hsn_code || '').trim(),
+      description: String(r.description || '').trim(), qty: String(r.qty || '').trim(), unit: String(r.unit || '').trim(),
+      rate: Number(r.rate) || 0, remarks: String(r.remarks || '').trim(),
+    }))
+    .filter(r => r.description || r.qty || r.unit || r.remarks || r.item_code || r.hsn_code || r.rate);
   db.transaction(() => {
     db.prepare('DELETE FROM offer_annexures WHERE offer_id = ?').run(version.id);
-    const stmt = db.prepare('INSERT INTO offer_annexures (offer_id, description, qty, unit, remarks, sort_order) VALUES (?,?,?,?,?,?)');
-    rows.forEach((r, i) => stmt.run(version.id, r.description, r.qty, r.unit, r.remarks, i));
+    const stmt = db.prepare('INSERT INTO offer_annexures (offer_id, item_code, hsn_code, description, qty, unit, rate, amount, remarks, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    rows.forEach((r, i) => {
+      const qtyNum = Number(r.qty) || 0;
+      const amount = qtyNum * r.rate;
+      stmt.run(version.id, r.item_code, r.hsn_code, r.description, r.qty, r.unit, r.rate, amount, r.remarks, i);
+    });
   })();
   res.json({ ok: true, newVersion: version.forked, offerId: version.id });
 });

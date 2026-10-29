@@ -283,12 +283,18 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   const poNumber = po_number && String(po_number).trim();
   const advancePercent = Math.min(100, Math.max(0, Number(req.body.advance_percent) || 0));
   const predispatchPercent = Math.min(100, Math.max(0, Number(req.body.predispatch_percent) || 0));
+  // Payment Terms (2026-10-29) - captured once here, free text, since Sales
+  // Orders had no Terms & Conditions/Payment Terms concept at all before
+  // this - reused live by every Proforma Invoice generated against this
+  // order (see routes/finance.js's proforma-invoices/from-sales-order
+  // route), rather than retyped per document.
+  const paymentTerms = req.body.payment_terms && String(req.body.payment_terms).trim();
   const info = db.prepare(`
     INSERT INTO sales_orders (order_no, lead_id, client_id, description, order_value, created_by,
-      po_status, po_number, po_date, advance_percent, predispatch_percent)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      po_status, po_number, po_date, advance_percent, predispatch_percent, payment_terms)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(orderNo, lead_id || null, client_id, description, computedValue, req.user.id,
-    poNumber ? 'Received' : 'Pending', poNumber || null, poNumber ? (po_date || null) : null, advancePercent, predispatchPercent);
+    poNumber ? 'Received' : 'Pending', poNumber || null, poNumber ? (po_date || null) : null, advancePercent, predispatchPercent, paymentTerms || null);
   if (lines.length) {
     const insertItem = db.prepare(`
       INSERT INTO sales_order_items (sales_order_id, item_id, description, hsn_code, quantity, unit, rate, value, gst_rate, sort_order)
@@ -464,16 +470,17 @@ router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.mana
   const {
     promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
     abg_required, abg_percentage, abg_amount, abg_validity_days,
-    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes,
+    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes, payment_terms,
   } = req.body;
   db.prepare(`
     UPDATE sales_orders SET promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
       abg_required = ?, abg_percentage = ?, abg_amount = ?, abg_validity_days = ?,
-      pbg_required = ?, pbg_percentage = ?, pbg_amount = ?, pbg_validity_days = ?, bg_terms_notes = ?
+      pbg_required = ?, pbg_percentage = ?, pbg_amount = ?, pbg_validity_days = ?, bg_terms_notes = ?, payment_terms = ?
     WHERE id = ?
   `).run(promised_delivery_date || null, ld_percentage || null, ld_cap_percentage || null, ld_trigger_notes || null,
     abg_required ? 1 : 0, abg_percentage || null, abg_amount || null, abg_validity_days || null,
     pbg_required ? 1 : 0, pbg_percentage || null, pbg_amount || null, pbg_validity_days || null, bg_terms_notes || null,
+    payment_terms ? String(payment_terms).trim() : null,
     req.params.id);
   // Our own side of the terms just changed - re-check against whatever PO
   // is already on file rather than leaving a stale comparison in place.
