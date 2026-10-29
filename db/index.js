@@ -1572,6 +1572,41 @@ const MIGRATIONS = [
   // columns at creation time, no new columns needed for those two.
   `ALTER TABLE sales_orders ADD COLUMN advance_percent REAL DEFAULT 0`,
   `ALTER TABLE sales_orders ADD COLUMN predispatch_percent REAL DEFAULT 0`,
+  // Annexure/Proforma follow-up round (2026-10-29):
+  // (1) offer_annexures was built around a 5-column assumption (S.No/
+  // Description/Qty/Unit/Remarks) that never matched the real-world file
+  // the owner actually pastes/uploads (S.no/Item Code/HSN Code/Description/
+  // Qty/Uom/Rate/Amount/Remarks, confirmed against a real sample file) -
+  // Item Code/HSN Code/Rate/Amount were silently dropped by both the paste
+  // and upload parsers with no indication anywhere. Amount is always
+  // recomputed as Qty x Rate (locked answer), so it's not a separately
+  // user-editable input, but is still stored so it doesn't need
+  // recomputing on every read/PDF render.
+  `ALTER TABLE offer_annexures ADD COLUMN item_code TEXT`,
+  `ALTER TABLE offer_annexures ADD COLUMN hsn_code TEXT`,
+  `ALTER TABLE offer_annexures ADD COLUMN rate REAL DEFAULT 0`,
+  `ALTER TABLE offer_annexures ADD COLUMN amount REAL DEFAULT 0`,
+  // (2) Sales Orders have no Terms & Conditions/Payment Terms concept at
+  // all (confirmed during the 2026-10-27 Proforma redesign) - captured once
+  // here per the locked answer ("once on SO, reused everywhere") rather
+  // than retyped per-Proforma, so New Sales Order and every future
+  // Proforma/Invoice for that order can read the same value.
+  `ALTER TABLE sales_orders ADD COLUMN payment_terms TEXT`,
+  // (3) Courier Charges on the Proforma - built exactly like the existing
+  // Packing & Forwarding pair (percent-or-flat-₹, GST-taxable per the
+  // locked answer, omitted from the PDF when zero).
+  `ALTER TABLE proforma_invoices ADD COLUMN courier_charges_percent REAL DEFAULT 0`,
+  `ALTER TABLE proforma_invoices ADD COLUMN courier_charges_amount REAL DEFAULT 0`,
+  // (4) Proforma line items can now be picked straight off the Sales
+  // Order's own sales_order_items (so the real ordered quantity - e.g. 3,
+  // not always 1 - and a per-line GST% the user can override at generation
+  // time both flow through correctly) - this column just traces which SO
+  // line a proforma line came from, for display/audit; nothing reads it
+  // back for any billable-quantity math (unlike Purchase Invoice's
+  // consumption tracking, a Proforma is a payment-request document, not a
+  // billing-against-receipt one, so the same SO line can be picked again
+  // on a later Proforma with no gate).
+  `ALTER TABLE proforma_invoice_items ADD COLUMN sales_order_item_id INTEGER REFERENCES sales_order_items(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

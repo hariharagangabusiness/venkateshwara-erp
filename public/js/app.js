@@ -3587,6 +3587,9 @@ PAGES.orders = async (el) => {
         <div><label>Advance (%) <span class="muted">(used to default an Advance Proforma's amount)</span></label><input id="so-advance-pct" type="number" min="0" max="100" step="0.01"></div>
         <div><label>Payment Before Dispatch (%) <span class="muted">(used to default a Pre-Dispatch Proforma's amount)</span></label><input id="so-predispatch-pct" type="number" min="0" max="100" step="0.01"></div>
       </div>
+      <div class="form-grid">
+        <div style="grid-column:1/-1;"><label>Payment Terms <span class="muted">(reused on every Proforma/Invoice generated against this order)</span></label><textarea id="so-payment-terms" rows="2" placeholder="e.g. 30% advance, 60% before dispatch, 10% against performance"></textarea></div>
+      </div>
       <h4>Line Items <span class="muted">(optional - leave empty and set Order Value manually for a simple order with no dispatch tracking)</span></h4>
       <div id="so-lines"></div>
       <button class="btn small outline" type="button" onclick="addSOLine()">+ Add Line Item</button>
@@ -3805,6 +3808,7 @@ window.addOrder = async () => {
       client_id: val('so-client'), lead_id: val('so-lead') || null, order_value: val('so-value'), description: val('so-desc'),
       po_number: val('so-po-number'), po_date: val('so-po-date') || null,
       advance_percent: val('so-advance-pct') || 0, predispatch_percent: val('so-predispatch-pct') || 0,
+      payment_terms: val('so-payment-terms') || null,
       lines,
     })});
     // Commercial terms aren't accepted by the create endpoint (kept
@@ -3830,6 +3834,7 @@ function soTermsForm(o) {
   </div>
   <div><label>Trigger Conditions</label><textarea id="so-terms-ldnotes-${o.id}" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
   ${bgTermsFormFields(`so-terms-${o.id}`, o)}
+  <div><label>Payment Terms <span class="muted">(reused on every Proforma/Invoice generated against this order)</span></label><textarea id="so-terms-paymentterms-${o.id}" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
   <button class="btn small" type="button" onclick="saveSOTerms(${o.id})">Save Terms</button>`;
 }
 window.toggleSOTerms = (id) => {
@@ -3843,6 +3848,7 @@ window.saveSOTerms = async (id) => {
       ld_percentage: val(`so-terms-ldpct-${id}`) || null,
       ld_cap_percentage: val(`so-terms-ldcap-${id}`) || null,
       ld_trigger_notes: val(`so-terms-ldnotes-${id}`) || null,
+      payment_terms: val(`so-terms-paymentterms-${id}`) || null,
       ...readBgTermsFields(`so-terms-${id}`),
     })});
     navigate('orders');
@@ -4472,9 +4478,12 @@ function renderOfferTab(data) {
 // ---- Annexure tab: paste straight from Excel (TSV on the clipboard) ----
 let OFFER_ANNEXURE_ROWS = [];
 function renderOfferAnnexureTab(el, data) {
-  OFFER_ANNEXURE_ROWS = (data.annexures || []).map(a => ({ description: a.description || '', qty: a.qty || '', unit: a.unit || '', remarks: a.remarks || '' }));
+  OFFER_ANNEXURE_ROWS = (data.annexures || []).map(a => ({
+    item_code: a.item_code || '', hsn_code: a.hsn_code || '', description: a.description || '',
+    qty: a.qty || '', unit: a.unit || '', rate: a.rate || '', remarks: a.remarks || '',
+  }));
   el.innerHTML = `
-    <p class="muted">Printed as the last page of the offer PDF (only when it has rows). Copy cells in Excel and paste (Ctrl+V) into the box below, or upload the file itself - columns: <b>S.No</b> (optional), <b>Description</b>, <b>Qty</b>, <b>Unit</b>, <b>Remarks</b>. A header row is detected automatically; rows are appended and stay editable either way.</p>
+    <p class="muted">Printed as the last page of the offer PDF (only when it has rows). Copy cells in Excel and paste (Ctrl+V) into the box below, or upload the file itself - columns: <b>S.No</b> (optional), <b>Item Code</b>, <b>HSN Code</b>, <b>Description</b>, <b>Qty</b>, <b>Uom</b>, <b>Rate</b>, <b>Amount</b> (recomputed as Qty &times; Rate, not stored from the file), <b>Remarks</b>. A header row is detected automatically; rows are appended and stay editable either way.</p>
     <textarea id="an-paste" rows="3" placeholder="Click here, then press Ctrl+V to paste from Excel" style="width:100%;padding:8px;border:2px dashed var(--border);border-radius:6px;font-family:inherit;" onpaste="pasteOfferAnnexure(event)"></textarea>
     <div style="margin-top:8px;">
       <label>Or upload an Annexure file (.xlsx/.csv) to read its rows in:</label>
@@ -4491,16 +4500,32 @@ function renderOfferAnnexureTab(el, data) {
 function renderOfferAnnexureRows() {
   const wrap = document.getElementById('an-rows');
   if (!wrap) return;
-  const inp = (i, k, w) => `<input value="${esc(OFFER_ANNEXURE_ROWS[i][k])}" oninput="OFFER_ANNEXURE_ROWS[${i}].${k}=this.value" style="width:${w};padding:5px;border:1px solid var(--border);border-radius:4px;">`;
-  wrap.innerHTML = `<table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Remarks</th><th></th></tr></thead><tbody>
-    ${OFFER_ANNEXURE_ROWS.map((r, i) => `<tr><td>${i + 1}</td><td style="min-width:240px;">${inp(i, 'description', '100%')}</td><td>${inp(i, 'qty', '70px')}</td><td>${inp(i, 'unit', '70px')}</td><td style="min-width:160px;">${inp(i, 'remarks', '100%')}</td>
-      <td><button class="btn small red" type="button" onclick="removeOfferAnnexureRow(${i})">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">No annexure rows yet.</td></tr>'}
+  const inp = (i, k, w) => `<input value="${esc(OFFER_ANNEXURE_ROWS[i][k])}" oninput="OFFER_ANNEXURE_ROWS[${i}].${k}=this.value;renderOfferAnnexureAmount(${i})" style="width:${w};padding:5px;border:1px solid var(--border);border-radius:4px;">`;
+  const amount = (r) => { const a = (Number(r.qty) || 0) * (Number(r.rate) || 0); return a ? fmt(a) : ''; };
+  wrap.innerHTML = `<table><thead><tr><th>S.No</th><th>Item Code</th><th>HSN Code</th><th>Description</th><th>Qty</th><th>Uom</th><th>Rate</th><th>Amount</th><th>Remarks</th><th></th></tr></thead><tbody>
+    ${OFFER_ANNEXURE_ROWS.map((r, i) => `<tr><td>${i + 1}</td><td>${inp(i, 'item_code', '90px')}</td><td>${inp(i, 'hsn_code', '80px')}</td><td style="min-width:220px;">${inp(i, 'description', '100%')}</td><td>${inp(i, 'qty', '60px')}</td><td>${inp(i, 'unit', '60px')}</td><td>${inp(i, 'rate', '80px')}</td><td id="an-amt-${i}" class="muted" style="text-align:right;padding-right:6px;">${amount(r)}</td><td style="min-width:140px;">${inp(i, 'remarks', '100%')}</td>
+      <td><button class="btn small red" type="button" onclick="removeOfferAnnexureRow(${i})">Delete</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">No annexure rows yet.</td></tr>'}
   </tbody></table>`;
 }
+// Amount is always Qty x Rate (locked 2026-10-29 answer) - recomputed live
+// on every keystroke in either field rather than being its own editable
+// input; the server recomputes and stores it the same way on Save, so this
+// is purely a live preview.
+window.renderOfferAnnexureAmount = (i) => {
+  const cell = document.getElementById(`an-amt-${i}`);
+  if (!cell) return;
+  const r = OFFER_ANNEXURE_ROWS[i];
+  const a = (Number(r.qty) || 0) * (Number(r.rate) || 0);
+  cell.textContent = a ? fmt(a) : '';
+};
 // Parses an Excel/TSV clipboard dump into annexure rows. With a header row
-// (any cell reading Description) columns are mapped by name; otherwise 5+
-// columns are read as S.No/Description/Qty/Unit/Remarks and fewer as
-// Description/Qty/Unit/Remarks.
+// (any cell reading Description) every recognized column is mapped by name
+// (any subset/order); otherwise falls back by column count to the real-
+// world 9-column template (S.No/Item Code/HSN Code/Description/Qty/Uom/
+// Rate/Amount/Remarks, confirmed 2026-10-29 against the owner's own sample
+// file - PR #229's original format) for 8+ columns, or the older 5-column
+// shape (S.No/Description/Qty/Unit/Remarks) for fewer. Mirrors
+// routes/offers.js's parseAnnexureGrid() (the upload path) exactly.
 function parseAnnexureTsv(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
   if (!lines.length) return [];
@@ -4509,19 +4534,26 @@ function parseAnnexureTsv(text) {
   const hdr = grid[0].map(c => c.toLowerCase());
   if (hdr.some(c => c.startsWith('desc'))) {
     map = {
+      itemCode: hdr.findIndex(c => c.includes('item code') || c.includes('item_code')),
+      hsnCode: hdr.findIndex(c => c.includes('hsn')),
       description: hdr.findIndex(c => c.startsWith('desc')),
       qty: hdr.findIndex(c => c === 'qty' || c.startsWith('quant')),
       unit: hdr.findIndex(c => c === 'unit' || c === 'uom'),
+      rate: hdr.findIndex(c => c.startsWith('rate')),
       remarks: hdr.findIndex(c => c.startsWith('remark')),
     };
     grid = grid.slice(1);
+  } else if (grid[0].length >= 8) {
+    map = { itemCode: 1, hsnCode: 2, description: 3, qty: 4, unit: 5, rate: 6, remarks: 8 };
   } else {
     const off = grid[0].length >= 5 ? 1 : 0;
     map = { description: off, qty: off + 1, unit: off + 2, remarks: off + 3 };
   }
-  const at = (row, i) => (i >= 0 && i < row.length ? row[i] : '');
-  return grid.map(r => ({ description: at(r, map.description), qty: at(r, map.qty), unit: at(r, map.unit), remarks: at(r, map.remarks) }))
-    .filter(r => r.description || r.qty || r.unit || r.remarks);
+  const at = (row, i) => (i !== undefined && i >= 0 && i < row.length ? row[i] : '');
+  return grid.map(r => ({
+    item_code: at(r, map.itemCode), hsn_code: at(r, map.hsnCode), description: at(r, map.description),
+    qty: at(r, map.qty), unit: at(r, map.unit), rate: at(r, map.rate), remarks: at(r, map.remarks),
+  })).filter(r => r.description || r.qty || r.unit || r.remarks || r.item_code || r.hsn_code || r.rate);
 }
 // Upload-and-parse an Excel/CSV Annexure file (2026-10-27) - server-side
 // parsing (same column-detection rules as the paste box, routes/offers.js's
@@ -4548,7 +4580,7 @@ window.pasteOfferAnnexure = (ev) => {
   OFFER_ANNEXURE_ROWS = OFFER_ANNEXURE_ROWS.concat(rows);
   renderOfferAnnexureRows();
 };
-window.addOfferAnnexureRow = () => { OFFER_ANNEXURE_ROWS.push({ description: '', qty: '', unit: '', remarks: '' }); renderOfferAnnexureRows(); };
+window.addOfferAnnexureRow = () => { OFFER_ANNEXURE_ROWS.push({ item_code: '', hsn_code: '', description: '', qty: '', unit: '', rate: '', remarks: '' }); renderOfferAnnexureRows(); };
 window.removeOfferAnnexureRow = (i) => { OFFER_ANNEXURE_ROWS.splice(i, 1); renderOfferAnnexureRows(); };
 window.clearOfferAnnexure = () => { if (OFFER_ANNEXURE_ROWS.length && !confirm('Clear all annexure rows? (Not saved until you press Save Annexure.)')) return; OFFER_ANNEXURE_ROWS = []; renderOfferAnnexureRows(); };
 window.saveOfferAnnexure = async () => {
@@ -12872,16 +12904,22 @@ PAGES['sales-invoices'] = async (el) => {
       <div class="form-grid">
         <div><label>Sales Order</label>${salesOrderPickerHTML('pf-so', window.__INV_ORDERS, null, 'onchange="pfSOChanged()"')}</div>
         <div><label>Type</label><select id="pf-type" onchange="pfPrefillAmountFromPercent()"><option value="Advance">Advance</option><option value="PreDispatch">Payment Before Dispatch</option></select></div>
-        <div><label>Payment Milestone (optional)</label><select id="pf-milestone"><option value="">-- None / manual amount --</option></select></div>
-        <div><label>Amount (₹, if no milestone)</label><input id="pf-amount" type="number"></div>
-        <div><label>Item Description</label><input id="pf-desc" placeholder="Defaults to order description (ignored if a milestone is picked)"></div>
+        <div><label>Payment Milestone (optional)</label><select id="pf-milestone" onchange="pfPrefillAmountFromPercent()"><option value="">-- None / manual amount --</option></select></div>
         <div><label>Buyer State</label><input id="pf-buyer-state" placeholder="e.g. Haryana"></div>
         <div><label>Buyer GSTIN</label><input id="pf-buyer-gstin"></div>
+      </div>
+      <h4>Order Line Items <span class="muted">(tick the lines to invoice - quantity/unit/rate are pulled from the order, GST % is editable per line. Leave all unticked to use the plain Amount field below instead.)</span></h4>
+      <div id="pf-lines"></div>
+      <div class="form-grid" style="margin-top:8px;">
+        <div><label>Amount (₹, if no milestone and no lines ticked above)</label><input id="pf-amount" type="number"></div>
+        <div><label>Item Description</label><input id="pf-desc" placeholder="Defaults to order description (ignored if a milestone is picked or lines are ticked)"></div>
         <div><label>Packing &amp; Forwarding (%)</label><input id="pf-pf-percent" type="number" placeholder="e.g. 2.5"></div>
         <div><label>Packing &amp; Forwarding (₹, overrides %)</label><input id="pf-pf-amount" type="number" placeholder="Flat amount, optional"></div>
+        <div><label>Courier Charges (%)</label><input id="pf-cc-percent" type="number" placeholder="e.g. 1"></div>
+        <div><label>Courier Charges (₹, overrides %)</label><input id="pf-cc-amount" type="number" placeholder="Flat amount, optional"></div>
         <div><label>Advance Received (₹)</label><input id="pf-advance" type="number" placeholder="Deducted from the total payable"></div>
       </div>
-      <p class="muted" style="margin-top:4px;">Ship To is picked up automatically from the client's own Shipping address (Clients → Edit → Bill-to/Ship-to Addresses) and printed on the document.</p>
+      <p class="muted" style="margin-top:4px;">Ship To and Payment Terms are picked up automatically from the client's Shipping address and the order's own Payment Terms (Sales Orders → Commercial Terms) and printed on the document.</p>
       <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
       <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
@@ -12909,16 +12947,58 @@ window.loadPFMilestones = async () => {
     sel.innerHTML += ms.map(m => `<option value="${m.id}">${esc(m.milestone_name)} (${m.percentage ? m.percentage + '%' : '₹' + fmt(m.amount)})</option>`).join('');
   } catch (e) { /* no milestone read access - manual amount still works */ }
 };
+// Proforma line-item picker (2026-10-29) - lets Finance tick specific
+// sales_order_items lines to invoice instead of always falling into the
+// backend's single-aggregate-amount default (which hardcoded quantity to
+// 1 regardless of the order's own real quantity). Each ticked line's own
+// qty/unit/rate come straight from the order; GST % is editable per line
+// right here, since the order's own gst_rate is just a starting default,
+// not necessarily what Finance wants to bill this specific payment request
+// at. Unlike Purchase Invoice vs GRN, there's no "already proforma'd"
+// quantity gate - a Proforma is a payment-request document, not a
+// billing-against-receipt one, so every line is always offered.
+let PF_LINES = [];
+window.loadPFLines = async () => {
+  const wrap = document.getElementById('pf-lines');
+  if (!wrap) return;
+  const soId = val('pf-so');
+  PF_LINES = [];
+  if (!soId) { wrap.innerHTML = '<p class="muted">Pick a Sales Order first.</p>'; return; }
+  try {
+    const items = await api(`/sales/orders/${soId}/items`);
+    PF_LINES = items.map(it => ({ ...it, selected: false, gst_rate_override: it.gst_rate }));
+  } catch (e) { PF_LINES = []; }
+  renderPFLines();
+};
+function renderPFLines() {
+  const wrap = document.getElementById('pf-lines');
+  if (!wrap) return;
+  if (!PF_LINES.length) { wrap.innerHTML = '<p class="muted">This order has no line items on file - use the Amount field below instead.</p>'; return; }
+  wrap.innerHTML = gridLineTableHTML('36px minmax(220px,2fr) 90px 90px 100px 100px', ['', 'Description', 'Qty', 'Unit', 'Rate (₹)', 'GST %'], PF_LINES, (l, i) => `
+      <div><input type="checkbox" ${l.selected ? 'checked' : ''} onchange="PF_LINES[${i}].selected=this.checked"></div>
+      <div>${esc(l.description)}</div>
+      <div>${l.quantity}</div>
+      <div>${esc(l.unit || 'Nos')}</div>
+      <div>₹${fmt(l.rate)}</div>
+      <div><input type="number" value="${l.gst_rate_override}" onchange="PF_LINES[${i}].gst_rate_override=Number(this.value)" style="width:70px;"></div>`);
+}
 window.generateProforma = async () => {
   const errEl = document.getElementById('pf-err'); errEl.style.display = 'none';
   const soId = val('pf-so');
   if (!soId) { errEl.textContent = 'Pick a sales order.'; errEl.style.display = 'block'; return; }
+  const selectedLines = PF_LINES.filter(l => l.selected);
   try {
     const r = await api(`/finance/proforma-invoices/from-sales-order/${soId}`, { method: 'POST', body: JSON.stringify({
-      invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null, amount: val('pf-amount') || undefined,
+      invoice_type: val('pf-type'), milestone_id: val('pf-milestone') || null,
+      amount: selectedLines.length ? undefined : (val('pf-amount') || undefined),
       description: val('pf-desc'),
+      items: selectedLines.length ? selectedLines.map(l => ({
+        description: l.description, quantity: l.quantity, unit: l.unit, rate: l.rate,
+        gst_rate: l.gst_rate_override, sales_order_item_id: l.id,
+      })) : undefined,
       buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
       packing_forwarding_percent: val('pf-pf-percent') || undefined, packing_forwarding_amount: val('pf-pf-amount') || undefined,
+      courier_charges_percent: val('pf-cc-percent') || undefined, courier_charges_amount: val('pf-cc-amount') || undefined,
       advance_received: val('pf-advance') || undefined,
     })});
     // Doesn't block creation (Finance may legitimately need to invoice
@@ -12974,6 +13054,7 @@ window.pfSOChanged = () => {
     document.getElementById('pf-buyer-gstin').value = o.client_gstin || '';
   }
   loadPFMilestones();
+  loadPFLines();
   pfPrefillAmountFromPercent();
 };
 // Advance %/Payment Before Dispatch % (2026-10-27, captured on the Sales

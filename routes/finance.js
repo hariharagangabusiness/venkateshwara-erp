@@ -1199,7 +1199,7 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
     taxableTotal += taxable;
     const taxAmt = taxable * gstRate / 100;
     if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
-    return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i };
+    return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i, sales_order_item_id: it.sales_order_item_id || null };
   });
 
   // Packing & Forwarding (2026-10-27) - part of the GST taxable value (same
@@ -1216,25 +1216,35 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
   const packingTax = packingAmount * pfRate / 100;
   if (sameState) { cgst += packingTax / 2; sgst += packingTax / 2; } else { igst += packingTax; }
 
+  // Courier Charges (2026-10-29) - built exactly like Packing & Forwarding
+  // above (same flat-₹-overrides-% shape, same GST-taxable treatment per
+  // the owner's locked answer), as its own separate charge rather than
+  // folded into Packing & Forwarding.
+  const ccPercent = Math.max(0, Number(req.body.courier_charges_percent) || 0);
+  const ccAmountGiven = req.body.courier_charges_amount !== undefined && req.body.courier_charges_amount !== '' && req.body.courier_charges_amount !== null;
+  const courierAmount = Math.max(0, ccAmountGiven ? (Number(req.body.courier_charges_amount) || 0) : taxableTotal * ccPercent / 100);
+  const courierTax = courierAmount * pfRate / 100;
+  if (sameState) { cgst += courierTax / 2; sgst += courierTax / 2; } else { igst += courierTax; }
+
   // Advance Received (2026-10-27) - a deduction Finance types in against
   // what's already come in for this order, reducing what's actually payable
   // on THIS document (most useful on a Pre-Dispatch proforma raised after an
   // earlier Advance proforma's payment has already landed). A plain
   // deduction, not derived from any other Advance proforma's own status.
   const advanceReceived = Math.max(0, Number(req.body.advance_received) || 0);
-  const total = taxableTotal + packingAmount + cgst + sgst + igst - advanceReceived;
+  const total = taxableTotal + packingAmount + courierAmount + cgst + sgst + igst - advanceReceived;
   const proformaNo = nextProformaNo();
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO proforma_invoices (proforma_no, sales_order_id, client_id, milestone_id, invoice_type,
         place_of_supply, buyer_gstin, buyer_state, ship_to_address, taxable_value, cgst, sgst, igst,
-        packing_forwarding_percent, packing_forwarding_amount, advance_received, total_value, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        packing_forwarding_percent, packing_forwarding_amount, courier_charges_percent, courier_charges_amount, advance_received, total_value, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(proformaNo, so.id, client.id, milestone_id || null, invoice_type,
       buyerState || company.default_place_of_supply, buyerGstin, buyerState, shipToAddress, taxableTotal, cgst, sgst, igst,
-      pfPercent, packingAmount, advanceReceived, total, 'Draft', req.user.id);
-    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order) VALUES (?,?,?,?,?,?,?,?)`);
-    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order));
+      pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total, 'Draft', req.user.id);
+    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order, sales_order_item_id) VALUES (?,?,?,?,?,?,?,?,?)`);
+    lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order, r.sales_order_item_id));
     // The tax-invoice pipeline uses 'Invoiced' for this same transition -
     // one consistent status regardless of which document triggered it.
     if (milestone) db.prepare(`UPDATE payment_milestones SET status = 'Invoiced' WHERE id = ?`).run(milestone.id);
@@ -1292,7 +1302,7 @@ router.post('/proforma-invoices/:id/cancel', requirePermission('sales_order.mana
 });
 router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manage'), async (req, res) => {
   const pf = db.prepare(`
-    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date
+    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
     FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
   `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
@@ -1329,7 +1339,7 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
 });
 router.get('/proforma-invoices/:id/pdf', async (req, res) => {
   const pf = db.prepare(`
-    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date
+    SELECT pf.*, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
     FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
   `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
