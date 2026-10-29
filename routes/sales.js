@@ -11,6 +11,7 @@ const { getCompanySettings } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
+const { buildDownloadFilename } = require('../lib/downloadFilename');
 const router = express.Router();
 router.use(authRequired);
 
@@ -745,7 +746,8 @@ router.post('/dispatches', requirePermission('sales_order.manage'), (req, res) =
 });
 function dispatchBundle(id) {
   const dispatch = db.prepare(`
-    SELECT fd.*, so.order_no FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id WHERE fd.id = ?
+    SELECT fd.*, so.order_no, so.po_number, so.po_date
+    FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id WHERE fd.id = ?
   `).get(id);
   if (!dispatch) return null;
   const items = db.prepare(`
@@ -850,9 +852,20 @@ router.get('/dispatches/:id/customer-bundle', async (req, res) => {
       return { label, file: row ? resolveUploadPath(row.file_path) : null };
     });
     const out = await assembleCustomerBundle(cover, slots);
+    // Filename names the customer, dispatch date, and Customer PO No
+    // alongside the dispatch no - per the owner's ask, the same information
+    // this document's own covering-letter page (page 1 of the bundle) now
+    // also prints in its grid, above.
+    const filename = buildDownloadFilename({
+      docType: 'FG_Dispatch_Bundle',
+      reference: bundle.dispatch.dispatch_no,
+      partyName: client && (client.legal_name || client.name),
+      date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+      version: bundle.dispatch.po_number || undefined,
+    });
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-customer-bundle.pdf"`,
+      'Content-Disposition': `attachment; filename="${filename}"`,
       'X-Bundle-Included': out.included.join(', '),
       'X-Bundle-Skipped': out.skipped.map(s => `${s.label} (${s.reason})`).join(', '),
       'Access-Control-Expose-Headers': 'X-Bundle-Included, X-Bundle-Skipped',
