@@ -7600,7 +7600,80 @@ PAGES['purchase-velocity'] = async (el) => {
     <p class="muted">Per PO number (not per line). Draft, Cancelled and Rejected POs are excluded. Click a card for the underlying records.</p>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px;">${cards}</div>
-  ${PV_CARDS.map((c) => `<div id="pv-drill-${c.key}" style="display:none;"></div>`).join('')}`;
+  ${PV_CARDS.map((c) => `<div id="pv-drill-${c.key}" style="display:none;"></div>`).join('')}
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px;">
+    <div class="panel" style="margin:0;">
+      <div class="muted">Open Purchase Orders</div>
+      <div style="font-size:14px;margin:4px 0 8px;">Every not-yet-fully-received PO line, across all time.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn small" type="button" onclick="togglePvOpenPos()">View Report</button>
+        <button class="btn small outline" type="button" onclick="downloadTemplateFile('/purchase/velocity/open-pos/export.xlsx','Open_POs.xlsx')">Export Excel</button>
+        <button class="btn small outline" type="button" onclick="downloadTemplateFile('/purchase/velocity/open-pos/export.pptx','Open_POs_Summary.pptx')">Export PPT</button>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="muted">Open Purchase Requests</div>
+      <div style="font-size:14px;margin:4px 0 8px;">Draft / Pending Quotes / Pending, across all time.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn small" type="button" onclick="togglePvOpenPrs()">View Report</button>
+        <button class="btn small outline" type="button" onclick="downloadTemplateFile('/purchase/velocity/open-prs/export.xlsx','Open_PRs.xlsx')">Export Excel</button>
+      </div>
+    </div>
+  </div>
+  <div id="pv-open-pos" style="display:none;"></div>
+  <div id="pv-open-prs" style="display:none;"></div>`;
+};
+window.togglePvOpenPos = async () => {
+  const box = document.getElementById('pv-open-pos');
+  if (!box) return;
+  const open = box.style.display === 'none';
+  box.style.display = open ? '' : 'none';
+  if (!open || box.dataset.built) return;
+  box.dataset.built = '1';
+  box.innerHTML = '<div class="panel muted">Loading...</div>';
+  try {
+    const { rows } = await api('/purchase/velocity/open-pos');
+    const day = (s) => (s ? esc(String(s).slice(0, 10)) : '-');
+    const body = rows.map((r) => `<tr>
+      <td>${esc(r.po_no)}</td><td>${day(r.po_date)}</td><td>${badge(r.status)}</td><td>${r.line_no}</td>
+      <td>${esc(r.item_code) || '-'}</td><td>${esc(r.item_description) || '-'}</td><td>${r.item_qty}</td><td>${r.received_qty}</td>
+      <td>${esc(r.vendor_name) || '-'}</td><td>${esc(r.vendor_address) || '-'}</td><td>${esc(r.vendor_phone) || '-'}</td><td>${esc(r.vendor_email) || '-'}</td>
+      <td>${day(r.delivery_date)}</td><td ${r.delay_days > 0 ? 'style="color:#dc2626;font-weight:700;"' : ''}>${r.delay_days}</td>
+    </tr>`).join('');
+    box.innerHTML = `<div class="panel"><h3>Open Purchase Orders (${rows.length} line${rows.length === 1 ? '' : 's'})</h3>
+      <div style="overflow-x:auto;"><table><thead><tr>
+        <th>PO No.</th><th>PO Date</th><th>PO Status</th><th>Line No.</th><th>Item Code</th><th>Item Description</th>
+        <th>Item Qty</th><th>Received Qty</th><th>Vendor Name</th><th>Vendor Address</th><th>Vendor Ph. No.</th><th>Vendor Email</th>
+        <th>Promised Dispatch Date</th><th>Delay Days</th>
+      </tr></thead><tbody>${body || '<tr><td colspan="14" class="muted">None.</td></tr>'}</tbody></table></div></div>`;
+  } catch (e) {
+    box.dataset.built = '';
+    box.innerHTML = `<div class="panel">Could not load: ${esc(e.message)}</div>`;
+  }
+};
+window.togglePvOpenPrs = async () => {
+  const box = document.getElementById('pv-open-prs');
+  if (!box) return;
+  const open = box.style.display === 'none';
+  box.style.display = open ? '' : 'none';
+  if (!open || box.dataset.built) return;
+  box.dataset.built = '1';
+  box.innerHTML = '<div class="panel muted">Loading...</div>';
+  try {
+    const { rows } = await api('/purchase/velocity/open-prs');
+    const day = (s) => (s ? esc(String(s).slice(0, 10)) : '-');
+    const body = rows.map((r) => `<tr>
+      <td>${esc(r.pr_no)}</td><td>${esc(r.item_code) || '-'}</td><td>${r.quantity}</td><td>${day(r.created_at)}</td>
+      <td>${esc(r.created_by) || '-'}</td><td>${esc(r.department) || '-'}</td><td>${esc(r.project) || '-'}</td>
+    </tr>`).join('');
+    box.innerHTML = `<div class="panel"><h3>Open Purchase Requests (${rows.length} item${rows.length === 1 ? '' : 's'})</h3>
+      <div style="overflow-x:auto;"><table><thead><tr>
+        <th>PR No.</th><th>Item Code</th><th>Qty</th><th>PR Creation Date</th><th>Created By</th><th>Department</th><th>Project</th>
+      </tr></thead><tbody>${body || '<tr><td colspan="7" class="muted">None.</td></tr>'}</tbody></table></div></div>`;
+  } catch (e) {
+    box.dataset.built = '';
+    box.innerHTML = `<div class="panel">Could not load: ${esc(e.message)}</div>`;
+  }
 };
 window.applyPvRange = () => {
   window.__PV_RANGE = { from: document.getElementById('pv-from').value, to: document.getElementById('pv-to').value };

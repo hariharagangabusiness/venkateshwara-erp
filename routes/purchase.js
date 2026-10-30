@@ -14,6 +14,7 @@ const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const { poReceivedQty } = require('../lib/purchaseOrders');
+const PptxGenJS = require('pptxgenjs');
 const path = require('path');
 const { makeUpload, uploadMemory } = require('../lib/upload');
 const router = express.Router();
@@ -334,6 +335,165 @@ router.get('/velocity/drill', requirePermission('purchase_order.manage'), (req, 
     : rows.filter(VELOCITY_INFLIGHT[m]).map((r) => ({ ref: r.po_no, vendor_name: r.vendor_name, pr_no: r.pr_no, start: startEnd(r)[0], days: r[VELOCITY_WAIT[m]] }))
       .sort((a, b) => b.days - a.days);
   res.json({ from, to, metric: m, done, in_flight: inFlight });
+});
+
+// ---- Open PO / Open PR report (Purchase Velocity, Round "Open PO & PR") ----
+// "Open" = anything still not fully received for PO, still pre-approval for
+// PR - locked with the repo owner before building (see CLAUDE.md). One row
+// per purchase_orders line (a multi-item PO is several rows sharing one
+// po_no, same convention this whole file already follows) / one row per PR
+// item (flattens the legacy single-item PR shape and the newer
+// purchase_request_items child-table shape into one result set, same
+// flattening GET /requests already does via item_summary).
+const OPEN_PO_STATUSES = ['Draft', 'PendingApproval', 'Open', 'PartiallyReceived'];
+const OPEN_PR_STATUSES = ['Draft', 'PendingQuotes', 'Pending'];
+
+function openPoRows() {
+  const rows = db.prepare(`
+    SELECT po.id, po.po_no, po.created_at as po_date, po.status, po.quantity, po.delivery_date,
+      i.item_code, i.name as item_name,
+      v.name as vendor_name, v.address as vendor_address, v.phone as vendor_phone, v.email as vendor_email
+    FROM purchase_orders po
+    LEFT JOIN items i ON i.id = po.item_id
+    LEFT JOIN vendors v ON v.id = po.vendor_id
+    WHERE po.status IN (${OPEN_PO_STATUSES.map(() => '?').join(',')})
+    ORDER BY po.po_no, po.id
+  `).all(...OPEN_PO_STATUSES);
+  const lineNoByPoNo = {};
+  const today = new Date().toISOString().slice(0, 10);
+  return rows.map((r) => {
+    lineNoByPoNo[r.po_no] = (lineNoByPoNo[r.po_no] || 0) + 1;
+    const received_qty = poReceivedQty(r.id);
+    const outstanding = received_qty < r.quantity;
+    let delay_days = 0;
+    if (outstanding && r.delivery_date) {
+      const delivery = String(r.delivery_date).slice(0, 10);
+      const d = Math.round((new Date(today) - new Date(delivery)) / 86400000);
+      delay_days = Math.max(0, d);
+    }
+    return {
+      po_no: r.po_no, po_date: r.po_date, status: r.status, line_no: lineNoByPoNo[r.po_no],
+      item_code: r.item_code, item_description: r.item_name, item_qty: r.quantity, received_qty,
+      vendor_name: r.vendor_name, vendor_address: r.vendor_address, vendor_phone: r.vendor_phone, vendor_email: r.vendor_email,
+      delivery_date: r.delivery_date, delay_days,
+    };
+  });
+}
+
+function openPrRows() {
+  const placeholders = OPEN_PR_STATUSES.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT pr.pr_no, COALESCE(i.item_code, pri.item_text) as item_code, pri.quantity,
+      pr.created_at, u.full_name as created_by, d.name as department, p.project_code as project
+    FROM purchase_request_items pri
+    JOIN purchase_requests pr ON pr.id = pri.purchase_request_id
+    LEFT JOIN items i ON i.id = pri.item_id
+    LEFT JOIN users u ON u.id = pr.raised_by
+    LEFT JOIN departments d ON d.id = u.department_id
+    LEFT JOIN projects p ON p.id = pr.project_id
+    WHERE pr.status IN (${placeholders})
+
+    UNION ALL
+
+    SELECT pr.pr_no, i.item_code, pr.quantity,
+      pr.created_at, u.full_name as created_by, d.name as department, p.project_code as project
+    FROM purchase_requests pr
+    LEFT JOIN items i ON i.id = pr.item_id
+    LEFT JOIN users u ON u.id = pr.raised_by
+    LEFT JOIN departments d ON d.id = u.department_id
+    LEFT JOIN projects p ON p.id = pr.project_id
+    WHERE pr.status IN (${placeholders})
+      AND NOT EXISTS (SELECT 1 FROM purchase_request_items pri2 WHERE pri2.purchase_request_id = pr.id)
+    ORDER BY pr_no
+  `).all(...OPEN_PR_STATUSES, ...OPEN_PR_STATUSES);
+}
+
+router.get('/velocity/open-pos', requirePermission('purchase_order.manage'), (req, res) => {
+  res.json({ rows: openPoRows() });
+});
+
+router.get('/velocity/open-prs', requirePermission('purchase_order.manage'), (req, res) => {
+  res.json({ rows: openPrRows() });
+});
+
+router.get('/velocity/open-pos/export.xlsx', requirePermission('purchase_order.manage'), (req, res) => {
+  const rows = openPoRows().map((r) => ({
+    'PO No.': r.po_no, 'PO Date': r.po_date, 'PO Status': r.status, 'PO Line No.': r.line_no,
+    'Item Code': r.item_code, 'Item Description': r.item_description, 'Item Qty': r.item_qty, 'Received Qty': r.received_qty,
+    'Vendor Name': r.vendor_name, 'Vendor Address': r.vendor_address, 'Vendor Ph. No.': r.vendor_phone, 'Vendor Email': r.vendor_email,
+    'Promised Dispatch Date': r.delivery_date, 'Delay Days': r.delay_days,
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = rows.length ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['(no open PO lines)']]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Open POs');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'xlsx' })}"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+
+router.get('/velocity/open-prs/export.xlsx', requirePermission('purchase_order.manage'), (req, res) => {
+  const rows = openPrRows().map((r) => ({
+    'PR No.': r.pr_no, 'Item Code': r.item_code, 'Qty': r.quantity, 'PR Creation Date': r.created_at,
+    'Created By': r.created_by, 'Department': r.department, 'Project': r.project,
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = rows.length ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['(no open PR items)']]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Open PRs');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_PRs', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'xlsx' })}"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+
+// PPT export is deliberately PO-level, not line-level - confirmed with the
+// owner before building: a slide/table row per PO (vendor, status, total
+// lines, qty vs. received, max delay across its lines), not every
+// individual line, since a multi-line PO's full item table wouldn't fit
+// usefully on a slide the way it does in the Excel export.
+router.get('/velocity/open-pos/export.pptx', requirePermission('purchase_order.manage'), async (req, res) => {
+  const lines = openPoRows();
+  const byPo = {};
+  for (const r of lines) {
+    if (!byPo[r.po_no]) byPo[r.po_no] = { po_no: r.po_no, po_date: r.po_date, vendor_name: r.vendor_name, statuses: new Set(), lines: 0, qty: 0, received: 0, max_delay: 0 };
+    const g = byPo[r.po_no];
+    g.statuses.add(r.status);
+    g.lines += 1;
+    g.qty += r.item_qty || 0;
+    g.received += r.received_qty || 0;
+    g.max_delay = Math.max(g.max_delay, r.delay_days || 0);
+  }
+  const groups = Object.values(byPo);
+  const pptx = new PptxGenJS();
+  pptx.defineLayout({ name: 'A4', width: 11.7, height: 8.3 });
+  pptx.layout = 'A4';
+
+  const titleSlide = pptx.addSlide();
+  titleSlide.addText('Open Purchase Orders', { x: 0.5, y: 2.8, w: 10.7, h: 1, fontSize: 32, bold: true, align: 'center' });
+  titleSlide.addText(`${groups.length} open PO(s) · ${lines.length} open line(s) · as of ${new Date().toISOString().slice(0, 10)}`, { x: 0.5, y: 3.9, w: 10.7, h: 0.5, fontSize: 14, align: 'center', color: '666666' });
+
+  const header = ['PO No.', 'PO Date', 'Status', 'Vendor', 'Lines', 'Qty', 'Received', 'Max Delay (d)'];
+  const rowsPerSlide = 12;
+  for (let i = 0; i < groups.length; i += rowsPerSlide) {
+    const chunk = groups.slice(i, i + rowsPerSlide);
+    const slide = pptx.addSlide();
+    slide.addText('Open Purchase Orders - Summary', { x: 0.4, y: 0.25, w: 10.9, h: 0.5, fontSize: 18, bold: true });
+    const tableRows = [header.map((h) => ({ text: h, options: { bold: true, fill: { color: 'EEEEEE' } } }))]
+      .concat(chunk.map((g) => [
+        g.po_no, g.po_date ? String(g.po_date).slice(0, 10) : '', [...g.statuses].join(', '), g.vendor_name || '',
+        String(g.lines), String(g.qty), String(g.received), String(g.max_delay),
+      ]));
+    slide.addTable(tableRows, { x: 0.4, y: 0.9, w: 10.9, fontSize: 10, autoPage: false });
+  }
+  if (!groups.length) {
+    const slide = pptx.addSlide();
+    slide.addText('No open Purchase Orders.', { x: 0.5, y: 3.8, w: 10.7, h: 0.6, fontSize: 18, align: 'center' });
+  }
+
+  const buf = await pptx.write({ outputType: 'nodebuffer' });
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs_Summary', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'pptx' })}"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  res.send(buf);
 });
 
 // ---- Multi-vendor quotes for a Purchase Request (Round 13) ----
