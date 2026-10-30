@@ -4886,7 +4886,7 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
     <tbody id="kv-rows">${rows.map((r, i) => `
       <tr data-i="${i}">
         <td><input class="kv-key" value="${esc(r[keyField])}" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-        <td><input class="kv-val" value="${esc(r[valField])}" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+        <td><textarea class="kv-val" rows="2" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;white-space:pre-wrap;resize:vertical;">${esc(r[valField])}</textarea></td>
         <td>${disabled ? '' : `<button class="btn small red" onclick="this.closest('tr').remove()">Remove</button>`}</td>
       </tr>`).join('')}</tbody></table>
     ${disabled ? '' : hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
@@ -4905,7 +4905,7 @@ window.addKvRow = () => {
   const tbody = document.getElementById('kv-rows');
   const tr = document.createElement('tr');
   tr.innerHTML = `<td><input class="kv-key" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-    <td><input class="kv-val" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+    <td><textarea class="kv-val" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;white-space:pre-wrap;resize:vertical;"></textarea></td>
     <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>`;
   tbody.appendChild(tr);
 };
@@ -4919,7 +4919,7 @@ window.addKvRowFromLibrary = () => {
   const tbody = document.getElementById('kv-rows');
   const tr = document.createElement('tr');
   tr.innerHTML = `<td><input class="kv-key" value="${esc(picked.label)}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-    <td><input class="kv-val" value="${esc(picked.body)}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+    <td><textarea class="kv-val" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;white-space:pre-wrap;resize:vertical;">${esc(picked.body)}</textarea></td>
     <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>`;
   tbody.appendChild(tr);
   select.value = '';
