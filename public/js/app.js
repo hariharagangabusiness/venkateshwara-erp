@@ -3287,7 +3287,7 @@ PAGES['fg-dispatches'] = async (el) => {
   el.innerHTML = `
     <div class="panel"><h3>New Dispatch</h3>
       <div class="form-grid">
-        <div><label>Sales Order</label><select id="disp-so" onchange="loadDispatchableLines()"><option value="">- Select -</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+        <div><label>Sales Order</label>${salesOrderPickerHTML('disp-so', orders, '', 'onchange="loadDispatchableLines()"')}</div>
         <div><label>Vehicle No</label><input id="disp-vehicle"></div>
         <div><label>Transporter</label><input id="disp-transporter"></div>
         <div><label>E-Way Bill No</label><input id="disp-eway"></div>
@@ -3296,7 +3296,14 @@ PAGES['fg-dispatches'] = async (el) => {
       <button class="btn" onclick="submitDispatch()">Dispatch</button>
     </div>
     ${collapsiblePanel('dispatches-list', `Dispatches (${dispatches.length})`, `
-      ${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
+      ${renderListSearch('fg-dispatches-list', dispatches, ['dispatch_no', 'order_no', 'client_name', 'status'], renderDispatchRows, 'Search by dispatch no, order, client, or status...')}
+      <div id="fg-dispatches-rows"></div>
+    `)}`;
+  renderDispatchRows(dispatches);
+};
+function renderDispatchRows(dispatches) {
+  document.getElementById('fg-dispatches-rows').innerHTML =
+      `${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
         <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
         <td>${actionButtonsCell(`
           ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
@@ -3307,9 +3314,8 @@ PAGES['fg-dispatches'] = async (el) => {
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
         `)}</td></tr>
-        <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}
-    `)}`;
-};
+        <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}`;
+}
 window.submitDispatch = async () => {
   const lines = DISPATCH_LINES.filter(l => l.dispatch_qty > 0).map(l => ({ sales_order_item_id: l.sales_order_item_id, quantity: l.dispatch_qty }));
   if (!lines.length) { alert('Pick a sales order and at least one line with quantity > 0.'); return; }
