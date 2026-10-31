@@ -1564,7 +1564,7 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
 // frontend now sends whatever's currently sitting in that box as
 // pending_qty so this route can refuse the same way the UI's own greyed-out
 // button already does, as defense in depth for any other caller of this API.
-router.post('/orders/:id/close-short-ship', requirePermission('purchase_order.manage'), (req, res) => {
+router.post('/orders/:id/close-short-ship', requirePermission('store.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (!['Open', 'PartiallyReceived'].includes(existing.status)) {
