@@ -4666,10 +4666,15 @@ function offerUnitSelectHTML(id, options, current) {
 async function renderScopeTab(el, data) {
   const items = data.items;
   const equipmentRefs = data.equipmentReferences || [];
-  const sectionTitles = await api('/offers/section-titles').catch(() => []);
+  // Machine Library (Standard offers) vs. Spares Library (Spares offers,
+  // 2026-11-01) - the two are never mixed, so only the one the offer's
+  // own format actually needs is fetched.
+  const isSparesFormat = data.offer.offer_format === 'Spares';
+  const sectionTitles = isSparesFormat ? await api('/offers/spares-library').catch(() => []) : await api('/offers/section-titles').catch(() => []);
   window.__SECTION_TITLES = sectionTitles;
+  window.__IS_SPARES_OFFER = isSparesFormat;
   // Admin-managed Unit list (Offer Field Options) - Spares lines only.
-  const unitOpts = data.offer.offer_format === 'Spares' ? await api('/offers/field-options/unit').catch(() => []) : [];
+  const unitOpts = isSparesFormat ? await api('/offers/field-options/unit').catch(() => []) : [];
   // Unit of Measurement + flat Discount Amount per line (2026-10-15) -
   // Spares-format offers only, matching the owner's locked scope (a full
   // machinery offer's Scope Of Supply stays exactly as it was). Spares mode
@@ -4726,7 +4731,7 @@ async function renderScopeTab(el, data) {
     <h4 id="it-form-title">Add Machinery / Scope Line</h4>
     <div class="form-grid">
       <div><label>Item Code</label><input id="it-code" placeholder="A / B / C"></div>
-      <div><label>Section Title (from library)</label><select id="it-section-select" onchange="applySectionTitleTemplate()"><option value="">- type a new one below -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
+      <div><label>${isSpares ? 'Spares Library' : 'Section Title (from library)'}</label><select id="it-section-select" onchange="applySectionTitleTemplate()"><option value="">- type a new one below -</option>${sectionTitles.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></div>
       <div><label>Or type a new Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
       <div><label>Qty</label><input id="it-qty" type="number" value="1"></div>
       <div><label>Unit Price (₹)</label><input id="it-price" type="number" value="0"></div>
@@ -4807,6 +4812,21 @@ window.applySectionTitleTemplate = () => {
   document.getElementById('it-section').value = lib.title;
   document.getElementById('it-desc').value = lib.description || '';
   document.getElementById('it-summary').value = lib.summary || '';
+  // Spares Library entries also carry a default rate/unit - pre-fill those
+  // too (Machine Library entries have neither, so this is a no-op there).
+  if (window.__IS_SPARES_OFFER) {
+    if (lib.rate != null && document.getElementById('it-price')) document.getElementById('it-price').value = lib.rate;
+    const unitSel = document.getElementById('it-unit');
+    if (lib.unit && unitSel) {
+      const opt = Array.from(unitSel.options).find(o => o.value === lib.unit);
+      if (opt) { unitSel.value = lib.unit; window.toggleUnitOther && window.toggleUnitOther('it-unit'); }
+      else if (document.getElementById('it-unit-other')) {
+        unitSel.value = 'Other';
+        document.getElementById('it-unit-other').value = lib.unit;
+        window.toggleUnitOther('it-unit');
+      }
+    }
+  }
   preview.innerHTML = lib.image_path ? `<img src="${esc(lib.image_path)}" style="max-height:80px;max-width:140px;"> <span class="muted">Library picture - will be used unless you upload your own above.</span>` : '';
 };
 let EDITING_OFFER_ITEM_ID = null;
@@ -4865,7 +4885,7 @@ window.addOfferItem = async () => {
     if (document.getElementById('it-discount')) fd.append('discount_amount', val('it-discount'));
     if (document.getElementById('it-remarks')) fd.append('remarks', val('it-remarks'));
     fd.append('revision_reason', reason || '');
-    if (val('it-section-select')) fd.append('section_title_id', val('it-section-select'));
+    if (val('it-section-select')) fd.append(window.__IS_SPARES_OFFER ? 'spares_library_id' : 'section_title_id', val('it-section-select'));
     const fileInput = document.getElementById('it-image');
     if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
     let r;
@@ -10481,6 +10501,22 @@ function renderSectionTitleRows(rows, isAdmin) {
     </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
   </tbody></table>`;
 }
+function renderSparesLibraryRows(rows, isAdmin) {
+  return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Rate</th><th>Unit</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
+    ${rows.map(s => `<tr>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onblur="editSparesLibraryEntry(${s.id}, 'title', this.value)" style="width:100%;min-width:140px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
+      <td style="max-width:200px;">${isAdmin ? `<textarea onblur="editSparesLibraryEntry(${s.id}, 'description', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
+      <td style="max-width:200px;">${isAdmin ? `<textarea onblur="editSparesLibraryEntry(${s.id}, 'summary', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
+      <td>${isAdmin ? `<input type="number" value="${s.rate||0}" onblur="editSparesLibraryEntry(${s.id}, 'rate', this.value)" style="width:90px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : ('₹' + fmt(s.rate||0))}</td>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.unit||'Nos')}" onblur="editSparesLibraryEntry(${s.id}, 'unit', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.unit||'Nos')}</td>
+      <td>
+        ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
+        ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSparesLibraryImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
+      </td>
+      ${isAdmin ? `<td><button class="btn small red" onclick="deleteSparesLibraryEntry(${s.id})">Delete</button></td>` : ''}
+    </tr>`).join('') || `<tr><td colspan="${isAdmin ? 7 : 6}" class="empty">No spares in the library yet.</td></tr>`}
+  </tbody></table>`;
+}
 PAGES['offer-options'] = async (el) => {
   // Field options / Section Title library are master template controls
   // (values every Sales user's offers draw from) - only Admin can add,
@@ -10490,9 +10526,10 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, pdfTemplate, governance, clauses, suggestions, offerTemplates] = await Promise.all([
+  const [rows, sectionTitles, sparesLibrary, pdfTemplate, governance, clauses, suggestions, offerTemplates] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
+    api('/offers/spares-library'),
     api('/offers/pdf-template').catch(() => null), // Admin-only - null for everyone else, panel just doesn't render
     api('/offers/governance').catch(() => null), // Admin-only - same
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
@@ -10533,10 +10570,11 @@ PAGES['offer-options'] = async (el) => {
       `)}
       </div>
     </div>
-    ${isAdmin && suggestions.length ? `<div class="panel"><h3>Pending Section Titles for Review (${suggestions.length})</h3>
-      <p class="muted">Typed directly on an offer instead of picked from the library - Approve to add it to the Section Title Library below for everyone to reuse, or Reject to discard it. The offer item itself already saved either way.</p>
-      ${tableHTML(['Title', 'Description', 'Summary', 'Picture', 'Offer', 'Suggested By', ''], suggestions, s => `
+    ${isAdmin && suggestions.length ? `<div class="panel"><h3>Pending Library Entries for Review (${suggestions.length})</h3>
+      <p class="muted">Typed directly on an offer instead of picked from the library - Approve to add it to the Machine Library (or Spares Library, for a Spares-format offer's entry) below for everyone to reuse, or Reject to discard it. The offer item itself already saved either way.</p>
+      ${tableHTML(['Library', 'Title', 'Description', 'Summary', 'Picture', 'Offer', 'Suggested By', ''], suggestions, s => `
         <tr>
+          <td>${s.library_type === 'Spares' ? 'Spares' : 'Machine'}</td>
           <td>${esc(s.title)}</td>
           <td style="white-space:pre-wrap;max-width:200px;">${esc(s.description)||'-'}</td>
           <td style="white-space:pre-wrap;max-width:200px;">${esc(s.summary)||'-'}</td>
@@ -10548,13 +10586,13 @@ PAGES['offer-options'] = async (el) => {
         </tr>`)}
     </div>` : ''}
     <div class="panel">
-      ${collapsiblePanel('section-title-library', `Section Title Library (${sectionTitles.length})`, `
-        <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on an offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time.</p>
+      ${collapsiblePanel('section-title-library', `Machine Library (${sectionTitles.length})`, `
+        <p class="muted">Named machinery/scope lines with a default description, summary and picture - picking one on a Standard offer's "Add Machinery / Scope Line" form auto-fills the line instead of retyping it every time. A Spares-format offer uses the separate Spares Library below instead.</p>
         ${renderListSearch('section-title-library', sectionTitles, ['title', 'description', 'summary'], (filtered) => {
           document.getElementById('stl-table-wrap').innerHTML = renderSectionTitleRows(filtered, isAdmin);
         }, 'Search title, description, summary...')}
         <div id="stl-table-wrap">${renderSectionTitleRows(sectionTitles, isAdmin)}</div>
-        ${isAdmin ? `<h4>Add Section Title</h4>
+        ${isAdmin ? `<h4>Add to Machine Library</h4>
         <div class="form-grid">
           <div><label>Title</label><input id="stl-title" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
           <div><label>Picture (optional)</label><input id="stl-image" type="file" accept="image/*"></div>
@@ -10565,6 +10603,33 @@ PAGES['offer-options'] = async (el) => {
         <textarea id="stl-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;" placeholder="Short reference note"></textarea>
         <div style="margin-top:8px;"><button class="btn" onclick="addSectionTitle()">Add to Library</button></div>
         <div id="stl-err" class="msg err" style="display:none;margin-top:10px;"></div>` : ''}
+      `)}
+    </div>
+    <div class="panel">
+      ${collapsiblePanel('spares-library', `Spares Library (${sparesLibrary.length})`, `
+        <p class="muted">Reusable spare parts with a default description, summary, rate and unit - picking one on a Spares-format offer's "Add Line" form auto-fills the line instead of retyping it every time.</p>
+        ${renderListSearch('spares-library', sparesLibrary, ['title', 'description', 'summary'], (filtered) => {
+          document.getElementById('spl-table-wrap').innerHTML = renderSparesLibraryRows(filtered, isAdmin);
+        }, 'Search title, description, summary...')}
+        <div id="spl-table-wrap">${renderSparesLibraryRows(sparesLibrary, isAdmin)}</div>
+        ${isAdmin ? `<h4>Add to Spares Library</h4>
+        <div class="form-grid">
+          <div><label>Title</label><input id="spl-title" placeholder="e.g. Ball Bearing 6205"></div>
+          <div><label>Rate (₹)</label><input id="spl-rate" type="number" value="0"></div>
+          <div><label>Unit</label><input id="spl-unit" value="Nos"></div>
+          <div><label>Picture (optional)</label><input id="spl-image" type="file" accept="image/*"></div>
+        </div>
+        <label>Description</label>
+        <textarea id="spl-desc" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
+        <label>Summary</label>
+        <textarea id="spl-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;" placeholder="Short reference note"></textarea>
+        <div style="margin-top:8px;"><button class="btn" onclick="addSparesLibraryEntry()">Add to Library</button></div>
+        <div id="spl-err" class="msg err" style="display:none;margin-top:10px;"></div>
+        <h4 style="margin-top:18px;">Bulk Upload via Excel</h4>
+        <p class="muted">Columns: Title / Description / Summary / Rate / Unit (header row optional - with no header, read in that column order). A title that already exists in the library is skipped, not overwritten.</p>
+        <input id="spl-bulk-file" type="file" accept=".xlsx,.xls,.csv">
+        <button class="btn outline" onclick="uploadSparesLibraryBulk()">Upload</button>
+        <div id="spl-bulk-msg" class="msg" style="display:none;margin-top:10px;"></div>` : ''}
       `)}
     </div>
     ${isAdmin ? collapsiblePanel('offer-clause-library', 'Offer Clause Library', `
@@ -10687,6 +10752,59 @@ window.rejectSectionTitleSuggestion = async (id) => {
   if (!confirm('Reject this suggestion? It will be discarded - the offer item that suggested it is unaffected.')) return;
   try { await api('/offers/section-title-suggestions/' + id + '/reject', { method: 'POST' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
+};
+window.addSparesLibraryEntry = async () => {
+  const errEl = document.getElementById('spl-err');
+  errEl.style.display = 'none';
+  try {
+    const fd = new FormData();
+    fd.append('title', val('spl-title'));
+    fd.append('description', val('spl-desc'));
+    fd.append('summary', val('spl-summary'));
+    fd.append('rate', val('spl-rate'));
+    fd.append('unit', val('spl-unit'));
+    const fileInput = document.getElementById('spl-image');
+    if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
+    await apiUpload('/offers/spares-library', fd, 'POST');
+    navigate('offer-options');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteSparesLibraryEntry = async (id) => {
+  if (!confirm('Delete this spare from the library?')) return;
+  try { await api('/offers/spares-library/' + id, { method: 'DELETE' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
+};
+window.editSparesLibraryEntry = async (id, field, value) => {
+  try {
+    const fd = new FormData();
+    fd.append(field, value);
+    await apiUpload('/offers/spares-library/' + id, fd, 'PUT');
+    navigate('offer-options');
+  } catch (e) { alert(e.message); navigate('offer-options'); }
+};
+window.replaceSparesLibraryImage = async (id, fileInput) => {
+  if (!fileInput.files[0]) return;
+  try {
+    const fd = new FormData();
+    fd.append('image', fileInput.files[0]);
+    await apiUpload('/offers/spares-library/' + id, fd, 'PUT');
+    navigate('offer-options');
+  } catch (e) { alert(e.message); }
+};
+window.uploadSparesLibraryBulk = async () => {
+  const msgEl = document.getElementById('spl-bulk-msg');
+  msgEl.style.display = 'none';
+  const fileInput = document.getElementById('spl-bulk-file');
+  if (!fileInput.files[0]) { alert('Choose a file first.'); return; }
+  try {
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    const r = await apiUpload('/offers/spares-library/bulk-upload', fd, 'POST');
+    msgEl.className = 'msg ok';
+    msgEl.textContent = `Done: ${r.inserted} added, ${r.skipped} skipped (blank title or already in the library).`;
+    msgEl.style.display = 'block';
+    navigate('offer-options');
+  } catch (e) { msgEl.className = 'msg err'; msgEl.textContent = e.message; msgEl.style.display = 'block'; }
 };
 window.switchClauseLibraryTab = (id) => { CLAUSE_LIBRARY_TAB = id; navigate('offer-options'); };
 window.addClause = async () => {
