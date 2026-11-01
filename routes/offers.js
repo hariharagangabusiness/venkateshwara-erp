@@ -723,11 +723,11 @@ function cloneOfferContent(source, opts) {
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
-      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     items.forEach(it => {
-      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order);
+      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order, it.spares_library_id || null);
     });
     const annStmt = db.prepare(`INSERT INTO offer_annexures (offer_id, item_code, hsn_code, description, qty, unit, rate, amount, remarks, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)`);
     db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(source.id)
@@ -859,9 +859,9 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
-    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0);
+    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0, spares_library_id || null);
   if (!section_title_id && !spares_library_id) {
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
@@ -906,9 +906,9 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     }
   }
   db.prepare(`
-    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?
+    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?, spares_library_id=?
     WHERE id=?
-  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, targetItemId);
+  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, spares_library_id || null, targetItemId);
   if (!section_title_id && !spares_library_id) {
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
@@ -1368,6 +1368,20 @@ router.delete('/:id', requireRole('Admin'), (req, res) => {
   });
   tx();
   res.json({ ok: true });
+});
+
+// ===================== Spares Price Comparison (2026-11-01) =====================
+// Finance's "what did we quote vs. what did they actually order" review
+// against a new spares RFQ - see lib/sparesComparison.js for the matching
+// logic (Spares Library id where available, a normalized-description
+// fallback otherwise, flagged `approximate` either way it's used).
+const sparesComparison = require('../lib/sparesComparison');
+router.get('/spares-comparison/customer/:clientId', offerPerm(), (req, res) => {
+  res.json(sparesComparison.perCustomer(req.params.clientId));
+});
+router.get('/spares-comparison/trend', offerPerm(), (req, res) => {
+  const period = req.query.period === 'year' ? 'year' : 'quarter';
+  res.json(sparesComparison.trend(period));
 });
 
 module.exports = router;

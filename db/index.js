@@ -1631,6 +1631,14 @@ const MIGRATIONS = [
   // reused via this same table rather than a duplicate one, distinguished
   // by library_type so the two review queues never mix.
   `ALTER TABLE section_title_suggestions ADD COLUMN library_type TEXT DEFAULT 'Machine'`,
+  // Spares Price Comparison (2026-11-01) - a line picked from spares_library
+  // needs its own stable identity recorded on the offer line itself (the
+  // library id can be reused across any number of future offers/orders),
+  // so the same real-world spare can be grouped across customers/time
+  // without relying purely on a fuzzy description match. Nullable - a line
+  // typed fresh (not picked from the library) simply has none, and falls
+  // back to the description-match path in lib/sparesComparison.js.
+  `ALTER TABLE offer_items ADD COLUMN spares_library_id INTEGER REFERENCES spares_library(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
