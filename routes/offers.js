@@ -62,21 +62,27 @@ function copyLibraryImage(libraryImagePath) {
 // way); skipped entirely if the title already matches something in the
 // library, or a suggestion for it is already pending, so re-saving the
 // same item repeatedly doesn't spam the review queue.
-function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summary, imagePath, userId }) {
+// libraryType: 'Machine' (default, Section Title Library) or 'Spares'
+// (Spares Library, 2026-11-01) - a Spares-format offer's items route here
+// too, just checked/filed against spares_library instead.
+function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summary, imagePath, userId, libraryType }) {
   const trimmed = String(title || '').trim();
   if (!trimmed) return;
-  const inLibrary = db.prepare(`SELECT id FROM section_title_library WHERE LOWER(title) = LOWER(?)`).get(trimmed);
+  const type = libraryType === 'Spares' ? 'Spares' : 'Machine';
+  const libraryTable = type === 'Spares' ? 'spares_library' : 'section_title_library';
+  const inLibrary = db.prepare(`SELECT id FROM ${libraryTable} WHERE LOWER(title) = LOWER(?)`).get(trimmed);
   if (inLibrary) return;
-  const alreadyPending = db.prepare(`SELECT id FROM section_title_suggestions WHERE LOWER(title) = LOWER(?) AND status = 'Pending'`).get(trimmed);
+  const alreadyPending = db.prepare(`SELECT id FROM section_title_suggestions WHERE LOWER(title) = LOWER(?) AND status = 'Pending' AND library_type = ?`).get(trimmed, type);
   if (alreadyPending) return;
 
   const suggestionImagePath = imagePath ? copyLibraryImage(imagePath) : null;
   const info = db.prepare(`
-    INSERT INTO section_title_suggestions (title, description, summary, image_path, offer_id, offer_item_id, suggested_by)
-    VALUES (?,?,?,?,?,?,?)
-  `).run(trimmed, description || null, summary || null, suggestionImagePath, offerId, itemId || null, userId);
+    INSERT INTO section_title_suggestions (title, description, summary, image_path, offer_id, offer_item_id, suggested_by, library_type)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).run(trimmed, description || null, summary || null, suggestionImagePath, offerId, itemId || null, userId, type);
 
-  const brief = `Review new Section Title suggestion: "${trimmed}"`;
+  const libraryLabel = type === 'Spares' ? 'Spares Library' : 'Machine Library';
+  const brief = `Review new ${libraryLabel} suggestion: "${trimmed}"`;
   const admins = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'Admin' AND u.is_active = 1`).all();
   const today = new Date().toISOString().slice(0, 10);
   const targetDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
@@ -85,7 +91,7 @@ function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summ
       INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
       VALUES (?,?,?,?,?,?,?,?,?)
     `).run(admin.id, admin.id, today, targetDate, brief,
-      `Typed on an offer instead of picked from the library - review on the Offer Field Options page and Approve to add it to the Section Title Library, or Reject to discard.`,
+      `Typed on an offer instead of picked from the library - review on the Offer Field Options page and Approve to add it to the ${libraryLabel}, or Reject to discard.`,
       'Normal', 'SECTION_TITLE_SUGGESTION', info.lastInsertRowid);
     db.prepare(`INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)`)
       .run(admin.id, 'SECTION_TITLE_SUGGESTION', info.lastInsertRowid, brief);
@@ -205,8 +211,9 @@ router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req
   const suggestion = db.prepare(`SELECT * FROM section_title_suggestions WHERE id = ?`).get(req.params.id);
   if (!suggestion) return res.status(404).json({ error: 'Not found' });
   if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
+  const libraryTable = suggestion.library_type === 'Spares' ? 'spares_library' : 'section_title_library';
   try {
-    db.prepare(`INSERT INTO section_title_library (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
+    db.prepare(`INSERT INTO ${libraryTable} (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
       .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, req.user.id);
   } catch (e) {
     return res.status(400).json({ error: 'That title already exists in the library - reject this suggestion instead.' });
@@ -225,6 +232,92 @@ router.post('/section-title-suggestions/:id/reject', requireRole('Admin'), (req,
     .run(req.user.id, suggestion.id);
   autoCompleteSystemTodos('SECTION_TITLE_SUGGESTION', suggestion.id);
   res.json({ ok: true });
+});
+
+// ===================== Spares Library =====================
+// Sibling to Section Title Library (renamed "Machine Library" in the UI) -
+// a Spares-format offer's item picker reads this instead, per the locked
+// 2026-11-01 answer. Same CRUD shape, plus a default rate/unit per entry
+// and an Excel bulk-upload (Admin-only, same pattern as every other
+// template importer in this app).
+router.get('/spares-library', offerPerm(), (req, res) => {
+  res.json(db.prepare('SELECT * FROM spares_library ORDER BY title').all());
+});
+router.post('/spares-library', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
+  const { title, description, summary, rate, unit } = req.body;
+  if (!String(title || '').trim()) return res.status(400).json({ error: 'Enter a title.' });
+  const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
+  try {
+    const info = db.prepare(`INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by) VALUES (?,?,?,?,?,?,?)`)
+      .run(title.trim(), description || null, summary || null, imagePath, Number(rate) || null, unit || 'Nos', req.user.id);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: 'That spare already exists in the library.' });
+  }
+});
+router.put('/spares-library/:id', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
+  const existing = db.prepare('SELECT * FROM spares_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const { title, description, summary, rate, unit } = req.body;
+  let imagePath = existing.image_path;
+  if (req.file) {
+    imagePath = '/uploads/offers/' + req.file.filename;
+    if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
+  }
+  try {
+    db.prepare(`UPDATE spares_library SET title=?, description=?, summary=?, image_path=?, rate=?, unit=? WHERE id=?`).run(
+      title !== undefined ? title.trim() : existing.title,
+      description !== undefined ? description : existing.description,
+      summary !== undefined ? summary : existing.summary,
+      imagePath,
+      rate !== undefined ? (Number(rate) || null) : existing.rate,
+      unit !== undefined ? unit : existing.unit,
+      existing.id
+    );
+    res.json({ ok: true, image_path: imagePath });
+  } catch (e) {
+    res.status(400).json({ error: 'That spare already exists in the library.' });
+  }
+});
+router.delete('/spares-library/:id', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM spares_library WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
+  db.prepare('DELETE FROM spares_library WHERE id = ?').run(existing.id);
+  res.json({ ok: true });
+});
+// Columns: Title / Description / Summary / Rate / Unit, header-name matched
+// (same tolerant mapping-by-name convention the Offer Annexure upload
+// already uses) - a row with no title is skipped; a title that collides
+// with an existing entry is skipped and counted, never overwritten (bulk
+// upload here is for ADDING new spares, not a mass-edit tool).
+router.post('/spares-library/bulk-upload', requireRole('Admin'), uploadMemory.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  let wb;
+  try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+  catch (e) { return res.status(400).json({ error: 'Could not read that file as an Excel/CSV workbook.' }); }
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).filter(r => r.some(c => String(c).trim() !== ''));
+  if (!grid.length) return res.status(400).json({ error: 'No usable rows found in that file.' });
+  let headerRow = grid[0].map(c => String(c).trim().toLowerCase());
+  const hasHeader = headerRow.some(h => h === 'title');
+  const map = hasHeader
+    ? { title: headerRow.indexOf('title'), description: headerRow.indexOf('description'), summary: headerRow.indexOf('summary'), rate: headerRow.indexOf('rate'), unit: headerRow.indexOf('unit') }
+    : { title: 0, description: 1, summary: 2, rate: 3, unit: 4 };
+  const dataRows = hasHeader ? grid.slice(1) : grid;
+  const at = (row, i) => (i !== undefined && i >= 0 && i < row.length ? row[i] : '');
+  const stmt = db.prepare(`INSERT INTO spares_library (title, description, summary, rate, unit, created_by) VALUES (?,?,?,?,?,?)`);
+  let inserted = 0, skipped = 0;
+  for (const r of dataRows) {
+    const title = String(at(r, map.title) || '').trim();
+    if (!title) { skipped++; continue; }
+    try {
+      stmt.run(title, String(at(r, map.description) || '').trim() || null, String(at(r, map.summary) || '').trim() || null,
+        Number(at(r, map.rate)) || null, String(at(r, map.unit) || '').trim() || 'Nos', req.user.id);
+      inserted++;
+    } catch (e) { skipped++; }
+  }
+  res.json({ inserted, skipped });
 });
 
 // ===================== Offer Clause Library =====================
@@ -743,7 +836,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   // Unit + flat Discount Amount (2026-10-15, Spares-format offers only on
@@ -755,26 +848,33 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
   let imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
   // No file uploaded by hand, but a library entry was picked and it has a
   // picture on file - a browser can't pre-fill a file input for security
-  // reasons, so this is how the picture actually carries over.
+  // reasons, so this is how the picture actually carries over. Spares
+  // offers pick from spares_library instead of section_title_library
+  // (2026-11-01) - a distinct param, since the two tables' ids overlap.
   if (!imagePath && section_title_id) {
     const lib = db.prepare('SELECT image_path FROM section_title_library WHERE id = ?').get(section_title_id);
+    if (lib) imagePath = copyLibraryImage(lib.image_path);
+  } else if (!imagePath && spares_library_id) {
+    const lib = db.prepare('SELECT image_path FROM spares_library WHERE id = ?').get(spares_library_id);
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
     INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0);
-  if (!section_title_id) {
+  if (!section_title_id && !spares_library_id) {
+    const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: info.lastInsertRowid, title: section_title,
       description, summary, imagePath, userId: req.user.id,
+      libraryType: offerRow && offerRow.offer_format === 'Spares' ? 'Spares' : 'Machine',
     });
   }
   res.json({ id: info.lastInsertRowid, image_path: imagePath, newVersion: version.forked, offerId: version.id });
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const discount = Math.max(0, Number(discount_amount || 0));
   const taxable = Math.max(0, q * rate - discount);
@@ -791,10 +891,12 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     if (existing.image_path && !version.forked) {
       fs.unlink(resolveUploadPath(existing.image_path), () => {});
     }
-  } else if (section_title_id) {
+  } else if (section_title_id || spares_library_id) {
     // Same "no manual file, but a library entry was picked" fallback as
     // create - gets its own fresh copy, same unlink-the-old-one rule as above.
-    const lib = db.prepare('SELECT image_path FROM section_title_library WHERE id = ?').get(section_title_id);
+    const lib = section_title_id
+      ? db.prepare('SELECT image_path FROM section_title_library WHERE id = ?').get(section_title_id)
+      : db.prepare('SELECT image_path FROM spares_library WHERE id = ?').get(spares_library_id);
     const copied = lib ? copyLibraryImage(lib.image_path) : null;
     if (copied) {
       if (existing.image_path && !version.forked) {
@@ -807,10 +909,12 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?
     WHERE id=?
   `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, targetItemId);
-  if (!section_title_id) {
+  if (!section_title_id && !spares_library_id) {
+    const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: targetItemId, title: section_title,
       description, summary, imagePath, userId: req.user.id,
+      libraryType: offerRow && offerRow.offer_format === 'Spares' ? 'Spares' : 'Machine',
     });
   }
   res.json({ ok: true, image_path: imagePath, newVersion: version.forked, offerId: version.id });

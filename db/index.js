@@ -1607,6 +1607,30 @@ const MIGRATIONS = [
   // billing-against-receipt one, so the same SO line can be picked again
   // on a later Proforma with no gate).
   `ALTER TABLE proforma_invoice_items ADD COLUMN sales_order_item_id INTEGER REFERENCES sales_order_items(id)`,
+  // Spares Library (2026-11-01) - "Section Title Library" (renamed in the
+  // UI to "Machine Library") stays untouched; a Spares-format offer's
+  // picker now reads a sibling library instead, so entries never mix
+  // between a full-machinery reference and a reusable spare part. Shaped
+  // like section_title_library (title/description/summary/picture) plus a
+  // default rate/unit so picking a spare can pre-fill the line, not just
+  // its text/picture.
+  `CREATE TABLE IF NOT EXISTS spares_library (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL UNIQUE,
+    description TEXT,
+    summary TEXT,
+    image_path TEXT,
+    rate REAL,
+    unit TEXT DEFAULT 'Nos',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // A spare typed directly on a Spares offer line (not picked from
+  // spares_library) goes through the identical Admin-review queue
+  // section_title_suggestions already provides for Machine Library -
+  // reused via this same table rather than a duplicate one, distinguished
+  // by library_type so the two review queues never mix.
+  `ALTER TABLE section_title_suggestions ADD COLUMN library_type TEXT DEFAULT 'Machine'`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
