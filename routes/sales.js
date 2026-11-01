@@ -797,7 +797,15 @@ function dispatchParty(dispatch) {
   const shipTo = ship
     ? [ship.line1, ship.line2, [ship.city, ship.state, ship.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
     : (client && client.address) || '';
-  return { client, shipTo };
+  // The state the vehicle is actually being sent to - the Shipping address's
+  // own state, falling back to the Billing address's if no Shipping address
+  // is on file. Used by the Vehicle Request filename (buildDownloadFilename).
+  let shipState = ship && ship.state;
+  if (!shipState && client) {
+    const bill = db.prepare(`SELECT state FROM client_addresses WHERE client_id = ? AND address_type = 'Billing' ORDER BY is_default DESC, id LIMIT 1`).get(client.id);
+    shipState = bill && bill.state;
+  }
+  return { client, shipTo, shipState };
 }
 // Post-departure logistics + invoice info - freely re-editable on any
 // dispatch that isn't Cancelled/Rejected (typo / vehicle-replacement fixes).
@@ -891,11 +899,19 @@ router.post('/dispatches/:id/request-vehicle', requirePermission('report.view_al
   }
   const pickupDate = String((req.body && req.body.pickupDate) || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) return res.status(400).json({ error: 'Enter the date of pick-up to be arranged.' });
-  const { client, shipTo } = dispatchParty(bundle.dispatch);
+  const { client, shipTo, shipState } = dispatchParty(bundle.dispatch);
   let gen;
   try {
     gen = await generateTransporterRequestPdf(bundle.dispatch, bundle.items, client, shipTo, getCompanySettings(), pickupDate);
-    res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-vehicle-request.pdf`, () => {
+    // Filename names the document type, date of pick-up to be arranged,
+    // customer name and state, per the owner's explicit ask.
+    const filename = buildDownloadFilename({
+      docType: 'Vehicle_Request',
+      date: pickupDate,
+      partyName: client && (client.legal_name || client.name),
+      version: shipState || undefined,
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {

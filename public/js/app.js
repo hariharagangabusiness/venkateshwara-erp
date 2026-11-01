@@ -2747,6 +2747,7 @@ async function renderClientAddressesPanel(clientId, targetId) {
   const panel = document.getElementById(targetId);
   if (!panel) return;
   const addresses = await api(`/masters/clients/${clientId}/addresses`);
+  CLIENT_ADDR_CACHE[targetId] = addresses;
   const addrRow = (a) => `<tr>
       <td>${esc(a.address_type)}${a.is_default ? ' <span class="badge active">Default</span>' : ''}</td>
       <td>${esc(a.label)||'-'}</td>
@@ -2754,6 +2755,7 @@ async function renderClientAddressesPanel(clientId, targetId) {
       <td>${esc(a.gstin)||'-'}</td>
       <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id}, '${targetId}')">Delete</button></td>
     </tr>`;
+  const hasBilling = addresses.some(a => a.address_type === 'Billing');
   panel.innerHTML = `
     <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
       ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
@@ -2769,10 +2771,30 @@ async function renderClientAddressesPanel(clientId, targetId) {
         <div><label>Pincode</label><input id="ca-pincode"></div>
         <div><label><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
       </div>
+      <button class="btn small outline" type="button" ${hasBilling ? '' : 'disabled title="Add a Billing address first."'} onclick="copyBillToShipTo('${targetId}')">Same as Bill-to</button>
       <button class="btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
       <div id="ca-err" class="msg err" style="display:none;"></div>
     </div>`;
 }
+// Copies the client's own saved Billing address (default one, else the
+// first) into the Add-Address form fields and switches Type to Shipping -
+// so a Ship-to that's identical to Bill-to doesn't have to be retyped.
+// Still just fills the form; nothing saves until "Add Address" is clicked.
+const CLIENT_ADDR_CACHE = {};
+window.copyBillToShipTo = (targetId) => {
+  const addresses = CLIENT_ADDR_CACHE[targetId] || [];
+  const billing = addresses.find(a => a.address_type === 'Billing' && a.is_default) || addresses.find(a => a.address_type === 'Billing');
+  if (!billing) { alert('No Billing address on file yet - add one first.'); return; }
+  document.getElementById('ca-type').value = 'Shipping';
+  document.getElementById('ca-label').value = billing.label || '';
+  document.getElementById('ca-gstin').value = billing.gstin || '';
+  document.getElementById('ca-line1').value = billing.line1 || '';
+  document.getElementById('ca-line2').value = billing.line2 || '';
+  document.getElementById('ca-city').value = billing.city || '';
+  document.getElementById('ca-state').value = billing.state || '';
+  document.getElementById('ca-state-code').value = billing.state_code || '';
+  document.getElementById('ca-pincode').value = billing.pincode || '';
+};
 window.addClientAddress = async (clientId, targetId) => {
   const errEl = document.getElementById('ca-err');
   try {
@@ -3433,7 +3455,9 @@ window.submitRequestVehicle = async (id) => {
   try {
     const res = await fetch(`/api/sales/dispatches/${id}/request-vehicle`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }, body: JSON.stringify({ pickupDate }) });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Request failed'); }
-    openOrDownloadBlob(await res.blob(), `vehicle-request-${id}.pdf`);
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    openOrDownloadBlob(await res.blob(), match ? match[1] : `vehicle-request-${id}.pdf`);
   } catch (e) { alert(e.message); }
 };
 window.cancelDispatch = async (id) => {
