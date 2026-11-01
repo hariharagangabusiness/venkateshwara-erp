@@ -544,6 +544,7 @@ const NAV = [
     { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
+    { id: 'spares-comparison', label: 'Spares Price Comparison' },
     { id: 'sales-targets', label: 'Sales Targets' },
   ]},
   { group: 'Store & Inventory', items: [
@@ -5085,6 +5086,95 @@ PAGES['sales-analytics'] = async (el) => {
         <tr><td>${esc(t.period)}</td><td>${esc(t.owner_name) || 'Company-wide'}</td><td>₹${fmt(t.target_value)}</td><td>₹${fmt(t.achieved_value)}</td><td>${t.achievement_pct === null ? '-' : t.achievement_pct + '%'}</td></tr>`)}
       <p class="muted" style="margin-top:8px;">Set targets on the <a href="#" onclick="navigate('sales-targets');return false;">Sales Targets</a> page.</p>
     </div>`;
+};
+
+// ---- Spares Price Comparison (2026-11-01) ----
+// Finance's "what did we quote vs. what did they actually order" review
+// before quoting a new spares RFQ - a per-customer lookup plus a QoQ/YoY
+// rollup across every customer. See lib/sparesComparison.js for the match
+// logic (Spares Library id where available, else a normalized-description
+// fallback, flagged `approximate` either way it's rendered here).
+let SPARES_TREND_PERIOD = 'quarter';
+function sparesApproxNote(row) {
+  return row.approximate ? ' <span class="muted" title="Matched by description text, not a Spares Library id - may be approximate.">(approx.)</span>' : '';
+}
+function renderSparesPerCustomerTable(rows) {
+  if (!rows.length) return '<p class="empty">No spares quote history for this customer yet.</p>';
+  return tableHTML(['Spare', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
+    <tr>
+      <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
+      <td>₹${fmt(r.last_quoted_rate)}</td>
+      <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
+      <td>${r.last_ordered_date ? new Date(r.last_ordered_date).toLocaleDateString() : '-'}</td>
+      <td>${r.quote_count}</td>
+      <td>${r.order_count}</td>
+    </tr>`);
+}
+window.loadSparesPerCustomer = async () => {
+  const clientId = val('spc-client');
+  const wrap = document.getElementById('spc-customer-wrap');
+  if (!clientId) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const rows = await api('/offers/spares-comparison/customer/' + clientId);
+    wrap.innerHTML = renderSparesPerCustomerTable(rows);
+  } catch (e) { wrap.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
+function groupSparesTrendByPeriod(rows) {
+  const byPeriod = new Map();
+  rows.forEach(r => {
+    if (!byPeriod.has(r.period)) byPeriod.set(r.period, []);
+    byPeriod.get(r.period).push(r);
+  });
+  return Array.from(byPeriod.entries());
+}
+async function loadSparesTrend() {
+  const wrap = document.getElementById('spc-trend-wrap');
+  wrap.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const rows = await api('/offers/spares-comparison/trend?period=' + SPARES_TREND_PERIOD);
+    if (!rows.length) { wrap.innerHTML = '<p class="empty">No spares quote history yet.</p>'; return; }
+    const groups = groupSparesTrendByPeriod(rows);
+    wrap.innerHTML = groups.map(([period, periodRows], i) => collapsiblePanel(`spc-trend-period-${i}`, `${esc(period)} (${periodRows.length} spare${periodRows.length === 1 ? '' : 's'})`, `
+      ${tableHTML(['Spare', 'Avg Quoted Rate', 'Avg Ordered Rate', 'Quotes', 'Orders'], periodRows, r => `
+        <tr>
+          <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
+          <td>₹${fmt(r.avg_quoted_rate)}</td>
+          <td>${r.avg_ordered_rate !== null ? '₹' + fmt(r.avg_ordered_rate) : '-'}</td>
+          <td>${r.quote_count}</td>
+          <td>${r.order_count}</td>
+        </tr>`)}
+    `)).join('');
+  } catch (e) { wrap.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+}
+window.switchSparesTrendPeriod = (period) => {
+  SPARES_TREND_PERIOD = period;
+  document.getElementById('spc-trend-quarter-btn').className = 'btn small' + (period === 'quarter' ? '' : ' outline');
+  document.getElementById('spc-trend-year-btn').className = 'btn small' + (period === 'year' ? '' : ' outline');
+  loadSparesTrend();
+};
+PAGES['spares-comparison'] = async (el) => {
+  const clients = await api('/masters/clients').catch(() => []);
+  el.innerHTML = `
+    <div class="panel">
+      <h3>Per-Customer: Quoted vs. Ordered</h3>
+      <p class="muted">Pick a customer to see, for every spare they've ever been quoted, the last quoted rate against the last rate they actually ordered at.</p>
+      <div class="form-grid">
+        <div><label>Customer</label>${clientPickerHTML('spc-client', clients, '', 'Select a customer', 'onchange="loadSparesPerCustomer()"')}</div>
+      </div>
+      <div id="spc-customer-wrap" style="margin-top:10px;"></div>
+    </div>
+    <div class="panel">
+      ${collapsiblePanel('spc-trend', 'QoQ / YoY Trend (all customers)', `
+        <p class="muted">Average quoted rate vs. average ordered rate per spare, across every customer, bucketed by period.</p>
+        <button class="btn small" id="spc-trend-quarter-btn" onclick="switchSparesTrendPeriod('quarter')">By Quarter</button>
+        <button class="btn small outline" id="spc-trend-year-btn" onclick="switchSparesTrendPeriod('year')">By Year</button>
+        <div id="spc-trend-wrap" style="margin-top:10px;"></div>
+      `)}
+    </div>
+  `;
+  loadSparesTrend();
 };
 
 // ---- Sales Targets (admin) ----
