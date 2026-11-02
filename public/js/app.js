@@ -5111,6 +5111,35 @@ function renderSparesPerCustomerTable(rows) {
       <td>${r.order_count}</td>
     </tr>`);
 }
+function renderSparesSearchTable(rows) {
+  if (!rows.length) return '<p class="empty">No matching spare found in any customer\'s quote history.</p>';
+  return tableHTML(['Customer', 'Spare', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
+    <tr>
+      <td>${esc(r.client_name)}</td>
+      <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
+      <td>₹${fmt(r.last_quoted_rate)}</td>
+      <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
+      <td>${r.last_ordered_date ? new Date(r.last_ordered_date).toLocaleDateString() : '-'}</td>
+      <td>${r.quote_count}</td>
+      <td>${r.order_count}</td>
+    </tr>`);
+}
+window.searchSparesByName = async () => {
+  const q = val('spc-search-q').trim();
+  const wrap = document.getElementById('spc-search-wrap');
+  if (!q) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<p class="muted">Searching...</p>';
+  try {
+    const rows = await api('/offers/spares-comparison/search?q=' + encodeURIComponent(q));
+    wrap.innerHTML = renderSparesSearchTable(rows);
+  } catch (e) { wrap.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+};
+let SPARES_SEARCH_TIMER = null;
+window.debouncedSearchSpares = () => {
+  if (SPARES_SEARCH_TIMER) clearTimeout(SPARES_SEARCH_TIMER);
+  SPARES_SEARCH_TIMER = setTimeout(window.searchSparesByName, 350);
+};
 window.loadSparesPerCustomer = async () => {
   const clientId = val('spc-client');
   const wrap = document.getElementById('spc-customer-wrap');
@@ -5157,6 +5186,14 @@ window.switchSparesTrendPeriod = (period) => {
 PAGES['spares-comparison'] = async (el) => {
   const clients = await api('/masters/clients').catch(() => []);
   el.innerHTML = `
+    <div class="panel">
+      <h3>Search by Spare Part</h3>
+      <p class="muted">Type a spare's name (library title or free-typed description) to see every customer it's ever been quoted/ordered against.</p>
+      <div class="form-grid">
+        <div><label>Spare Name</label><input id="spc-search-q" placeholder="e.g. Bearing 6205" oninput="debouncedSearchSpares()"></div>
+      </div>
+      <div id="spc-search-wrap" style="margin-top:10px;"></div>
+    </div>
     <div class="panel">
       <h3>Per-Customer: Quoted vs. Ordered</h3>
       <p class="muted">Pick a customer to see, for every spare they've ever been quoted, the last quoted rate against the last rate they actually ordered at.</p>
