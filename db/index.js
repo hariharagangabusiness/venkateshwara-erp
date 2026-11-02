@@ -1639,12 +1639,34 @@ const MIGRATIONS = [
   // typed fresh (not picked from the library) simply has none, and falls
   // back to the description-match path in lib/sparesComparison.js.
   `ALTER TABLE offer_items ADD COLUMN spares_library_id INTEGER REFERENCES spares_library(id)`,
+  // Approval escalation (2026-11-02) - step_started_at tracks when the
+  // approval last landed at its CURRENT step (set on chain start, on every
+  // step advance, and on an InfoRequested review resuming - see
+  // lib/approvals.js), so lib/approvalEscalationScan.js can measure how
+  // long it's genuinely been sitting there, not just since it was first
+  // raised. last_escalated_at tracks the most recent escalation email sent
+  // for that same sitting-at-this-step period; reset to NULL whenever
+  // step_started_at itself resets, so a new step/resume gets a fresh 24h
+  // grace period before it can escalate again.
+  `ALTER TABLE approvals ADD COLUMN step_started_at TEXT`,
+  `ALTER TABLE approvals ADD COLUMN last_escalated_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 }
+
+// Backfill step_started_at for already-live Pending/InfoRequested approvals
+// that predate this column (every row on an existing database) - falls back
+// to the approval's own created_at (when it started the chain) rather than
+// CURRENT_TIMESTAMP, which would make every pre-existing approval escalate
+// simultaneously the moment this feature ships, as if they'd all just this
+// second landed at their current step. A fresh install has no rows here to
+// backfill. Idempotent - only ever touches rows still NULL.
+try {
+  raw.exec(`UPDATE approvals SET step_started_at = created_at WHERE step_started_at IS NULL AND status IN ('Pending', 'InfoRequested')`);
+} catch (e) { /* best-effort */ }
 
 // purchase_orders.po_no was originally UNIQUE (one row = one PO = one item),
 // but a multi-item PO (Round: PO multi-line items) is now several rows

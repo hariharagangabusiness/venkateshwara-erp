@@ -105,6 +105,7 @@ const { runScan } = require('./lib/bgReminderScan');
 const { runSoaScan } = require('./lib/soaScan');
 const { runFpBoeScan } = require('./lib/foreignPaymentBoeScan');
 const { runReferralIncentiveScan } = require('./lib/referralIncentiveScan');
+const { runApprovalEscalationScan } = require('./lib/approvalEscalationScan');
 function runReminderScanSafely() {
   try {
     const result = runScan();
@@ -139,6 +140,17 @@ function runReminderScanSafely() {
     if (eligibleCount) console.log(`[referral-incentive-scan] ${eligibleCount} incentive(s) became eligible`);
   } catch (e) {
     console.error('[referral-incentive-scan] failed:', e.message);
+  }
+  // Approval escalation (24h un-acted, then every 12h until closed) - same
+  // piggyback reasoning as the scans above; the 6-hourly cadence here is
+  // coarser than the 12h repeat, which just means an escalation fires
+  // within 6h of actually becoming due rather than the instant it does -
+  // fine for a reminder email.
+  try {
+    const escResult = runApprovalEscalationScan();
+    if (escResult.escalated) console.log(`[approval-escalation-scan] ${escResult.escalated} escalation(s) sent`);
+  } catch (e) {
+    console.error('[approval-escalation-scan] failed:', e.message);
   }
 }
 setTimeout(runReminderScanSafely, 5000); // let the server finish booting first
