@@ -1383,5 +1383,8 @@ router.get('/spares-comparison/trend', offerPerm(), (req, res) => {
   const period = req.query.period === 'year' ? 'year' : 'quarter';
   res.json(sparesComparison.trend(period));
 });
+router.get('/spares-comparison/search', offerPerm(), (req, res) => {
+  res.json(sparesComparison.searchBySpare(req.query.q || ''));
+});
 
 module.exports = router;
