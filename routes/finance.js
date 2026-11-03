@@ -1134,6 +1134,42 @@ router.get('/proforma-invoices/:id', requirePermission('report.view_all', 'sales
   res.json({ proforma: pf, items });
 });
 
+// Shared by create (POST .../from-sales-order/:soId) and edit (PUT .../:id) -
+// the line-item/GST/Packing & Forwarding/Courier Charges/Advance Received
+// math has to stay identical between the two, or an edited proforma's totals
+// could silently drift from what a freshly-created one would compute for the
+// same inputs.
+function computeProformaCharges(req, items, company, sameState) {
+  let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
+  const lineRows = items.map((it, i) => {
+    const qty = Number(it.quantity) || 1;
+    const rate = Number(it.rate != null ? it.rate : it.taxable_value) || 0;
+    const taxable = qty * rate;
+    const gstRate = Number(it.gst_rate) || company.default_gst_rate || 18;
+    taxableTotal += taxable;
+    const taxAmt = taxable * gstRate / 100;
+    if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
+    return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i, sales_order_item_id: it.sales_order_item_id || null };
+  });
+
+  const pfPercent = Math.max(0, Number(req.body.packing_forwarding_percent) || 0);
+  const pfRate = lineRows[0] ? lineRows[0].gst_rate : (company.default_gst_rate || 18);
+  const pfAmountGiven = req.body.packing_forwarding_amount !== undefined && req.body.packing_forwarding_amount !== '' && req.body.packing_forwarding_amount !== null;
+  const packingAmount = Math.max(0, pfAmountGiven ? (Number(req.body.packing_forwarding_amount) || 0) : taxableTotal * pfPercent / 100);
+  const packingTax = packingAmount * pfRate / 100;
+  if (sameState) { cgst += packingTax / 2; sgst += packingTax / 2; } else { igst += packingTax; }
+
+  const ccPercent = Math.max(0, Number(req.body.courier_charges_percent) || 0);
+  const ccAmountGiven = req.body.courier_charges_amount !== undefined && req.body.courier_charges_amount !== '' && req.body.courier_charges_amount !== null;
+  const courierAmount = Math.max(0, ccAmountGiven ? (Number(req.body.courier_charges_amount) || 0) : taxableTotal * ccPercent / 100);
+  const courierTax = courierAmount * pfRate / 100;
+  if (sameState) { cgst += courierTax / 2; sgst += courierTax / 2; } else { igst += courierTax; }
+
+  const advanceReceived = Math.max(0, Number(req.body.advance_received) || 0);
+  const total = taxableTotal + packingAmount + courierAmount + cgst + sgst + igst - advanceReceived;
+  return { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total };
+}
+
 router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sales_order.manage'), (req, res) => {
   const so = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.soId);
   if (!so) return res.status(404).json({ error: 'Sales order not found' });
@@ -1190,49 +1226,8 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
     ? [shipAddr.line1, shipAddr.line2, [shipAddr.city, shipAddr.state, shipAddr.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
     : (client.address || '');
 
-  let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
-  const lineRows = items.map((it, i) => {
-    const qty = Number(it.quantity) || 1;
-    const rate = Number(it.rate != null ? it.rate : it.taxable_value) || 0;
-    const taxable = qty * rate;
-    const gstRate = Number(it.gst_rate) || company.default_gst_rate || 18;
-    taxableTotal += taxable;
-    const taxAmt = taxable * gstRate / 100;
-    if (sameState) { cgst += taxAmt / 2; sgst += taxAmt / 2; } else { igst += taxAmt; }
-    return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i, sales_order_item_id: it.sales_order_item_id || null };
-  });
-
-  // Packing & Forwarding (2026-10-27) - part of the GST taxable value (same
-  // treatment GST law gives any packing/forwarding charge billed alongside
-  // the goods - Section 15 CGST Act), taxed at the first line's own GST
-  // rate (Proforma is effectively always a single line in practice, same as
-  // Generate Invoice). A caller-given flat ₹ amount wins over the
-  // percentage when both are sent; the percentage alone is also accepted
-  // and computed off the items' own taxable total.
-  const pfPercent = Math.max(0, Number(req.body.packing_forwarding_percent) || 0);
-  const pfRate = lineRows[0] ? lineRows[0].gst_rate : (company.default_gst_rate || 18);
-  const pfAmountGiven = req.body.packing_forwarding_amount !== undefined && req.body.packing_forwarding_amount !== '' && req.body.packing_forwarding_amount !== null;
-  const packingAmount = Math.max(0, pfAmountGiven ? (Number(req.body.packing_forwarding_amount) || 0) : taxableTotal * pfPercent / 100);
-  const packingTax = packingAmount * pfRate / 100;
-  if (sameState) { cgst += packingTax / 2; sgst += packingTax / 2; } else { igst += packingTax; }
-
-  // Courier Charges (2026-10-29) - built exactly like Packing & Forwarding
-  // above (same flat-₹-overrides-% shape, same GST-taxable treatment per
-  // the owner's locked answer), as its own separate charge rather than
-  // folded into Packing & Forwarding.
-  const ccPercent = Math.max(0, Number(req.body.courier_charges_percent) || 0);
-  const ccAmountGiven = req.body.courier_charges_amount !== undefined && req.body.courier_charges_amount !== '' && req.body.courier_charges_amount !== null;
-  const courierAmount = Math.max(0, ccAmountGiven ? (Number(req.body.courier_charges_amount) || 0) : taxableTotal * ccPercent / 100);
-  const courierTax = courierAmount * pfRate / 100;
-  if (sameState) { cgst += courierTax / 2; sgst += courierTax / 2; } else { igst += courierTax; }
-
-  // Advance Received (2026-10-27) - a deduction Finance types in against
-  // what's already come in for this order, reducing what's actually payable
-  // on THIS document (most useful on a Pre-Dispatch proforma raised after an
-  // earlier Advance proforma's payment has already landed). A plain
-  // deduction, not derived from any other Advance proforma's own status.
-  const advanceReceived = Math.max(0, Number(req.body.advance_received) || 0);
-  const total = taxableTotal + packingAmount + courierAmount + cgst + sgst + igst - advanceReceived;
+  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total } =
+    computeProformaCharges(req, items, company, sameState);
   const proformaNo = nextProformaNo();
   const tx = db.transaction(() => {
     const info = db.prepare(`
@@ -1277,6 +1272,76 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
   }
 
   res.json({ id, proforma_no: proformaNo, bgWarning });
+});
+
+// Edit a Draft proforma (2026-11-03) - everything the create form itself
+// captures: Type, Milestone, Buyer State/GSTIN, line items (same
+// tick-lines-or-flat-amount shape), Item Description, Packing & Forwarding,
+// Courier Charges, Advance Received. Draft-only - once Received it's already
+// posted to finance_ledger and flipped the linked milestone to Invoiced, and
+// Cancelled is terminal, so editing either after the fact would desync real
+// accounting entries from what the document says. Totals/GST always
+// recompute via the same computeProformaCharges() the create route uses, so
+// an edited proforma's math can never drift from a freshly-created one's.
+router.put('/proforma-invoices/:id', requirePermission('sales_order.manage'), (req, res) => {
+  const pf = db.prepare('SELECT * FROM proforma_invoices WHERE id = ?').get(req.params.id);
+  if (!pf) return res.status(404).json({ error: 'Not found' });
+  if (pf.status !== 'Draft') return res.status(400).json({ error: 'Only a Draft proforma can be edited - this one is already ' + pf.status + '.' });
+  const so = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(pf.sales_order_id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  const { invoice_type, milestone_id, buyer_state, buyer_gstin } = req.body;
+  if (!['Advance', 'PreDispatch'].includes(invoice_type)) return res.status(400).json({ error: 'invoice_type must be Advance or PreDispatch' });
+
+  let milestone = null;
+  if (milestone_id) {
+    milestone = db.prepare(`SELECT * FROM payment_milestones WHERE id = ? AND order_type = 'SO' AND order_id = ?`).get(milestone_id, pf.sales_order_id);
+    if (!milestone) return res.status(400).json({ error: 'That payment milestone does not belong to this sales order.' });
+  }
+
+  const company = getCompanySettings();
+  let items = Array.isArray(req.body.items) && req.body.items.length ? req.body.items : null;
+  if (!items) {
+    const soPercent = invoice_type === 'Advance' ? Number(so.advance_percent) || 0 : Number(so.predispatch_percent) || 0;
+    const amount = milestone
+      ? (milestone.amount || (Number(milestone.percentage) || 0) / 100 * (Number(so.order_value) || 0))
+      : (Number(req.body.amount) || (soPercent / 100 * (Number(so.order_value) || 0)));
+    if (!amount) return res.status(400).json({ error: 'Give an amount, pick a milestone that has one, or set this order\'s Advance %/Payment Before Dispatch % first.' });
+    const typedDesc = req.body.description && String(req.body.description).trim();
+    items = [{
+      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`),
+      quantity: 1, unit: 'Nos', rate: amount, gst_rate: company.default_gst_rate || 18,
+    }];
+  }
+  const buyerState = buyer_state || '';
+  const buyerGstin = buyer_gstin || client.gstin || '';
+  const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
+
+  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total } =
+    computeProformaCharges(req, items, company, sameState);
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE proforma_invoices SET
+        milestone_id = ?, invoice_type = ?, place_of_supply = ?, buyer_gstin = ?, buyer_state = ?,
+        taxable_value = ?, cgst = ?, sgst = ?, igst = ?,
+        packing_forwarding_percent = ?, packing_forwarding_amount = ?,
+        courier_charges_percent = ?, courier_charges_amount = ?, advance_received = ?, total_value = ?
+      WHERE id = ?
+    `).run(milestone_id || null, invoice_type, buyerState || company.default_place_of_supply, buyerGstin, buyerState,
+      taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total, pf.id);
+    db.prepare(`DELETE FROM proforma_invoice_items WHERE proforma_id = ?`).run(pf.id);
+    const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order, sales_order_item_id) VALUES (?,?,?,?,?,?,?,?,?)`);
+    lineRows.forEach(r => insertItem.run(pf.id, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order, r.sales_order_item_id));
+    // A previously-linked milestone that's no longer selected reverts to
+    // Pending (same "undo on edit-away" rule Cancel already uses); the
+    // newly-selected one (if any) is marked Invoiced, same as create.
+    if (pf.milestone_id && pf.milestone_id !== Number(milestone_id || 0)) {
+      db.prepare(`UPDATE payment_milestones SET status = 'Pending' WHERE id = ? AND status = 'Invoiced'`).run(pf.milestone_id);
+    }
+    if (milestone) db.prepare(`UPDATE payment_milestones SET status = 'Invoiced' WHERE id = ?`).run(milestone.id);
+  });
+  tx();
+  res.json({ ok: true });
 });
 
 router.post('/proforma-invoices/:id/mark-received', requirePermission('sales_order.manage', 'report.view_all'), (req, res) => {

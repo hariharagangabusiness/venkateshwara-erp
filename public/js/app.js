@@ -13278,7 +13278,8 @@ PAGES['sales-invoices'] = async (el) => {
         <td>${actionButtonsCell(`
           <button class="btn small outline" type="button" onclick="downloadTemplateFile('/finance/proforma-invoices/${p.id}/pdf', '${esc(p.proforma_no).replace(/\//g,'-')}.pdf')">PDF</button>
           <button class="btn small outline" type="button" onclick="emailProforma(${p.id})">Email to Client</button>
-          ${p.status === 'Draft' ? `<button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
+          ${p.status === 'Draft' ? `<button class="btn small outline" type="button" onclick="openEditProforma(${p.id})">Edit</button>
+          <button class="btn small" type="button" onclick="markProformaReceived(${p.id})">Mark Received</button>
           <button class="btn small outline" type="button" onclick="cancelProforma(${p.id})">Cancel</button>` : ''}
         `)}</td></tr>`)}
     `)}`;
@@ -13370,6 +13371,90 @@ window.emailProforma = async (id) => {
     const r = await api(`/finance/proforma-invoices/${id}/email`, { method: 'POST' });
     alert(r.sent ? `Emailed to ${r.to}` : `Not sent: ${r.message}`);
   } catch (e) { alert(e.message); }
+};
+// Edit a Draft proforma (2026-11-03) - same popup-modal pattern every other
+// Edit action in this app already uses (openAppModal()), with the identical
+// field set the create form itself captures: Type/Milestone/Buyer State &
+// GSTIN/line items (tick-lines-or-flat-amount, same shape as create)/Packing
+// & Forwarding/Courier Charges/Advance Received. Draft-only - PUT itself
+// re-enforces this, this is just the UI-level gate (no Edit button renders
+// for a non-Draft row at all).
+let PFE_LINES = [];
+window.openEditProforma = async (id) => {
+  const data = await api(`/finance/proforma-invoices/${id}`);
+  const pf = data.proforma;
+  const items = data.items || [];
+  const [ms, soItems] = await Promise.all([
+    api(`/bg/milestones?order_type=SO&order_id=${pf.sales_order_id}`).catch(() => []),
+    api(`/sales/orders/${pf.sales_order_id}/items`).catch(() => []),
+  ]);
+  const linkedIds = new Set(items.filter(it => it.sales_order_item_id).map(it => it.sales_order_item_id));
+  PFE_LINES = soItems.map(it => {
+    const pfItem = items.find(x => x.sales_order_item_id === it.id);
+    return { ...it, selected: linkedIds.has(it.id), gst_rate_override: pfItem ? pfItem.gst_rate : it.gst_rate };
+  });
+  const manualItem = (!linkedIds.size && items.length === 1) ? items[0] : null;
+  openAppModal(`Edit Proforma — ${esc(pf.proforma_no)}`, `
+    <div class="form-grid">
+      <div><label>Type</label><select id="pfe-type" onchange="pfePrefillAmountFromPercent(${pf.sales_order_id})"><option value="Advance" ${pf.invoice_type === 'Advance' ? 'selected' : ''}>Advance</option><option value="PreDispatch" ${pf.invoice_type === 'PreDispatch' ? 'selected' : ''}>Payment Before Dispatch</option></select></div>
+      <div><label>Payment Milestone (optional)</label><select id="pfe-milestone"><option value="">-- None / manual amount --</option>${ms.map(m => `<option value="${m.id}" ${pf.milestone_id === m.id ? 'selected' : ''}>${esc(m.milestone_name)} (${m.percentage ? m.percentage + '%' : '₹' + fmt(m.amount)})</option>`).join('')}</select></div>
+      <div><label>Buyer State</label><input id="pfe-buyer-state" value="${esc(pf.buyer_state || '')}"></div>
+      <div><label>Buyer GSTIN</label><input id="pfe-buyer-gstin" value="${esc(pf.buyer_gstin || '')}"></div>
+    </div>
+    <h4>Order Line Items <span class="muted">(tick the lines to invoice, or leave all unticked to use the Amount field below)</span></h4>
+    <div id="pfe-lines"></div>
+    <div class="form-grid" style="margin-top:8px;">
+      <div><label>Amount (₹, if no milestone and no lines ticked)</label><input id="pfe-amount" type="number" value="${manualItem ? manualItem.rate : ''}"></div>
+      <div><label>Item Description</label><input id="pfe-desc" value="${manualItem ? esc(manualItem.description) : ''}"></div>
+      <div><label>Packing &amp; Forwarding (%)</label><input id="pfe-pf-percent" type="number" value="${pf.packing_forwarding_percent || ''}"></div>
+      <div><label>Packing &amp; Forwarding (₹, overrides %)</label><input id="pfe-pf-amount" type="number" value="${pf.packing_forwarding_percent ? '' : (pf.packing_forwarding_amount || '')}"></div>
+      <div><label>Courier Charges (%)</label><input id="pfe-cc-percent" type="number" value="${pf.courier_charges_percent || ''}"></div>
+      <div><label>Courier Charges (₹, overrides %)</label><input id="pfe-cc-amount" type="number" value="${pf.courier_charges_percent ? '' : (pf.courier_charges_amount || '')}"></div>
+      <div><label>Advance Received (₹)</label><input id="pfe-advance" type="number" value="${pf.advance_received || ''}"></div>
+    </div>
+    <button class="btn" id="pfe-save-btn-${pf.id}" onclick="saveEditProforma(${pf.id})">Save Changes</button>
+    <div id="pfe-err" class="msg err" style="display:none;margin-top:8px;"></div>
+  `);
+  renderPFELines();
+};
+function renderPFELines() {
+  const wrap = document.getElementById('pfe-lines');
+  if (!wrap) return;
+  if (!PFE_LINES.length) { wrap.innerHTML = '<p class="muted">This order has no line items on file - use the Amount field below instead.</p>'; return; }
+  wrap.innerHTML = gridLineTableHTML('36px minmax(220px,2fr) 90px 90px 100px 100px', ['', 'Description', 'Qty', 'Unit', 'Rate (₹)', 'GST %'], PFE_LINES, (l, i) => `
+      <div><input type="checkbox" ${l.selected ? 'checked' : ''} onchange="PFE_LINES[${i}].selected=this.checked"></div>
+      <div>${esc(l.description)}</div>
+      <div>${l.quantity}</div>
+      <div>${esc(l.unit || 'Nos')}</div>
+      <div>₹${fmt(l.rate)}</div>
+      <div><input type="number" value="${l.gst_rate_override}" onchange="PFE_LINES[${i}].gst_rate_override=Number(this.value)" style="width:70px;"></div>`);
+}
+window.pfePrefillAmountFromPercent = (soId) => {
+  const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
+  const amountEl = document.getElementById('pfe-amount');
+  if (!o || !amountEl || val('pfe-milestone')) return;
+  const pct = val('pfe-type') === 'Advance' ? Number(o.advance_percent) || 0 : Number(o.predispatch_percent) || 0;
+  if (pct > 0) amountEl.value = Math.round((pct / 100 * (Number(o.order_value) || 0)) * 100) / 100;
+};
+window.saveEditProforma = async (id) => {
+  const errEl = document.getElementById('pfe-err'); errEl.style.display = 'none';
+  const selectedLines = PFE_LINES.filter(l => l.selected);
+  try {
+    await api(`/finance/proforma-invoices/${id}`, { method: 'PUT', body: JSON.stringify({
+      invoice_type: val('pfe-type'), milestone_id: val('pfe-milestone') || null,
+      amount: selectedLines.length ? undefined : (val('pfe-amount') || undefined),
+      description: val('pfe-desc'),
+      items: selectedLines.length ? selectedLines.map(l => ({
+        description: l.description, quantity: l.quantity, unit: l.unit, rate: l.rate,
+        gst_rate: l.gst_rate_override, sales_order_item_id: l.id,
+      })) : undefined,
+      buyer_state: val('pfe-buyer-state'), buyer_gstin: val('pfe-buyer-gstin'),
+      packing_forwarding_percent: val('pfe-pf-percent') || undefined, packing_forwarding_amount: val('pfe-pf-amount') || undefined,
+      courier_charges_percent: val('pfe-cc-percent') || undefined, courier_charges_amount: val('pfe-cc-amount') || undefined,
+      advance_received: val('pfe-advance') || undefined,
+    })});
+    confirmSavedThenClose(`pfe-save-btn-${id}`, 'sales-invoices');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 // Fills Client Name/Contact Person/Address/Phone from the picked order's
 // client master the moment an order is selected - still freely editable
