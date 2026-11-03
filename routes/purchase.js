@@ -178,25 +178,25 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
   const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.itemId);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   let vendors = [];
-  let matchType = 'fallback';
   if (item.category) {
     const itemNorm = normalizeCategory(item.category);
     const allVendors = db.prepare(`SELECT * FROM vendors WHERE status = 'Active' OR status IS NULL ORDER BY name`).all();
     if (itemNorm) {
-      const exact = allVendors.filter(v => normalizeCategory(v.category) === itemNorm);
-      if (exact.length) {
-        vendors = exact;
-        matchType = 'exact';
-      } else {
-        const partial = allVendors.filter(v => {
-          const vNorm = normalizeCategory(v.category);
-          return vNorm && (vNorm.includes(itemNorm) || itemNorm.includes(vNorm));
-        });
-        if (partial.length) {
-          vendors = partial;
-          matchType = 'partial';
-        }
+      // Exact and partial are no longer mutually exclusive - a vendor whose
+      // category text merely contains the item's category (e.g. "Raw
+      // Material Steel Supplier...") is a genuine match too and shouldn't
+      // be hidden just because some OTHER vendor happened to match exactly.
+      // Previously the partial tier was only even attempted when the exact
+      // tier found nothing at all, which silently excluded every partial
+      // match whenever at least one exact match existed.
+      const byId = new Map();
+      for (const v of allVendors) {
+        const vNorm = normalizeCategory(v.category);
+        if (!vNorm) continue;
+        if (vNorm === itemNorm) byId.set(v.id, Object.assign({}, v, { match_type: 'exact' }));
+        else if (vNorm.includes(itemNorm) || itemNorm.includes(vNorm)) byId.set(v.id, Object.assign({}, v, { match_type: 'partial' }));
       }
+      vendors = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
   }
   const fallback = vendors.length === 0;
@@ -205,10 +205,8 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
       SELECT * FROM vendors
       WHERE (status = 'Active' OR status IS NULL) AND category IS NOT NULL AND TRIM(category) != ''
       ORDER BY name
-    `).all();
-    matchType = 'fallback';
+    `).all().map(v => Object.assign({}, v, { match_type: 'fallback' }));
   }
-  vendors = vendors.map(v => Object.assign({}, v, { match_type: matchType }));
   res.json({ vendors, fallback });
 });
 

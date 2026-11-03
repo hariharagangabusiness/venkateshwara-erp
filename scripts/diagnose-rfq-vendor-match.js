@@ -30,25 +30,20 @@ function normalizeCategory(s) {
 
 function vendorsForItem(item) {
   let vendors = [];
-  let matchType = 'fallback';
   if (item.category) {
     const itemNorm = normalizeCategory(item.category);
     const allVendors = db.prepare(`SELECT * FROM vendors WHERE status = 'Active' OR status IS NULL ORDER BY name`).all();
     if (itemNorm) {
-      const exact = allVendors.filter(v => normalizeCategory(v.category) === itemNorm);
-      if (exact.length) {
-        vendors = exact;
-        matchType = 'exact';
-      } else {
-        const partial = allVendors.filter(v => {
-          const vNorm = normalizeCategory(v.category);
-          return vNorm && (vNorm.includes(itemNorm) || itemNorm.includes(vNorm));
-        });
-        if (partial.length) {
-          vendors = partial;
-          matchType = 'partial';
-        }
+      // Exact and partial are merged, not mutually exclusive - matches
+      // routes/purchase.js's fixed /vendors-for-item/:itemId exactly.
+      const byId = new Map();
+      for (const v of allVendors) {
+        const vNorm = normalizeCategory(v.category);
+        if (!vNorm) continue;
+        if (vNorm === itemNorm) byId.set(v.id, Object.assign({}, v, { match_type: 'exact' }));
+        else if (vNorm.includes(itemNorm) || itemNorm.includes(vNorm)) byId.set(v.id, Object.assign({}, v, { match_type: 'partial' }));
       }
+      vendors = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
   }
   if (vendors.length === 0) {
@@ -56,10 +51,9 @@ function vendorsForItem(item) {
       SELECT * FROM vendors
       WHERE (status = 'Active' OR status IS NULL) AND category IS NOT NULL AND TRIM(category) != ''
       ORDER BY name
-    `).all();
-    matchType = 'fallback';
+    `).all().map(v => Object.assign({}, v, { match_type: 'fallback' }));
   }
-  return { vendors, matchType };
+  return { vendors };
 }
 
 const pr = db.prepare(`SELECT * FROM purchase_requests WHERE pr_no = ?`).get(prNo);
@@ -97,11 +91,11 @@ for (const line of lines) {
     console.log(`\n--- Line item_id=${line.item_id} not found in items table ---`);
     continue;
   }
-  const { vendors, matchType } = vendorsForItem(item);
-  console.log(`\n--- Item "${item.name}" (item_code=${item.item_code || '-'}, category="${item.category || '(blank)'}") -> matchType=${matchType}, ${vendors.length} vendor(s) ---`);
+  const { vendors } = vendorsForItem(item);
+  console.log(`\n--- Item "${item.name}" (item_code=${item.item_code || '-'}, category="${item.category || '(blank)'}") -> ${vendors.length} vendor(s) ---`);
   for (const v of vendors) {
     const hasEmail = !!(v.po_email || v.email);
-    console.log(`  ${v.name} | vendor category="${v.category}" | email=${v.po_email || v.email || '(none)'}${hasEmail ? '' : '  <-- NO EMAIL, filtered from RFQ picker'}`);
+    console.log(`  ${v.name} | match_type=${v.match_type} | vendor category="${v.category}" | email=${v.po_email || v.email || '(none)'}${hasEmail ? '' : '  <-- NO EMAIL, filtered from RFQ picker'}`);
     if (hasEmail) mergedVendorMap.set(v.id, v);
   }
 }
