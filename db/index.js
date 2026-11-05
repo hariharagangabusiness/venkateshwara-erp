@@ -2151,6 +2151,31 @@ try {
   }
 } catch (e) { console.error('[db] Expense Voucher approval chain migration failed:', e.message); }
 
+// Expense Voucher's Accounts step (2026-11-05) - reported directly by the
+// owner: a plain Account Executive (role Accounts, not the department's own
+// supervisor) was both acting on and getting notified about vouchers that
+// should only ever reach the Accounts HOD/supervisor. The step above left
+// requires_supervisor=0 on the Accounts step, so any active Accounts-role
+// user qualified in both canAct()'s own role_id match and
+// notifyNewPendingStep()'s recipient query - not a notification bug, a
+// chain-configuration one. One-time migration, same settings-flag-guarded
+// shape as the migration above, so it fires exactly once and never stomps a
+// later Admin customization via the Approval Matrix page. The Management
+// step (step 1) is deliberately left at requires_supervisor=0, per the
+// owner's own confirmed answer - only Accounts is tightened here.
+try {
+  const EV_ACCOUNTS_SUPERVISOR_FLAG = 'expense_voucher_accounts_step_supervisor_only_v1';
+  const alreadyMigrated = raw.prepare(`SELECT value FROM settings WHERE key = ?`).get(EV_ACCOUNTS_SUPERVISOR_FLAG);
+  if (!alreadyMigrated) {
+    const chainRow = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'ExpenseVoucher'`).get();
+    if (chainRow) {
+      raw.prepare(`UPDATE approval_chain_steps SET requires_supervisor = 1 WHERE chain_id = ? AND step_order = 2`).run(chainRow.id);
+      console.log('[db] Expense Voucher approval chain: Accounts step restricted to supervisor/HOD only.');
+    }
+    raw.prepare(`INSERT INTO settings (key, value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'`).run(EV_ACCOUNTS_SUPERVISOR_FLAG);
+  }
+} catch (e) { console.error('[db] Expense Voucher Accounts-supervisor migration failed:', e.message); }
+
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
 // (node:sqlite's DatabaseSync has no built-in transaction wrapper).
