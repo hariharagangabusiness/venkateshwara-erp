@@ -91,13 +91,18 @@ router.post('/vendor-portal/rfq/:token/submit', (req, res) => {
   const seen = new Set();
   for (const l of lines) {
     const id = Number(l && l.purchase_request_item_id);
-    const rate = Number(l && l.unit_rate), lead = Number(l && l.lead_days);
+    const declined = !!(l && l.declined);
     if (!wanted.includes(id) || seen.has(id)) return res.status(400).json({ error: 'Quotation lines do not match this RFQ.' });
-    if (!(rate > 0) || !isFinite(rate)) return res.status(400).json({ error: 'Every unit rate must be a number above 0.' });
+    if (declined) {
+      seen.add(id);
+      continue;
+    }
+    const rate = Number(l && l.unit_rate), lead = Number(l && l.lead_days);
+    if (!(rate > 0) || !isFinite(rate)) return res.status(400).json({ error: 'Every unit rate must be a number above 0, or mark the item as not available.' });
     if (!Number.isInteger(lead) || lead < 0 || lead > 365) return res.status(400).json({ error: 'Lead time must be a whole number of days from 0 to 365.' });
     seen.add(id);
   }
-  if (seen.size !== wanted.length) return res.status(400).json({ error: 'Please quote every item on the RFQ.' });
+  if (seen.size !== wanted.length) return res.status(400).json({ error: 'Please quote or mark as not available every item on the RFQ.' });
 
   try {
     db.transaction(() => {
@@ -106,8 +111,12 @@ router.post('/vendor-portal/rfq/:token/submit', (req, res) => {
         const e = new Error('dup'); e.code = 'DUP'; throw e;
       }
       const info = db.prepare('INSERT INTO vendor_responses (rfq_token_id, remarks) VALUES (?, ?)').run(rfq.token_id, remarks || null);
-      const ins = db.prepare('INSERT INTO vendor_response_lines (vendor_response_id, purchase_request_item_id, unit_rate, lead_days) VALUES (?,?,?,?)');
-      for (const l of lines) ins.run(info.lastInsertRowid, Number(l.purchase_request_item_id), Number(l.unit_rate), Number(l.lead_days));
+      const ins = db.prepare('INSERT INTO vendor_response_lines (vendor_response_id, purchase_request_item_id, unit_rate, lead_days, declined, decline_reason) VALUES (?,?,?,?,?,?)');
+      for (const l of lines) {
+        const declined = !!(l && l.declined);
+        const reason = declined ? String(l.decline_reason || '').trim().slice(0, 500) || null : null;
+        ins.run(info.lastInsertRowid, Number(l.purchase_request_item_id), declined ? 0 : Number(l.unit_rate), declined ? 0 : Number(l.lead_days), declined ? 1 : 0, reason);
+      }
     })();
   } catch (e) {
     if (e.code === 'DUP' || /UNIQUE/i.test(e.message)) return res.status(409).json({ error: 'A quotation has already been submitted for this link.' });

@@ -6777,7 +6777,7 @@ async function renderPRQuotesPanel(prId) {
       <h4 style="margin:0 0 8px;">Request for Quotation (RFQ)</h4>
       <p class="muted">Select line items and vendors, then edit and send an RFQ email. A vendor's reply still comes back by phone/email outside the system - type it in as a quote above once you have it.</p>
       <div><b>Line Items</b></div>
-        ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
+        ${lines.map(l => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="rfq-item-cb-${prId}" value="${l.id}" checked onchange="loadRFQTemplate(${prId})"> ${lineLabel(l)}</label>`).join('') || '<span class="muted">No line items on this PR.</span>'}
       </div>
       <div>
         <label><b>Vendors</b></label>
@@ -7907,6 +7907,7 @@ window.openRFQComparison = async (id) => {
     vs.map(v => {
       const l = v.lines[it.id];
       if (!l) return '<td class="muted">-</td>';
+      if (l.declined) return '<td style="color:#b91c1c;">Declined' + (l.decline_reason ? '<br><span class="muted" style="font-weight:normal;color:#b91c1c;">' + esc(l.decline_reason) + '</span>' : '') + '</td>';
       const low = it.lowest_rate_vendor_ids.includes(v.vendor_id);
       return '<td style="' + (low ? G : '') + '">₹' + fmt(l.unit_rate) + '<br><span class="muted" style="font-weight:normal;">' + esc(l.lead_days) + ' days · ₹' + fmt(l.subtotal) + '</span></td>';
     }).join('') + '</tr>').join('');
