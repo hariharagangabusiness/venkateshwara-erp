@@ -380,8 +380,10 @@ function openPoRows() {
 
 function openPrRows() {
   const placeholders = OPEN_PR_STATUSES.map(() => '?').join(',');
-  return db.prepare(`
-    SELECT pr.pr_no, COALESCE(i.item_code, pri.item_text) as item_code, pri.quantity,
+  const rows = db.prepare(`
+    SELECT pr.pr_no, pr.status, COALESCE(i.item_code, pri.item_text) as item_code,
+      COALESCE(i.name, pri.item_text) as item_description, i.unit as unit, pri.details,
+      pri.quantity, pri.estimated_value,
       pr.created_at, u.full_name as created_by, d.name as department, p.project_code as project
     FROM purchase_request_items pri
     JOIN purchase_requests pr ON pr.id = pri.purchase_request_id
@@ -393,7 +395,9 @@ function openPrRows() {
 
     UNION ALL
 
-    SELECT pr.pr_no, i.item_code, pr.quantity,
+    SELECT pr.pr_no, pr.status, i.item_code,
+      COALESCE(i.name, 'Item') as item_description, i.unit as unit, NULL as details,
+      pr.quantity, pr.estimated_value,
       pr.created_at, u.full_name as created_by, d.name as department, p.project_code as project
     FROM purchase_requests pr
     LEFT JOIN items i ON i.id = pr.item_id
@@ -404,6 +408,12 @@ function openPrRows() {
       AND NOT EXISTS (SELECT 1 FROM purchase_request_items pri2 WHERE pri2.purchase_request_id = pr.id)
     ORDER BY pr_no
   `).all(...OPEN_PR_STATUSES, ...OPEN_PR_STATUSES);
+  const today = new Date().toISOString().slice(0, 10);
+  return rows.map((r) => {
+    const created = String(r.created_at || '').slice(0, 10);
+    const days_pending = created ? Math.max(0, Math.round((new Date(today) - new Date(created)) / 86400000)) : null;
+    return { ...r, days_pending };
+  });
 }
 
 router.get('/velocity/open-pos', requirePermission('purchase_order.manage'), (req, res) => {
@@ -432,7 +442,9 @@ router.get('/velocity/open-pos/export.xlsx', requirePermission('purchase_order.m
 
 router.get('/velocity/open-prs/export.xlsx', requirePermission('purchase_order.manage'), (req, res) => {
   const rows = openPrRows().map((r) => ({
-    'PR No.': r.pr_no, 'Item Code': r.item_code, 'Qty': r.quantity, 'PR Creation Date': r.created_at,
+    'PR No.': r.pr_no, 'PR Status': r.status, 'Item Code': r.item_code, 'Item Description': r.item_description,
+    'Details': r.details, 'Unit': r.unit, 'Qty': r.quantity, 'Estimated Value': r.estimated_value,
+    'PR Creation Date': r.created_at, 'Days Pending': r.days_pending,
     'Created By': r.created_by, 'Department': r.department, 'Project': r.project,
   }));
   const wb = XLSX.utils.book_new();

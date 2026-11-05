@@ -7840,13 +7840,16 @@ window.togglePvOpenPrs = async () => {
     const { rows } = await api('/purchase/velocity/open-prs');
     const day = (s) => (s ? esc(String(s).slice(0, 10)) : '-');
     const body = rows.map((r) => `<tr>
-      <td>${esc(r.pr_no)}</td><td>${esc(r.item_code) || '-'}</td><td>${r.quantity}</td><td>${day(r.created_at)}</td>
+      <td>${esc(r.pr_no)}</td><td>${badge(r.status)}</td><td>${esc(r.item_code) || '-'}</td><td>${esc(r.item_description) || '-'}</td>
+      <td>${esc(r.details) || '-'}</td><td>${esc(r.unit) || '-'}</td><td>${r.quantity}</td><td>${r.estimated_value != null ? fmt(r.estimated_value) : '-'}</td>
+      <td>${day(r.created_at)}</td><td>${r.days_pending != null ? r.days_pending : '-'}</td>
       <td>${esc(r.created_by) || '-'}</td><td>${esc(r.department) || '-'}</td><td>${esc(r.project) || '-'}</td>
     </tr>`).join('');
     box.innerHTML = `<div class="panel"><h3>Open Purchase Requests (${rows.length} item${rows.length === 1 ? '' : 's'})</h3>
       <div style="overflow-x:auto;"><table><thead><tr>
-        <th>PR No.</th><th>Item Code</th><th>Qty</th><th>PR Creation Date</th><th>Created By</th><th>Department</th><th>Project</th>
-      </tr></thead><tbody>${body || '<tr><td colspan="7" class="muted">None.</td></tr>'}</tbody></table></div></div>`;
+        <th>PR No.</th><th>Status</th><th>Item Code</th><th>Item Description</th><th>Details</th><th>Unit</th><th>Qty</th><th>Est. Value</th>
+        <th>PR Creation Date</th><th>Days Pending</th><th>Created By</th><th>Department</th><th>Project</th>
+      </tr></thead><tbody>${body || '<tr><td colspan="13" class="muted">None.</td></tr>'}</tbody></table></div></div>`;
   } catch (e) {
     box.dataset.built = '';
     box.innerHTML = `<div class="panel">Could not load: ${esc(e.message)}</div>`;
