@@ -821,8 +821,12 @@ router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 
     const lines = {};
     let total = 0, maxLead = 0;
     if (v.response_id) {
-      db.prepare('SELECT purchase_request_item_id as item_id, unit_rate, lead_days FROM vendor_response_lines WHERE vendor_response_id = ?').all(v.response_id)
+      db.prepare('SELECT purchase_request_item_id as item_id, unit_rate, lead_days, declined, decline_reason FROM vendor_response_lines WHERE vendor_response_id = ?').all(v.response_id)
         .forEach(l => {
+          if (l.declined) {
+            lines[l.item_id] = { declined: true, decline_reason: l.decline_reason || null };
+            return;
+          }
           const subtotal = l.unit_rate * (qtyById[l.item_id] || 0);
           lines[l.item_id] = { unit_rate: l.unit_rate, lead_days: l.lead_days, subtotal };
           total += subtotal; maxLead = Math.max(maxLead, l.lead_days);
@@ -837,7 +841,7 @@ router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 
     responded.forEach(v => { v.is_lowest_total = v.total === minTotal; });
   }
   items.forEach(it => {
-    const rates = responded.filter(v => v.lines[it.id]).map(v => ({ id: v.vendor_id, r: v.lines[it.id].unit_rate }));
+    const rates = responded.filter(v => v.lines[it.id] && !v.lines[it.id].declined).map(v => ({ id: v.vendor_id, r: v.lines[it.id].unit_rate }));
     const min = rates.length ? Math.min(...rates.map(x => x.r)) : null;
     it.lowest_rate_vendor_ids = rates.filter(x => x.r === min).map(x => x.id);
   });

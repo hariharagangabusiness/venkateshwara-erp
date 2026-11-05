@@ -1528,6 +1528,16 @@ const MIGRATIONS = [
     unit_rate REAL NOT NULL,
     lead_days INTEGER NOT NULL
   )`,
+  // Vendor portal "decline" option (2026-11-05) - a vendor who can't supply
+  // a specific line (out of stock, discontinued) can mark it declined
+  // instead of being forced to either type a fake rate or abandon the
+  // whole submission. Kept as plain ALTER TABLE ADD COLUMN rather than
+  // relaxing unit_rate/lead_days's NOT NULL (which would need a full table
+  // rebuild on SQLite) - a declined line stores 0/0 for both, a sentinel
+  // that's otherwise already disallowed by the real-quote validation below,
+  // so it can never be confused with a genuine (if improbable) zero quote.
+  `ALTER TABLE vendor_response_lines ADD COLUMN declined INTEGER DEFAULT 0`,
+  `ALTER TABLE vendor_response_lines ADD COLUMN decline_reason TEXT`,
   // Proforma Invoice redesign (2026-10-27): Ship To (auto-resolved from the
   // client's default Shipping address, same lookup routes/sales.js's own
   // dispatchParty() uses for FG Dispatch - snapshotted as text at creation

@@ -23,7 +23,12 @@
   .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
   .card h2{margin:0 0 10px;font-size:16px}
   /* grid "table": one declared column template shared by header and rows */
-  .grid-row{display:grid;grid-template-columns:minmax(150px,1.6fr) minmax(160px,2fr) 90px 70px 130px 120px;gap:8px;align-items:center;padding:8px 6px;border-bottom:1px solid var(--border)}
+  .grid-row{display:grid;grid-template-columns:minmax(150px,1.6fr) minmax(160px,2fr) 90px 70px 90px 130px 120px;gap:8px;align-items:center;padding:8px 6px;border-bottom:1px solid var(--border)}
+  .reason-row{display:grid;grid-template-columns:1fr;gap:6px;padding:0 6px 10px;border-bottom:1px solid var(--border)}
+  .reason-row[hidden]{display:none}
+  .decline-cell{text-align:center;font-size:12px;color:var(--muted)}
+  .decline-cell input{width:auto}
+  .grid-row.declined .rate,.grid-row.declined .lead{opacity:.45}
   .grid-head{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600;border-bottom:2px solid var(--border)}
   .grid-row:last-child{border-bottom:0}
   .spec{color:var(--muted);font-size:13px}
@@ -69,7 +74,7 @@
   <div class="card">
     <h2>Quote Matrix</h2>
     <div class="grid-row grid-head" role="row">
-      <div>Item Name</div><div>Specifications</div><div>Required Qty</div><div>Unit</div><div>Quoted Unit Rate (₹)</div><div>Lead Time (Days)</div>
+      <div>Item Name</div><div>Specifications</div><div>Required Qty</div><div>Unit</div><div>Not Available</div><div>Quoted Unit Rate (₹)</div><div>Lead Time (Days)</div>
     </div>
     <div id="rows"></div>
   </div>
@@ -116,9 +121,24 @@ function render() {
       <div class="spec">${esc(it.spec)}</div>
       <div><span class="cell-lbl">Required Qty</span>${esc(it.quantity)}</div>
       <div><span class="cell-lbl">Unit</span>${esc(it.unit)}</div>
+      <div class="decline-cell"><span class="cell-lbl">Not Available</span><input class="decline" type="checkbox" aria-label="Not available / decline to quote ${esc(it.name)}" onchange="toggleDecline(${i})"></div>
       <div><span class="cell-lbl">Quoted Rate (₹)</span><input class="rate" type="number" min="0.01" step="0.01" inputmode="decimal" aria-label="Quoted unit rate for ${esc(it.name)}"></div>
       <div><span class="cell-lbl">Lead Time (Days)</span><input class="lead" type="number" min="0" max="365" step="1" inputmode="numeric" aria-label="Delivery lead time for ${esc(it.name)}"></div>
+    </div>
+    <div class="reason-row" data-reason-i="${i}" hidden>
+      <input class="decline-reason" type="text" maxlength="500" placeholder="Reason (optional) - out of stock, discontinued, etc." aria-label="Reason for declining ${esc(it.name)}">
     </div>`).join('');
+}
+
+function toggleDecline(i) {
+  const row = document.querySelector(`.grid-row[data-i="${i}"]`);
+  const reasonRow = document.querySelector(`.reason-row[data-reason-i="${i}"]`);
+  const checked = row.querySelector('.decline').checked;
+  row.classList.toggle('declined', checked);
+  row.querySelector('.rate').disabled = checked;
+  row.querySelector('.lead').disabled = checked;
+  if (checked) { row.querySelector('.rate').classList.remove('bad'); row.querySelector('.lead').classList.remove('bad'); }
+  reasonRow.hidden = !checked;
 }
 
 function show(kind, text) {
@@ -142,14 +162,19 @@ async function init() {
 document.getElementById('submit').addEventListener('click', async () => {
   let ok = true;
   const lines = Array.from(document.querySelectorAll('#rows .grid-row')).map(row => {
+    const declined = row.querySelector('.decline').checked;
     const rate = row.querySelector('.rate'), lead = row.querySelector('.lead');
+    if (declined) {
+      const reasonEl = document.querySelector(`.reason-row[data-reason-i="${row.dataset.i}"] .decline-reason`);
+      return { purchase_request_item_id: RFQ.items[row.dataset.i].id, declined: true, decline_reason: reasonEl ? reasonEl.value.trim() : '' };
+    }
     const r = Number(rate.value), d = Number(lead.value);
     const rOk = rate.value !== '' && r > 0, dOk = lead.value !== '' && Number.isInteger(d) && d >= 0 && d <= 365;
     rate.classList.toggle('bad', !rOk); lead.classList.toggle('bad', !dOk);
     if (!rOk || !dOk) ok = false;
     return { purchase_request_item_id: RFQ.items[row.dataset.i].id, unit_rate: r, lead_days: d };
   });
-  if (!ok) return show('err', 'Enter a rate above 0 and a lead time of 0–365 days for every item.');
+  if (!ok) return show('err', 'Enter a rate above 0 and a lead time of 0–365 days for every item, or mark it Not Available.');
   const btn = document.getElementById('submit');
   btn.disabled = true;
   try {
