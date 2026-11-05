@@ -135,8 +135,11 @@ const upsertStep = db.prepare(`
 // seeded under the old Accounts -> Admin shape picks this up via the
 // one-time migration in db/index.js instead, since re-seeding here never
 // runs again once a database already exists).
+// Accounts step is supervisor/HOD-only (2026-11-05) - a plain Account
+// Executive must never qualify to act on or be notified about a voucher,
+// only whoever's flagged is_supervisor under the Accounts role.
 upsertStep.run(chainId('ExpenseVoucher'), 1, roleId('Management'), 0, 0);
-upsertStep.run(chainId('ExpenseVoucher'), 2, roleId('Accounts'), 0, 0);
+upsertStep.run(chainId('ExpenseVoucher'), 2, roleId('Accounts'), 0, 1);
 
 // Leave: HR approves
 upsertStep.run(chainId('Leave'), 1, roleId('HR'), 0, 0);
