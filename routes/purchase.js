@@ -1340,10 +1340,27 @@ function poAuditLog(userId, action, poId, details) {
 // "editing a field" and "adding a line" count as the same kind of change
 // that voids a prior sign-off and sends the whole group back through
 // approval from scratch.
-function resubmitPoGroup(poNo, entityId, liveApprovalId, actingUserId) {
-  if (liveApprovalId) {
-    db.prepare(`UPDATE approvals SET status = 'Superseded' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(liveApprovalId);
-  }
+function resubmitPoGroup(poNo, entityId, actingUserId) {
+  // Supersede EVERY currently-live approval tied to any line of this po_no
+  // group, not just the one the caller happened to read off the edited
+  // line's own (possibly stale) approval_id column. A line that's already
+  // Open/PartiallyReceived/Received/Closed/Cancelled is deliberately left
+  // out of the approval_id sweep below (2026-10-16, so it's never yanked
+  // out of the Receive picker by an unrelated sibling's edit) - which means
+  // ITS OWN approval_id can be frozen on a long-terminal (Approved)
+  // approval. If an approver edits that specific line, the old single-id
+  // supersede below would then correctly no-op (nothing to supersede) while
+  // still unconditionally starting a brand-new Pending approval - leaving
+  // the group's REAL live approval never superseded, so both end up
+  // Pending at once and both show up as separate rows in My Approvals
+  // (confirmed root cause of PO-1793773966158 showing up 3 times). Querying
+  // by po_no instead of trusting the one id passed in guarantees at most
+  // one live approval per group regardless of which line triggered this.
+  db.prepare(`
+    UPDATE approvals SET status = 'Superseded'
+    WHERE entity_type = 'purchase_order' AND status IN ('Pending', 'InfoRequested')
+    AND entity_id IN (SELECT id FROM purchase_orders WHERE po_no = ?)
+  `).run(poNo);
   const totals = db.prepare('SELECT COALESCE(SUM(total_value), 0) as t, MAX(freight) as freight, MAX(freight_gst_rate) as freight_gst_rate FROM purchase_orders WHERE po_no = ?').get(poNo);
   const groupTotal = totals.t + (totals.freight || 0) * (1 + (totals.freight_gst_rate || 0) / 100);
   const newApprovalId = approvals.startApproval('PurchaseOrder', 'purchase_order', entityId, groupTotal, actingUserId);
@@ -1461,7 +1478,7 @@ router.put('/orders/:id', requirePermission('purchase_order.manage'), (req, res)
     if (existing.status === 'Draft') {
       poAuditLog(req.user.id, 'po_edit_draft', existing.id, 'Edited while still Draft: ' + changes.join('; '));
     } else {
-      resubmitPoGroup(existing.po_no, existing.id, existing.approval_id, req.user.id);
+      resubmitPoGroup(existing.po_no, existing.id, req.user.id);
       poAuditLog(req.user.id, 'po_edit_resubmit', existing.id, 'Edited - resubmitted for approval. Changes: ' + changes.join('; '));
     }
   }
@@ -1518,7 +1535,7 @@ router.post('/orders/:id/add-line', requirePermission('purchase_order.manage'), 
   if (existing.status === 'Draft') {
     poAuditLog(req.user.id, 'po_add_line_draft', existing.id, `Added a line while still Draft: item_id=${item_id || '-'} qty=${qty} rate=${rt}`);
   } else {
-    resubmitPoGroup(existing.po_no, existing.id, existing.approval_id, req.user.id);
+    resubmitPoGroup(existing.po_no, existing.id, req.user.id);
     poAuditLog(req.user.id, 'po_add_line_resubmit', existing.id, `Added a line - resubmitted for approval. item_id=${item_id || '-'} qty=${qty} rate=${rt}`);
   }
   res.json({ id: info.lastInsertRowid, ok: true });
