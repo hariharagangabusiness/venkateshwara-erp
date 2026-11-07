@@ -502,6 +502,7 @@ const NAV = [
   { group: 'Overview', items: [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'approvals', label: 'My Approvals' },
+    { id: 'overdue-items', label: 'Overdue Items' },
     { id: 'todos', label: 'To-Do List' },
     { id: 'dept-report', label: 'Department Report' },
   ]},
@@ -7882,6 +7883,37 @@ window.togglePvDrill = async (key) => {
     box.dataset.built = '';
     box.innerHTML = `<div class="panel">Could not load: ${esc(e.message)}</div>`;
   }
+};
+// ERP-wide "pending items outside of aligned dates" dashboard (2026-11-07) -
+// one collapsed-by-default panel per source (lib/overdueItems.js's
+// registry), each listing every row of that type whose own stored target
+// date has already passed while it's still open. Deliberately covers only
+// entity types with a genuine target-date field - Purchase Requests/Leave
+// Requests/RFQ/etc. have no such field and already have their own
+// approval-queue-age SLA coverage elsewhere (My Approvals/escalation mail).
+PAGES['overdue-items'] = async (el) => {
+  const d = await api('/reports/overdue-items');
+  const sources = Object.entries(d.bySource);
+  const summaryCards = sources.map(([name, rows]) => `<div class="panel" style="margin:0;${rows.length ? 'border-color:#dc2626;' : ''}">
+    <div class="muted">${esc(name)}</div>
+    <div style="font-size:26px;font-weight:600;${rows.length ? 'color:#dc2626;' : ''}">${rows.length}</div>
+  </div>`).join('');
+  const panels = sources.map(([name, rows]) => {
+    const key = 'overdue-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const body = rows.length
+      ? `<div style="overflow-x:auto;"><table><thead><tr><th>Reference</th><th>Label</th><th>Target Date</th><th>Days Overdue</th><th>Detail</th></tr></thead><tbody>
+          ${rows.map(r => `<tr><td>${esc(r.ref) || '-'}</td><td>${esc(r.label)}</td><td>${esc(String(r.target_date).slice(0, 10))}</td>
+            <td style="color:#dc2626;font-weight:700;">${r.days_overdue}</td><td>${esc(r.detail) || '-'}</td></tr>`).join('')}
+         </tbody></table></div>`
+      : '<p class="muted">Nothing overdue.</p>';
+    return collapsiblePanel(key, `${esc(name)} (${rows.length})`, body);
+  }).join('');
+  el.innerHTML = `<div class="panel">
+    <p class="muted">Every item, across the whole ERP, that is still open/pending and whose own stored target date has already passed - Purchase Order delivery dates, Job Card planned completion, Foreign Payment compliance dates, Bank Guarantee expiry, To-Do target dates, Referral Incentive probation end, Sales Order promised delivery, and Purchase Invoice payment due dates. Entities with no real target-date field (Purchase Requests, Leave Requests, RFQ, etc.) aren't listed here - they're already covered by My Approvals' own SLA/escalation mail.</p>
+    <button class="btn small outline" type="button" onclick="downloadTemplateFile('/reports/overdue-items/export.xlsx','Overdue_Items.xlsx')">Export Excel</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px;">${summaryCards}</div>
+  ${panels}`;
 };
 function rfqDashboardActions(r) {
   const btns = [];

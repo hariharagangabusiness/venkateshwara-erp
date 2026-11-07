@@ -3,8 +3,35 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { combinedStagesForRole } = require('../lib/pipeline');
 const { listExportableTables, exportTableXlsx } = require('../lib/tableExport');
+const { getOverdueItems } = require('../lib/overdueItems');
+const XLSX = require('xlsx');
 const router = express.Router();
 router.use(authRequired);
+
+// ===================== ERP-wide overdue items =====================
+// Every entity type with a genuine, already-stored target date (not a mere
+// approval-queue-age SLA, which the approval engine's own SLA_DAYS map /
+// escalation scan already cover) that's still open/pending and whose own
+// target date has already passed - see lib/overdueItems.js for the full
+// per-entity registry and why e.g. Purchase Requests/Leave Requests/RFQ
+// have no entry here (no real due-date field exists on those rows at all).
+router.get('/overdue-items', requirePermission('report.view_all'), (req, res) => {
+  res.json(getOverdueItems());
+});
+router.get('/overdue-items/export.xlsx', requirePermission('report.view_all'), (req, res) => {
+  const { bySource } = getOverdueItems();
+  const wb = XLSX.utils.book_new();
+  const allRows = [];
+  for (const [source, rows] of Object.entries(bySource)) {
+    for (const r of rows) allRows.push({ Source: source, Reference: r.ref, Label: r.label, 'Target Date': r.target_date, 'Days Overdue': r.days_overdue, Detail: r.detail });
+  }
+  const ws = allRows.length ? XLSX.utils.json_to_sheet(allRows) : XLSX.utils.aoa_to_sheet([['(nothing overdue)']]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Overdue Items');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', `attachment; filename="Overdue_Items_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
 
 // ===================== Full-field table export =====================
 // Every raw column of any whitelisted table, straight to xlsx, for external
