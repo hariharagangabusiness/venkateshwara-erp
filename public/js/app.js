@@ -2723,9 +2723,15 @@ window.retryConfirmOfferFromModal = async () => {
   errEl.style.display = 'none';
   try {
     const r = await api(`/offers/${CURRENT_OFFER_ID}/confirm`, { method: 'POST' });
-    closeAppModal();
-    alert(`Sales Order ${r.orderNo} created. Project ${r.projCode} queued for execution across all departments.`);
-    navigate('projects');
+    // Previously closed the popup and navigated away immediately on
+    // success - the only way to see the result was the alert() box, with
+    // no explicit control over when the window actually closed. Now shows
+    // the result inside the still-open modal with its own Close/View
+    // Project buttons, so the user decides when (and whether) to leave.
+    document.getElementById('app-modal-body').innerHTML = `
+      <p class="msg ok" style="display:block;">Sales Order ${esc(r.orderNo)} created. Project ${esc(r.projCode)} queued for execution across all departments.</p>
+      <button class="btn" type="button" onclick="closeAppModal(); navigate('projects');">View Project</button>
+      <button class="btn small outline" type="button" onclick="closeAppModal();">Close</button>`;
   } catch (e) {
     errEl.textContent = e.message;
     errEl.style.display = 'block';
@@ -2787,12 +2793,17 @@ async function renderClientAddressesPanel(clientId, targetId) {
       <td>${esc(a.label)||'-'}</td>
       <td>${[a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).map(esc).join(', ')}</td>
       <td>${esc(a.gstin)||'-'}</td>
-      <td><button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id}, '${targetId}')">Delete</button></td>
+      <td class="row-actions">
+        <button class="btn small outline" onclick="editClientAddress(${clientId}, ${a.id}, '${targetId}')">Edit</button>
+        <button class="btn small outline" onclick="deleteClientAddress(${clientId}, ${a.id}, '${targetId}')">Delete</button>
+      </td>
     </tr>`;
   const hasBilling = addresses.some(a => a.address_type === 'Billing');
+  CLIENT_ADDR_EDITING[targetId] = null;
   panel.innerHTML = `
     <div class="panel"><h3>Bill-to / Ship-to Addresses</h3>
       ${tableHTML(['Type', 'Label', 'Address', 'GSTIN', ''], addresses, addrRow)}
+      <h4 id="ca-form-title" style="margin-bottom:6px;">Add Address</h4>
       <div class="form-grid">
         <div><label>Type</label><select id="ca-type"><option value="Billing">Billing</option><option value="Shipping">Shipping</option></select></div>
         <div><label>Label</label><input id="ca-label" placeholder="e.g. Head Office, Plant 2"></div>
@@ -2806,7 +2817,8 @@ async function renderClientAddressesPanel(clientId, targetId) {
         <div><label><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
       </div>
       <button class="btn small outline" type="button" ${hasBilling ? '' : 'disabled title="Add a Billing address first."'} onclick="copyBillToShipTo('${targetId}')">Same as Bill-to</button>
-      <button class="btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
+      <button class="btn" id="ca-save-btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
+      <button class="btn small outline" id="ca-cancel-btn" type="button" style="display:none;" onclick="cancelClientAddressEdit(${clientId}, '${targetId}')">Cancel</button>
       <div id="ca-err" class="msg err" style="display:none;"></div>
     </div>`;
 }
@@ -2829,14 +2841,55 @@ window.copyBillToShipTo = (targetId) => {
   document.getElementById('ca-state-code').value = billing.state_code || '';
   document.getElementById('ca-pincode').value = billing.pincode || '';
 };
+// Edits an existing address in place, directly in the panel's own Add-
+// Address form (not a second, nested openAppModal() popup) - this panel
+// itself already lives inside another modal (Edit Client, or the
+// Confirm-Order missing-billing recovery popup), and openAppModal() is
+// re-entrant: a second call would replace that outer modal's whole content
+// (title, Retry Confirm Order button, etc.), losing the very context this
+// panel exists inside of. Loading the clicked address's values into the
+// same form and switching the button to "Save Changes" avoids that.
+const CLIENT_ADDR_EDITING = {};
+window.editClientAddress = (clientId, addressId, targetId) => {
+  const addresses = CLIENT_ADDR_CACHE[targetId] || [];
+  const a = addresses.find(x => x.id === addressId);
+  if (!a) return;
+  CLIENT_ADDR_EDITING[targetId] = addressId;
+  document.getElementById('ca-type').value = a.address_type;
+  document.getElementById('ca-type').disabled = true;
+  document.getElementById('ca-label').value = a.label || '';
+  document.getElementById('ca-gstin').value = a.gstin || '';
+  document.getElementById('ca-line1').value = a.line1 || '';
+  document.getElementById('ca-line2').value = a.line2 || '';
+  document.getElementById('ca-city').value = a.city || '';
+  document.getElementById('ca-state').value = a.state || '';
+  document.getElementById('ca-state-code').value = a.state_code || '';
+  document.getElementById('ca-pincode').value = a.pincode || '';
+  document.getElementById('ca-default').checked = !!a.is_default;
+  const btn = document.getElementById('ca-save-btn');
+  btn.textContent = 'Save Changes';
+  document.getElementById('ca-cancel-btn').style.display = '';
+  document.getElementById('ca-form-title').textContent = 'Edit Address';
+  document.getElementById('ca-form-title').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+window.cancelClientAddressEdit = (clientId, targetId) => {
+  renderClientAddressesPanel(clientId, targetId);
+};
 window.addClientAddress = async (clientId, targetId) => {
   const errEl = document.getElementById('ca-err');
+  const editingId = CLIENT_ADDR_EDITING[targetId];
+  const payload = {
+    label: val('ca-label'), line1: val('ca-line1'), line2: val('ca-line2'),
+    city: val('ca-city'), state: val('ca-state'), state_code: val('ca-state-code'), pincode: val('ca-pincode'),
+    gstin: val('ca-gstin'), is_default: document.getElementById('ca-default').checked,
+  };
   try {
-    await api(`/masters/clients/${clientId}/addresses`, { method: 'POST', body: JSON.stringify({
-      address_type: val('ca-type'), label: val('ca-label'), line1: val('ca-line1'), line2: val('ca-line2'),
-      city: val('ca-city'), state: val('ca-state'), state_code: val('ca-state-code'), pincode: val('ca-pincode'),
-      gstin: val('ca-gstin'), is_default: document.getElementById('ca-default').checked,
-    })});
+    if (editingId) {
+      await api(`/masters/client-addresses/${editingId}`, { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      payload.address_type = val('ca-type');
+      await api(`/masters/clients/${clientId}/addresses`, { method: 'POST', body: JSON.stringify(payload) });
+    }
     renderClientAddressesPanel(clientId, targetId);
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
