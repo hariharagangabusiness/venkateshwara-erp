@@ -1224,6 +1224,38 @@ function projectPickerHTML(pickerId, projects, selectedId, placeholder) {
     (p, q) => (p.project_code || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q),
     '', 'Search project by code or title...');
 }
+// Indian States/UTs + their official GST state codes (as issued on GST
+// registration certificates) - shared by every address form in the app
+// (Client Bill-to/Ship-to, Vendor Master, Company Settings) so State is
+// always picked from this one fixed list instead of free-typed, with State
+// Code auto-filled from the pick rather than looked up by hand (2026-11-10).
+const INDIAN_STATES = [
+  ['Jammu and Kashmir', '01'], ['Himachal Pradesh', '02'], ['Punjab', '03'], ['Chandigarh', '04'],
+  ['Uttarakhand', '05'], ['Haryana', '06'], ['Delhi', '07'], ['Rajasthan', '08'], ['Uttar Pradesh', '09'],
+  ['Bihar', '10'], ['Sikkim', '11'], ['Arunachal Pradesh', '12'], ['Nagaland', '13'], ['Manipur', '14'],
+  ['Mizoram', '15'], ['Tripura', '16'], ['Meghalaya', '17'], ['Assam', '18'], ['West Bengal', '19'],
+  ['Jharkhand', '20'], ['Odisha', '21'], ['Chattisgarh', '22'], ['Madhya Pradesh', '23'], ['Gujarat', '24'],
+  ['Daman and Diu', '25'], ['Dadra and Nagar Haveli', '26'], ['Maharashtra', '27'], ['Andhra Pradesh (Old)', '28'],
+  ['Karnataka', '29'], ['Goa', '30'], ['Lakshadweep', '31'], ['Kerala', '32'], ['Tamil Nadu', '33'],
+  ['Puducherry', '34'], ['Andaman and Nicobar Islands', '35'], ['Telangana', '36'], ['Andhra Pradesh', '37'],
+  ['Ladakh', '38'], ['Other Territory', '97'], ['Centre Jurisdiction', '99'],
+];
+// A dropdown of INDIAN_STATES paired with a `${stateFieldId}-code` text
+// input (kept editable, not locked, in case a rarer code needs overriding)
+// that's auto-filled with the matching GST code on every State selection.
+function statePickerHTML(stateFieldId, selectedState) {
+  const match = INDIAN_STATES.find(([name]) => name.toLowerCase() === (selectedState || '').toLowerCase());
+  return `<select id="${stateFieldId}" onchange="stateCodeAutofill('${stateFieldId}')">
+      <option value="">-- select --</option>
+      ${INDIAN_STATES.map(([name]) => `<option value="${esc(name)}" ${match && match[0]===name?'selected':''}>${esc(name)}</option>`).join('')}
+    </select>`;
+}
+window.stateCodeAutofill = (stateFieldId) => {
+  const name = val(stateFieldId);
+  const match = INDIAN_STATES.find(([n]) => n === name);
+  const codeEl = document.getElementById(stateFieldId + '-code');
+  if (match && codeEl) codeEl.value = match[1];
+};
 // Client/customer picker - searches by name (clients have no separate code).
 // Alphabetical (case-insensitive) regardless of the caller's own array order
 // (2026-10-27) - every client picker in the app shares this one function, so
@@ -2768,7 +2800,7 @@ async function renderClientAddressesPanel(clientId, targetId) {
         <div style="grid-column:1/-1;"><label>Address Line 1</label><input id="ca-line1"></div>
         <div style="grid-column:1/-1;"><label>Address Line 2</label><input id="ca-line2"></div>
         <div><label>City</label><input id="ca-city"></div>
-        <div><label>State</label><input id="ca-state"></div>
+        <div><label>State</label>${statePickerHTML('ca-state', '')}</div>
         <div><label>State Code</label><input id="ca-state-code" placeholder="e.g. 06"></div>
         <div><label>Pincode</label><input id="ca-pincode"></div>
         <div><label><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
@@ -6312,7 +6344,7 @@ PAGES.vendors = async (el) => {
         <div><label>Address Line 1</label><input id="v-addr1"></div>
         <div><label>Address Line 2</label><input id="v-addr2"></div>
         <div><label>City</label><input id="v-city"></div>
-        <div><label>State</label><input id="v-state"></div>
+        <div><label>State</label>${statePickerHTML('v-state', '')}</div>
         <div><label>State Code</label><input id="v-state-code" maxlength="2" placeholder="06"></div>
         <div><label>Pincode</label><input id="v-pincode"></div>
         <div><label>Country</label><input id="v-country" value="India"></div>
@@ -6420,7 +6452,7 @@ window.openEditVendor = (id) => {
       <div><label>Address Line 1</label><input id="ve-addr1" value="${esc(v.address_line1)}"></div>
       <div><label>Address Line 2</label><input id="ve-addr2" value="${esc(v.address_line2)}"></div>
       <div><label>City</label><input id="ve-city" value="${esc(v.city)}"></div>
-      <div><label>State</label><input id="ve-state" value="${esc(v.state)}"></div>
+      <div><label>State</label>${statePickerHTML('ve-state', v.state)}</div>
       <div><label>State Code</label><input id="ve-state-code" value="${esc(v.state_code)}" maxlength="2"></div>
       <div><label>Pincode</label><input id="ve-pincode" value="${esc(v.pincode)}"></div>
       <div><label>Contact Person</label><input id="ve-contact" value="${esc(v.contact_person)}"></div>
@@ -12765,7 +12797,7 @@ PAGES['company-settings'] = async (el) => {
         <div><label>GSTIN</label><input id="cs-gstin" value="${esc(company.gstin)}"></div>
         <div><label>PAN</label><input id="cs-pan" value="${esc(company.pan)}"></div>
         <div><label>CIN</label><input id="cs-cin" value="${esc(company.cin)}"></div>
-        <div><label>State</label><input id="cs-state" value="${esc(company.state)}"></div>
+        <div><label>State</label>${statePickerHTML('cs-state', company.state)}</div>
         <div><label>State Code</label><input id="cs-state-code" value="${esc(company.state_code)}"></div>
         <div><label>Default Place of Supply</label><input id="cs-pos" value="${esc(company.default_place_of_supply)}"></div>
         <div><label>Default GST Rate (%)</label><input id="cs-gst-rate" type="number" value="${esc(company.default_gst_rate)}"></div>
@@ -13044,7 +13076,7 @@ async function renderCompanyAddressesPanel() {
         <div style="grid-column:1/-1;"><label>Address Line 1</label><input id="coaddr-line1"></div>
         <div style="grid-column:1/-1;"><label>Address Line 2</label><input id="coaddr-line2"></div>
         <div><label>City</label><input id="coaddr-city"></div>
-        <div><label>State</label><input id="coaddr-state"></div>
+        <div><label>State</label>${statePickerHTML('coaddr-state', '')}</div>
         <div><label>State Code</label><input id="coaddr-state-code" placeholder="e.g. 06"></div>
         <div><label>Pincode</label><input id="coaddr-pincode"></div>
         <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="coaddr-default" type="checkbox"> Set as default for this type</label></div>
