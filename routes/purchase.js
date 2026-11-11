@@ -2332,6 +2332,10 @@ router.get('/store/low-stock', (req, res) => {
 });
 
 // ---- Challans (inter-location material movement, GST delivery challan) ----
+// Challan Type is required going forward (2026-11-11) - a saved challan
+// predating this column has challan_type=NULL, left as-is rather than
+// backfilled; the "must pick one" rule only applies to a new save.
+const CHALLAN_TYPES = ['Job Work', 'Stock Transfer', 'Delivery Challan', 'Purchase Return', 'Sales Return'];
 router.get('/store/challans', (req, res) => {
   res.json(db.prepare(`
     SELECT c.*, u.full_name as created_by_name, p.project_code,
@@ -2359,19 +2363,20 @@ router.post('/store/challans', requirePermission('store.manage'), (req, res) => 
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items,
+    po_no, project_id, items, challan_type,
   } = req.body;
   if (!from_location || !to_location) return res.status(400).json({ error: 'From and To location are required' });
+  if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
   const lineItems = Array.isArray(items) ? items : [];
   const challanNo = 'CH-' + Date.now();
   const total = computeChallanTotal(lineItems);
   const tx = db.transaction(() => {
     const info = db.prepare(`
-      INSERT INTO challans (challan_no, from_location, to_location, vehicle_no, transport_mode, transporter_name,
+      INSERT INTO challans (challan_no, challan_type, from_location, to_location, vehicle_no, transport_mode, transporter_name,
         distance_km, consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no, po_no,
         project_id, total_value, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(challanNo, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(challanNo, challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
       project_id || null, total, req.user.id);
@@ -2395,16 +2400,17 @@ router.put('/store/challans/:id', requirePermission('store.manage'), (req, res) 
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items,
+    po_no, project_id, items, challan_type,
   } = req.body;
+  if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
   const lineItems = Array.isArray(items) ? items : [];
   const total = computeChallanTotal(lineItems);
   const tx = db.transaction(() => {
     db.prepare(`
-      UPDATE challans SET from_location=?, to_location=?, vehicle_no=?, transport_mode=?, transporter_name=?,
+      UPDATE challans SET challan_type=?, from_location=?, to_location=?, vehicle_no=?, transport_mode=?, transporter_name=?,
         distance_km=?, consignor_name=?, consignor_gstin=?, consignee_name=?, consignee_gstin=?, reason=?,
         eway_bill_no=?, po_no=?, project_id=?, total_value=? WHERE id = ?
-    `).run(from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
+    `).run(challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
       project_id || null, total, existing.id);

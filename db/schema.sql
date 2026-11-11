@@ -727,6 +727,7 @@ CREATE TABLE IF NOT EXISTS challans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   challan_no TEXT UNIQUE,
   challan_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  challan_type TEXT,
   from_location TEXT NOT NULL,
   to_location TEXT NOT NULL,
   vehicle_no TEXT,

@@ -8718,6 +8718,11 @@ async function renderChallanSheet(el) {
 }
 
 // ---- Challans ----
+const CHALLAN_TYPES = ['Job Work', 'Stock Transfer', 'Delivery Challan', 'Purchase Return', 'Sales Return'];
+function challanTypeOptions(selected) {
+  return `<option value="">-- Select Challan Type --</option>` +
+    CHALLAN_TYPES.map(t => `<option value="${t}" ${selected === t ? 'selected' : ''}>${t}</option>`).join('');
+}
 let CHALLAN_ITEMS = [{ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0 }];
 function renderChallanForm() {
   const formEl = document.getElementById('challan-form');
@@ -8725,6 +8730,7 @@ function renderChallanForm() {
   formEl.innerHTML = `
     <div class="form-grid">
       <div><label>Challan Date</label><input id="ch-date" type="date" value="${today()}"></div>
+      <div><label>Challan Type</label><select id="ch-type">${challanTypeOptions()}</select></div>
       <div><label>From Location</label><input id="ch-from" placeholder="e.g. Faridabad Factory"></div>
       <div><label>To Location</label><input id="ch-to" placeholder="e.g. Site / Other Unit"></div>
       <div><label>Vehicle Number</label><input id="ch-vehicle" placeholder="e.g. HR38 AB 1234"></div>
@@ -8761,8 +8767,10 @@ function renderChallanItemRows() {
 }
 window.addChallanItemRow = () => { CHALLAN_ITEMS.push({ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0 }); renderChallanItemRows(); };
 window.saveChallan = async () => {
+  if (!val('ch-type')) return alert('Pick a Challan Type before saving.');
   try {
     await api('/purchase/store/challans', { method: 'POST', body: JSON.stringify({
+      challan_type: val('ch-type'),
       from_location: val('ch-from'), to_location: val('ch-to'), vehicle_no: val('ch-vehicle'), transport_mode: val('ch-mode'),
       transporter_name: val('ch-transporter'), distance_km: val('ch-distance') || null, consignor_gstin: val('ch-cgstin'),
       consignee_name: val('ch-consignee'), consignee_gstin: val('ch-econgstin'), reason: val('ch-reason'),
@@ -8776,12 +8784,13 @@ async function renderChallanList() {
   const listEl = document.getElementById('challan-list');
   if (!listEl) return;
   const challans = await api('/purchase/store/challans');
-  const renderRows = (rows) => tableHTML(['Challan No', 'Date', 'From', 'To', 'Vehicle', 'Items', 'Value', ''], rows, c => `
-      <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.vehicle_no)||'-'}</td><td>${c.item_count}</td><td>₹${fmt(c.total_value)}</td>
-      <td>${actionButtonsCell(`<button class="btn small outline" onclick="printChallan(${c.id})">Print</button>
+  const renderRows = (rows) => tableHTML(['Challan No', 'Date', 'Type', 'From', 'To', 'Vehicle', 'Items', 'Value', ''], rows, c => `
+      <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td>${esc(c.challan_type)||'-'}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.vehicle_no)||'-'}</td><td>${c.item_count}</td><td>₹${fmt(c.total_value)}</td>
+      <td>${actionButtonsCell(`<button class="btn small outline" onclick="editChallan(${c.id})">Edit</button>
+        <button class="btn small outline" onclick="printChallan(${c.id})">Print</button>
         <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button>`)}</td></tr>`);
   listEl.innerHTML = collapsiblePanel('challans-list', `<span id="ch-list-count">Saved Challans (${challans.length})</span>`, `
-    ${renderListSearch('challans', challans, ['challan_no', 'vehicle_no', 'from_location', 'to_location'], (rows) => {
+    ${renderListSearch('challans', challans, ['challan_no', 'vehicle_no', 'from_location', 'to_location', 'challan_type'], (rows) => {
       document.getElementById('ch-list-table').innerHTML = renderRows(rows);
       document.getElementById('ch-list-count').textContent = 'Saved Challans (' + rows.length + ')';
     }, 'Search by challan no, vehicle, from/to location...')}
@@ -8816,6 +8825,7 @@ window.printChallan = async (id) => {
     <div class="meta">
       <div><span>Challan No:</span> <b>${esc(c.challan_no)}</b></div>
       <div><span>Date:</span> <b>${new Date(c.challan_date).toLocaleDateString()}</b></div>
+      <div><span>Challan Type:</span> <b>${esc(c.challan_type)||'-'}</b></div>
       <div><span>From Location:</span> <b>${esc(c.from_location)}</b></div>
       <div><span>To Location:</span> <b>${esc(c.to_location)}</b></div>
       <div><span>Vehicle No:</span> <b>${esc(c.vehicle_no)||'-'}</b></div>
@@ -8835,6 +8845,62 @@ window.printChallan = async (id) => {
     <script>window.onload = () => window.print();</script>
     </body></html>`);
   w.document.close();
+};
+
+let EDIT_CHALLAN_ITEMS = [];
+window.editChallan = async (id) => {
+  const { challan: c, items } = await api('/purchase/store/challans/' + id);
+  EDIT_CHALLAN_ITEMS = items.map(it => ({ description: it.description, hsn_code: it.hsn_code || '', quantity: it.quantity, unit: it.unit, rate: it.rate }));
+  openAppModal('Edit Challan — ' + c.challan_no, `
+    <div class="form-grid">
+      <div><label>Challan Type</label><select id="ech-type">${challanTypeOptions(c.challan_type)}</select></div>
+      <div><label>From Location</label><input id="ech-from" value="${esc(c.from_location)}"></div>
+      <div><label>To Location</label><input id="ech-to" value="${esc(c.to_location)}"></div>
+      <div><label>Vehicle Number</label><input id="ech-vehicle" value="${esc(c.vehicle_no)||''}"></div>
+      <div><label>Transport Mode</label><select id="ech-mode">${['Road','Rail','Air','Ship'].map(m => `<option ${c.transport_mode===m?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div><label>Transporter Name</label><input id="ech-transporter" value="${esc(c.transporter_name)||''}"></div>
+      <div><label>Distance (km)</label><input id="ech-distance" type="number" value="${c.distance_km||''}"></div>
+      <div><label>E-Way Bill No.</label><input id="ech-eway" value="${esc(c.eway_bill_no)||''}"></div>
+      <div><label>PO / Reference No.</label><input id="ech-po" value="${esc(c.po_no)||''}"></div>
+      <div><label>Consignor GSTIN</label><input id="ech-cgstin" value="${esc(c.consignor_gstin)||''}"></div>
+      <div><label>Consignee Name</label><input id="ech-consignee" value="${esc(c.consignee_name)||''}"></div>
+      <div><label>Consignee GSTIN</label><input id="ech-econgstin" value="${esc(c.consignee_gstin)||''}"></div>
+      <div><label>Reason for Transport</label><input id="ech-reason" value="${esc(c.reason)||''}"></div>
+    </div>
+    <h4 style="margin:14px 0 8px;">Material Being Transported</h4>
+    <div id="ech-items"></div>
+    <button class="btn small outline" type="button" onclick="addEditChallanItemRow()">+ Add Line Item</button>
+    <div style="margin-top:12px;"><button class="btn" id="ech-save-btn-${id}" onclick="saveEditChallan(${id})">Save Changes</button></div>
+  `);
+  renderEditChallanItemRows();
+};
+function renderEditChallanItemRows() {
+  const el = document.getElementById('ech-items');
+  if (!el) return;
+  el.innerHTML = tableHTML(['Description', 'HSN Code', 'Qty', 'Unit', 'Rate (₹)', 'Value (₹)', ''], EDIT_CHALLAN_ITEMS, (it, i) => `
+    <tr>
+      <td><input value="${esc(it.description)}" onchange="EDIT_CHALLAN_ITEMS[${i}].description=this.value"></td>
+      <td><input value="${esc(it.hsn_code)}" onchange="EDIT_CHALLAN_ITEMS[${i}].hsn_code=this.value" style="width:80px;"></td>
+      <td><input type="number" value="${it.quantity}" onchange="EDIT_CHALLAN_ITEMS[${i}].quantity=Number(this.value);renderEditChallanItemRows()" style="width:70px;"></td>
+      <td><input value="${esc(it.unit)}" onchange="EDIT_CHALLAN_ITEMS[${i}].unit=this.value" style="width:60px;"></td>
+      <td><input type="number" value="${it.rate}" onchange="EDIT_CHALLAN_ITEMS[${i}].rate=Number(this.value);renderEditChallanItemRows()" style="width:80px;"></td>
+      <td>₹${fmt((Number(it.quantity)||0) * (Number(it.rate)||0))}</td>
+      <td><button class="btn small outline" type="button" onclick="EDIT_CHALLAN_ITEMS.splice(${i},1);renderEditChallanItemRows()">✕</button></td>
+    </tr>`).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="5" style="text-align:right;"><b>Total</b></td><td colspan="2"><b>₹${fmt(EDIT_CHALLAN_ITEMS.reduce((s,it)=>s+(Number(it.quantity)||0)*(Number(it.rate)||0),0))}</b></td></tr></tfoot></table>`);
+}
+window.addEditChallanItemRow = () => { EDIT_CHALLAN_ITEMS.push({ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0 }); renderEditChallanItemRows(); };
+window.saveEditChallan = async (id) => {
+  if (!val('ech-type')) return alert('Pick a Challan Type before saving.');
+  try {
+    await api('/purchase/store/challans/' + id, { method: 'PUT', body: JSON.stringify({
+      challan_type: val('ech-type'),
+      from_location: val('ech-from'), to_location: val('ech-to'), vehicle_no: val('ech-vehicle'), transport_mode: val('ech-mode'),
+      transporter_name: val('ech-transporter'), distance_km: val('ech-distance') || null, consignor_gstin: val('ech-cgstin'),
+      consignee_name: val('ech-consignee'), consignee_gstin: val('ech-econgstin'), reason: val('ech-reason'),
+      eway_bill_no: val('ech-eway'), po_no: val('ech-po'), items: EDIT_CHALLAN_ITEMS.filter(it => it.description),
+    })});
+    confirmSavedThenClose('ech-save-btn-' + id, 'challans');
+  } catch (e) { alert(e.message); }
 };
 
 // ---- Service Request Management ----
