@@ -1660,6 +1660,12 @@ const MIGRATIONS = [
   // grace period before it can escalate again.
   `ALTER TABLE approvals ADD COLUMN step_started_at TEXT`,
   `ALTER TABLE approvals ADD COLUMN last_escalated_at TEXT`,
+  // Challan Type (2026-11-11) - a required-going-forward category (Job Work/
+  // Stock Transfer/Delivery Challan/Purchase Return/Sales Return), separate
+  // from the existing free-text "reason" field. Nullable here since an
+  // already-saved challan predates this column - routes/purchase.js enforces
+  // "must pick one" only on a new save (create or edit), never retroactively.
+  `ALTER TABLE challans ADD COLUMN challan_type TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
