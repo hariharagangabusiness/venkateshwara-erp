@@ -3300,7 +3300,7 @@ function orderRowHTML(o) {
   return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
-    <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
+    <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a> <a class="btn small outline" href="#" onclick="return downloadAnnexure(event, ${o.id}, 'pdf')">Annexure PDF</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td>${actionButtonsCell(`
     <button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
@@ -3740,18 +3740,22 @@ window.reportOrders = async () => {
   const orders = await api('/sales/orders');
   downloadCSV('sales_orders_report.csv', orders, ['id', 'order_no', 'client_name', 'order_value', 'status', 'order_date', 'description']);
 };
-window.downloadAnnexure = async (ev, orderId) => {
-  ev.preventDefault();
+// format 'docx' (default, the stored engineering annexure) or 'pdf' (always
+// rendered fresh from the order's current data - see lib/annexurePdf.js).
+window.downloadAnnexure = async (ev, orderId, format) => {
+  if (ev) ev.preventDefault();
   try {
-    const res = await fetch(`/api/sales/orders/${orderId}/annexure`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    const url = format === 'pdf' ? `/api/sales/orders/${orderId}/annexure/pdf` : `/api/sales/orders/${orderId}/annexure`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
     const cd = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
-    const filename = match ? match[1] : 'annexure.docx';
+    const filename = match ? match[1] : (format === 'pdf' ? 'annexure.pdf' : 'annexure.docx');
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
+    if (format === 'pdf') { openOrDownloadBlob(blob, filename); return false; }
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = objUrl; a.download = filename; a.click();
+    URL.revokeObjectURL(objUrl);
   } catch (e) { alert(e.message); }
   return false;
 };
@@ -3809,6 +3813,7 @@ async function renderOrderConfirmationModal(orderId) {
       ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}`
         : (ar.status === 'Approved' && ME.role === 'Admin' ? `<button class="btn small outline red" onclick="unlockAnnexure(${orderId})">Unlock for Revision</button>` : '')}
       <a href="#" onclick="downloadAnnexure(event, ${orderId});return false;">Download Annexure</a>
+      <a href="#" onclick="downloadAnnexure(event, ${orderId}, 'pdf');return false;">Download Annexure (PDF)</a>
     </div>
   `;
   openMiniModal('Order Confirmation & Annexure', body, true);
@@ -5520,7 +5525,7 @@ window.viewProjectCards = async (id, code) => {
 function annexureLinkHTML(p) {
   if (!p.sales_order_id) return '<span class="muted">No sales order</span>';
   return p.annexure_path
-    ? `<a href="/api/sales/orders/${p.sales_order_id}/annexure" onclick="return downloadAnnexure(event, ${p.sales_order_id})">Annexure</a>`
+    ? `<a href="/api/sales/orders/${p.sales_order_id}/annexure" onclick="return downloadAnnexure(event, ${p.sales_order_id})">Annexure</a> <a href="#" onclick="return downloadAnnexure(event, ${p.sales_order_id}, 'pdf')">PDF</a>`
     : `<a href="#" onclick="return generateAnnexureForTargets(event, ${p.sales_order_id})">Generate</a>`;
 }
 // Same link, worded as a prominent line right above the plan editor's own
@@ -6068,7 +6073,7 @@ window.openJobCardDetail = async (id) => {
   const routedHTML = routedTo.length ? `<p class="muted">Routed onward to: ${routedTo.map(d => `${esc(STAGE_LABELS[d.stage]||d.stage)} (${esc(d.title)}) ${badge(d.status)}`).join(', ')}</p>` : '';
 
   const annexureHTML = c.so_annexure_path ? `
-    <p><b>Sales Order Annexure</b> (${esc(c.so_order_no)||'-'}, read-only): <a href="#" onclick="return downloadAnnexure(event, ${c.so_id})">Download</a></p>
+    <p><b>Sales Order Annexure</b> (${esc(c.so_order_no)||'-'}, read-only): <a href="#" onclick="return downloadAnnexure(event, ${c.so_id})">Download</a> / <a href="#" onclick="return downloadAnnexure(event, ${c.so_id}, 'pdf')">PDF</a></p>
   ` : '';
 
   const materialHTML = `

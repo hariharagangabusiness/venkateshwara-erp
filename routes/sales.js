@@ -4,6 +4,7 @@ const path = require('path');
 const { db } = require('../db');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
+const { generateAnnexurePdf } = require('../lib/annexurePdf');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
@@ -40,7 +41,11 @@ function ensureProjectForOrder(salesOrder, userId) {
 // its own sales_order_items (the line-items grid on the New Sales Order form,
 // entered without a price) - generateAnnexureDocx() renders that table off of
 // whichever source is present, so an offer-less order isn't left with nothing.
-async function ensureAnnexureForOrder(salesOrder) {
+// Shared by the stored .docx (ensureAnnexureForOrder, below) and the PDF
+// route, which always renders on demand from live data rather than a
+// stored file - pulled into one function so the two formats can never
+// silently disagree about what an annexure actually contains.
+function loadAnnexureData(salesOrder) {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(salesOrder.client_id);
   const offer = db.prepare('SELECT * FROM offers WHERE sales_order_id = ?').get(salesOrder.id);
   let items = [], techSpecs = [], boughtOut = [];
@@ -55,7 +60,12 @@ async function ensureAnnexureForOrder(salesOrder) {
       WHERE soi.sales_order_id = ? ORDER BY soi.sort_order, soi.id
     `).all(salesOrder.id);
   }
-  const annex = await generateAnnexureDocx({ salesOrder, client, offer, items, techSpecs, boughtOut, company: getCompanySettings() });
+  return { salesOrder, client, offer, items, techSpecs, boughtOut, company: getCompanySettings() };
+}
+
+async function ensureAnnexureForOrder(salesOrder) {
+  const data = loadAnnexureData(salesOrder);
+  const annex = await generateAnnexureDocx(data);
   db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, salesOrder.id);
   return annex;
 }
@@ -346,7 +356,7 @@ function recomputeOrderValue(salesOrderId) {
   const total = db.prepare('SELECT COALESCE(SUM(value), 0) as t FROM sales_order_items WHERE sales_order_id = ?').get(salesOrderId).t;
   db.prepare('UPDATE sales_orders SET order_value = ? WHERE id = ?').run(total, salesOrderId);
 }
-router.post('/orders/:id/items', requirePermission('sales_order.manage'), (req, res) => {
+router.post('/orders/:id/items', requirePermission('sales_order.manage'), async (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   const { description, item_id, hsn_code, quantity, unit, rate, gst_rate } = req.body;
@@ -361,9 +371,15 @@ router.post('/orders/:id/items', requirePermission('sales_order.manage'), (req, 
   `).run(order.id, item_id || null, String(description).trim(), hsn_code || null, Number(quantity), unit || 'Nos', Number(rate), value,
     gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18, maxSort + 1);
   recomputeOrderValue(order.id);
+  // Scope Of Supply (for an offer-less order) is sourced live from these
+  // rows - previously only the stored annexure .docx generated at order-
+  // creation time ever reflected them, so adding/editing/removing a line
+  // afterward silently left it stale with no prompt to regenerate (the
+  // exact same class of gap the 2026-10-10 PO No/Date fix closed).
+  await regenerateAnnexureIfUnlocked(order.id);
   res.json({ id: info.lastInsertRowid });
 });
-router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), (req, res) => {
+router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), async (req, res) => {
   const item = db.prepare('SELECT * FROM sales_order_items WHERE id = ? AND sales_order_id = ?').get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'Not found' });
   const { description, hsn_code, quantity, unit, rate, gst_rate } = req.body;
@@ -381,9 +397,10 @@ router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'),
     gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : item.gst_rate, item.id
   );
   recomputeOrderValue(item.sales_order_id);
+  await regenerateAnnexureIfUnlocked(item.sales_order_id);
   res.json({ ok: true });
 });
-router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), (req, res) => {
+router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), async (req, res) => {
   const item = db.prepare('SELECT * FROM sales_order_items WHERE id = ? AND sales_order_id = ?').get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'Not found' });
   if (soLineDispatchableQty(item) < item.quantity) {
@@ -391,6 +408,7 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
   }
   db.prepare('DELETE FROM sales_order_items WHERE id = ?').run(item.id);
   recomputeOrderValue(item.sales_order_id);
+  await regenerateAnnexureIfUnlocked(item.sales_order_id);
   res.json({ ok: true });
 });
 
@@ -427,6 +445,12 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     ['Bank Guarantee', db.prepare(`SELECT COUNT(*) as n FROM bank_guarantees WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
     ['Payment Milestone', db.prepare(`SELECT COUNT(*) as n FROM payment_milestones WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
     ['FOC Request', db.prepare('SELECT COUNT(*) as n FROM foc_requests WHERE sales_order_id = ?').get(order.id).n],
+    // FG Dispatch wasn't checked here before (2026-11-11 fix) - fg_dispatch_items
+    // carries a hard, non-nullable FK into sales_order_items, so any dispatch
+    // (even one still PendingApproval) made the final DELETE FROM sales_orders
+    // below throw a raw, uncaught "FOREIGN KEY constraint failed" once the new
+    // cleanup of sales_order_items rows was added, rather than this clear message.
+    ['FG Dispatch', db.prepare('SELECT COUNT(*) as n FROM fg_dispatches WHERE sales_order_id = ?').get(order.id).n],
   ].filter(([, n]) => n > 0);
   const oc = db.prepare('SELECT status FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
   if (oc && oc.status !== 'Draft') blockers.push(['Order Confirmation letter', 1]);
@@ -444,6 +468,17 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     }
     db.prepare('DELETE FROM order_confirmations WHERE sales_order_id = ?').run(order.id);
     db.prepare('DELETE FROM annexure_reviews WHERE sales_order_id = ?').run(order.id);
+    // sales_order_items.sales_order_id is a NOT NULL FK with no ON DELETE
+    // CASCADE - the blockers check above already confirmed no FG Dispatch
+    // (the only other table with a hard FK into these rows, via
+    // fg_dispatch_items) exists, so these lines are genuinely orphaned once
+    // the order itself goes and can be removed outright. Real bug, fixed
+    // 2026-11-11: this was previously missing entirely, so any Confirmed
+    // order that ever had a line added via the Items button (the norm since
+    // the 2026-10-04 multi-line SO feature) threw a raw, uncaught
+    // "FOREIGN KEY constraint failed" on delete instead of either succeeding
+    // or reporting a clear reason.
+    db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(order.id);
     // If this order came from a confirmed offer, undo that conversion so the
     // offer becomes a normal, editable Sent offer again rather than being
     // left locked and pointing at a sales order that no longer exists.
@@ -620,6 +655,27 @@ router.get('/orders/:id/annexure', async (req, res) => {
     }
   }
   res.download(abs, path.basename(abs));
+});
+
+// PDF copy of the same annexure - always rendered fresh from the order's
+// current data (never a stored file), so it can never go stale the way the
+// .docx briefly could before edits to the line items started regenerating
+// it too (see the three /orders/:id/items routes above/below).
+router.get('/orders/:id/annexure/pdf', async (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const data = loadAnnexureData(order);
+  let tmpDir;
+  try {
+    const result = await generateAnnexurePdf(data);
+    tmpDir = result.tmpDir;
+    const filename = buildDownloadFilename({ docType: 'Annexure', reference: order.order_no, partyName: data.client && data.client.name, date: order.order_date });
+    res.download(result.outPath, filename, () => { fs.rm(tmpDir, { recursive: true, force: true }, () => {}); });
+  } catch (e) {
+    console.error('Annexure PDF generation failed:', e);
+    if (tmpDir) fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Backfill / regenerate: for orders created before this feature existed, or
