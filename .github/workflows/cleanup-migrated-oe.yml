@@ -1,0 +1,57 @@
+name: Cleanup migrated Operating Expense entries
+
+# One-off, manually-triggered run of scripts/cleanup-migrated-oe-nov2026.js
+# against the production database, over the same SSH path deploy.yml /
+# run-grn-consolidation.yml / diagnose-so-delete.yml already use (same
+# DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY/DEPLOY_PORT/DEPLOY_PATH secrets - no
+# new credentials needed). Defaults to a dry run (lists matching rows,
+# deletes nothing); set apply=true to actually delete. erp.db is backed up
+# first whenever apply=true, same as run-grn-consolidation.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: 'Month to clean up, YYYY-MM'
+        required: true
+        type: string
+        default: '2026-11'
+      apply:
+        description: 'Actually delete the matching rows (false = dry run only)'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH in and run the cleanup script
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ secrets.DEPLOY_PATH }}"
+            MONTH="${{ inputs.month }}"
+            APPLY="${{ inputs.apply }}"
+
+            DATA_DIR=$(sudo -u erp sh -c "cat '$APP_DIR/.env' 2>/dev/null | sed -n 's/^DATA_DIR=//p'" | tail -1)
+            if [ -z "$DATA_DIR" ]; then DATA_DIR="$APP_DIR/db"; fi
+            DB_PATH="$DATA_DIR/erp.db"
+            echo "==> Using database: $DB_PATH"
+            if [ ! -f "$DB_PATH" ]; then
+              echo "erp.db not found at $DB_PATH - aborting." >&2
+              exit 1
+            fi
+
+            if [ "$APPLY" = "true" ]; then
+              BACKUP_PATH="$DB_PATH.bak-cleanup-$(date +%Y%m%d%H%M%S)"
+              sudo -u erp cp "$DB_PATH" "$BACKUP_PATH"
+              echo "==> Backed up erp.db to $BACKUP_PATH"
+              sudo -u erp node "$APP_DIR/scripts/cleanup-migrated-oe-nov2026.js" "$DB_PATH" "$MONTH" --apply
+            else
+              sudo -u erp node "$APP_DIR/scripts/cleanup-migrated-oe-nov2026.js" "$DB_PATH" "$MONTH"
+            fi
