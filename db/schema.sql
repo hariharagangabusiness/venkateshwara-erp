@@ -743,6 +743,10 @@ CREATE TABLE IF NOT EXISTS challans (
   po_no TEXT,
   project_id INTEGER REFERENCES projects(id),
   total_value REAL DEFAULT 0,
+  is_returnable INTEGER DEFAULT 0,
+  received_back INTEGER DEFAULT 0,
+  received_at TEXT,
+  received_notes TEXT,
   created_by INTEGER REFERENCES users(id),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -754,6 +758,8 @@ CREATE TABLE IF NOT EXISTS challan_items (
   quantity REAL NOT NULL,
   unit TEXT DEFAULT 'Nos',
   rate REAL DEFAULT 0,
+  gst_rate REAL DEFAULT 0,
+  gst_amount REAL DEFAULT 0,
   value REAL DEFAULT 0,
   sort_order INTEGER DEFAULT 0
 );

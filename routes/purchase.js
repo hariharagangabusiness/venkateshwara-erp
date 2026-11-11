@@ -2345,6 +2345,20 @@ router.get('/store/challans', (req, res) => {
   `).all());
 });
 
+// Report: every returnable challan still awaiting its "Received Back" -
+// oldest first, since that's the one most overdue for follow-up. Registered
+// before the literal-:id route below - this app's own recurring route-
+// shadowing bug class (:id matching any path segment, including this one).
+router.get('/store/challans/open-returnable', (req, res) => {
+  res.json(db.prepare(`
+    SELECT c.*, u.full_name as created_by_name, p.project_code,
+      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id) as item_count
+    FROM challans c LEFT JOIN users u ON u.id = c.created_by LEFT JOIN projects p ON p.id = c.project_id
+    WHERE c.is_returnable = 1 AND c.received_back = 0
+    ORDER BY c.challan_date ASC
+  `).all());
+});
+
 router.get('/store/challans/:id', (req, res) => {
   const challan = db.prepare(`
     SELECT c.*, u.full_name as created_by_name, p.project_code FROM challans c
@@ -2355,15 +2369,26 @@ router.get('/store/challans/:id', (req, res) => {
   res.json({ challan, items });
 });
 
+// Line total = taxable (qty*rate) + GST computed server-side on that taxable
+// value - never trusts a client-sent gst_amount, same as qty*rate was always
+// recomputed server-side rather than trusting a client-sent "value".
+function challanLineFigures(it) {
+  const qty = Number(it.quantity) || 0;
+  const rate = Number(it.rate) || 0;
+  const gstRate = Number(it.gst_rate) || 0;
+  const taxable = qty * rate;
+  const gstAmount = taxable * gstRate / 100;
+  return { taxable, gstRate, gstAmount, lineTotal: taxable + gstAmount };
+}
 function computeChallanTotal(items) {
-  return items.reduce((sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.rate) || 0), 0);
+  return items.reduce((sum, it) => sum + challanLineFigures(it).lineTotal, 0);
 }
 
 router.post('/store/challans', requirePermission('store.manage'), (req, res) => {
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items, challan_type,
+    po_no, project_id, items, challan_type, is_returnable,
   } = req.body;
   if (!from_location || !to_location) return res.status(400).json({ error: 'From and To location are required' });
   if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
@@ -2374,19 +2399,19 @@ router.post('/store/challans', requirePermission('store.manage'), (req, res) => 
     const info = db.prepare(`
       INSERT INTO challans (challan_no, challan_type, from_location, to_location, vehicle_no, transport_mode, transporter_name,
         distance_km, consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no, po_no,
-        project_id, total_value, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        project_id, total_value, is_returnable, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(challanNo, challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
-      project_id || null, total, req.user.id);
+      project_id || null, total, is_returnable ? 1 : 0, req.user.id);
     const insertItem = db.prepare(`
-      INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, value, sort_order)
-      VALUES (?,?,?,?,?,?,?,?)
+      INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, gst_rate, gst_amount, value, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `);
     lineItems.forEach((it, i) => {
-      const value = (Number(it.quantity) || 0) * (Number(it.rate) || 0);
-      insertItem.run(info.lastInsertRowid, it.description, it.hsn_code || null, it.quantity || 0, it.unit || 'Nos', it.rate || 0, value, i);
+      const { taxable, gstRate, gstAmount } = challanLineFigures(it);
+      insertItem.run(info.lastInsertRowid, it.description, it.hsn_code || null, it.quantity || 0, it.unit || 'Nos', it.rate || 0, gstRate, gstAmount, taxable, i);
     });
     return info.lastInsertRowid;
   });
@@ -2400,7 +2425,7 @@ router.put('/store/challans/:id', requirePermission('store.manage'), (req, res) 
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items, challan_type,
+    po_no, project_id, items, challan_type, is_returnable,
   } = req.body;
   if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
   const lineItems = Array.isArray(items) ? items : [];
@@ -2409,24 +2434,41 @@ router.put('/store/challans/:id', requirePermission('store.manage'), (req, res) 
     db.prepare(`
       UPDATE challans SET challan_type=?, from_location=?, to_location=?, vehicle_no=?, transport_mode=?, transporter_name=?,
         distance_km=?, consignor_name=?, consignor_gstin=?, consignee_name=?, consignee_gstin=?, reason=?,
-        eway_bill_no=?, po_no=?, project_id=?, total_value=? WHERE id = ?
+        eway_bill_no=?, po_no=?, project_id=?, total_value=?, is_returnable=? WHERE id = ?
     `).run(challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
-      project_id || null, total, existing.id);
+      project_id || null, total, is_returnable ? 1 : 0, existing.id);
     db.prepare('DELETE FROM challan_items WHERE challan_id = ?').run(existing.id);
     const insertItem = db.prepare(`
-      INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, value, sort_order)
-      VALUES (?,?,?,?,?,?,?,?)
+      INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, gst_rate, gst_amount, value, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `);
     lineItems.forEach((it, i) => {
-      const value = (Number(it.quantity) || 0) * (Number(it.rate) || 0);
-      insertItem.run(existing.id, it.description, it.hsn_code || null, it.quantity || 0, it.unit || 'Nos', it.rate || 0, value, i);
+      const { taxable, gstRate, gstAmount } = challanLineFigures(it);
+      insertItem.run(existing.id, it.description, it.hsn_code || null, it.quantity || 0, it.unit || 'Nos', it.rate || 0, gstRate, gstAmount, taxable, i);
     });
   });
   tx();
   res.json({ ok: true });
 });
+
+// A returnable challan (e.g. Job Work material sent out, expected back) is
+// closed out here - whole-challan, not per-line quantity, per the owner's
+// confirmed scope. Only acts on a challan actually marked returnable and not
+// already received back, so this can't double-fire or "receive back" a
+// challan that was never returnable in the first place.
+router.post('/store/challans/:id/receive-back', requirePermission('store.manage'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM challans WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (!existing.is_returnable) return res.status(400).json({ error: 'This challan is not marked Returnable.' });
+  if (existing.received_back) return res.status(400).json({ error: 'Already received back.' });
+  const notes = (req.body && req.body.notes) || null;
+  db.prepare(`UPDATE challans SET received_back = 1, received_at = CURRENT_TIMESTAMP, received_notes = ? WHERE id = ?`)
+    .run(notes, existing.id);
+  res.json({ ok: true });
+});
+
 
 router.get('/store/challans/:id/pdf', async (req, res) => {
   const challan = db.prepare('SELECT * FROM challans WHERE id = ?').get(req.params.id);

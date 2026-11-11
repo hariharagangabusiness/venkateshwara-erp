@@ -1666,6 +1666,21 @@ const MIGRATIONS = [
   // already-saved challan predates this column - routes/purchase.js enforces
   // "must pick one" only on a new save (create or edit), never retroactively.
   `ALTER TABLE challans ADD COLUMN challan_type TEXT`,
+  // Challan line-item GST + returnable tracking (2026-11-11). GST is per
+  // line (gst_rate the picked %, gst_amount the server-computed amount on
+  // that line's taxable value) - challans.total_value keeps including it,
+  // same as the pre-existing computeChallanTotal() already summed qty*rate.
+  // Returnable is an explicit per-challan Yes/No (not inferred from Challan
+  // Type), defaulting No so every pre-existing challan reads as non-
+  // returnable until someone marks one otherwise; received_back/received_at/
+  // received_notes record the single "received back" action (whole-challan,
+  // no partial-quantity tracking) that closes a returnable challan out.
+  `ALTER TABLE challan_items ADD COLUMN gst_rate REAL DEFAULT 0`,
+  `ALTER TABLE challan_items ADD COLUMN gst_amount REAL DEFAULT 0`,
+  `ALTER TABLE challans ADD COLUMN is_returnable INTEGER DEFAULT 0`,
+  `ALTER TABLE challans ADD COLUMN received_back INTEGER DEFAULT 0`,
+  `ALTER TABLE challans ADD COLUMN received_at TEXT`,
+  `ALTER TABLE challans ADD COLUMN received_notes TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
