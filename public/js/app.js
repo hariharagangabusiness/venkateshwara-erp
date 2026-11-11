@@ -3300,7 +3300,7 @@ function orderRowHTML(o) {
   return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
     <td>${deliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
-    <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annexure</a> <a class="btn small outline" href="#" onclick="return downloadAnnexure(event, ${o.id}, 'pdf')">Annexure PDF</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
+    <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annex- Word</a> <a class="btn small outline" href="#" onclick="return downloadAnnexure(event, ${o.id}, 'pdf')">Annex- PDF</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td>${actionButtonsCell(`
     <button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
