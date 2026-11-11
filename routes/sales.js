@@ -412,6 +412,55 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
   res.json({ ok: true });
 });
 
+// Tables this route itself deletes alongside the order/project/job cards -
+// their own rows carry no meaning once the parent they belong to is gone.
+// Everything else with a live foreign key into sales_orders/projects/
+// job_cards is real business activity and blocks the delete instead - see
+// findForeignKeyBlockers() below, which discovers that set generically via
+// sqlite's own PRAGMA foreign_key_list rather than a hand-maintained list.
+// 2026-11-11 root cause: the hand-maintained version of this route had
+// fallen behind several newer features (Site Visits, Customer
+// Communications, Material Requisitions, Stock Movements, Service Requests,
+// Challans, Purchase Requests, job_card_comments, job_card_dependencies) -
+// none of their FKs into these 3 tables were ever added to either the
+// cascade-delete set or the blockers list, so a real order with any of that
+// activity against it threw a raw, uncaught "FOREIGN KEY constraint failed"
+// (surfaced to the user as a bare "Something went wrong"/"Request failed")
+// the instant any of those FKs had a matching row - exactly the same bug
+// class already hit once this same day for sales_order_items specifically.
+const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items'];
+
+// A few tables' names contain acronyms that Title-Case alone mangles
+// (fg_dispatches -> "Fg Dispatches", foc_requests -> "Foc Requests") -
+// corrected here rather than generalizing the whole function, since this
+// is the only spot in the app that turns a table name into user-facing text.
+const TABLE_NAME_OVERRIDES = { fg: 'FG', foc: 'FOC', mrns: 'MRNs' };
+function prettifyTableName(t) {
+  return t.replace(/_/g, ' ').replace(/\b\w+\b/g, w => TABLE_NAME_OVERRIDES[w.toLowerCase()] || (w.charAt(0).toUpperCase() + w.slice(1)));
+}
+
+// Every table (other than `exclude`) carrying a live foreign key into
+// `targetTable(id)`, with at least one row whose FK column value is in
+// `ids` - table/column names come from sqlite's own schema introspection
+// (PRAGMA foreign_key_list), never from request input, so interpolating
+// them directly into SQL here is safe.
+function findForeignKeyBlockers(targetTable, ids, exclude) {
+  if (!ids.length) return [];
+  const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map(r => r.name);
+  const placeholders = ids.map(() => '?').join(',');
+  const blockers = [];
+  for (const t of tables) {
+    if (exclude.includes(t)) continue;
+    const fks = db.prepare(`PRAGMA foreign_key_list(${t})`).all();
+    for (const fk of fks) {
+      if (fk.table !== targetTable) continue;
+      const n = db.prepare(`SELECT COUNT(*) as n FROM ${t} WHERE ${fk.from} IN (${placeholders})`).get(...ids).n;
+      if (n > 0) blockers.push([prettifyTableName(t), n]);
+    }
+  }
+  return blockers;
+}
+
 // Admin-only permanent delete, for cleaning up an order that was created by
 // mistake before any real work happened on it. Every order gets a project +
 // job cards (and usually an order-confirmation/annexure review pair)
@@ -419,7 +468,8 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
 // so their mere existence isn't a sign of real progress; what actually
 // blocks deletion is any of that scaffolding having moved past its
 // untouched starting state, or any genuinely separate document (invoice,
-// BG, milestone, FOC request) having been raised against this order.
+// BG, milestone, FOC request, dispatch, service request, material
+// requisition, ...) having been raised against this order/project.
 router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
@@ -427,6 +477,7 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     return res.status(400).json({ error: `This order has moved to ${order.status} - only a Confirmed order with nothing built on it yet can be deleted.` });
   }
   const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
+  let jobCardIds = [];
   if (project) {
     // Excluding a stage (status = 'NotApplicable') is a planning decision,
     // not production activity - it must not itself count as "started" here,
@@ -438,31 +489,41 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     if (startedJobCard) {
       return res.status(400).json({ error: 'Production has already started on this order (at least one job card is in progress or further along) and it cannot be deleted.' });
     }
+    jobCardIds = db.prepare('SELECT id FROM job_cards WHERE project_id = ?').all(project.id).map(r => r.id);
   }
+  // Bank Guarantee / Payment Milestone are polymorphic (order_type/order_id
+  // covering both SO and PO) with no real FK on order_id, so they're invisible
+  // to findForeignKeyBlockers() and need their own explicit check, same as
+  // always; everything else is discovered generically.
   const blockers = [
-    ['Tax Invoice', db.prepare('SELECT COUNT(*) as n FROM sales_invoices WHERE sales_order_id = ?').get(order.id).n],
-    ['Proforma Invoice', db.prepare('SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ?').get(order.id).n],
     ['Bank Guarantee', db.prepare(`SELECT COUNT(*) as n FROM bank_guarantees WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
     ['Payment Milestone', db.prepare(`SELECT COUNT(*) as n FROM payment_milestones WHERE order_type = 'SO' AND order_id = ?`).get(order.id).n],
-    ['FOC Request', db.prepare('SELECT COUNT(*) as n FROM foc_requests WHERE sales_order_id = ?').get(order.id).n],
-    // FG Dispatch wasn't checked here before (2026-11-11 fix) - fg_dispatch_items
-    // carries a hard, non-nullable FK into sales_order_items, so any dispatch
-    // (even one still PendingApproval) made the final DELETE FROM sales_orders
-    // below throw a raw, uncaught "FOREIGN KEY constraint failed" once the new
-    // cleanup of sales_order_items rows was added, rather than this clear message.
-    ['FG Dispatch', db.prepare('SELECT COUNT(*) as n FROM fg_dispatches WHERE sales_order_id = ?').get(order.id).n],
+    ...findForeignKeyBlockers('sales_orders', [order.id], [...ORDER_DELETE_CASCADE_TABLES, 'projects', 'offers']),
   ].filter(([, n]) => n > 0);
+  if (project) {
+    blockers.push(...findForeignKeyBlockers('projects', [project.id], ORDER_DELETE_CASCADE_TABLES).filter(([, n]) => n > 0));
+    if (jobCardIds.length) {
+      blockers.push(...findForeignKeyBlockers('job_cards', jobCardIds, ORDER_DELETE_CASCADE_TABLES).filter(([, n]) => n > 0));
+    }
+  }
   const oc = db.prepare('SELECT status FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
   if (oc && oc.status !== 'Draft') blockers.push(['Order Confirmation letter', 1]);
   const ar = db.prepare('SELECT status FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
   if (ar && ar.status !== 'Draft') blockers.push(['Annexure review', 1]);
   if (blockers.length) {
-    return res.status(400).json({ error: `This order already has real activity against it (${blockers.map(([label]) => label).join(', ')}) and cannot be deleted.` });
+    // A table can carry more than one FK into this check's 3 target tables
+    // (e.g. store_material_requests has both job_card_id and project_id) and
+    // so can legitimately surface twice across the project-level and
+    // job_cards-level scans - de-duped by label so the message names it once.
+    const labels = [...new Set(blockers.map(([label]) => label))];
+    return res.status(400).json({ error: `This order already has real activity against it (${labels.join(', ')}) and cannot be deleted.` });
   }
 
   const tx = db.transaction(() => {
     if (project) {
       db.prepare(`DELETE FROM job_card_attachments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
+      db.prepare(`DELETE FROM job_card_comments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
+      db.prepare(`DELETE FROM job_card_dependencies WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?) OR depends_on_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id, project.id);
       db.prepare('DELETE FROM job_cards WHERE project_id = ?').run(project.id);
       db.prepare('DELETE FROM projects WHERE id = ?').run(project.id);
     }
@@ -472,12 +533,7 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     // CASCADE - the blockers check above already confirmed no FG Dispatch
     // (the only other table with a hard FK into these rows, via
     // fg_dispatch_items) exists, so these lines are genuinely orphaned once
-    // the order itself goes and can be removed outright. Real bug, fixed
-    // 2026-11-11: this was previously missing entirely, so any Confirmed
-    // order that ever had a line added via the Items button (the norm since
-    // the 2026-10-04 multi-line SO feature) threw a raw, uncaught
-    // "FOREIGN KEY constraint failed" on delete instead of either succeeding
-    // or reporting a clear reason.
+    // the order itself goes and can be removed outright.
     db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(order.id);
     // If this order came from a confirmed offer, undo that conversion so the
     // offer becomes a normal, editable Sent offer again rather than being
