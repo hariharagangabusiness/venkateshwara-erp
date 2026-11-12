@@ -343,6 +343,82 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   res.json(result);
 });
 
+const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancelled'];
+
+// Admin-only header edit (2026-11-12) - every other Sales Order action
+// (Items, Customer PO, Commercial Terms) was already open to anyone holding
+// sales_order.manage, but there was no way at all to correct the order's own
+// header fields (Client, Lead, Description, Order Date, Status, and - when
+// the order has no line items of its own - the manually-entered Order
+// Value) after creation. Folded in alongside the pre-existing Commercial
+// Terms fields per the owner's explicit choice, so Admin has one single Edit
+// surface rather than three separate ones - the standalone
+// PATCH /orders/:id/commercial-terms route stays exactly as it was for
+// every other caller, this route just also accepts the same fields.
+// Deliberately no status-based lockout (confirmed with the owner) - unlike
+// the Admin-only Delete route above, editing a header field is treated as
+// an administrative correction, not something downstream activity should
+// block.
+router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const {
+    client_id, lead_id, description, order_date, order_value, status,
+    promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
+    abg_required, abg_percentage, abg_amount, abg_validity_days,
+    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes, payment_terms,
+  } = req.body;
+  if (client_id !== undefined) {
+    const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+    if (!client) return res.status(400).json({ error: 'Selected customer not found.' });
+  }
+  if (status !== undefined && !SALES_ORDER_STATUSES.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status.' });
+  }
+  // Order Value is only ever directly editable here when the order has no
+  // line items of its own - same rule creation already follows, since with
+  // items present the value is always the sum of those lines, recomputed by
+  // recomputeOrderValue() on every item add/edit/delete.
+  const itemCount = db.prepare('SELECT COUNT(*) as n FROM sales_order_items WHERE sales_order_id = ?').get(order.id).n;
+  const newOrderValue = (!itemCount && order_value !== undefined) ? (Number(order_value) || 0) : order.order_value;
+  db.prepare(`
+    UPDATE sales_orders SET
+      client_id = ?, lead_id = ?, description = ?, order_date = ?, order_value = ?, status = ?,
+      promised_delivery_date = ?, ld_percentage = ?, ld_cap_percentage = ?, ld_trigger_notes = ?,
+      abg_required = ?, abg_percentage = ?, abg_amount = ?, abg_validity_days = ?,
+      pbg_required = ?, pbg_percentage = ?, pbg_amount = ?, pbg_validity_days = ?, bg_terms_notes = ?, payment_terms = ?
+    WHERE id = ?
+  `).run(
+    client_id !== undefined ? client_id : order.client_id,
+    lead_id !== undefined ? (lead_id || null) : order.lead_id,
+    description !== undefined ? description : order.description,
+    order_date !== undefined ? (order_date || null) : order.order_date,
+    newOrderValue,
+    status !== undefined ? status : order.status,
+    promised_delivery_date !== undefined ? (promised_delivery_date || null) : order.promised_delivery_date,
+    ld_percentage !== undefined ? (ld_percentage || null) : order.ld_percentage,
+    ld_cap_percentage !== undefined ? (ld_cap_percentage || null) : order.ld_cap_percentage,
+    ld_trigger_notes !== undefined ? (ld_trigger_notes || null) : order.ld_trigger_notes,
+    abg_required !== undefined ? (abg_required ? 1 : 0) : order.abg_required,
+    abg_percentage !== undefined ? (abg_percentage || null) : order.abg_percentage,
+    abg_amount !== undefined ? (abg_amount || null) : order.abg_amount,
+    abg_validity_days !== undefined ? (abg_validity_days || null) : order.abg_validity_days,
+    pbg_required !== undefined ? (pbg_required ? 1 : 0) : order.pbg_required,
+    pbg_percentage !== undefined ? (pbg_percentage || null) : order.pbg_percentage,
+    pbg_amount !== undefined ? (pbg_amount || null) : order.pbg_amount,
+    pbg_validity_days !== undefined ? (pbg_validity_days || null) : order.pbg_validity_days,
+    bg_terms_notes !== undefined ? (bg_terms_notes || null) : order.bg_terms_notes,
+    payment_terms !== undefined ? (payment_terms ? String(payment_terms).trim() : null) : order.payment_terms,
+    order.id
+  );
+  recomputePoTermsStatus(db, order.id);
+  // Client/Description changes affect what the annexure's own header prints
+  // (customer name, subject) - same "don't leave it silently stale" guard
+  // every other order-header-changing route already applies.
+  await regenerateAnnexureIfUnlocked(order.id);
+  res.json({ ok: true });
+});
+
 // ---- Sales Order line items ----
 // Lines can be added/edited after the order is created too (a big project's
 // scope is rarely fully known on day one) - the only real restriction is
