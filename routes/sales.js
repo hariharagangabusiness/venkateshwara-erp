@@ -375,12 +375,10 @@ router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
   if (status !== undefined && !SALES_ORDER_STATUSES.includes(status)) {
     return res.status(400).json({ error: 'Invalid status.' });
   }
-  // Order Value is only ever directly editable here when the order has no
-  // line items of its own - same rule creation already follows, since with
-  // items present the value is always the sum of those lines, recomputed by
-  // recomputeOrderValue() on every item add/edit/delete.
-  const itemCount = db.prepare('SELECT COUNT(*) as n FROM sales_order_items WHERE sales_order_id = ?').get(order.id).n;
-  const newOrderValue = (!itemCount && order_value !== undefined) ? (Number(order_value) || 0) : order.order_value;
+  // Admin can override Order Value directly here even when line items exist -
+  // it stays as typed until the next item add/edit/delete, at which point
+  // recomputeOrderValue() recalculates it from the items again as usual.
+  const newOrderValue = order_value !== undefined ? (Number(order_value) || 0) : order.order_value;
   db.prepare(`
     UPDATE sales_orders SET
       client_id = ?, lead_id = ?, description = ?, order_date = ?, order_value = ?, status = ?,
