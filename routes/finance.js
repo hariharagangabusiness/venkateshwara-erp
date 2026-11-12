@@ -1113,12 +1113,18 @@ function nextProformaNo() {
   return `PF/${fy}/${String(next).padStart(4, '0')}`;
 }
 
+// Client is resolved live off the linked Sales Order's own client_id, not
+// the proforma's own stored client_id column (frozen at creation time) -
+// so an Admin correcting which client a Sales Order belongs to (2026-11-12's
+// Sales Order Edit) is reflected on every already-created Proforma against
+// it, not just on the order itself. Same reasoning applies to the PDF/email/
+// edit routes below.
 router.get('/proforma-invoices', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
   res.json(db.prepare(`
     SELECT pf.*, c.name as client_name, so.order_no, m.milestone_name
     FROM proforma_invoices pf
-    LEFT JOIN clients c ON c.id = pf.client_id
     LEFT JOIN sales_orders so ON so.id = pf.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id
     LEFT JOIN payment_milestones m ON m.id = pf.milestone_id
     ORDER BY pf.id DESC
   `).all());
@@ -1126,7 +1132,8 @@ router.get('/proforma-invoices', requirePermission('report.view_all', 'sales_ord
 router.get('/proforma-invoices/:id', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
   const pf = db.prepare(`
     SELECT pf.*, c.name as client_name, m.milestone_name FROM proforma_invoices pf
-    LEFT JOIN clients c ON c.id = pf.client_id LEFT JOIN payment_milestones m ON m.id = pf.milestone_id
+    LEFT JOIN sales_orders so ON so.id = pf.sales_order_id
+    LEFT JOIN clients c ON c.id = so.client_id LEFT JOIN payment_milestones m ON m.id = pf.milestone_id
     WHERE pf.id = ?
   `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
@@ -1288,7 +1295,7 @@ router.put('/proforma-invoices/:id', requirePermission('sales_order.manage'), (r
   if (!pf) return res.status(404).json({ error: 'Not found' });
   if (pf.status !== 'Draft') return res.status(400).json({ error: 'Only a Draft proforma can be edited - this one is already ' + pf.status + '.' });
   const so = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(pf.sales_order_id);
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(so.client_id);
   const { invoice_type, milestone_id, buyer_state, buyer_gstin } = req.body;
   if (!['Advance', 'PreDispatch'].includes(invoice_type)) return res.status(400).json({ error: 'invoice_type must be Advance or PreDispatch' });
 
@@ -1367,12 +1374,12 @@ router.post('/proforma-invoices/:id/cancel', requirePermission('sales_order.mana
 });
 router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manage'), async (req, res) => {
   const pf = db.prepare(`
-    SELECT pf.*, so.order_no AS so_order_no, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
+    SELECT pf.*, so.client_id AS so_client_id, so.order_no AS so_order_no, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
     FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
   `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
   const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.so_client_id);
   const toAddress = client && client.email;
   if (!toAddress) return res.status(400).json({ error: 'This client has no email on file - add one under Clients.' });
   let gen;
@@ -1404,12 +1411,12 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
 });
 router.get('/proforma-invoices/:id/pdf', async (req, res) => {
   const pf = db.prepare(`
-    SELECT pf.*, so.order_no AS so_order_no, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
+    SELECT pf.*, so.client_id AS so_client_id, so.order_no AS so_order_no, so.po_number AS so_po_number, so.po_date AS so_po_date, so.payment_terms AS so_payment_terms
     FROM proforma_invoices pf LEFT JOIN sales_orders so ON so.id = pf.sales_order_id WHERE pf.id = ?
   `).get(req.params.id);
   if (!pf) return res.status(404).json({ error: 'Not found' });
   const items = db.prepare('SELECT * FROM proforma_invoice_items WHERE proforma_id = ? ORDER BY sort_order, id').all(pf.id);
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.client_id);
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(pf.so_client_id);
   try {
     const gen = await generateProformaInvoicePdf(pf, items, client || {}, getCompanySettings());
     const filename = buildDownloadFilename({
