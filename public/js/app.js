@@ -3693,7 +3693,6 @@ window.openEditSalesOrder = async (id) => {
   if (!o) return alert('Could not find this order - try refreshing the page.');
   const clients = await api('/masters/clients');
   const wonLeads = window.__SO_WON_LEADS_CACHE || [];
-  const itemCount = await api(`/sales/orders/${id}/items`).then(items => items.length).catch(() => 0);
   openAppModal('Edit Sales Order — ' + o.order_no, `
     <div class="form-grid">
       <div><label>Client</label>${clientPickerHTML('eso-client', clients, o.client_id)}</div>
@@ -3703,8 +3702,8 @@ window.openEditSalesOrder = async (id) => {
     </div>
     <div><label>Description</label><textarea id="eso-desc" rows="2" style="width:100%;">${esc(o.description || '')}</textarea></div>
     <div class="form-grid">
-      <div><label>Order Value (₹) ${itemCount ? '<span class="muted">(computed from line items - edit via Items instead)</span>' : '<span class="muted">(no line items on this order - editable directly)</span>'}</label>
-        <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${itemCount ? 'disabled' : ''}></div>
+      <div><label>Order Value (₹) <span class="muted">(if this order has line items, this value is recomputed from them the next time any item is added, edited, or removed)</span></label>
+        <input id="eso-value" type="number" value="${o.order_value ?? ''}"></div>
     </div>
     <h4 style="margin-top:14px;">Commercial Terms</h4>
     <div class="form-grid">
