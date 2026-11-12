@@ -3302,6 +3302,7 @@ function orderRowHTML(o) {
     <td>${poTermsBadge(o)}</td>
     <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annex- Word</a> <a class="btn small outline" href="#" onclick="return downloadAnnexure(event, ${o.id}, 'pdf')">Annex- PDF</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td>${actionButtonsCell(`
+    ${ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="openEditSalesOrder(${o.id})">Edit</button>` : ''}
     <button class="btn small outline" type="button" onclick="toggleSOTerms(${o.id})">Commercial Terms</button>
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
     <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
@@ -3678,6 +3679,58 @@ function renderSOLines() {
 }
 window.addSOLine = () => { SO_LINES.push({ description: '', quantity: 1, unit: 'Nos', rate: 0, hsn_code: '', gst_rate: 18 }); renderSOLines(); };
 
+// Admin-only Sales Order header Edit (2026-11-12) - covers the fields that
+// had no edit path at all (Client/Lead/Description/Order Date/Status, plus
+// Order Value when the order has no line items of its own) folded in
+// alongside the pre-existing Commercial Terms fields, per the owner's
+// confirmed scope - the standalone Commercial Terms panel (soTermsForm)
+// stays exactly as-is for everyone else; this is a second, Admin-only way
+// to reach those same fields plus the header ones. Uses the shared
+// bgTermsFormFields()/readBgTermsFields() helpers that panel already uses.
+const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancelled'];
+window.openEditSalesOrder = async (id) => {
+  const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
+  if (!o) return alert('Could not find this order - try refreshing the page.');
+  const clients = await api('/masters/clients');
+  const wonLeads = window.__SO_WON_LEADS_CACHE || [];
+  const itemCount = await api(`/sales/orders/${id}/items`).then(items => items.length).catch(() => 0);
+  openAppModal('Edit Sales Order — ' + o.order_no, `
+    <div class="form-grid">
+      <div><label>Client</label>${clientPickerHTML('eso-client', clients, o.client_id)}</div>
+      <div><label>From Lead (optional)</label><select id="eso-lead"><option value="">-</option>${wonLeads.map(l => `<option value="${l.id}" ${Number(o.lead_id) === l.id ? 'selected' : ''}>#${l.id} ${esc(l.client_name)}</option>`).join('')}</select></div>
+      <div><label>Order Date</label><input id="eso-date" type="date" value="${o.order_date ? String(o.order_date).slice(0, 10) : ''}"></div>
+      <div><label>Status</label><select id="eso-status">${SALES_ORDER_STATUSES.map(s => `<option value="${s}" ${o.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div><label>Description</label><textarea id="eso-desc" rows="2" style="width:100%;">${esc(o.description || '')}</textarea></div>
+    <div class="form-grid">
+      <div><label>Order Value (₹) ${itemCount ? '<span class="muted">(computed from line items - edit via Items instead)</span>' : '<span class="muted">(no line items on this order - editable directly)</span>'}</label>
+        <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${itemCount ? 'disabled' : ''}></div>
+    </div>
+    <h4 style="margin-top:14px;">Commercial Terms</h4>
+    <div class="form-grid">
+      <div><label>Promised Delivery Date</label><input id="eso-delivery" type="date" value="${o.promised_delivery_date || ''}"></div>
+      <div><label>LD Rate (%)</label><input id="eso-ld-pct" type="number" step="0.01" value="${o.ld_percentage ?? ''}"></div>
+      <div><label>LD Cap (%)</label><input id="eso-ld-cap" type="number" step="0.01" value="${o.ld_cap_percentage ?? ''}"></div>
+    </div>
+    <div><label>Trigger Conditions</label><textarea id="eso-ld-notes" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
+    ${bgTermsFormFields('eso', o)}
+    <div><label>Payment Terms</label><textarea id="eso-payment-terms" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
+    <div style="margin-top:12px;"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
+  `);
+};
+window.saveEditSalesOrder = async (id) => {
+  try {
+    await api('/sales/orders/' + id, { method: 'PUT', body: JSON.stringify({
+      client_id: val('eso-client'), lead_id: val('eso-lead') || null, description: val('eso-desc'),
+      order_date: val('eso-date') || null, order_value: val('eso-value'), status: val('eso-status'),
+      promised_delivery_date: val('eso-delivery') || null, ld_percentage: val('eso-ld-pct') || null,
+      ld_cap_percentage: val('eso-ld-cap') || null, ld_trigger_notes: val('eso-ld-notes') || null,
+      payment_terms: val('eso-payment-terms') || null,
+      ...readBgTermsFields('eso'),
+    })});
+    confirmSavedThenClose('eso-save-btn-' + id, 'orders');
+  } catch (e) { alert(e.message); }
+};
 window.deleteOrderRow = async (id) => {
   if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
   try {
@@ -3688,6 +3741,8 @@ window.deleteOrderRow = async (id) => {
 PAGES.orders = async (el) => {
   const orders = await api('/sales/orders');
   const wonLeads = (await api('/sales/leads')).filter(l => l.stage === 'Won');
+  window.__SO_ORDERS_CACHE = orders;
+  window.__SO_WON_LEADS_CACHE = wonLeads;
   SO_LINES = [];
   el.innerHTML = `
     <div class="panel">
