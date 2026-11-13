@@ -3506,8 +3506,9 @@ window.downloadDispatchPdf = async (ev, id) => {
   try {
     const res = await fetch(`/api/sales/dispatches/${id}/pdf`, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
-    const blob = await res.blob();
-    openOrDownloadBlob(blob, `dispatch-${id}.pdf`);
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    openOrDownloadBlob(await res.blob(), match ? match[1] : `dispatch-${id}.pdf`);
   } catch (e) { alert(e.message); }
   return false;
 };
@@ -3518,8 +3519,9 @@ window.downloadDispatchDoc = async (ev, id, kind) => {
     const res = await fetch(`/api/sales/dispatches/${id}/${kind}`, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Download failed'); }
     const skipped = res.headers.get('X-Bundle-Skipped');
-    const blob = await res.blob();
-    openOrDownloadBlob(blob, `dispatch-${id}-${kind}.pdf`);
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    openOrDownloadBlob(await res.blob(), match ? match[1] : `dispatch-${id}-${kind}.pdf`);
     if (skipped) alert('Customer bundle opened without: ' + skipped);
   } catch (e) { alert(e.message); }
   return false;
