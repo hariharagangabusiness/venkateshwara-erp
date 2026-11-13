@@ -66,7 +66,14 @@ function loadAnnexureData(salesOrder) {
 async function ensureAnnexureForOrder(salesOrder) {
   const data = loadAnnexureData(salesOrder);
   const annex = await generateAnnexureDocx(data);
-  db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, salesOrder.id);
+  // A genuine auto-generation always wins over whatever's on file, including
+  // a prior manual upload - callers of this function (the explicit
+  // "Regenerate Annexure" button, order-creation, GET /orders/:id/annexure's
+  // self-heal when the file is missing from disk) are all deliberate "I want
+  // the live-data version" actions, so the manual flag is cleared here too.
+  // regenerateAnnexureIfUnlocked() below is the one place that checks the
+  // flag BEFORE calling this, to skip an *incidental* auto-refresh instead.
+  db.prepare('UPDATE sales_orders SET annexure_path = ?, annexure_is_manual = 0 WHERE id = ?').run(annex.relativePath, salesOrder.id);
   return annex;
 }
 
@@ -670,7 +677,19 @@ router.patch('/orders/:id/commercial-terms', requirePermission('sales_order.mana
 // button already enforces: skip quietly (never fail the PO save over it)
 // once the annexure review is Approved/locked or still PendingApproval -
 // an unlock-for-revision or a reject is how to get a fresh one in that case.
+// Also skips when the current file is a manual upload (annexure_is_manual) -
+// 2026-11-13: this call fires from several incidental order-edit routes
+// (Customer PO save, line-item add/edit/delete, the Admin Sales Order Edit),
+// and before this flag existed any one of those silently overwrote a
+// deliberately-uploaded replacement file the moment a review was unlocked
+// for revision (which clears locked/PendingApproval precisely so it CAN be
+// edited) - discarding the upload with no warning. The explicit "Regenerate
+// Annexure" button (ensureAnnexureForOrder called directly, not through this
+// function) still always wins, since that's a deliberate "give me the live-
+// data version" action.
 async function regenerateAnnexureIfUnlocked(salesOrderId) {
+  const order = db.prepare('SELECT annexure_is_manual FROM sales_orders WHERE id = ?').get(salesOrderId);
+  if (order && order.annexure_is_manual) return;
   const review = db.prepare('SELECT locked, status FROM annexure_reviews WHERE sales_order_id = ?').get(salesOrderId);
   if (review && (review.locked || review.status === 'PendingApproval')) return;
   try {
