@@ -3857,11 +3857,12 @@ async function renderOrderConfirmationModal(orderId) {
 
     <h4 style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px;">Annexure</h4>
     ${reviewStatusBlock(ar, 'annexure.approve', `approveAnnexure(${orderId})`, `rejectAnnexure(${orderId})`)}
+    ${ar.annexure_is_manual ? `<div class="msg" style="display:block;background:#fff3cd;border:1px solid #ffe08a;">A manually uploaded file is currently on file for this Annexure - it will NOT be overwritten by editing the order's Customer PO/line items, only by clicking "Regenerate Annexure" below or uploading another file.</div>` : ''}
     <label>Review Notes</label>
     <textarea id="ar-notes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.review_notes)}</textarea>
     <div style="margin-top:6px;">
       ${!ar.locked ? `<button class="btn small" onclick="saveAnnexureNotes(${orderId})">Save Notes</button>
-      <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId})">Regenerate Annexure</button>
+      <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId}, ${!!ar.annexure_is_manual})">Regenerate Annexure</button>
       <input type="file" id="ar-file-${orderId}" style="display:inline-block;width:auto;">
       <button class="btn small outline" onclick="uploadAnnexureFile(${orderId})">Upload Revised File</button>
       ${['Draft', 'Rejected'].includes(ar.status) ? `<button class="btn small outline" onclick="submitAnnexure(${orderId})">Submit for Approval</button>` : ''}`
@@ -3895,7 +3896,8 @@ window.rejectOrderConfirmation = async (orderId) => {
   catch (e) { alert(e.message); }
 };
 window.downloadOrderConfirmationPdf = (orderId) => downloadTemplateFile(`/order-confirmation/order-confirmations/${orderId}/pdf`, `Order-Confirmation-${orderId}.pdf`);
-window.regenerateAnnexureInModal = async (orderId) => {
+window.regenerateAnnexureInModal = async (orderId, isManual) => {
+  if (isManual && !confirm('A manually uploaded file is currently on file - regenerating will replace it with a fresh copy built from the order\'s own live data. Continue?')) return;
   try {
     await api(`/sales/orders/${orderId}/regenerate-annexure`, { method: 'POST' });
     await renderOrderConfirmationModal(orderId);

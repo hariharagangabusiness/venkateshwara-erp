@@ -1681,6 +1681,16 @@ const MIGRATIONS = [
   `ALTER TABLE challans ADD COLUMN received_back INTEGER DEFAULT 0`,
   `ALTER TABLE challans ADD COLUMN received_at TEXT`,
   `ALTER TABLE challans ADD COLUMN received_notes TEXT`,
+  // Manually-uploaded Annexure marker (2026-11-13) - a reviewer can replace
+  // the auto-generated annexure_path with their own file (POST
+  // /annexure-reviews/:soId/upload, after unlocking an Approved review for
+  // revision). Without this flag, the very next incidental order edit
+  // (Customer PO save, a line-item change, the Admin Sales Order Edit) would
+  // silently regenerate annexure_path from live data via
+  // regenerateAnnexureIfUnlocked() and discard the manual upload with no
+  // warning - set true by the manual-upload route, cleared by
+  // ensureAnnexureForOrder() whenever it genuinely auto-generates.
+  `ALTER TABLE sales_orders ADD COLUMN annexure_is_manual INTEGER DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

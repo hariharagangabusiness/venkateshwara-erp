@@ -120,8 +120,11 @@ function ensureAnnexureReview(soId) {
 
 router.get('/annexure-reviews/:soId', canView, (req, res) => {
   try {
-    getOrder(req.params.soId);
-    res.json(ensureAnnexureReview(req.params.soId));
+    const order = getOrder(req.params.soId);
+    // annexure_is_manual lives on sales_orders (routes/sales.js owns that
+    // column), not on this table - surfaced here too so the modal can warn
+    // before Regenerate Annexure would overwrite a deliberate upload.
+    res.json({ ...ensureAnnexureReview(req.params.soId), annexure_is_manual: !!order.annexure_is_manual });
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });
 
@@ -139,6 +142,12 @@ router.put('/annexure-reviews/:soId', canEdit, (req, res) => {
 // A manual replacement file for the auto-generated annexure - e.g. a
 // reviewer tweaked wording directly in Word before sign-off. Blocked once
 // locked, same as the existing regenerate-annexure route in routes/sales.js.
+// annexure_is_manual=1 marks the file as a deliberate override so
+// regenerateAnnexureIfUnlocked() (routes/sales.js) - fired by several
+// incidental order-edit routes - doesn't silently overwrite it the next time
+// anyone touches the order's Customer PO/items/header; it's cleared again
+// only by a genuine auto-generation (ensureAnnexureForOrder), including an
+// explicit click of "Regenerate Annexure".
 const upload = makeUpload('annexures', 15);
 router.post('/annexure-reviews/:soId/upload', canEdit, upload.single('file'), (req, res) => {
   try {
@@ -146,7 +155,8 @@ router.post('/annexure-reviews/:soId/upload', canEdit, upload.single('file'), (r
     const row = ensureAnnexureReview(req.params.soId);
     assertEditable(row);
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run('/uploads/annexures/' + req.file.filename, salesOrder.id);
+    db.prepare('UPDATE sales_orders SET annexure_path = ?, annexure_is_manual = 1 WHERE id = ?')
+      .run('/uploads/annexures/' + req.file.filename, salesOrder.id);
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });
