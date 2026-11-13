@@ -1041,7 +1041,16 @@ function streamDispatchDoc(generator, suffix) {
     let gen;
     try {
       gen = await generator({ dispatch: bundle.dispatch, items: bundle.items, client, shipTo, company: getCompanySettings() });
-      res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}-${suffix}.pdf`, () => {
+      // Same Dispatch No / Client / Date naming the plain PDF and Customer
+      // Bundle downloads already use, rather than this route's own older
+      // dispatch_no-only pattern.
+      const filename = buildDownloadFilename({
+        docType: suffix,
+        reference: bundle.dispatch.dispatch_no,
+        partyName: client && (client.legal_name || client.name),
+        date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+      });
+      res.download(gen.outPath, filename, () => {
         fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
       });
     } catch (e) {
