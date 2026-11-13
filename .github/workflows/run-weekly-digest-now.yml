@@ -1,0 +1,40 @@
+name: Force-send the weekly approval digest now
+
+# One-off, manually-triggered run of scripts/run-weekly-digest-now.js against
+# the production database and mailer, over the same SSH path deploy.yml /
+# run-grn-consolidation.yml / the diagnose-*.yml workflows already use (same
+# DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY/DEPLOY_PORT/DEPLOY_PATH secrets - no
+# new credentials needed).
+#
+# UNLIKE the diagnose-*.yml workflows, this one is NOT read-only - it sends
+# real emails to real department approvers (and the real Company Settings
+# Email Settings CC list) right now, bypassing the digest's own schedule.
+# Requested directly by the repo owner (2026-11-13), who explicitly confirmed
+# "force a real send now, in production" after being told exactly this.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH in and force-run the weekly digest
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ secrets.DEPLOY_PATH }}"
+
+            DATA_DIR=$(sudo -u erp sh -c "cat '$APP_DIR/.env' 2>/dev/null | sed -n 's/^DATA_DIR=//p'" | tail -1)
+            if [ -z "$DATA_DIR" ]; then DATA_DIR="$APP_DIR/db"; fi
+            DB_PATH="$DATA_DIR/erp.db"
+            echo "==> Using database: $DB_PATH"
+            if [ ! -f "$DB_PATH" ]; then
+              echo "erp.db not found at $DB_PATH - aborting." >&2
+              exit 1
+            fi
+            sudo -u erp node "$APP_DIR/scripts/run-weekly-digest-now.js" "$DB_PATH"
