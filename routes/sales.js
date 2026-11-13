@@ -986,7 +986,14 @@ router.get('/dispatches/:id/pdf', async (req, res) => {
   let gen;
   try {
     gen = await generateFgDispatchPdf(bundle.dispatch, bundle.items, client, getCompanySettings());
-    res.download(gen.outPath, `${bundle.dispatch.dispatch_no.replace(/\//g, '_')}.pdf`, () => {
+    // Filename reads Dispatch No, Client & Date - not just the dispatch
+    // number - per the owner's explicit ask (2026-11-14).
+    const filename = buildDownloadFilename({
+      reference: bundle.dispatch.dispatch_no,
+      partyName: client && (client.legal_name || client.name),
+      date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+    });
+    res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
     });
   } catch (e) {
