@@ -227,6 +227,23 @@ async function runInboundRfqScanSafely() {
 setTimeout(runInboundRfqScanSafely, 25000); // after the Service inbound-mail scan's own boot delay
 setInterval(runInboundRfqScanSafely, 60 * 1000);
 
+// Weekly, department-wise pending-approvals digest (2026-11-13) - checked
+// hourly; the module itself (lib/weeklyApprovalDigest.js) decides whether
+// the Admin-configured day/hour has actually arrived and whether it's
+// already been sent this week, so this timer's own 1-hour interval doesn't
+// need to line up exactly with the configured hour.
+const { runWeeklyApprovalDigest } = require('./lib/weeklyApprovalDigest');
+function runWeeklyApprovalDigestSafely() {
+  try {
+    const result = runWeeklyApprovalDigest();
+    if (result && result.sent) console.log(`[weekly-approval-digest] sent ${result.sent} department email(s)`);
+  } catch (e) {
+    console.error('[weekly-approval-digest] run failed:', e.message);
+  }
+}
+setTimeout(runWeeklyApprovalDigestSafely, 30000); // after the RFQ inbound-mail scan's own boot delay
+setInterval(runWeeklyApprovalDigestSafely, 60 * 60 * 1000);
+
 
 // Friendly names for UNIQUE-indexed columns, so a raw SQLite constraint
 // error ("UNIQUE constraint failed: clients.gstin") becomes a clean message

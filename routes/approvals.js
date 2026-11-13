@@ -589,7 +589,11 @@ async function notifyRequesterOfOutcome(approval, result, comment, actorName) {
       actor_name: actorName,
       reason: result === 'Rejected' && comment ? 'Reason: ' + comment : '',
     });
-    await sendMail({ to: requester.email, subject, text: body });
+    // 2026-11-13: no Company Settings Email Settings CC list on this one
+    // either - same as the "awaiting your approval" notification. The CC
+    // list now lives only on the weekly department digest
+    // (lib/weeklyApprovalDigest.js).
+    await sendMail({ to: requester.email, subject, text: body, skipDefaultCc: true });
   } catch (e) { /* best-effort - never let a notification failure affect the approval action itself */ }
 }
 
