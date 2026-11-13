@@ -13047,13 +13047,14 @@ window.focAction = async (id, action) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
     api('/settings/purchase').catch(() => null),
     api('/masters/departments'),
     api('/settings/sidebar-group-order').catch(() => ({ order: [] })),
     api('/admin/email-templates').catch(() => []),
+    api('/settings/weekly-digest').catch(() => null),
   ]);
   // Every group label the Admin might want to position: the 11 static NAV
   // groups, plus every real department name (covers both the per-login
@@ -13228,6 +13229,26 @@ PAGES['company-settings'] = async (el) => {
       </div>
       <div id="etc-body"></div>
     `)}
+    ${weeklyDigest ? collapsiblePanel('weekly-digest', 'Weekly Approval Digest', `
+      <p class="muted">A weekly, department-wise email summarizing every pending approval sitting with that department, color-coded by how many days it's been waiting - separate from the per-item "awaiting your approval" email and the 24h/12h escalation reminder, which keep firing as before. This is the one approval-related email that still copies the Company Settings Email Settings CC list. A department with nothing pending still gets a short "all clear" email that week.</p>
+      <div class="form-grid">
+        <div><label><input type="checkbox" id="wd-enabled" ${weeklyDigest.enabled ? 'checked' : ''}> Enabled</label></div>
+        <div><label>Day of week</label><select id="wd-day">
+          ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => `<option value="${i}" ${Number(weeklyDigest.day_of_week) === i ? 'selected' : ''}>${d}</option>`).join('')}
+        </select></div>
+        <div><label>Hour (server time, 24h)</label><select id="wd-hour">
+          ${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${Number(weeklyDigest.hour) === h ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="form-grid" style="margin-top:4px;">
+        <div><label>Green bucket - up to this many days</label><input id="wd-bucket1" type="number" min="0" value="${esc(weeklyDigest.bucket1_max_days)}"></div>
+        <div><label>Amber bucket - up to this many days</label><input id="wd-bucket2" type="number" min="1" value="${esc(weeklyDigest.bucket2_max_days)}"></div>
+        <div><label class="muted" style="display:block;margin-top:24px;">Beyond the amber cutoff is Red.</label></div>
+      </div>
+      <button class="btn" id="wd-save-btn" onclick="saveWeeklyDigestSettings()" style="margin-top:10px;">Save Weekly Digest Settings</button>
+      <div id="wd-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      ${weeklyDigest.last_sent_at ? `<p class="muted" style="margin-top:6px;">Last sent ${new Date(weeklyDigest.last_sent_at).toLocaleString()}.</p>` : `<p class="muted" style="margin-top:6px;">Not sent yet.</p>`}
+    `) : ''}
     ${collapsiblePanel('sidebar-group-order', 'Sidebar Group Order', `
       <p class="muted">Sets one sidebar group order that applies to every user, replacing the default alphabetical order. Includes every department-specific "Job Cards" group (a department's own tab, and the Admin/Project Manager per-department tabs) alongside the regular menu groups, so those can be positioned too instead of always sitting wherever they land by default.</p>
       <div class="muted" style="margin-bottom:8px;">Drag a group by its ⠿ handle to rearrange, then Save Order.
@@ -13283,6 +13304,18 @@ window.saveEmailTemplate = async () => {
       subject: val('etc-subject'), body: document.getElementById('etc-body-text').value,
     })});
     confirmSavedThenClose('etc-save-btn', 'company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.saveWeeklyDigestSettings = async () => {
+  const errEl = document.getElementById('wd-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/settings/weekly-digest', { method: 'PUT', body: JSON.stringify({
+      enabled: document.getElementById('wd-enabled').checked,
+      day_of_week: val('wd-day'), hour: val('wd-hour'),
+      bucket1_max_days: val('wd-bucket1'), bucket2_max_days: val('wd-bucket2'),
+    })});
+    confirmSavedThenClose('wd-save-btn', 'company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 window.saveSidebarGroupOrder = async () => {

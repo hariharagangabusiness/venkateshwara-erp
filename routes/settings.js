@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -164,6 +164,26 @@ router.get('/sidebar-group-order', (req, res) => res.json({ order: getSidebarGro
 router.put('/sidebar-group-order', requireRole('Admin'), (req, res) => {
   setSidebarGroupOrder((req.body && req.body.order) || []);
   res.json({ order: getSidebarGroupOrder() });
+});
+
+// Weekly, department-wise pending-approvals digest (2026-11-13) - GET open
+// to any authenticated user so the Company Settings page can always show
+// the current schedule, PUT Admin-only. See lib/weeklyApprovalDigest.js.
+router.get('/weekly-digest', (req, res) => res.json(getWeeklyDigestSettings()));
+router.put('/weekly-digest', requireRole('Admin'), (req, res) => {
+  const b = req.body || {};
+  const dayOfWeek = Math.min(6, Math.max(0, parseInt(b.day_of_week, 10) || 0));
+  const hour = Math.min(23, Math.max(0, parseInt(b.hour, 10) || 0));
+  const bucket1 = Math.max(0, parseInt(b.bucket1_max_days, 10) || 0);
+  const bucket2 = Math.max(bucket1 + 1, parseInt(b.bucket2_max_days, 10) || bucket1 + 1);
+  setWeeklyDigestSettings({
+    enabled: !!b.enabled,
+    day_of_week: dayOfWeek,
+    hour,
+    bucket1_max_days: bucket1,
+    bucket2_max_days: bucket2,
+  });
+  res.json(getWeeklyDigestSettings());
 });
 
 module.exports = router;
