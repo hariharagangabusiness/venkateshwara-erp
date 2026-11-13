@@ -3320,15 +3320,50 @@ window.toggleSOItems = async (id) => {
   if (showing) return;
   await loadSOItems(id);
 };
+// id -> currently-fetched items array, and id -> the one item row (if any)
+// being edited inline - so Edit/Save/Cancel on a row never needs a second
+// round trip just to redraw. PUT /orders/:id/items/:itemId already accepted
+// every one of these fields (description/qty/unit/rate/hsn/gst_rate) from
+// the day the route shipped - the frontend simply never offered Edit at
+// all, only Remove, which read (and was reported) as "I can only edit the
+// order's own header Description, not the item's own details."
+let SO_ITEMS_CACHE = {};
+let SO_ITEM_EDITING = {};
 async function loadSOItems(id) {
   const body = document.getElementById(`so-items-body-${id}`);
   body.innerHTML = '<p class="muted">Loading...</p>';
-  const items = await api(`/sales/orders/${id}/items`);
+  SO_ITEMS_CACHE[id] = await api(`/sales/orders/${id}/items`);
+  renderSOItemsBody(id);
+}
+function soItemLineFieldsHTML(id, it) {
+  return `
+    <div class="form-grid">
+      <div><label>Description</label><input id="so-item-desc-${id}" value="${esc(it.description)}"></div>
+      <div><label>Quantity</label><input id="so-item-qty-${id}" type="number" value="${it.quantity}"></div>
+      <div><label>Unit</label><input id="so-item-unit-${id}" value="${esc(it.unit)}"></div>
+      <div><label>Rate (₹)</label><input id="so-item-rate-${id}" type="number" value="${it.rate}"></div>
+      <div><label>HSN Code</label><input id="so-item-hsn-${id}" value="${esc(it.hsn_code || '')}"></div>
+      <div><label>GST Rate (%)</label><input id="so-item-gst-${id}" type="number" value="${it.gst_rate}"></div>
+    </div>`;
+}
+function renderSOItemsBody(id) {
+  const body = document.getElementById(`so-items-body-${id}`);
+  if (!body) return;
+  const items = SO_ITEMS_CACHE[id] || [];
+  const editingItemId = SO_ITEM_EDITING[id];
   body.innerHTML = `
-    ${tableHTML(['Description', 'Qty', 'Unit', 'Rate (₹)', 'Value (₹)', 'HSN', 'GST %', 'Dispatchable', ''], items, it => `
+    ${tableHTML(['Description', 'Qty', 'Unit', 'Rate (₹)', 'Value (₹)', 'HSN', 'GST %', 'Dispatchable', ''], items, it => editingItemId === it.id ? `
+      <tr><td colspan="9">
+        ${soItemLineFieldsHTML('edit-' + id, it)}
+        <button class="btn small" type="button" onclick="saveSOItemEdit(${id},${it.id})">Save</button>
+        <button class="btn small outline" type="button" onclick="cancelSOItemEdit(${id})">Cancel</button>
+      </td></tr>` : `
       <tr><td>${esc(it.description)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td><td>₹${fmt(it.value)}</td>
       <td>${esc(it.hsn_code)||'-'}</td><td>${it.gst_rate}%</td><td>${it.dispatchable_qty}</td>
-      <td>${it.dispatchable_qty === it.quantity ? `<button class="btn small outline" type="button" onclick="removeSOItem(${id},${it.id})">Remove</button>` : ''}</td></tr>`)}
+      <td>${actionButtonsCell(`
+        <button class="btn small outline" type="button" onclick="startSOItemEdit(${id},${it.id})">Edit</button>
+        ${it.dispatchable_qty === it.quantity ? `<button class="btn small outline" type="button" onclick="removeSOItem(${id},${it.id})">Remove</button>` : ''}
+      `)}</td></tr>`)}
     <h5 style="margin:10px 0 6px;">Add Line Item</h5>
     <div class="form-grid">
       <div><label>Description</label><input id="so-item-desc-${id}"></div>
@@ -3340,6 +3375,19 @@ async function loadSOItems(id) {
     </div>
     <button class="btn small" type="button" onclick="addSOItem(${id})">Add</button>`;
 }
+window.startSOItemEdit = (id, itemId) => { SO_ITEM_EDITING[id] = itemId; renderSOItemsBody(id); };
+window.cancelSOItemEdit = (id) => { SO_ITEM_EDITING[id] = null; renderSOItemsBody(id); };
+window.saveSOItemEdit = async (id, itemId) => {
+  const p = 'edit-' + id;
+  try {
+    await api(`/sales/orders/${id}/items/${itemId}`, { method: 'PUT', body: JSON.stringify({
+      description: val(`so-item-desc-${p}`), quantity: val(`so-item-qty-${p}`), unit: val(`so-item-unit-${p}`),
+      rate: val(`so-item-rate-${p}`), hsn_code: val(`so-item-hsn-${p}`), gst_rate: val(`so-item-gst-${p}`),
+    })});
+    SO_ITEM_EDITING[id] = null;
+    await loadSOItems(id);
+  } catch (e) { alert(e.message); }
+};
 window.addSOItem = async (id) => {
   try {
     await api(`/sales/orders/${id}/items`, { method: 'POST', body: JSON.stringify({
