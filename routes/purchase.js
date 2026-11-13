@@ -344,7 +344,11 @@ router.get('/velocity/drill', requirePermission('purchase_order.manage'), (req, 
 // purchase_request_items child-table shape into one result set, same
 // flattening GET /requests already does via item_summary).
 const OPEN_PO_STATUSES = ['Draft', 'PendingApproval', 'Open', 'PartiallyReceived'];
-const OPEN_PR_STATUSES = ['Draft', 'PendingQuotes', 'Pending'];
+// 'Approved' included deliberately (2026-11-13) - a PR only flips to
+// 'OrderPlaced' once a PO is actually raised against it, so 'Approved' means
+// exactly "cleared approval, but no PO created yet" - still open work from a
+// procurement standpoint, not yet closed out just because it's signed off.
+const OPEN_PR_STATUSES = ['Draft', 'PendingQuotes', 'Pending', 'Approved'];
 
 function openPoRows() {
   const rows = db.prepare(`
