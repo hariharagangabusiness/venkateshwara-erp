@@ -1691,6 +1691,17 @@ const MIGRATIONS = [
   // warning - set true by the manual-upload route, cleared by
   // ensureAnnexureForOrder() whenever it genuinely auto-generates.
   `ALTER TABLE sales_orders ADD COLUMN annexure_is_manual INTEGER DEFAULT 0`,
+  // Technician Tour Advance/Expense Ledger (2026-11-15) - the Service Report's
+  // own amount_updown_food figure is reviewed independently of the report's
+  // main status (which still governs the amount_travel/service/spares
+  // ServiceCollection reconciliation), so it can be approved/adjusted/
+  // rejected into the technician's monthly ledger without disturbing that
+  // separate workflow.
+  `ALTER TABLE service_reports ADD COLUMN updown_food_status TEXT DEFAULT 'Pending'`,
+  `ALTER TABLE service_reports ADD COLUMN updown_food_approved_amount REAL`,
+  `ALTER TABLE service_reports ADD COLUMN updown_food_reason TEXT`,
+  `ALTER TABLE service_reports ADD COLUMN updown_food_reviewed_by INTEGER`,
+  `ALTER TABLE service_reports ADD COLUMN updown_food_reviewed_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -2411,6 +2422,26 @@ function bootstrapDataExportGrant() {
   } catch (e) { console.error('[db] data.export permission grant backfill failed:', e.message); }
 }
 
+// Technician Tour Advance/Expense Ledger (2026-11-15) - reviewing a
+// technician's daily travel/lodging/food claims, their Service Report
+// Up/Down & Food figure, and issuing/settling the Tour Advance is an
+// Accounts function, same reasoning as every other finance-review
+// permission already defaulted to Accounts in this file - still freely
+// revocable afterward via the Role Permissions screen since it's in the
+// catalog, unlike a plain backfill-with-no-grant (job_card.recall,
+// project.plan_spares) where Admin alone decides who gets it.
+function bootstrapTourExpenseGrant() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('tour_expense.manage')`);
+    raw.exec(`
+      INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+      SELECT (SELECT id FROM roles WHERE name = 'Accounts'), (SELECT id FROM permissions WHERE code = 'tour_expense.manage')
+      WHERE (SELECT id FROM roles WHERE name = 'Accounts') IS NOT NULL
+        AND (SELECT id FROM permissions WHERE code = 'tour_expense.manage') IS NOT NULL
+    `);
+  } catch (e) { console.error('[db] tour_expense.manage permission grant backfill failed:', e.message); }
+}
+
 // Accounts Payable: booking a Purchase Invoice (vendor bill) starts this
 // chain immediately, same shape as ExpenseVoucher - step 1 is the Accounts
 // department's own HOD (always required), step 2 is Management above a
@@ -2638,5 +2669,5 @@ module.exports = {
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
   bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission,
-  bootstrapProjectPlanSparesPermission,
+  bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant,
 };

@@ -517,6 +517,8 @@ const NAV = [
     { id: 'salary-hikes', label: 'Salary Hike History' },
     { id: 'salary-hike-cycles', label: 'Salary Hike Cycles' },
     { id: 'salary-report', label: 'Salary Report' },
+    { id: 'tour-expenses-mine', label: 'My Travel & Expense' },
+    { id: 'tour-expenses-review', label: 'Technician Expense Review' },
   ]},
   { group: 'Projects Management', items: [
     { id: 'projects', label: 'Projects' },
@@ -10514,6 +10516,304 @@ window.submitPayrollApproval = async (id) => {
 window.payPayroll = async (id) => {
   await api(`/hr/salary-schedule/${id}/mark-paid`, { method: 'POST', body: JSON.stringify({ cash_or_bank: 'Bank' })});
   navigate('payroll');
+};
+
+// ===================== Technician Tour Advance/Expense Ledger =====================
+// "My Travel & Expense" (technician self-service, mobile-first day entry)
+// and "Technician Expense Review" (Accounts/HOD line-by-line review) - see
+// CLAUDE.md's 2026-11-15 entry for the full design.
+window.TEM_STATE = { legs: [{ mode_of_transport: '', from_location: '', to_location: '', amount: '' }], legFiles: {}, lodgingOn: false, lodging: { name: '', amount: '' }, lodgingFile: null, foodOn: false, food: { amount: '' }, foodFile: null, editingId: null };
+function temResetState() {
+  window.TEM_STATE = { legs: [{ mode_of_transport: '', from_location: '', to_location: '', amount: '' }], legFiles: {}, lodgingOn: false, lodging: { name: '', amount: '' }, lodgingFile: null, foodOn: false, food: { amount: '' }, foodFile: null, editingId: null };
+}
+PAGES['tour-expenses-mine'] = async (el) => {
+  if (!ME.employee_id) { el.innerHTML = `<div class="panel"><p class="msg err">Your login has no linked employee record, so there's nothing to log travel/expense against. Ask Admin to link one under Users & Roles.</p></div>`; return; }
+  const month = window.__TEM_MONTH || new Date().toISOString().slice(0, 7);
+  window.__TEM_MONTH = month;
+  const [days, months, advances] = await Promise.all([
+    api(`/tour-expenses/days?month=${month}`), api('/tour-expenses/months'), api('/tour-expenses/advances'),
+  ]);
+  window.__TEM_DAYS = days;
+  const monthRow = months.find(m => m.month === month);
+  const totalAdvance = advances.reduce((s, a) => s + a.amount, 0);
+  const locked = monthRow && monthRow.status !== 'Draft';
+  temResetState();
+  el.innerHTML = `
+    <div class="panel">
+      <h3>My Travel &amp; Expense</h3>
+      <div class="form-grid">
+        <div><label>Month</label><input type="month" id="tem-month" value="${month}" onchange="window.__TEM_MONTH=this.value;navigate('tour-expenses-mine')"></div>
+        <div><label>Tour Advance Issued (all-time)</label><input value="&#8377;${fmt(totalAdvance)}" disabled></div>
+        <div><label>Month Status</label><input value="${esc(monthRow ? monthRow.status : 'Draft')}" disabled></div>
+      </div>
+      ${locked ? `<p class="msg err">${esc(month)} has already been submitted for review - no further days can be logged or edited this month.</p>` :
+        `<button class="btn" onclick="navigate('tour-expenses-mine');document.getElementById('tem-editor').scrollIntoView({behavior:'smooth'})">+ Log a day</button>
+         <button class="btn outline" onclick="submitTemMonth()">Submit ${esc(month)} for Review</button>`}
+      <div id="tem-editor" style="margin-top:14px;"></div>
+    </div>
+    ${collapsiblePanel('tem-days', `Logged Days (${days.length})`, `<div id="tem-days-body">${renderTemDaysList(days)}</div>`)}
+    <div class="panel">
+      <h3>Monthly Expense (separate lump-sum claim)</h3>
+      <div class="form-grid">
+        <div><label>What is it</label><input id="tem-allow-label" value="${esc(monthRow && monthRow.allowance_label || '')}" placeholder="e.g. Mobile &amp; data allowance" ${monthRow && monthRow.allowance_status !== 'Pending' && monthRow.allowance_amount != null ? 'disabled' : ''}></div>
+        <div><label>Amount (&#8377;)</label><input type="number" id="tem-allow-amount" value="${monthRow && monthRow.allowance_amount != null ? monthRow.allowance_amount : ''}" ${monthRow && monthRow.allowance_status !== 'Pending' && monthRow.allowance_amount != null ? 'disabled' : ''}></div>
+        <div><label>Receipt</label><input type="file" id="tem-allow-file" ${monthRow && monthRow.allowance_status !== 'Pending' && monthRow.allowance_amount != null ? 'disabled' : ''}></div>
+      </div>
+      ${monthRow && monthRow.allowance_amount != null ? `<p>Status: ${badge(monthRow.allowance_status)}${monthRow.allowance_reason ? ' - ' + esc(monthRow.allowance_reason) : ''}</p>` : ''}
+      ${!monthRow || monthRow.allowance_status === 'Pending' || monthRow.allowance_amount == null ? `<button class="btn" onclick="saveTemAllowance()">Save Monthly Expense Claim</button>` : ''}
+    </div>`;
+  renderTemEditor();
+};
+function renderTemDaysList(days) {
+  if (!days.length) return '<p class="muted">No days logged yet this month.</p>';
+  return tableHTML(['Date', 'Travel', 'Lodging', 'Food', 'Claimed (&#8377;)', 'Status', ''], days, (d) => `
+    <tr>
+      <td>${esc(d.entry_date)}</td>
+      <td>${d.legs.map(l => esc(l.mode_of_transport) + (l.from_location ? ' ' + esc(l.from_location) + '&rarr;' + esc(l.to_location || '') : '')).join(', ')}</td>
+      <td>${d.lodging_claimed ? '&#8377;' + fmt(d.lodging_amount) : '-'}</td>
+      <td>${d.food_claimed ? '&#8377;' + fmt(d.food_amount) : '-'}</td>
+      <td>&#8377;${fmt(d.claimed_amount)}${d.status !== 'Open' ? ` (approved &#8377;${fmt(d.approved_amount)})` : ''}</td>
+      <td>${badge(d.status)}${d.review_reason ? '<br><span class="muted">' + esc(d.review_reason) + '</span>' : ''}</td>
+      <td>${actionButtonsCell(d.status === 'Open' ? `<button class="btn small outline" onclick="editTemDay(${d.id})">Edit</button><button class="btn small outline" onclick="deleteTemDay(${d.id})">Delete</button>` : '')}</td>
+    </tr>`);
+}
+window.editTemDay = (id) => {
+  const d = (window.__TEM_DAYS || []).find(x => x.id === id);
+  if (!d) return;
+  window.TEM_STATE = {
+    editingId: d.id, legs: d.legs.map(l => ({ mode_of_transport: l.mode_of_transport, from_location: l.from_location || '', to_location: l.to_location || '', amount: l.amount })),
+    legFiles: {}, lodgingOn: !!d.lodging_claimed, lodging: { name: d.lodging_name || '', amount: d.lodging_amount || '' }, lodgingFile: null,
+    foodOn: !!d.food_claimed, food: { amount: d.food_amount || '' }, foodFile: null, entryDate: d.entry_date,
+  };
+  renderTemEditor();
+  document.getElementById('tem-editor').scrollIntoView({ behavior: 'smooth' });
+};
+window.deleteTemDay = async (id) => {
+  if (!confirm('Delete this day\'s entry?')) return;
+  try { await api(`/tour-expenses/days/${id}`, { method: 'DELETE' }); navigate('tour-expenses-mine'); } catch (e) { alert(e.message); }
+};
+const TEM_MODES = ['Bus', 'Taxi', 'Auto', 'Train', 'Flight', 'Own Vehicle', 'Other'];
+function renderTemEditor() {
+  const el = document.getElementById('tem-editor');
+  if (!el) return;
+  const s = window.TEM_STATE;
+  el.innerHTML = `
+    <div class="panel" style="background:var(--panel-bg,#f7f8fa);">
+      <h4 style="margin-top:0;">${s.editingId ? 'Edit' : 'Log'} Day ${s.entryDate ? '- ' + esc(s.entryDate) : ''}</h4>
+      ${!s.editingId ? `<div class="form-grid"><div><label>Date</label><input type="date" id="tem-date" value="${new Date().toISOString().slice(0,10)}"></div></div>` : ''}
+      <h5>Travel</h5>
+      <div id="tem-legs">${s.legs.map((l, i) => `
+        <div class="form-grid" style="margin-bottom:6px;">
+          <div><label>Mode</label><select onchange="TEM_STATE.legs[${i}].mode_of_transport=this.value">
+            <option value="">- select -</option>${TEM_MODES.map(m => `<option value="${m}" ${l.mode_of_transport===m?'selected':''}>${m}</option>`).join('')}
+          </select></div>
+          <div><label>From</label><input value="${esc(l.from_location)}" onchange="TEM_STATE.legs[${i}].from_location=this.value"></div>
+          <div><label>To</label><input value="${esc(l.to_location)}" onchange="TEM_STATE.legs[${i}].to_location=this.value"></div>
+          <div><label>Amount (&#8377;)</label><input type="number" value="${l.amount}" onchange="TEM_STATE.legs[${i}].amount=this.value"></div>
+          <div><label>Receipt</label><input type="file" onchange="TEM_STATE.legFiles[${i}]=this.files[0]"></div>
+          <div>${s.legs.length > 1 ? `<button class="btn small outline" type="button" onclick="TEM_STATE.legs.splice(${i},1);renderTemEditor()">Remove</button>` : ''}</div>
+        </div>`).join('')}</div>
+      <button class="btn small outline" type="button" onclick="TEM_STATE.legs.push({mode_of_transport:'',from_location:'',to_location:'',amount:''});renderTemEditor()">+ Add another leg</button>
+      <h5>Lodging <label style="font-size:12px;font-weight:400;"><input type="checkbox" ${s.lodgingOn?'checked':''} onchange="TEM_STATE.lodgingOn=this.checked;renderTemEditor()"> had a stay today</label></h5>
+      ${s.lodgingOn ? `<div class="form-grid">
+        <div><label>Hotel / stay name</label><input value="${esc(s.lodging.name)}" onchange="TEM_STATE.lodging.name=this.value"></div>
+        <div><label>Amount (&#8377;)</label><input type="number" value="${s.lodging.amount}" onchange="TEM_STATE.lodging.amount=this.value"></div>
+        <div><label>Receipt</label><input type="file" onchange="TEM_STATE.lodgingFile=this.files[0]"></div>
+      </div>` : ''}
+      <h5>Food <label style="font-size:12px;font-weight:400;"><input type="checkbox" ${s.foodOn?'checked':''} onchange="TEM_STATE.foodOn=this.checked;renderTemEditor()"> separate claim today</label></h5>
+      ${s.foodOn ? `<div class="form-grid">
+        <div><label>Amount (&#8377;)</label><input type="number" value="${s.food.amount}" onchange="TEM_STATE.food.amount=this.value"></div>
+        <div><label>Receipt (optional)</label><input type="file" onchange="TEM_STATE.foodFile=this.files[0]"></div>
+      </div>` : ''}
+      <button class="btn" onclick="saveTemDay()">Save this day</button>
+      <button class="btn outline" type="button" onclick="temResetState();renderTemEditor()">Cancel</button>
+      <div id="tem-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    </div>`;
+}
+window.saveTemDay = async () => {
+  const errEl = document.getElementById('tem-err');
+  errEl.style.display = 'none';
+  const s = window.TEM_STATE;
+  const entryDate = s.editingId ? s.entryDate : val('tem-date');
+  try {
+    const day = await api('/tour-expenses/days', { method: 'POST', body: JSON.stringify({
+      entry_date: entryDate,
+      legs: s.legs.map(l => ({ mode_of_transport: l.mode_of_transport, from_location: l.from_location, to_location: l.to_location, amount: l.amount })),
+      lodging: { claimed: s.lodgingOn, name: s.lodging.name, amount: s.lodging.amount },
+      food: { claimed: s.foodOn, amount: s.food.amount },
+    })});
+    for (let i = 0; i < day.legs.length; i++) {
+      const f = s.legFiles[i];
+      if (f) { const fd = new FormData(); fd.append('file', f); await apiUpload(`/tour-expenses/legs/${day.legs[i].id}/receipt`, fd); }
+    }
+    if (s.lodgingOn && s.lodgingFile) { const fd = new FormData(); fd.append('file', s.lodgingFile); await apiUpload(`/tour-expenses/days/${day.id}/lodging-receipt`, fd); }
+    if (s.foodOn && s.foodFile) { const fd = new FormData(); fd.append('file', s.foodFile); await apiUpload(`/tour-expenses/days/${day.id}/food-receipt`, fd); }
+    navigate('tour-expenses-mine');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.submitTemMonth = async () => {
+  if (!confirm(`Submit ${window.__TEM_MONTH} for review? No day this month can be edited after this.`)) return;
+  try { await api('/tour-expenses/months/submit', { method: 'POST', body: JSON.stringify({ month: window.__TEM_MONTH }) }); navigate('tour-expenses-mine'); }
+  catch (e) { alert(e.message); }
+};
+window.saveTemAllowance = async () => {
+  try {
+    await api('/tour-expenses/months/allowance', { method: 'POST', body: JSON.stringify({ month: window.__TEM_MONTH, label: val('tem-allow-label'), amount: val('tem-allow-amount') }) });
+    const fileInput = document.getElementById('tem-allow-file');
+    if (fileInput && fileInput.files.length) {
+      const fd = new FormData(); fd.append('file', fileInput.files[0]); fd.append('month', window.__TEM_MONTH);
+      await apiUpload('/tour-expenses/months/allowance/receipt', fd);
+    }
+    navigate('tour-expenses-mine');
+  } catch (e) { alert(e.message); }
+};
+
+// ---- Technician Expense Review (Accounts/HOD) ----
+PAGES['tour-expenses-review'] = async (el) => {
+  const employees = await api('/hr/employees');
+  window.__TER_EMPLOYEES = employees;
+  const employeeId = window.__TER_EMPLOYEE_ID || (employees[0] && employees[0].id);
+  const month = window.__TER_MONTH || new Date().toISOString().slice(0, 7);
+  window.__TER_EMPLOYEE_ID = employeeId; window.__TER_MONTH = month;
+  el.innerHTML = `
+    <div class="panel">
+      <h3>Technician Expense Review</h3>
+      <div class="form-grid">
+        <div><label>Technician</label><select id="ter-emp" onchange="window.__TER_EMPLOYEE_ID=Number(this.value);navigate('tour-expenses-review')">
+          ${employees.map(e => `<option value="${e.id}" ${e.id===employeeId?'selected':''}>${esc(e.full_name)}</option>`).join('')}
+        </select></div>
+        <div><label>Month</label><input type="month" value="${month}" onchange="window.__TER_MONTH=this.value;navigate('tour-expenses-review')"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h4>Issue Tour Advance</h4>
+      <div class="form-grid">
+        <div><label>Amount (&#8377;)</label><input type="number" id="ter-adv-amount"></div>
+        <div><label>Date</label><input type="date" id="ter-adv-date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div><label>Mode</label><select id="ter-adv-mode"><option>Cash</option><option>Bank</option></select></div>
+        <div><label>Notes</label><input id="ter-adv-notes"></div>
+      </div>
+      <button class="btn" onclick="issueTourAdvance()">Issue Advance</button>
+    </div>
+    <div id="ter-body"></div>`;
+  if (employeeId) await loadTerBundle();
+};
+window.issueTourAdvance = async () => {
+  try {
+    await api('/tour-expenses/advances', { method: 'POST', body: JSON.stringify({
+      employee_id: window.__TER_EMPLOYEE_ID, amount: val('ter-adv-amount'), issued_date: val('ter-adv-date'), payment_mode: val('ter-adv-mode'), notes: val('ter-adv-notes'),
+    })});
+    navigate('tour-expenses-review');
+  } catch (e) { alert(e.message); }
+};
+async function loadTerBundle() {
+  const bundle = await api(`/tour-expenses/review-bundle?employee_id=${window.__TER_EMPLOYEE_ID}&month=${window.__TER_MONTH}`);
+  window.__TER_BUNDLE = bundle;
+  const t = bundle.totals;
+  const body = document.getElementById('ter-body');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="panel">
+      <div class="form-grid">
+        <div><label>Advance Issued (all-time)</label><input value="&#8377;${fmt(t.advance)}" disabled></div>
+        <div><label>Claimed (all sources, this month)</label><input value="&#8377;${fmt(t.claimed)}" disabled></div>
+        <div><label>Approved So Far</label><input value="&#8377;${fmt(t.approved)}" disabled></div>
+        <div><label>Balance to Return</label><input value="${t.balance >= 0 ? 'Returns' : 'Owed'} &#8377;${fmt(Math.abs(t.balance))}" disabled></div>
+      </div>
+    </div>
+    ${collapsiblePanel('ter-days', `Daily Travel, Lodging &amp; Food (${bundle.days.length} days)`, `<div>${renderTerDaysTable(bundle.days)}</div>`)}
+    ${collapsiblePanel('ter-svc', `Service Visit Charges - Up/Down &amp; Food (${bundle.serviceReports.length})`, `<div>${renderTerSvcTable(bundle.serviceReports)}</div>`)}
+    <div class="panel">
+      <h4>Monthly Expense Claim</h4>
+      ${bundle.monthRow && bundle.monthRow.allowance_amount != null ? `
+        <p>${esc(bundle.monthRow.allowance_label || 'Monthly expense')}: &#8377;${fmt(bundle.monthRow.allowance_amount)} - ${badge(bundle.monthRow.allowance_status)}
+          ${bundle.monthRow.allowance_attachment_path ? ` <a href="${bundle.monthRow.allowance_attachment_path}" target="_blank">Receipt</a>` : ''}
+          ${bundle.monthRow.allowance_reason ? '<br><span class="muted">' + esc(bundle.monthRow.allowance_reason) + '</span>' : ''}</p>
+        ${bundle.monthRow.allowance_status === 'Pending' ? `
+          <button class="btn small green" onclick="decideTerAllowance('Approve')">Approve</button>
+          <button class="btn small outline" onclick="decideTerAllowance('Adjust')">Adjust</button>
+          <button class="btn small outline" onclick="decideTerAllowance('Reject')">Reject</button>` : ''}
+      ` : '<p class="muted">No monthly expense claim filed for this month.</p>'}
+    </div>
+    <div class="panel">
+      <div class="form-grid">
+        <div><label>Collected (approved Service Reports)</label><input value="&#8377;${fmt(t.collected)}" disabled></div>
+        <div><label>Approved Expenses</label><input value="&#8377;${fmt(t.approvedExpenses)}" disabled></div>
+        <div><label>Net (Earnings vs. Expenses)</label><input value="${t.net >= 0 ? 'Earns' : 'Expenses exceed by'} &#8377;${fmt(Math.abs(t.net))}" disabled></div>
+      </div>
+      <button class="btn" onclick="finalizeTerMonth()">Finalize Month &amp; Post to Ledger</button>
+      <div id="ter-finalize-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    </div>`;
+}
+function renderTerDaysTable(days) {
+  if (!days.length) return '<p class="muted">No days logged yet this month.</p>';
+  return tableHTML(['Date', 'Travel', 'Lodging', 'Food', 'Claimed (&#8377;)', 'Status', ''], days, (d) => `
+    <tr>
+      <td>${esc(d.entry_date)}</td>
+      <td>${d.legs.map(l => `${esc(l.mode_of_transport)} ${esc(l.from_location||'')}&rarr;${esc(l.to_location||'')} (&#8377;${fmt(l.amount)})${l.attachment_path ? ` <a href="${l.attachment_path}" target="_blank">receipt</a>` : ' <span class="muted">(no receipt)</span>'}`).join('<br>')}</td>
+      <td>${d.lodging_claimed ? `${esc(d.lodging_name||'')} &#8377;${fmt(d.lodging_amount)}${d.lodging_attachment_path ? ` <a href="${d.lodging_attachment_path}" target="_blank">receipt</a>` : ' <span class="muted">(no receipt)</span>'}` : '-'}</td>
+      <td>${d.food_claimed ? `&#8377;${fmt(d.food_amount)}${d.food_attachment_path ? ` <a href="${d.food_attachment_path}" target="_blank">receipt</a>` : ''}` : '-'}</td>
+      <td>&#8377;${fmt(d.claimed_amount)}</td>
+      <td>${badge(d.status)}${d.review_reason ? '<br><span class="muted">' + esc(d.review_reason) + '</span>' : ''}${d.approved_amount != null ? '<br>Approved: &#8377;' + fmt(d.approved_amount) : ''}</td>
+      <td>${actionButtonsCell(d.status === 'PendingReview' ? `
+        <button class="btn small green" onclick="decideTerDay(${d.id},'Approve')">Approve</button>
+        <button class="btn small outline" onclick="decideTerDay(${d.id},'Adjust')">Adjust</button>
+        <button class="btn small outline" onclick="decideTerDay(${d.id},'Reject')">Reject</button>` : '')}</td>
+    </tr>`);
+}
+function renderTerSvcTable(rows) {
+  if (!rows.length) return '<p class="muted">No Service Reports with an Up/Down &amp; Food charge this month.</p>';
+  return tableHTML(['Date', 'SR No', 'Customer', 'Claimed (&#8377;)', 'Status', ''], rows, (r) => `
+    <tr>
+      <td>${esc(r.activity_date)}</td><td>${esc(r.sr_no)}</td><td>${esc(r.client_name || r.customer_name || '-')}</td>
+      <td>&#8377;${fmt(r.amount_updown_food)}</td>
+      <td>${badge(r.updown_food_status)}${r.updown_food_reason ? '<br><span class="muted">' + esc(r.updown_food_reason) + '</span>' : ''}${r.updown_food_approved_amount != null ? '<br>Approved: &#8377;' + fmt(r.updown_food_approved_amount) : ''}</td>
+      <td>${actionButtonsCell(r.updown_food_status === 'Pending' ? `
+        <button class="btn small green" onclick="decideTerSvc(${r.id},'Approve')">Approve</button>
+        <button class="btn small outline" onclick="decideTerSvc(${r.id},'Adjust')">Adjust</button>
+        <button class="btn small outline" onclick="decideTerSvc(${r.id},'Reject')">Reject</button>` : '')}</td>
+    </tr>`);
+}
+async function terReasonAndAmount(action, claimedAmount) {
+  let approved_amount, reason;
+  if (action === 'Adjust') {
+    approved_amount = prompt(`Approve what amount (of ₹${fmt(claimedAmount)} claimed)?`, claimedAmount);
+    if (approved_amount === null) return null;
+    reason = prompt('Reason for the adjustment (shown to the technician):');
+    if (reason === null || !reason.trim()) return null;
+  } else if (action === 'Reject') {
+    reason = prompt('Reason for rejecting this claim (shown to the technician):');
+    if (reason === null || !reason.trim()) return null;
+  }
+  return { approved_amount, reason };
+}
+window.decideTerDay = async (id, action) => {
+  const day = window.__TER_BUNDLE.days.find(d => d.id === id);
+  const extra = await terReasonAndAmount(action, day.claimed_amount);
+  if (action !== 'Approve' && !extra) return;
+  try { await api(`/tour-expenses/days/${id}/decide`, { method: 'POST', body: JSON.stringify({ action, ...(extra || {}) }) }); navigate('tour-expenses-review'); }
+  catch (e) { alert(e.message); }
+};
+window.decideTerAllowance = async (action) => {
+  const m = window.__TER_BUNDLE.monthRow;
+  const extra = await terReasonAndAmount(action, m.allowance_amount);
+  if (action !== 'Approve' && !extra) return;
+  try { await api(`/tour-expenses/months/${window.__TER_EMPLOYEE_ID}/${window.__TER_MONTH}/allowance/decide`, { method: 'POST', body: JSON.stringify({ action, ...(extra || {}) }) }); navigate('tour-expenses-review'); }
+  catch (e) { alert(e.message); }
+};
+window.decideTerSvc = async (id, action) => {
+  const r = window.__TER_BUNDLE.serviceReports.find(x => x.id === id);
+  const extra = await terReasonAndAmount(action, r.amount_updown_food);
+  if (action !== 'Approve' && !extra) return;
+  try { await api(`/tour-expenses/service-reports/${id}/updown-decide`, { method: 'POST', body: JSON.stringify({ action, ...(extra || {}) }) }); navigate('tour-expenses-review'); }
+  catch (e) { alert(e.message); }
+};
+window.finalizeTerMonth = async () => {
+  const errEl = document.getElementById('ter-finalize-err');
+  errEl.style.display = 'none';
+  if (!confirm(`Finalize ${window.__TER_MONTH} for this technician? This locks the month.`)) return;
+  try { await api(`/tour-expenses/months/${window.__TER_EMPLOYEE_ID}/${window.__TER_MONTH}/finalize`, { method: 'POST' }); navigate('tour-expenses-review'); }
+  catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
 // ---- Leave Balances Master ----

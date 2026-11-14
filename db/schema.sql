@@ -1244,3 +1244,88 @@ CREATE TABLE IF NOT EXISTS foreign_payment_invoice_lines (
   date_of_shipment TEXT,
   sort_order INTEGER DEFAULT 0
 );
+
+-- ===================== TECHNICIAN TOUR ADVANCE & DAILY EXPENSE LEDGER =====================
+-- Automates the field technician's paper tour-expense claim: an advance
+-- issued against upcoming travel, logged day-by-day (as it happens, not
+-- retyped at month-end), reviewed line-by-line by Accounts/HOD (approve,
+-- reject, or reduce a day's claim), and netted against the advance in one
+-- running ledger. Deliberately a dedicated advance type, not a reuse of
+-- salary_advances - this one settles directly with Accounts (cash/bank),
+-- never via a payroll deduction.
+CREATE TABLE IF NOT EXISTS tour_advances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  amount REAL NOT NULL,
+  issued_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  payment_mode TEXT DEFAULT 'Cash',    -- Cash, Bank
+  notes TEXT,
+  issued_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- One row per calendar date a technician actually travelled. Lodging and
+-- Food are genuinely optional per day (most days have neither or one, not
+-- both) - the *_claimed flags distinguish "nothing to claim" from "a day
+-- that was never logged at all", which the ledger needs to tell apart.
+-- The whole day is one reviewable unit (approve/reject/adjust), matching the
+-- owner's own framing ("reject any day's claim or deduct the amount") -
+-- there is no per-leg decision, only a per-day one.
+CREATE TABLE IF NOT EXISTS tour_expense_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  entry_date TEXT NOT NULL,
+  status TEXT DEFAULT 'Open',          -- Open (still editable), PendingReview, Approved, Adjusted, Rejected
+  food_claimed INTEGER DEFAULT 0,
+  food_amount REAL DEFAULT 0,
+  food_attachment_path TEXT,
+  lodging_claimed INTEGER DEFAULT 0,
+  lodging_name TEXT,
+  lodging_amount REAL DEFAULT 0,
+  lodging_attachment_path TEXT,
+  claimed_amount REAL DEFAULT 0,       -- legs + lodging + food, recomputed server-side on every save
+  approved_amount REAL,                -- NULL until reviewed
+  review_reason TEXT,
+  reviewed_by INTEGER REFERENCES users(id),
+  reviewed_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(employee_id, entry_date)
+);
+
+-- A day can have several legs (different mode/destination), each with its
+-- own receipt - a bus ticket and a taxi receipt are different proofs even
+-- on the same day.
+CREATE TABLE IF NOT EXISTS tour_expense_legs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day_id INTEGER NOT NULL REFERENCES tour_expense_days(id),
+  mode_of_transport TEXT NOT NULL,
+  from_location TEXT,
+  to_location TEXT,
+  amount REAL NOT NULL DEFAULT 0,
+  attachment_path TEXT,
+  sort_order INTEGER DEFAULT 0
+);
+
+-- One header per employee per calendar month - the unit that actually gets
+-- Submitted (locking every day that month for editing) and Finalized once
+-- every day's decision is in. The monthly lump-sum allowance (e.g. mobile/
+-- data) is a separate claim on this same header, reviewed once, independent
+-- of the day-wise travel/lodging/food ledger above.
+CREATE TABLE IF NOT EXISTS tour_expense_months (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  month TEXT NOT NULL,                 -- 'YYYY-MM'
+  status TEXT DEFAULT 'Draft',         -- Draft, Submitted, Closed
+  allowance_label TEXT,
+  allowance_amount REAL,
+  allowance_attachment_path TEXT,
+  allowance_status TEXT DEFAULT 'Pending', -- Pending, Approved, Adjusted, Rejected (only meaningful once allowance_amount is set)
+  allowance_approved_amount REAL,
+  allowance_reason TEXT,
+  submitted_at TEXT,
+  submitted_by INTEGER REFERENCES users(id),
+  closed_at TEXT,
+  closed_by INTEGER REFERENCES users(id),
+  UNIQUE(employee_id, month)
+);
