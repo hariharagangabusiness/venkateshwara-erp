@@ -6802,8 +6802,16 @@ window.dismissRfqResponse = async (id) => {
 };
 function prItemOptions(selectedId, itemsOverride) {
   const items = itemsOverride || window.__PR_ITEMS || [];
+  // A native <option> can only be colored as a whole (no partial/inline
+  // styling of just the stock figure), so an in-stock item renders green
+  // and an out-of-stock one renders in the muted "no stock" red/grey -
+  // the closest a plain <select> can get to highlighting availability.
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
-    .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)} (Stock: ${fmt(i.current_stock || 0)} ${esc(i.unit||'')})</option>`).join('')}`;
+    .map(i => {
+      const stock = Number(i.current_stock) || 0;
+      const color = stock > 0 ? '#1a7f37' : '#b42318';
+      return `<option value="${i.id}" ${i.id===selectedId?'selected':''} style="color:${color};">${esc(i.name)} (Stock: ${fmt(stock)} ${esc(i.unit||'')})</option>`;
+    }).join('')}`;
 }
 // Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
 // 6 columns in both forms.
