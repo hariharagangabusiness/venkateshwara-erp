@@ -1679,3 +1679,9 @@ Verified end-to-end on a scratch server: created a client, a Sales-Order-born pr
 Same-day follow-up to the Project/Item picker display fix above - the owner asked for the Item picker's stock figure to render in green. A native `<option>` can't color just part of its text (no inline spans inside an option), so `prItemOptions()` now colors the whole option: green (`#1a7f37`) when `current_stock > 0`, red (`#b42318`) when it's zero - the closest a plain `<select>` can get to flagging availability, rather than a literal partial-text color which the browser doesn't support.
 
 Verified via Puppeteer against the real New Purchase Request form: an item with stock renders with `color: rgb(26, 127, 55)` (green), a zero-stock item with `color: rgb(180, 35, 24)` (red).
+
+## Purchase Request item picker: only the stock figure is colored, not the whole item (2026-11-14)
+
+Same-day correction to the stock-color round above - the owner clarified only the stock quantity should be color-coded, not the entire item name. Reverted the whole-`<option>` green/red coloring (a native `<option>` has no way to color just part of its text) and instead added a small, separately-colored "Stock: N unit" readout (`prStockBadgeHTML()`/`window.updatePRStockBadge()`) next to the item picker - green when `current_stock > 0`, red when zero - updated live on New PR's own item change, and automatically correct on Edit PR via its existing full-row re-render. The dropdown list itself (and the collapsed select's own text) is back to plain, uncolored text.
+
+Verified via Puppeteer against the real New Purchase Request form: every option in the dropdown carries no color (confirmed `style.color` empty on all), the item select itself renders in the default black, and the separate badge correctly reads green ("Stock: 250 KGS") for an in-stock item and red ("Stock: 0 Mtr") once switched to a zero-stock one.

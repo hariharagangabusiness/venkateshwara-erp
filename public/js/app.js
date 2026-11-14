@@ -6802,17 +6802,31 @@ window.dismissRfqResponse = async (id) => {
 };
 function prItemOptions(selectedId, itemsOverride) {
   const items = itemsOverride || window.__PR_ITEMS || [];
-  // A native <option> can only be colored as a whole (no partial/inline
-  // styling of just the stock figure), so an in-stock item renders green
-  // and an out-of-stock one renders in the muted "no stock" red/grey -
-  // the closest a plain <select> can get to highlighting availability.
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
-    .map(i => {
-      const stock = Number(i.current_stock) || 0;
-      const color = stock > 0 ? '#1a7f37' : '#b42318';
-      return `<option value="${i.id}" ${i.id===selectedId?'selected':''} style="color:${color};">${esc(i.name)} (Stock: ${fmt(stock)} ${esc(i.unit||'')})</option>`;
-    }).join('')}`;
+    .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)} (Stock: ${fmt(Number(i.current_stock) || 0)} ${esc(i.unit||'')})</option>`).join('')}`;
 }
+// A native <option> can only be colored as a whole - there's no way to
+// color just the stock figure inside it while leaving the item name its
+// normal color - so the dropdown list itself stays plain text, and this
+// renders a small, separately-colored "Stock: N unit" readout next to the
+// picker for whichever item is currently selected (green if available, red
+// if zero), updated live on every change via badgeElId's onchange wiring.
+function prStockBadgeHTML(badgeId, items, selectedId) {
+  const it = items.find(x => x.id === Number(selectedId));
+  if (!it) return `<span id="${badgeId}"></span>`;
+  const stock = Number(it.current_stock) || 0;
+  const color = stock > 0 ? '#1a7f37' : '#b42318';
+  return `<span id="${badgeId}" style="color:${color};font-weight:600;white-space:nowrap;">Stock: ${fmt(stock)} ${esc(it.unit||'')}</span>`;
+}
+window.updatePRStockBadge = (badgeId, itemId) => {
+  const el = document.getElementById(badgeId);
+  if (!el) return;
+  const it = (window.__PR_ITEMS || []).find(x => x.id === Number(itemId));
+  if (!it) { el.outerHTML = `<span id="${badgeId}"></span>`; return; }
+  const stock = Number(it.current_stock) || 0;
+  const color = stock > 0 ? '#1a7f37' : '#b42318';
+  el.outerHTML = `<span id="${badgeId}" style="color:${color};font-weight:600;white-space:nowrap;">Stock: ${fmt(stock)} ${esc(it.unit||'')}</span>`;
+};
 // Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
 // 6 columns in both forms.
 const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 120px 44px';
@@ -6821,10 +6835,11 @@ function renderPRLines() {
   if (!el) return;
   const total = PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
   el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
-      <div><div style="display:flex;gap:6px;align-items:flex-start;">
+      <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:0 0 auto;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';showVendorsForPRLine(${i})"`)}</div>
+          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';updatePRStockBadge('pr-stock-${i}',this.value);showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
+        ${prStockBadgeHTML(`pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
       </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value"></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></div>
@@ -7228,8 +7243,11 @@ function renderEditPRLines() {
   const ro = EDIT_PR_ITEMS_LOCKED;
   const total = EDIT_PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
   el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
-      <div>${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-        `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}</div>
+      <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
+        ${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
+          `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}
+        ${prStockBadgeHTML(`edit-pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
+      </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" ${ro ? 'disabled' : ''}></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></div>
       <div><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" ${ro ? 'disabled' : ''}></div>
