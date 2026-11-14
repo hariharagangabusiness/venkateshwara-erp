@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, hasPermission } = require('../middleware/auth');
+const { getProjectPlanSparesMode } = require('../lib/settings');
 const {
   PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole,
   NOT_APPLICABLE, excludeJobCard, includeJobCard, advanceProjectStatus, releaseDependents,
@@ -250,7 +251,38 @@ function cascadePlanDates(startDate, stages) {
   return { computed, targetDate: groupEnd.toISOString().slice(0, 10) };
 }
 
-router.put('/:id/plan', requirePermission('project.manage'), (req, res) => {
+// True when a project's own Sales Order was confirmed from a Spares-format
+// Offer (offers.offer_format) - the project row itself carries no flag of
+// its own, so this traces projects.sales_order_id -> the offer that
+// confirmed it. A project with no linked Sales Order, or an SO with no
+// linked Offer (e.g. created directly), is never Spares.
+function isSparesProject(projectId) {
+  const row = db.prepare(`
+    SELECT o.id FROM projects p
+    JOIN sales_orders so ON so.id = p.sales_order_id
+    JOIN offers o ON o.sales_order_id = so.id
+    WHERE p.id = ? AND o.offer_format = 'Spares'
+  `).get(projectId);
+  return !!row;
+}
+
+// Gates Plan/Edit Department Targets (the save route and its dry-run
+// preview). project.manage (PM/Admin) always passes, unchanged. A holder
+// of the newer project.plan_spares permission (2026-11-14, Admin-grantable
+// via Role Permissions, for team members who need to plan Spares orders
+// specifically without full project.manage) passes too, but only when
+// either the Admin-configured scope is 'same_as_manage' (full reach, same
+// as project.manage) or the project being planned is actually Spares-type -
+// a Standard project still 403s for a plan_spares-only holder either way.
+function requirePlanAccess(req, res, next) {
+  if (hasPermission(req.user, 'project.manage')) return next();
+  if (hasPermission(req.user, 'project.plan_spares')) {
+    if (getProjectPlanSparesMode() === 'same_as_manage' || isSparesProject(req.params.id)) return next();
+  }
+  return res.status(403).json({ error: 'Access denied: missing permission project.manage,project.plan_spares' });
+}
+
+router.put('/:id/plan', requirePlanAccess, (req, res) => {
   const { start_date, stages, confirm } = req.body;
   if (!start_date || !Array.isArray(stages) || !stages.length) {
     return res.status(400).json({ error: 'start_date and a non-empty stages array are required' });
@@ -316,7 +348,7 @@ router.get('/capacity-calendar', requirePermission('project.manage'), (req, res)
 // plan editor show each department's real availability over the exact
 // window this draft plan would actually produce, before the PM commits to
 // it. Same request shape as the save ({start_date, stages}).
-router.post('/:id/plan/preview', requirePermission('project.manage'), (req, res) => {
+router.post('/:id/plan/preview', requirePlanAccess, (req, res) => {
   const { start_date, stages } = req.body;
   if (!start_date || !Array.isArray(stages) || !stages.length) {
     return res.status(400).json({ error: 'start_date and a non-empty stages array are required' });

@@ -28,18 +28,28 @@ function authRequired(req, res, next) {
 // another role that itself holds one of the codes - e.g. a unified
 // Electrical & Service HOD picks up Service's permissions on top of their
 // own without their account's actual role/department changing.
+// Same check requirePermission's middleware runs, exposed as a plain
+// boolean - for a route whose access depends on more than just "does this
+// user hold one of these codes" (e.g. project.plan_spares, which also
+// depends on which project is being acted on), so the extra condition can
+// be woven into one inline check instead of the route needing a second,
+// parallel permission lookup.
+function hasPermission(user, ...codes) {
+  if (user.role_name === 'Admin') return true;
+  const roleIds = [user.role_id, ...oversightRoleIds(db, user.id)];
+  const placeholders = roleIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT p.code FROM role_permissions rp
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE rp.role_id IN (${placeholders})
+  `).all(...roleIds);
+  const granted = new Set(rows.map(r => r.code));
+  return codes.some(c => granted.has(c));
+}
+
 function requirePermission(...codes) {
   return (req, res, next) => {
-    if (req.user.role_name === 'Admin') return next();
-    const roleIds = [req.user.role_id, ...oversightRoleIds(db, req.user.id)];
-    const placeholders = roleIds.map(() => '?').join(',');
-    const rows = db.prepare(`
-      SELECT p.code FROM role_permissions rp
-      JOIN permissions p ON p.id = rp.permission_id
-      WHERE rp.role_id IN (${placeholders})
-    `).all(...roleIds);
-    const granted = new Set(rows.map(r => r.code));
-    if (codes.some(c => granted.has(c))) return next();
+    if (hasPermission(req.user, ...codes)) return next();
     return res.status(403).json({ error: 'Access denied: missing permission ' + codes.join(',') });
   };
 }
@@ -52,4 +62,4 @@ function requireRole(...roleNames) {
   };
 }
 
-module.exports = { authRequired, requirePermission, requireRole, SECRET };
+module.exports = { authRequired, requirePermission, hasPermission, requireRole, SECRET };
