@@ -1216,13 +1216,13 @@ function resetItemPicker(selectId) { resetSearchPicker(selectId); }
 // to find by name once there are more than a handful of projects.
 function projectOptions(selectedId, projects, placeholder) {
   return `<option value="">${esc(placeholder || '- General / Not Project-Specific -')}</option>` +
-    projects.map(p => `<option value="${p.id}" ${selectedId && Number(selectedId) === p.id ? 'selected' : ''}>${esc(p.project_code)} - ${esc(p.title)}</option>`).join('');
+    projects.map(p => `<option value="${p.id}" ${selectedId && Number(selectedId) === p.id ? 'selected' : ''}>${esc(p.project_code)} - ${esc(p.client_name || 'No Customer')} - ${esc(p.title)}</option>`).join('');
 }
 function projectPickerHTML(pickerId, projects, selectedId, placeholder) {
   return searchPickerHTML(pickerId, projects, selectedId,
     (sel, list) => projectOptions(sel, list, placeholder),
-    (p, q) => (p.project_code || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q),
-    '', 'Search project by code or title...');
+    (p, q) => (p.project_code || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q) || (p.client_name || '').toLowerCase().includes(q),
+    '', 'Search project by code, customer, or title...');
 }
 // Indian States/UTs + their official GST state codes (as issued on GST
 // registration certificates) - shared by every address form in the app
@@ -6803,7 +6803,7 @@ window.dismissRfqResponse = async (id) => {
 function prItemOptions(selectedId, itemsOverride) {
   const items = itemsOverride || window.__PR_ITEMS || [];
   return `<option value="">- type a new item instead -</option>${items.filter(i=>!['Pending','Discontinued'].includes(i.status))
-    .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)}</option>`).join('')}`;
+    .map(i => `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(i.name)} (Stock: ${fmt(i.current_stock || 0)} ${esc(i.unit||'')})</option>`).join('')}`;
 }
 // Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
 // 6 columns in both forms.
@@ -7201,7 +7201,7 @@ window.openEditPR = async (id) => {
   EDIT_PR_ITEMS_LOCKED = ['Approved', 'OrderPlaced'].includes(r.status);
   openAppModal('Edit PR — ' + esc(r.pr_no), `
     <div class="form-grid">
-      <div><label>Project (optional)</label><select id="pre-project"><option value="">- General / Not Project-Specific -</option>${projects.map(p => `<option value="${p.id}" ${p.id===r.project_id?'selected':''}>${esc(p.project_code)}</option>`).join('')}</select></div>
+      <div><label>Project (optional)</label><select id="pre-project">${projectOptions(r.project_id, projects)}</select></div>
     </div>
     ${EDIT_PR_ITEMS_LOCKED ? `<p class="muted">This request has already been approved - line items are locked. Only the project assignment above can still be changed.</p>` : ''}
     <div id="pre-lines"></div>
