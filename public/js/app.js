@@ -498,6 +498,7 @@ const NAV = [
     { id: 'gst-summary', label: 'GST Summary' },
     { id: 'bg-dashboard', label: 'Bank Guarantee Dashboard' },
     { id: 'foreign-payments', label: 'Foreign Payments' },
+    { id: 'tour-expenses-review', label: 'Technician Expense Review' },
   ]},
   { group: 'Overview', items: [
     { id: 'dashboard', label: 'Dashboard' },
@@ -518,7 +519,6 @@ const NAV = [
     { id: 'salary-hike-cycles', label: 'Salary Hike Cycles' },
     { id: 'salary-report', label: 'Salary Report' },
     { id: 'tour-expenses-mine', label: 'My Travel & Expense' },
-    { id: 'tour-expenses-review', label: 'Technician Expense Review' },
   ]},
   { group: 'Projects Management', items: [
     { id: 'projects', label: 'Projects' },
