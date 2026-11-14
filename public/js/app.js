@@ -5652,7 +5652,16 @@ window.generateAnnexureForTargets = async (ev, orderId) => {
 
 PAGES.targets = async (el) => {
   const projects = await api('/projects');
-  const canPlan = has('project.manage');
+  const canPlanAny = has('project.manage');
+  // project.plan_spares (2026-11-14) lets a non-PM/Admin plan Spares-type
+  // projects specifically - whether that's scoped to Spares only or widened
+  // to every project is an Admin-configurable setting read server-side on
+  // save/preview, but the dropdown itself is narrowed here too so a
+  // Spares-only holder isn't shown a project they'll just get a 403 on.
+  const canPlanSpares = !canPlanAny && has('project.plan_spares');
+  const canPlan = canPlanAny || canPlanSpares;
+  const sparesMode = canPlanSpares ? (await api('/settings/project-plan-spares-mode')).mode : 'spares_only';
+  const planProjects = (canPlanAny || sparesMode === 'same_as_manage') ? projects : projects.filter(p => p.is_spares);
   el.innerHTML = `
     ${collapsiblePanel('targets-by-project', `Targets by Project (${projects.length})`, `
       ${tableHTML(['Code', 'Title', 'Client', 'Status', 'Target Completion', 'Annexure'], projects, p => `
@@ -5663,8 +5672,9 @@ PAGES.targets = async (el) => {
     <div class="panel">
       <h3>Plan / Edit Department Targets</h3>
       ${canPlan ? `
+        ${canPlanSpares && sparesMode === 'spares_only' ? `<p class="muted">You can plan Spares orders only - the project list below is filtered to those.</p>` : ''}
         <div class="form-grid">
-          <div><label>Project</label><select id="pl-project" onchange="loadProjectPlan()"><option value="">Select a project...</option>${projects.map(p => `<option value="${p.id}">${esc(p.project_code)} — ${esc(p.client_name || p.title)}</option>`).join('')}</select></div>
+          <div><label>Project</label><select id="pl-project" onchange="loadProjectPlan()"><option value="">Select a project...</option>${planProjects.map(p => `<option value="${p.id}">${esc(p.project_code)} — ${esc(p.client_name || p.title)}</option>`).join('')}</select></div>
           <div><label>Plan Start Date</label><input id="pl-start" type="date" value="${today()}"></div>
         </div>
         <div id="pl-body" class="muted">Pick a project above to plan how many days each department gets — dates cascade automatically from your start date, and rows can be reordered to match the real handover sequence. Saving here is what releases each stage into the assigned department's (or its HOD's) Job Cards queue. Come back here any time to change targets already set.</div>
