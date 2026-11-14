@@ -118,6 +118,7 @@ router.get('/me', authRequired, (req, res) => {
     id: req.user.id, username: req.user.username, full_name: req.user.full_name,
     role: req.user.role_name, department_id: req.user.department_id,
     department_name: dept ? dept.name : null, is_supervisor: !!req.user.is_supervisor,
+    employee_id: req.user.employee_id || null,
   });
 });
 

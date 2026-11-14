@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals, bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields, bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval, bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission, bootstrapProjectPlanSparesPermission } = require('./db');
+const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals, bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields, bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval, bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission, bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -37,6 +37,7 @@ bootstrapGrnReconciliationApproval();
 bootstrapTodoCompletionApproval();
 bootstrapJobCardRecallPermission();
 bootstrapProjectPlanSparesPermission();
+bootstrapTourExpenseGrant();
 
 const app = express();
 app.use(cors());
@@ -95,6 +96,7 @@ app.use('/api/soa', require('./routes/soa'));
 app.use('/api/order-confirmation', require('./routes/orderConfirmation'));
 app.use('/api/backups', require('./routes/backups'));
 app.use('/api/foreign-payments', require('./routes/foreignPayments'));
+app.use('/api/tour-expenses', require('./routes/tourExpenses'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
