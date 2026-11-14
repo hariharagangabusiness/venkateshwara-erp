@@ -174,7 +174,8 @@ router.get('/pipeline-stages', (req, res) => res.json(PIPELINE_STAGES));
 
 router.get('/', (req, res) => {
   res.json(db.prepare(`
-    SELECT p.*, so.order_no, so.annexure_path, c.name as client_name, u.full_name as pm_name
+    SELECT p.*, so.order_no, so.annexure_path, c.name as client_name, u.full_name as pm_name,
+      (SELECT 1 FROM offers o WHERE o.sales_order_id = p.sales_order_id AND o.offer_format = 'Spares' LIMIT 1) IS NOT NULL AS is_spares
     FROM projects p
     LEFT JOIN sales_orders so ON so.id = p.sales_order_id
     LEFT JOIN clients c ON c.id = so.client_id
