@@ -2364,6 +2364,15 @@ function bootstrapJobCardRecallPermission() {
   } catch (e) { console.error('[db] job_card.recall permission backfill failed:', e.message); }
 }
 
+// Backfills the project.plan_spares permission code (2026-11-14) - no
+// default grant to any role, deliberately: Admin decides via the Role
+// Permissions screen who gets it, same reasoning as job_card.recall above.
+function bootstrapProjectPlanSparesPermission() {
+  try {
+    raw.exec(`INSERT OR IGNORE INTO permissions (code) VALUES ('project.plan_spares')`);
+  } catch (e) { console.error('[db] project.plan_spares permission backfill failed:', e.message); }
+}
+
 function bootstrapPurchaseApproverGrants() {
   try {
     const managementRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Management'`).get()?.id;
@@ -2629,4 +2638,5 @@ module.exports = {
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
   bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission,
+  bootstrapProjectPlanSparesPermission,
 };

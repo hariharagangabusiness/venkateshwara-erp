@@ -12526,8 +12526,19 @@ PAGES.access = async (el) => {
     `)}
     ${collapsiblePanel('role-permissions', 'Role Permissions', `
       <p class="muted">Tick the actions a role is allowed to perform (separate from page visibility above - a role can see a page and still be blocked from acting on it if it's missing the permission that page's actions check). Unlike page visibility, there's no "unrestricted by default" here - a role's own starting set is whatever was granted when the app was built; use this to add or remove from it, e.g. letting a non-Store role manage Item Master.</p>
+      <div class="panel" style="margin-bottom:12px;">
+        <label style="font-weight:600;">Scope for "Plan / Edit Department Targets - Spares projects"</label>
+        <p class="muted" style="margin-top:2px;">Whoever is granted this permission below can open the Targets sheet's Plan/Edit Department Targets without needing Project Manager/Admin access. This one setting decides how far that reach goes, for every role it's granted to.</p>
+        <select id="rp-spares-mode" style="margin-top:6px;">
+          <option value="spares_only">Spares projects only (default) - a Standard project still needs project.manage</option>
+          <option value="same_as_manage">Same as full Plan access - any project</option>
+        </select>
+        <button class="btn small" style="margin-left:8px;" onclick="saveProjectPlanSparesMode()">Save Scope</button>
+      </div>
       <div id="role-perm-body"></div>
     `)}`;
+  const sparesMode = await api('/settings/project-plan-spares-mode');
+  document.getElementById('rp-spares-mode').value = sparesMode.mode;
   await renderUserAccessPanel(data.pageCatalog);
   await renderExtraAccessPanel(data.pageCatalog);
   await renderRoleOversightPanel();
@@ -12636,6 +12647,13 @@ async function renderRolePermissionsPanel() {
 window.toggleRolePermPanel = (roleId) => {
   const panel = document.getElementById(`rp-panel-${roleId}`);
   if (panel) panel.classList.toggle('collapsed');
+};
+window.saveProjectPlanSparesMode = async () => {
+  const mode = document.getElementById('rp-spares-mode').value;
+  try {
+    await api('/settings/project-plan-spares-mode', { method: 'PUT', body: JSON.stringify({ mode }) });
+    alert('Scope saved.');
+  } catch (e) { alert(e.message); }
 };
 window.toggleRpGroup = (checkbox) => {
   const role = checkbox.dataset.role, group = checkbox.dataset.group;

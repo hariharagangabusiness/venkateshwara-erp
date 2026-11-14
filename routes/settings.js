@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -184,6 +184,15 @@ router.put('/weekly-digest', requireRole('Admin'), (req, res) => {
     bucket2_max_days: bucket2,
   });
   res.json(getWeeklyDigestSettings());
+});
+
+// Scope for the project.plan_spares permission (2026-11-14) - GET open to
+// any authenticated user (the Role Permissions screen and the Targets
+// sheet's own access check both need to read it), PUT Admin-only.
+router.get('/project-plan-spares-mode', (req, res) => res.json({ mode: getProjectPlanSparesMode() }));
+router.put('/project-plan-spares-mode', requireRole('Admin'), (req, res) => {
+  setProjectPlanSparesMode(req.body && req.body.mode);
+  res.json({ mode: getProjectPlanSparesMode() });
 });
 
 module.exports = router;
