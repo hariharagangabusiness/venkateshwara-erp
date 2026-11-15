@@ -1740,6 +1740,16 @@ const MIGRATIONS = [
     stock_movement_id INTEGER REFERENCES stock_movements(id),
     sort_order INTEGER DEFAULT 0
   )`,
+  // Sales Return follow-up: a third condition value, 'Repair' (alongside
+  // Good/Damaged) - like Damaged, it never credits stock on approval, but
+  // is tracked through to a "Send Back to Customer" logistics record (a
+  // Damaged line can go through this too - e.g. returned to the customer
+  // as-is rather than scrapped). No new approval step: this is a plain
+  // logistics note on the line, same lightweight spirit as GRN's own
+  // "Receive Back" quick action.
+  `ALTER TABLE sales_return_items ADD COLUMN sent_back_at TEXT`,
+  `ALTER TABLE sales_return_items ADD COLUMN sent_back_ref TEXT`,
+  `ALTER TABLE sales_return_items ADD COLUMN sent_back_notes TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
