@@ -238,6 +238,16 @@ function describeEntity(entityType, entityId) {
         grn_vendor_qty: r.vendor_invoiced_qty, grn_vendor_rate: r.vendor_invoiced_rate,
       };
     }
+    case 'sales_return': {
+      const r = db.prepare(`
+        SELECT sr.*, c.name as client_name, so.order_no
+        FROM sales_returns sr LEFT JOIN clients c ON c.id = sr.client_id
+        LEFT JOIN sales_orders so ON so.id = sr.sales_order_id WHERE sr.id = ?`).get(entityId);
+      if (!r) return {};
+      const items = db.prepare('SELECT item_text, quantity, condition_status FROM sales_return_items WHERE return_id = ? ORDER BY sort_order, id').all(entityId);
+      const summary = items.map(it => `${it.item_text} x${it.quantity} (${it.condition_status})`).join(', ');
+      return { ref: r.return_no, summary: `${r.client_name || 'Customer'}: ${summary}` };
+    }
     default:
       return {};
   }
@@ -493,6 +503,49 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE grn_reconciliations SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
+  // Store HOD's approval is the single gate that confirms physical receipt -
+  // only once Approved does a 'Good' line actually credit real stock (a
+  // 'Damaged' line never does, logged only), and a paperwork-only Sales
+  // Return Challan (no GST - that stays on the separate Sales Credit Note
+  // path) is auto-generated for the whole return, mirroring the existing
+  // 'Sales Return' Challan Type that previously had no workflow behind it.
+  if (entityType === 'sales_return') {
+    if (result === 'Approved') {
+      const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(entityId);
+      if (!ret) return;
+      const items = db.prepare('SELECT * FROM sales_return_items WHERE return_id = ? ORDER BY sort_order, id').all(entityId);
+      const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(ret.client_id);
+      db.transaction(() => {
+        for (const it of items) {
+          if (it.condition_status === 'Good' && it.item_id) {
+            const mv = db.prepare(`
+              INSERT INTO stock_movements (item_id, movement_type, quantity, reference, client_id, moved_by)
+              VALUES (?, 'IN', ?, ?, ?, ?)
+            `).run(it.item_id, it.quantity, 'SalesReturn#' + ret.id, ret.client_id, ret.created_by);
+            db.prepare('UPDATE items SET current_stock = current_stock + ? WHERE id = ?').run(it.quantity, it.item_id);
+            db.prepare('UPDATE sales_return_items SET stock_movement_id = ? WHERE id = ?').run(mv.lastInsertRowid, it.id);
+          }
+        }
+        const challanNo = 'CH-' + Date.now();
+        const challanInfo = db.prepare(`
+          INSERT INTO challans (challan_no, challan_type, from_location, to_location, consignee_name, reason, total_value, created_by)
+          VALUES (?, 'Sales Return', ?, 'Main Store', ?, ?, 0, ?)
+        `).run(challanNo, client ? client.name : 'Customer', client ? client.name : null, 'Goods returned by customer' + (ret.reason ? ': ' + ret.reason : ''), ret.created_by);
+        const challanId = challanInfo.lastInsertRowid;
+        const insertLine = db.prepare(`
+          INSERT INTO challan_items (challan_id, description, quantity, unit, rate, gst_rate, gst_amount, value, sort_order)
+          VALUES (?,?,?,?,0,0,0,0,?)
+        `);
+        items.forEach((it, i) => insertLine.run(challanId, it.item_text, it.quantity, it.unit, i));
+        db.prepare('UPDATE sales_returns SET status = ?, challan_id = ? WHERE id = ?').run('Approved', challanId, entityId);
+      })();
+      return;
+    }
+    const statusByResult = { Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
+    const newStatus = statusByResult[result];
+    if (newStatus) db.prepare('UPDATE sales_returns SET status = ? WHERE id = ?').run(newStatus, entityId);
+    return;
+  }
   // Single-row, same shape as purchase_invoice. Rejected stays a visible,
   // numbered record (never deleted) - same "honest audit trail" convention
   // every other approval-gated entity in this app follows.
@@ -562,6 +615,7 @@ const ENTITY_LABELS = {
   service_request: 'Service Request (Inbound Email)',
   grn_reconciliation: 'GRN Reconciliation (Store)',
   todo: 'To-Do Completion',
+  sales_return: 'Sales Return',
 };
 
 // Best-effort email to whoever originally raised the request, telling them
@@ -681,7 +735,7 @@ const SLA_DAYS = {
   expense_voucher: 3, leave_request: 2, purchase_request: 5, salary_advance: 3,
   salary_schedule: 5, foc_request: 3, bg_reminder_log: 2, purchase_order: 3, purchase_invoice: 3,
   referral_incentive: 5, salary_hike_cycle: 5, fg_dispatch: 2, sale_rejection_mrn: 3, service_request: 1,
-  grn_reconciliation: 3, todo: 2,
+  grn_reconciliation: 3, todo: 2, sales_return: 3,
 };
 const ENTITY_TABLE = {
   expense_voucher: 'expense_vouchers', leave_request: 'leave_requests', purchase_request: 'purchase_requests',
@@ -689,7 +743,7 @@ const ENTITY_TABLE = {
   purchase_order: 'purchase_orders', purchase_invoice: 'purchase_invoices',
   referral_incentive: 'referral_incentives', salary_hike_cycle: 'salary_hike_cycles',
   fg_dispatch: 'fg_dispatches', sale_rejection_mrn: 'sale_rejection_mrns', service_request: 'service_requests',
-  grn_reconciliation: 'grn_reconciliations', todo: 'todos',
+  grn_reconciliation: 'grn_reconciliations', todo: 'todos', sales_return: 'sales_returns',
 };
 function ageDays(isoTs) {
   return (Date.now() - new Date(isoTs).getTime()) / 86400000;

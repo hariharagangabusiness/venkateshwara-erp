@@ -1702,6 +1702,44 @@ const MIGRATIONS = [
   `ALTER TABLE service_reports ADD COLUMN updown_food_reason TEXT`,
   `ALTER TABLE service_reports ADD COLUMN updown_food_reviewed_by INTEGER`,
   `ALTER TABLE service_reports ADD COLUMN updown_food_reviewed_at TEXT`,
+
+  // Sales Return (2026-11-16) - a customer sending goods back, standalone
+  // or tied to a Sale Rejection MRN for context (both supported, per the
+  // owner's explicit locked answer, not MRN-only). Gated by a new
+  // single-step 'SalesReturn' approval chain (Store department's own
+  // HOD/Supervisor, always required - see bootstrapSalesReturnApproval()
+  // below) that confirms physical receipt before anything touches real
+  // stock; a 'Good' line only credits items.current_stock once Approved,
+  // a 'Damaged' line never does (logged for traceability only). On
+  // Approve, one paperwork-only Sales Return Challan is auto-generated
+  // (challan_type='Sales Return', the pre-existing-but-unused Challan
+  // Type value) - GST stays entirely on the separate Sales Credit Note
+  // path, per the owner's locked answer; this challan carries no GST.
+  `CREATE TABLE IF NOT EXISTS sales_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_no TEXT UNIQUE,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    sales_order_id INTEGER REFERENCES sales_orders(id),
+    fg_dispatch_id INTEGER REFERENCES fg_dispatches(id),
+    mrn_id INTEGER REFERENCES sale_rejection_mrns(id),
+    reason TEXT,
+    status TEXT DEFAULT 'Draft',
+    approval_id INTEGER REFERENCES approvals(id),
+    challan_id INTEGER REFERENCES challans(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS sales_return_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id INTEGER NOT NULL REFERENCES sales_returns(id),
+    item_id INTEGER REFERENCES items(id),
+    item_text TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    unit TEXT DEFAULT 'Nos',
+    condition_status TEXT DEFAULT 'Good',
+    stock_movement_id INTEGER REFERENCES stock_movements(id),
+    sort_order INTEGER DEFAULT 0
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -2663,11 +2701,30 @@ function issueRfqToken(rfqId, vendorId, expiresAt) {
   return token;
 }
 
+// Sales Return (2026-11-16) - single step, the Store department's own
+// HOD/Supervisor (role 'Store' + requires_supervisor), same shape as
+// GrnReconciliation above - confirms physical receipt before a 'Good' line
+// is credited to real stock. min_amount=0 so it's always required
+// regardless of value.
+function bootstrapSalesReturnApproval() {
+  try {
+    const storeRoleId = raw.prepare(`SELECT id FROM roles WHERE name = 'Store'`).get()?.id;
+    const upsertStep = raw.prepare(`
+      INSERT INTO approval_chain_steps (chain_id, step_order, approver_role_id, min_amount, requires_supervisor)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, step_order) DO NOTHING
+    `);
+    raw.exec(`INSERT OR IGNORE INTO approval_chains (name, description) VALUES ('SalesReturn', 'Store & Inventory HOD confirms physical receipt of goods returned by a customer')`);
+    const chainId = raw.prepare(`SELECT id FROM approval_chains WHERE name = 'SalesReturn'`).get().id;
+    if (storeRoleId) upsertStep.run(chainId, 1, storeRoleId, 0, 1);
+  } catch (e) { console.error('[db] Sales Return approval bootstrap failed:', e.message); }
+}
+
 module.exports = {
   db, isNew, issueRfqToken, dataDir, dbPath, bootstrapForeignPayments, bootstrapBgManageGrant,
   bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals,
   bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields,
   bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval,
   bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission,
-  bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant,
+  bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant, bootstrapSalesReturnApproval,
 };

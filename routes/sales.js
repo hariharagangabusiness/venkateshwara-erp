@@ -1310,4 +1310,88 @@ router.post('/credit-notes/:id/cancel', requirePermission('sales_order.manage'),
   res.json({ ok: true });
 });
 
+// ===================== Sales Return =====================
+// Standalone - may optionally link to a Sale Rejection MRN/dispatch/order for
+// context, but doesn't require one (per the owner's locked answer). Starts
+// Draft (freely editable), moves to PendingApproval on submit, and only once
+// the Store HOD approves does a 'Good' line actually credit real stock - see
+// syncEntityStatus's 'sales_return' case in routes/approvals.js for that and
+// the auto-generated Sales Return Challan.
+router.get('/returns', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  res.json(db.prepare(`
+    SELECT r.*, c.name as client_name, so.order_no, fd.dispatch_no, m.mrn_no,
+      (SELECT COUNT(*) FROM sales_return_items ri WHERE ri.return_id = r.id) as line_count
+    FROM sales_returns r
+    LEFT JOIN clients c ON c.id = r.client_id
+    LEFT JOIN sales_orders so ON so.id = r.sales_order_id
+    LEFT JOIN fg_dispatches fd ON fd.id = r.fg_dispatch_id
+    LEFT JOIN sale_rejection_mrns m ON m.id = r.mrn_id
+    ORDER BY r.id DESC
+  `).all());
+});
+router.post('/returns', requirePermission('sales_order.manage'), (req, res) => {
+  const { client_id, sales_order_id, fg_dispatch_id, mrn_id, reason } = req.body;
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
+  if (!client) return res.status(400).json({ error: 'Select a real customer.' });
+  if (!lines.length) return res.status(400).json({ error: 'Add at least one returned line item.' });
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.item_text || !String(l.item_text).trim()) return res.status(400).json({ error: `Line ${i + 1}: a description is required.` });
+    if (!Number(l.quantity) || Number(l.quantity) <= 0) return res.status(400).json({ error: `Line ${i + 1}: enter a quantity greater than 0.` });
+    if (!['Good', 'Damaged'].includes(l.condition_status)) return res.status(400).json({ error: `Line ${i + 1}: condition must be Good or Damaged.` });
+  }
+  const returnNo = nextSeqNo('SRN', 'sales_return');
+  const returnId = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO sales_returns (return_no, client_id, sales_order_id, fg_dispatch_id, mrn_id, reason, created_by)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(returnNo, client_id, sales_order_id || null, fg_dispatch_id || null, mrn_id || null, reason || null, req.user.id);
+    const id = info.lastInsertRowid;
+    const insertItem = db.prepare(`
+      INSERT INTO sales_return_items (return_id, item_id, item_text, quantity, unit, condition_status, sort_order)
+      VALUES (?,?,?,?,?,?,?)
+    `);
+    lines.forEach((l, i) => insertItem.run(id, l.item_id || null, l.item_text, Number(l.quantity), l.unit || 'Nos', l.condition_status, i));
+    return id;
+  })();
+  res.json({ id: returnId, return_no: returnNo, status: 'Draft' });
+});
+function salesReturnBundle(id) {
+  const ret = db.prepare(`
+    SELECT r.*, c.name as client_name, so.order_no, fd.dispatch_no, m.mrn_no
+    FROM sales_returns r LEFT JOIN clients c ON c.id = r.client_id
+    LEFT JOIN sales_orders so ON so.id = r.sales_order_id LEFT JOIN fg_dispatches fd ON fd.id = r.fg_dispatch_id
+    LEFT JOIN sale_rejection_mrns m ON m.id = r.mrn_id WHERE r.id = ?`).get(id);
+  if (!ret) return null;
+  const items = db.prepare('SELECT * FROM sales_return_items WHERE return_id = ? ORDER BY sort_order, id').all(id);
+  return { ret, items };
+}
+router.get('/returns/:id', requirePermission('report.view_all', 'sales_order.manage'), (req, res) => {
+  const bundle = salesReturnBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  res.json(bundle);
+});
+router.post('/returns/:id/submit-for-approval', requirePermission('sales_order.manage'), (req, res) => {
+  const bundle = salesReturnBundle(req.params.id);
+  if (!bundle) return res.status(404).json({ error: 'Not found' });
+  const { ret } = bundle;
+  if (ret.status !== 'Draft') return res.status(400).json({ error: `This return is already ${ret.status}.` });
+  const approvalId = approvals.startApproval('SalesReturn', 'sales_return', ret.id, 0, req.user.id);
+  db.prepare(`UPDATE sales_returns SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, ret.id);
+  res.json({ ok: true });
+});
+router.post('/returns/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
+  const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(req.params.id);
+  if (!ret) return res.status(404).json({ error: 'Not found' });
+  if (!['Draft', 'PendingApproval', 'InfoRequested'].includes(ret.status)) {
+    return res.status(400).json({ error: `This return is ${ret.status} and can no longer be cancelled.` });
+  }
+  db.prepare(`UPDATE sales_returns SET status = 'Rejected' WHERE id = ?`).run(ret.id);
+  if (ret.approval_id) {
+    db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(ret.approval_id);
+  }
+  res.json({ ok: true });
+});
+
 module.exports = router;

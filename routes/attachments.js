@@ -21,7 +21,7 @@ const upload = makeUpload('attachments', 15);
 
 const VALID_TYPES = new Set([
   'purchase_request', 'purchase_order', 'purchase_invoice', 'expense_voucher', 'foc_request', 'leave_request', 'salary_advance', 'ticket', 'bank_guarantee',
-  'foreign_payment', 'offer', 'sales_order', 'customer_communication', 'fg_dispatch', 'sale_rejection_mrn', 'grn_reconciliation', 'grn_batches',
+  'foreign_payment', 'offer', 'sales_order', 'customer_communication', 'fg_dispatch', 'sale_rejection_mrn', 'grn_reconciliation', 'grn_batches', 'sales_return',
 ]);
 
 // Free-form category tag, currently only used by foreign_payment uploads
