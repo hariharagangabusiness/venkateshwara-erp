@@ -453,16 +453,6 @@ async function boot() {
 // so keep it sorted A-Z when adding/renaming a group rather than relying on
 // a runtime sort, which would obscure the ordering rule from a future edit.
 const NAV = [
-  { group: 'Admin', items: [
-    { id: 'users', label: 'Users & Roles' },
-    { id: 'access', label: 'User Access' },
-    { id: 'approval-matrix', label: 'Approval Matrix' },
-    { id: 'company-settings', label: 'Company Settings' },
-    { id: 'data-import', label: 'Data Import' },
-    { id: 'full-data-export', label: 'Full Data Export' },
-    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
-    { id: 'backups', label: 'Backups' },
-  ]},
   { group: 'Asset Management', items: [
     { id: 'assets', label: 'Asset Register' },
     { id: 'assets-maintenance', label: 'Maintenance / EOL Report' },
@@ -549,6 +539,16 @@ const NAV = [
     { id: 'sales-analytics', label: 'Sales Analytics' },
     { id: 'spares-comparison', label: 'Spares Price Comparison' },
     { id: 'sales-targets', label: 'Sales Targets' },
+  ]},
+  { group: 'Settings', items: [
+    { id: 'users', label: 'Users & Roles' },
+    { id: 'access', label: 'User Access' },
+    { id: 'approval-matrix', label: 'Approval Matrix' },
+    { id: 'company-settings', label: 'Company Settings' },
+    { id: 'data-import', label: 'Data Import' },
+    { id: 'full-data-export', label: 'Full Data Export' },
+    { id: 'org-hierarchy', label: 'Organizational Hierarchy' },
+    { id: 'backups', label: 'Backups' },
   ]},
   { group: 'Store & Inventory', items: [
     { id: 'store', label: 'Item Master' },
