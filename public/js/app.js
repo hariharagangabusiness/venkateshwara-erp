@@ -3731,7 +3731,7 @@ function renderSalesReturnLines() {
       <div><input value="${esc(l.item_text||'')}" placeholder="What's coming back" onchange="SR_RETURN_LINES[${i}].item_text=this.value"></div>
       <div><input type="number" value="${l.quantity}" onchange="SR_RETURN_LINES[${i}].quantity=Number(this.value)"></div>
       <div><input value="${esc(l.unit||'Nos')}" onchange="SR_RETURN_LINES[${i}].unit=this.value"></div>
-      <div><select onchange="SR_RETURN_LINES[${i}].condition_status=this.value"><option ${l.condition_status==='Good'?'selected':''}>Good</option><option ${l.condition_status==='Damaged'?'selected':''}>Damaged</option></select></div>
+      <div><select onchange="SR_RETURN_LINES[${i}].condition_status=this.value"><option ${l.condition_status==='Good'?'selected':''}>Good</option><option ${l.condition_status==='Damaged'?'selected':''}>Damaged</option><option ${l.condition_status==='Repair'?'selected':''}>Repair</option></select></div>
       <div>${SR_RETURN_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="SR_RETURN_LINES.splice(${i},1);renderSalesReturnLines()">✕</button>` : ''}</div>`);
 }
 window.addSalesReturnLine = () => { SR_RETURN_LINES.push({ item_text: '', quantity: 1, unit: 'Nos', condition_status: 'Good' }); renderSalesReturnLines(); };
@@ -3785,8 +3785,24 @@ window.toggleSalesReturnDetail = async (id) => {
   box.innerHTML = `
     <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
       ${ret.reason ? `<p style="font-size:13px;"><b>Reason:</b> ${esc(ret.reason)}</p>` : ''}
-      ${tableHTML(['Item', 'Qty', 'Unit', 'Condition'], items, it => `<tr><td>${esc(it.item_text)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${badge(it.condition_status)}</td></tr>`)}
+      ${tableHTML(['Item', 'Qty', 'Unit', 'Condition', 'Return Status', ''], items, it => `<tr><td>${esc(it.item_text)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${badge(it.condition_status)}</td>
+        <td>${it.condition_status === 'Good' ? '<span class="muted">Credited to stock</span>' :
+             it.sent_back_at ? `<span class="muted">↩ Sent Back · ${esc(new Date(it.sent_back_at).toLocaleDateString())}${it.sent_back_ref ? ' · ' + esc(it.sent_back_ref) : ''}</span>` :
+             '<span class="muted">Awaiting disposition</span>'}</td>
+        <td>${actionButtonsCell(
+          ret.status === 'Approved' && ['Damaged', 'Repair'].includes(it.condition_status) && !it.sent_back_at
+            ? `<button class="btn small outline" type="button" onclick="sendBackSalesReturnItem(${ret.id},${it.id})">Send Back to Customer</button>` : ''
+        )}</td></tr>`)}
     </div>`;
+};
+window.sendBackSalesReturnItem = async (returnId, itemId) => {
+  const ref = prompt('Courier / challan reference (optional):') || '';
+  const notes = prompt('Notes (optional):') || '';
+  try {
+    await api(`/sales/returns/${returnId}/items/${itemId}/send-back`, { method: 'POST', body: JSON.stringify({ ref, notes }) });
+    await toggleSalesReturnDetail(returnId); // collapse
+    await toggleSalesReturnDetail(returnId); // re-expand with fresh data
+  } catch (e) { alert(e.message); }
 };
 window.submitSalesReturn = async (id) => {
   if (!confirm('Submit this return for the Store HOD\'s approval?')) return;

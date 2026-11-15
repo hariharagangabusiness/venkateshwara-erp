@@ -1339,7 +1339,7 @@ router.post('/returns', requirePermission('sales_order.manage'), (req, res) => {
     const l = lines[i];
     if (!l.item_text || !String(l.item_text).trim()) return res.status(400).json({ error: `Line ${i + 1}: a description is required.` });
     if (!Number(l.quantity) || Number(l.quantity) <= 0) return res.status(400).json({ error: `Line ${i + 1}: enter a quantity greater than 0.` });
-    if (!['Good', 'Damaged'].includes(l.condition_status)) return res.status(400).json({ error: `Line ${i + 1}: condition must be Good or Damaged.` });
+    if (!['Good', 'Damaged', 'Repair'].includes(l.condition_status)) return res.status(400).json({ error: `Line ${i + 1}: condition must be Good, Damaged, or Repair.` });
   }
   const returnNo = nextSeqNo('SRN', 'sales_return');
   const returnId = db.transaction(() => {
@@ -1379,6 +1379,23 @@ router.post('/returns/:id/submit-for-approval', requirePermission('sales_order.m
   if (ret.status !== 'Draft') return res.status(400).json({ error: `This return is already ${ret.status}.` });
   const approvalId = approvals.startApproval('SalesReturn', 'sales_return', ret.id, 0, req.user.id);
   db.prepare(`UPDATE sales_returns SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, ret.id);
+  res.json({ ok: true });
+});
+// Send Back to Customer - a plain logistics record on one line (date/ref/
+// notes), never a stock movement: a Damaged/Repair line was never credited
+// to stock in the first place, so there's nothing to reverse, and no second
+// approval is needed - it's recording what already physically happened.
+router.post('/returns/:id/items/:itemId/send-back', requirePermission('sales_order.manage'), (req, res) => {
+  const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(req.params.id);
+  if (!ret) return res.status(404).json({ error: 'Not found' });
+  if (ret.status !== 'Approved') return res.status(400).json({ error: 'This return must be Approved before a line can be sent back to the customer.' });
+  const item = db.prepare('SELECT * FROM sales_return_items WHERE id = ? AND return_id = ?').get(req.params.itemId, ret.id);
+  if (!item) return res.status(404).json({ error: 'Line item not found on this return.' });
+  if (!['Damaged', 'Repair'].includes(item.condition_status)) return res.status(400).json({ error: 'Only a Damaged or Repair line can be sent back to the customer.' });
+  if (item.sent_back_at) return res.status(400).json({ error: 'This line has already been sent back to the customer.' });
+  const { ref, notes } = req.body;
+  db.prepare(`UPDATE sales_return_items SET sent_back_at = CURRENT_TIMESTAMP, sent_back_ref = ?, sent_back_notes = ? WHERE id = ?`)
+    .run(ref || null, notes || null, item.id);
   res.json({ ok: true });
 });
 router.post('/returns/:id/cancel', requirePermission('sales_order.manage'), (req, res) => {
