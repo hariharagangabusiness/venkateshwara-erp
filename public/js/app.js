@@ -544,6 +544,7 @@ const NAV = [
     { id: 'orders', label: 'Sales Orders' },
     { id: 'fg-dispatches', label: 'FG Packing & Dispatch' },
     { id: 'sale-rejection-mrns', label: 'Sale Rejection MRN' },
+    { id: 'sales-returns', label: 'Sales Return' },
     { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
     { id: 'clients', label: 'Clients' },
     { id: 'sales-analytics', label: 'Sales Analytics' },
@@ -2517,6 +2518,22 @@ async function renderApprovalDrilldown(key) {
         ${tableHTML(['Description', 'Qty Rejected', 'Unit', 'Rate (₹)'], items, it => `
           <tr><td>${esc(it.description)}</td><td>${it.quantity_rejected}</td><td>${esc(it.unit)}</td><td>₹${fmt(it.rate)}</td></tr>`)}
       `;
+    } else if (r.entity_type === 'sales_return') {
+      const [bundle, hist] = await Promise.all([api(`/sales/returns/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
+      const { ret, items } = bundle;
+      history = hist;
+      attachType = 'sales_return';
+      extraHtml = `
+        <h5 style="margin:8px 0 4px;">Return Details</h5>
+        <p style="font-size:13px;margin:0 0 8px;">
+          <b>Customer:</b> ${esc(ret.client_name)} ${ret.order_no ? `&nbsp; <b>Linked Order:</b> ${esc(ret.order_no)}` : ''} ${ret.mrn_no ? `&nbsp; <b>Linked MRN:</b> ${esc(ret.mrn_no)}` : ''}<br>
+          <b>Reason:</b> ${esc(ret.reason)||'-'}
+        </p>
+        <h5 style="margin:8px 0 4px;">Returned Lines (${items.length})</h5>
+        ${tableHTML(['Item', 'Qty', 'Unit', 'Condition'], items, it => `
+          <tr><td>${esc(it.item_text)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${badge(it.condition_status)}</td></tr>`)}
+        <p class="muted" style="font-size:12px;">Approving confirms physical receipt - a Good-condition line is credited to stock immediately, a Damaged line is logged only. A paperwork Sales Return Challan is generated automatically.</p>
+      `;
     } else if (r.entity_type === 'grn_reconciliation') {
       const [g, hist] = await Promise.all([api(`/purchase/store/grn-reconciliations/${r.entity_id}`), api(`/approvals/${r.id}/history`)]);
       history = hist;
@@ -3695,6 +3712,90 @@ window.resolveMrnFoc = async (id) => {
 window.cancelMrn = async (id) => {
   if (!confirm('Cancel this MRN? This cannot be undone.')) return;
   try { await api(`/sales/mrns/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('sale-rejection-mrns'); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- Sales Return ----
+// A customer sending goods back - standalone or optionally linked to a Sale
+// Rejection MRN for context (not MRN-only, per the owner's locked answer).
+// Draft -> PendingApproval (Store HOD confirms physical receipt) -> Approved,
+// at which point a 'Good' line credits real stock and a paperwork-only Sales
+// Return Challan is auto-generated server-side (no GST - that stays on the
+// separate Sales Credit Note path).
+let SR_RETURN_LINES = [];
+const SR_RETURN_GRID_COLS = 'minmax(220px,2fr) 90px 90px 130px 44px';
+function renderSalesReturnLines() {
+  const el = document.getElementById('sr-return-lines');
+  if (!el) return;
+  el.innerHTML = gridLineTableHTML(SR_RETURN_GRID_COLS, ['Item Description', 'Quantity', 'Unit', 'Condition', ''], SR_RETURN_LINES, (l, i) => `
+      <div><input value="${esc(l.item_text||'')}" placeholder="What's coming back" onchange="SR_RETURN_LINES[${i}].item_text=this.value"></div>
+      <div><input type="number" value="${l.quantity}" onchange="SR_RETURN_LINES[${i}].quantity=Number(this.value)"></div>
+      <div><input value="${esc(l.unit||'Nos')}" onchange="SR_RETURN_LINES[${i}].unit=this.value"></div>
+      <div><select onchange="SR_RETURN_LINES[${i}].condition_status=this.value"><option ${l.condition_status==='Good'?'selected':''}>Good</option><option ${l.condition_status==='Damaged'?'selected':''}>Damaged</option></select></div>
+      <div>${SR_RETURN_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="SR_RETURN_LINES.splice(${i},1);renderSalesReturnLines()">✕</button>` : ''}</div>`);
+}
+window.addSalesReturnLine = () => { SR_RETURN_LINES.push({ item_text: '', quantity: 1, unit: 'Nos', condition_status: 'Good' }); renderSalesReturnLines(); };
+PAGES['sales-returns'] = async (el) => {
+  const [returns, clients, orders] = await Promise.all([api('/sales/returns'), api('/masters/clients'), api('/sales/orders')]);
+  SR_RETURN_LINES = [{ item_text: '', quantity: 1, unit: 'Nos', condition_status: 'Good' }];
+  el.innerHTML = `
+    <div class="panel"><h3>New Sales Return</h3>
+      <div class="form-grid">
+        <div><label>Customer</label>${clientPickerHTML('sr-client', clients, '', 'Select customer')}</div>
+        <div><label>Linked Sales Order (optional)</label><select id="sr-order"><option value="">-- None --</option>${orders.map(o => `<option value="${o.id}">${esc(o.order_no)} - ${esc(o.client_name)}</option>`).join('')}</select></div>
+      </div>
+      <div><label>Reason</label><input id="sr-reason" placeholder="Why these goods are coming back"></div>
+      <h4>Returned Line Items</h4>
+      <div id="sr-return-lines"></div>
+      <button class="btn small outline" type="button" onclick="addSalesReturnLine()">+ Add Line Item</button>
+      <button class="btn" style="margin-top:10px;" onclick="createSalesReturn()">Save Return</button>
+      <div class="muted">Saved as Draft - freely editable until you submit for the Store HOD's approval, which is what actually credits stock for a Good-condition line.</div>
+    </div>
+    ${collapsiblePanel('sales-returns-list', `Sales Returns (${returns.length})`, `
+      ${tableHTML(['Return No', 'Customer', 'Linked Order', 'Linked MRN', 'Lines', 'Status', ''], returns, r => `
+        <tr><td>${esc(r.return_no)}</td><td>${esc(r.client_name)}</td><td>${esc(r.order_no)||'-'}</td><td>${esc(r.mrn_no)||'-'}</td><td>${r.line_count}</td>
+        <td>${badge(r.status)}</td>
+        <td>${actionButtonsCell(`
+          <button class="btn small outline" type="button" onclick="toggleSalesReturnDetail(${r.id})">Details</button>
+          ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitSalesReturn(${r.id})">Submit for Approval</button>` : ''}
+          ${['Draft','PendingApproval','InfoRequested'].includes(r.status) ? `<button class="btn small red" type="button" onclick="cancelSalesReturn(${r.id})">Cancel</button>` : ''}
+        `)}</td></tr>
+        <tr id="sr-detail-row-${r.id}" style="display:none;"><td colspan="7"><div id="sr-detail-${r.id}"></div></td></tr>`)}
+    `)}`;
+  renderSalesReturnLines();
+};
+window.createSalesReturn = async () => {
+  const lines = SR_RETURN_LINES.filter(l => l.item_text && l.quantity > 0);
+  if (!lines.length) { alert('Add at least one line with a description and quantity > 0.'); return; }
+  try {
+    await api('/sales/returns', { method: 'POST', body: JSON.stringify({
+      client_id: val('sr-client'), sales_order_id: val('sr-order') || null, reason: val('sr-reason'), lines,
+    })});
+    navigate('sales-returns');
+  } catch (e) { alert(e.message); }
+};
+window.toggleSalesReturnDetail = async (id) => {
+  const row = document.getElementById(`sr-detail-row-${id}`);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  const box = document.getElementById(`sr-detail-${id}`);
+  box.innerHTML = '<p class="muted">Loading...</p>';
+  const { ret, items } = await api(`/sales/returns/${id}`);
+  box.innerHTML = `
+    <div style="padding:10px;background:#f9f9f9;border-radius:6px;">
+      ${ret.reason ? `<p style="font-size:13px;"><b>Reason:</b> ${esc(ret.reason)}</p>` : ''}
+      ${tableHTML(['Item', 'Qty', 'Unit', 'Condition'], items, it => `<tr><td>${esc(it.item_text)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${badge(it.condition_status)}</td></tr>`)}
+    </div>`;
+};
+window.submitSalesReturn = async (id) => {
+  if (!confirm('Submit this return for the Store HOD\'s approval?')) return;
+  try { await api(`/sales/returns/${id}/submit-for-approval`, { method: 'POST', body: '{}' }); navigate('sales-returns'); }
+  catch (e) { alert(e.message); }
+};
+window.cancelSalesReturn = async (id) => {
+  if (!confirm('Cancel this return? This cannot be undone.')) return;
+  try { await api(`/sales/returns/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('sales-returns'); }
   catch (e) { alert(e.message); }
 };
 

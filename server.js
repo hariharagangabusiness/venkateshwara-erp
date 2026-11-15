@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 
 // initializes db + runs schema on require
-const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals, bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields, bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval, bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission, bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant } = require('./db');
+const { isNew, bootstrapForeignPayments, bootstrapBgManageGrant, bootstrapPurchaseOrderApproval, bootstrapPurchaseInvoiceApproval, bootstrapHrCompensationApprovals, bootstrapSalesFulfillmentApprovals, bootstrapPurchaseApproverGrants, bootstrapDataExportGrant, repairCorruptedEmployeeNumericFields, bootstrapServiceRequestApproval, bootstrapGrnReconciliationApproval, bootstrapTodoCompletionApproval, bootstrapJobCardRecallPermission, bootstrapProjectPlanSparesPermission, bootstrapTourExpenseGrant, bootstrapSalesReturnApproval } = require('./db');
 const { getUploadsDir } = require('./lib/paths');
 
 // Seed roles/departments/permissions/demo users/admin login whenever the
@@ -38,6 +38,7 @@ bootstrapTodoCompletionApproval();
 bootstrapJobCardRecallPermission();
 bootstrapProjectPlanSparesPermission();
 bootstrapTourExpenseGrant();
+bootstrapSalesReturnApproval();
 
 const app = express();
 app.use(cors());
