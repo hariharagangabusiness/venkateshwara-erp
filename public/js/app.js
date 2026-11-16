@@ -5419,13 +5419,19 @@ PAGES['sales-analytics'] = async (el) => {
 // fallback, flagged `approximate` either way it's rendered here).
 let SPARES_TREND_PERIOD = 'quarter';
 function sparesApproxNote(row) {
-  return row.approximate ? ' <span class="muted" title="Matched by description text, not a Spares Library id - may be approximate.">(approx.)</span>' : '';
+  return row.approximate ? ' <span class="muted" title="Matched by description text, not a Spares Library id or Item Code - may be approximate.">(approx.)</span>' : '';
+}
+function sparesSourceBadge(row) {
+  return row.source === 'annexure'
+    ? ' <span class="badge" style="background:#e8f1f8;color:#2f5f8a;" title="Priced on this offer\'s Annexure tab (pasted/uploaded price list), not Scope of Supply.">Annexure</span>'
+    : ' <span class="badge" style="background:#f1e6da;color:#8a5a2f;" title="Priced on this offer\'s Scope of Supply tab.">Scope of Supply</span>';
 }
 function renderSparesPerCustomerTable(rows) {
   if (!rows.length) return '<p class="empty">No spares quote history for this customer yet.</p>';
-  return tableHTML(['Spare', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
+  return tableHTML(['Spare', 'Source', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
     <tr>
       <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
+      <td>${sparesSourceBadge(r)}</td>
       <td>₹${fmt(r.last_quoted_rate)}</td>
       <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
       <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
@@ -5436,10 +5442,11 @@ function renderSparesPerCustomerTable(rows) {
 }
 function renderSparesSearchTable(rows) {
   if (!rows.length) return '<p class="empty">No matching spare found in any customer\'s quote history.</p>';
-  return tableHTML(['Customer', 'Spare', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
+  return tableHTML(['Customer', 'Spare', 'Source', 'Last Quoted Rate', 'Quoted On', 'Last Ordered Rate', 'Ordered On', 'Quotes', 'Orders'], rows, r => `
     <tr>
       <td>${esc(r.client_name)}</td>
       <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
+      <td>${sparesSourceBadge(r)}</td>
       <td>₹${fmt(r.last_quoted_rate)}</td>
       <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
       <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
