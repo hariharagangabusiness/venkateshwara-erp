@@ -532,9 +532,6 @@ const NAV = [
     { id: 'vendors', label: 'Vendors' },
   ]},
   { group: 'Sales & Marketing', items: [
-    { id: 'leads', label: 'Leads / Enquiries' },
-    { id: 'pipeline', label: 'Pipeline (Kanban)' },
-    { id: 'followups', label: "Today's Follow-ups" },
     { id: 'offers', label: 'Offers / Quotations' },
     { id: 'offer-options', label: 'Offer Field Options' },
     { id: 'offer-pdf-designer', label: 'Offer PDF Layout Designer' },
@@ -543,9 +540,7 @@ const NAV = [
     { id: 'sale-rejection-mrns', label: 'Sale Rejection MRN' },
     { id: 'sales-credit-notes', label: 'Sales Credit Notes' },
     { id: 'clients', label: 'Clients' },
-    { id: 'sales-analytics', label: 'Sales Analytics' },
     { id: 'spares-comparison', label: 'Spares Price Comparison' },
-    { id: 'sales-targets', label: 'Sales Targets' },
   ]},
   { group: 'Settings', items: [
     { id: 'users', label: 'Users & Roles' },
@@ -570,6 +565,16 @@ const NAV = [
     { id: 'tickets-raise', label: 'Raise a Ticket' },
     { id: 'tickets-mine', label: 'My Tickets' },
     { id: 'tickets-department', label: 'Department Tickets' },
+  ]},
+  // Not deleted, just parked here (2026-11-16) - these 5 Sales & Marketing
+  // pages aren't currently in use. Moving an item back under its original
+  // group is a one-line change if any of them come back into use.
+  { group: 'Unused', items: [
+    { id: 'leads', label: 'Leads / Enquiries' },
+    { id: 'pipeline', label: 'Pipeline (Kanban)' },
+    { id: 'followups', label: "Today's Follow-ups" },
+    { id: 'sales-analytics', label: 'Sales Analytics' },
+    { id: 'sales-targets', label: 'Sales Targets' },
   ]},
 ];
 // Per-department Job Cards groups are injected dynamically in boot() for
