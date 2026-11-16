@@ -58,6 +58,13 @@ function canEditPO(o) {
   if (['Open', 'PartiallyReceived'].includes(o.status)) return approver;
   return false;
 }
+// Permanent delete (2026-11-16, mirrors routes/purchase.js's own gate) -
+// narrower than Edit: an approver only, never a plain creator, and only on
+// a still-untouched line (Draft/Rejected/Cancelled) - the backend's own
+// poDeleteBlockers() is the real safety net for a Cancelled line that had
+// already gone live before being cancelled, so this client-side check is
+// just for which button to show, not the authority on whether it'll work.
+function canDeletePO(o) { return isPurchaseApprover() && ['Draft', 'Rejected', 'Cancelled'].includes(o.status); }
 // Add Line Item is narrower than general Edit - unavailable once a PO has
 // gone live (Open/PartiallyReceived), not even for an approver; adding to a
 // shipped/receivable order means raising a new PO instead (see
@@ -7661,6 +7668,7 @@ function renderSinglePORow(o) {
     ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
     ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
     ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}
+    ${canDeletePO(o) ? `<button class="btn small red" type="button" onclick="deletePOLine(${o.id})">Delete</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
@@ -7688,6 +7696,7 @@ function renderMultiLinePOGroup(lines) {
   const totalReceived = lines.reduce((s, l) => s + Number(l.received_qty || 0), 0);
   const anyCancellable = lines.some(l => !['Received', 'Cancelled', 'Closed'].includes(l.status));
   const anyDraft = lines.some(l => l.status === 'Draft');
+  const allDeletable = isPurchaseApprover() && lines.every(l => ['Draft', 'Rejected', 'Cancelled'].includes(l.status));
   const groupId = first.id;
   const lineRows = lines.map(o => `
     <tr class="po-group-row-${groupId}" style="display:none;">
@@ -7701,7 +7710,8 @@ function renderMultiLinePOGroup(lines) {
       ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
       ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
       ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
-      ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}`)}</td>
+      ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}
+      ${canDeletePO(o) ? `<button class="btn small red" type="button" onclick="deletePOLine(${o.id})">Delete</button>` : ''}`)}</td>
     </tr>`).join('');
   return `
     <tr style="background:#f7f9fb;">
@@ -7722,6 +7732,7 @@ function renderMultiLinePOGroup(lines) {
       ${canEditPO(first) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${first.id})">Edit</button>` : ''}
       ${canAddPOLine(first) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${first.id})">+ Add Line Item</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
+      ${allDeletable ? `<button class="btn small red" type="button" onclick="deleteWholePO('${esc(first.po_no)}')">Delete Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button>`)}</td></tr>
     <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
     <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${first.id}"></div></td></tr>
@@ -7753,6 +7764,20 @@ window.cancelWholePO = async (poNo) => {
     const orders = await api('/purchase/orders');
     const ids = orders.filter(o => o.po_no === poNo && !['Received', 'Cancelled', 'Closed'].includes(o.status)).map(o => o.id);
     await Promise.all(ids.map(id => api(`/purchase/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) })));
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+window.deletePOLine = async (id) => {
+  if (!confirm('Permanently delete this line? This cannot be undone - it removes the line from the database, not just marking it Cancelled.')) return;
+  try {
+    await api(`/purchase/orders/${id}`, { method: 'DELETE' });
+    navigate('purchase-orders');
+  } catch (e) { alert(e.message); }
+};
+window.deleteWholePO = async (poNo) => {
+  if (!confirm(`Permanently delete every line of ${poNo}? This cannot be undone.`)) return;
+  try {
+    await api(`/purchase/orders/by-po/${encodeURIComponent(poNo)}`, { method: 'DELETE' });
     navigate('purchase-orders');
   } catch (e) { alert(e.message); }
 };

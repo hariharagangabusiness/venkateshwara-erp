@@ -1579,6 +1579,90 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
   res.json({ ok: true });
 });
 
+// Permanent delete (2026-11-16) - Cancel above is the everyday undo and
+// leaves the row forever (visible in the Archive); this genuinely removes a
+// line from the database, for clutter that never should have been raised.
+// Admin/Management/Purchase-HOD only (narrower than the general
+// purchase_order.manage permission everyone else edits/cancels with) - a
+// plain creator who isn't an approver can Cancel their own mistake but not
+// erase it outright. Only a still-untouched line (Draft, Rejected, or
+// Cancelled) is even eligible - but a line can reach Cancelled AFTER going
+// live (Open/PartiallyReceived -> Cancelled, which Cancel itself allows), so
+// status alone isn't proof nothing real happened; poDeleteBlockers() below
+// is the defense-in-depth check that actually confirms it.
+const PO_DELETE_FK_TABLES = [
+  ['grn_reconciliations', 'po_id'],
+  ['grn_batches', 'po_id'],
+  ['purchase_invoice_items', 'purchase_order_line_id'],
+];
+function poDeleteBlockers(poId) {
+  const blockers = [];
+  for (const [table, col] of PO_DELETE_FK_TABLES) {
+    const n = db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE ${col} = ?`).get(poId).n;
+    if (n > 0) blockers.push(table.replace(/_/g, ' '));
+  }
+  // stock_movements.reference is a plain string tag ('PO#'+id), not a real
+  // FK, but it's exactly as real a sign of activity as any of the above.
+  if (db.prepare(`SELECT COUNT(*) as n FROM stock_movements WHERE reference = ?`).get('PO#' + poId).n > 0) {
+    blockers.push('stock movements');
+  }
+  return blockers;
+}
+router.delete('/orders/:id', requirePermission('purchase_order.manage'), (req, res) => {
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!po) return res.status(404).json({ error: 'Not found' });
+  if (!isPurchaseApprover(req.user)) {
+    return res.status(403).json({ error: 'Only an approver (Purchase HOD/Management/Admin) can permanently delete a PO line.' });
+  }
+  if (!['Draft', 'Rejected', 'Cancelled'].includes(po.status)) {
+    return res.status(400).json({ error: `This line is ${po.status} - only a Draft, Rejected, or Cancelled line can be deleted. Use Cancel instead.` });
+  }
+  const blockers = poDeleteBlockers(po.id);
+  if (blockers.length) {
+    return res.status(400).json({ error: `This line already has real activity against it (${blockers.join(', ')}) and cannot be deleted.` });
+  }
+  const tx = db.transaction(() => {
+    if (po.approval_id) {
+      db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(po.approval_id);
+    }
+    db.prepare('DELETE FROM purchase_orders WHERE id = ?').run(po.id);
+  });
+  tx();
+  poAuditLog(req.user.id, 'po_delete', po.id, `Deleted ${po.po_no} line "${po.item_name}" (was ${po.status})`);
+  res.json({ ok: true });
+});
+// Whole-PO delete (same shape as Cancel Whole PO) - only enabled once
+// EVERY line sharing the po_no is individually eligible, so a multi-line PO
+// can never end up partially deleted with orphaned siblings left behind.
+router.delete('/orders/by-po/:poNo', requirePermission('purchase_order.manage'), (req, res) => {
+  const poNo = req.params.poNo;
+  const lines = db.prepare('SELECT * FROM purchase_orders WHERE po_no = ?').all(poNo);
+  if (!lines.length) return res.status(404).json({ error: 'Not found' });
+  if (!isPurchaseApprover(req.user)) {
+    return res.status(403).json({ error: 'Only an approver (Purchase HOD/Management/Admin) can permanently delete this order.' });
+  }
+  const ineligible = lines.filter(l => !['Draft', 'Rejected', 'Cancelled'].includes(l.status));
+  if (ineligible.length) {
+    const statuses = [...new Set(ineligible.map(l => l.status))].join(', ');
+    return res.status(400).json({ error: `${ineligible.length} of ${lines.length} line(s) on this PO are still ${statuses} - every line must be Draft, Rejected, or Cancelled before the whole PO can be deleted.` });
+  }
+  for (const l of lines) {
+    const blockers = poDeleteBlockers(l.id);
+    if (blockers.length) {
+      return res.status(400).json({ error: `Line "${l.item_name}" already has real activity against it (${blockers.join(', ')}) and cannot be deleted.` });
+    }
+  }
+  const tx = db.transaction(() => {
+    for (const l of lines) {
+      if (l.approval_id) db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(l.approval_id);
+    }
+    db.prepare('DELETE FROM purchase_orders WHERE po_no = ?').run(poNo);
+  });
+  tx();
+  poAuditLog(req.user.id, 'po_delete_whole', lines[0].id, `Deleted whole PO ${poNo} (${lines.length} line(s))`);
+  res.json({ ok: true, deleted: lines.length });
+});
+
 // Close a line out as short-shipped (2026-10-16) - distinct from Cancel:
 // a vendor that's stopped shipping against a line (whether nothing at all
 // came in, or only part of it did across one or several of their own
