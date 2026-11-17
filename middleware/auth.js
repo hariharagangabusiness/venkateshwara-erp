@@ -44,7 +44,18 @@ function hasPermission(user, ...codes) {
     WHERE rp.role_id IN (${placeholders})
   `).all(...roleIds);
   const granted = new Set(rows.map(r => r.code));
-  return codes.some(c => granted.has(c));
+  if (codes.some(c => granted.has(c))) return true;
+  // One-off extra grants (mirrors extra_page_access's Department/User shape,
+  // 2026-11-17) - lets Admin grant a specific permission code to one user or
+  // a whole department without widening it to the entire role, the same
+  // "one-off exception" intent Extra Page Access already covers for page
+  // visibility.
+  const extra = db.prepare(`
+    SELECT permission_code FROM extra_permission_access
+    WHERE user_id = ? OR (department_id IS NOT NULL AND department_id = ?)
+  `).all(user.id, user.department_id || -1);
+  const extraGranted = new Set(extra.map(r => r.permission_code));
+  return codes.some(c => extraGranted.has(c));
 }
 
 function requirePermission(...codes) {

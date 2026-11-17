@@ -283,6 +283,19 @@ function requirePlanAccess(req, res, next) {
   return res.status(403).json({ error: 'Access denied: missing permission project.manage,project.plan_spares' });
 }
 
+// Same rule as requirePlanAccess, but for a route whose :id is a job
+// card's own id, not a project id (Exclude/Include below) - resolves the
+// job card's project first, then applies the identical check.
+function requirePlanAccessForJobCard(req, res, next) {
+  const jc = db.prepare('SELECT project_id FROM job_cards WHERE id = ?').get(req.params.id);
+  if (!jc) return res.status(404).json({ error: 'Job card not found' });
+  if (hasPermission(req.user, 'project.manage')) return next();
+  if (hasPermission(req.user, 'project.plan_spares')) {
+    if (getProjectPlanSparesMode() === 'same_as_manage' || isSparesProject(jc.project_id)) return next();
+  }
+  return res.status(403).json({ error: 'Access denied: missing permission project.manage,project.plan_spares' });
+}
+
 router.put('/:id/plan', requirePlanAccess, (req, res) => {
   const { start_date, stages, confirm } = req.body;
   if (!start_date || !Array.isArray(stages) || !stages.length) {
@@ -619,13 +632,13 @@ router.get('/job-cards/:id/children', (req, res) => {
 // children, reversible any time). Works on either a top-level stage id or
 // an individual sub-stage id - the same two routes cover both, since the
 // Targets sheet and the sub-plan screen both just pass a job_cards.id.
-router.put('/job-cards/:id/exclude', requirePermission('project.manage'), (req, res) => {
+router.put('/job-cards/:id/exclude', requirePlanAccessForJobCard, (req, res) => {
   try {
     excludeJobCard(db, req.params.id, req.user.id);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-router.put('/job-cards/:id/include', requirePermission('project.manage'), (req, res) => {
+router.put('/job-cards/:id/include', requirePlanAccessForJobCard, (req, res) => {
   try {
     includeJobCard(db, req.params.id);
     res.json({ ok: true });

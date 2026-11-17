@@ -180,6 +180,45 @@ router.delete('/extra-access/:id', requireRole('Admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Extra Permission Access (2026-11-17): the missing other half of
+// Extra Page Access above - that one only ever grants page VISIBILITY, so
+// someone granted a page whose actions are requirePermission-gated still
+// 403s unless their whole role also holds the code. This grants an actual
+// permission code to one user or a whole department, without widening it to
+// the rest of their role - checked by middleware/auth.js's hasPermission().
+router.get('/extra-permission-access', requireRole('Admin'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT e.*, d.name as department_name, u.full_name as user_name
+    FROM extra_permission_access e
+    LEFT JOIN departments d ON d.id = e.department_id
+    LEFT JOIN users u ON u.id = e.user_id
+    ORDER BY e.id DESC
+  `).all();
+  res.json(rows);
+});
+router.post('/extra-permission-access', requireRole('Admin'), (req, res) => {
+  const { scope, department_id, user_ids, permission_code } = req.body;
+  if (!permission_code || !ALL_PERMISSION_CODES.includes(permission_code)) {
+    return res.status(400).json({ error: 'A valid permission_code is required' });
+  }
+  if (scope === 'Department') {
+    if (!department_id) return res.status(400).json({ error: 'department_id is required for Department scope' });
+    db.prepare(`INSERT INTO extra_permission_access (scope, department_id, permission_code) VALUES ('Department', ?, ?)`).run(department_id, permission_code);
+  } else if (scope === 'User') {
+    const ids = Array.isArray(user_ids) ? user_ids : [user_ids].filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'Pick at least one user for User scope' });
+    const insert = db.prepare(`INSERT INTO extra_permission_access (scope, user_id, permission_code) VALUES ('User', ?, ?)`);
+    ids.forEach(id => insert.run(id, permission_code));
+  } else {
+    return res.status(400).json({ error: "scope must be 'Department' or 'User'" });
+  }
+  res.json({ ok: true });
+});
+router.delete('/extra-permission-access/:id', requireRole('Admin'), (req, res) => {
+  db.prepare('DELETE FROM extra_permission_access WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---- Cross-Department Oversight (Round 22): grant a specific user
 // supervisor-level reach into another role's domain (Job Cards, To-Dos, and
 // any permission-gated route via requirePermission), without merging the
