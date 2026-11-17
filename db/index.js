@@ -827,6 +827,23 @@ const MIGRATIONS = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, page_id)
   )`,
+  // ---- Extra permission grants (2026-11-17) ----
+  // Extra Page Access (extra_page_access) only ever grants page VISIBILITY -
+  // a page whose actions are gated by requirePermission still 403s for
+  // someone who can only see it, unless their whole role also holds the
+  // underlying code. This is the missing other half: the identical
+  // Department/User one-off-exception shape, but for an actual permission
+  // code, so Admin can grant e.g. store.manage to one specific person
+  // without widening it to their whole role. Checked by middleware/auth.js's
+  // hasPermission() alongside the normal role_permissions lookup.
+  `CREATE TABLE IF NOT EXISTS extra_permission_access (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,                -- 'Department' or 'User'
+    department_id INTEGER REFERENCES departments(id),
+    user_id INTEGER REFERENCES users(id),
+    permission_code TEXT NOT NULL,
+    granted_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
   // ---- Per-project pipeline stage exclusion ----
   // Every project got the exact same fixed 10-stage (+5 Manufacturing
   // sub-stage) job-card tree, unconditionally - a purely bought-out/trading

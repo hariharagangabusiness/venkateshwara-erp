@@ -13001,9 +13001,14 @@ PAGES.access = async (el) => {
       <div id="au-body" style="margin-top:12px;"></div>
     </div>
     ${collapsiblePanel('extra-page-access', 'Grant Extra Page Access (Round 3)', `
-      <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config. This only makes a page <b>visible</b> - if it's a page where the user needs to actually submit/approve/manage something (e.g. Service & Spares), also grant Cross-Department Oversight below for that role, or they'll see the page but get "Access denied: missing permission" when they try to act on it.</p>
+      <p class="muted">On top of the role-based matrix below, grant one page either to an entire department (applies to every current AND future user in it) or to specific individual users. Useful for one-off exceptions without changing a whole role's config. This only makes a page <b>visible</b> - if it's a page where the user needs to actually submit/approve/manage something (e.g. Service & Spares), also grant Extra Permission Access or Cross-Department Oversight below for that role, or they'll see the page but get "Access denied: missing permission" when they try to act on it.</p>
       <div id="extra-access-form"></div>
       <div id="extra-access-list"></div>
+    `)}
+    ${collapsiblePanel('extra-permission-access', 'Grant Extra Permission Access', `
+      <p class="muted">The other half of Extra Page Access above: grant one specific action permission (e.g. store.manage) to an entire department or to specific individual users, without widening it to their whole role via the Role Permissions matrix below. Pair this with Extra Page Access when someone needs to both see a page and actually act on it, without granting the whole role those rights.</p>
+      <div id="extra-perm-form"></div>
+      <div id="extra-perm-list"></div>
     `)}
     ${collapsiblePanel('role-oversight', 'Cross-Department Oversight (Round 22)', `
       <p class="muted">Grant a specific user full supervisor-level reach into another role's domain - Job Cards allocation, To-Do oversight, and any permission-gated page that role has - without changing that user's own role or department. For a real-world HOD who covers two departments (e.g. Electrical & Service) rather than actually merging those departments/roles. This grants back-end authority only; pair it with Extra Page Access above if their own role's page list doesn't already show the other department's pages.</p>
@@ -13031,6 +13036,7 @@ PAGES.access = async (el) => {
   document.getElementById('rp-spares-mode').value = sparesMode.mode;
   await renderUserAccessPanel(data.pageCatalog);
   await renderExtraAccessPanel(data.pageCatalog);
+  await renderExtraPermissionAccessPanel();
   await renderRoleOversightPanel();
   await renderRolePermissionsPanel();
   const body = document.getElementById('access-body');
@@ -13269,6 +13275,52 @@ window.saveExtraAccess = async () => {
 };
 window.removeExtraAccess = async (id) => {
   await api('/admin/extra-access/' + id, { method: 'DELETE' });
+  navigate('access');
+};
+async function renderExtraPermissionAccessPanel() {
+  const [depts, users, permData, extras] = await Promise.all([
+    api('/masters/departments'), api('/masters/users'), api('/admin/permissions'), api('/admin/extra-permission-access')
+  ]);
+  const allCodes = permData.permissionCatalog.flatMap(g => g.items);
+  const formEl = document.getElementById('extra-perm-form');
+  formEl.innerHTML = `
+    <div class="form-grid">
+      <div><label>Scope</label><select id="epa-scope" onchange="toggleEPAscope()"><option value="Department">Entire Department</option><option value="User">Specific Users</option></select></div>
+      <div id="epa-dept-wrap"><label>Department</label><select id="epa-dept">${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+      <div id="epa-users-wrap" style="display:none;grid-column:1/-1;"><label>Users</label>
+        <div style="max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:6px;">
+          ${users.map(u => `<label style="display:block;font-weight:normal;"><input type="checkbox" class="epa-user" value="${u.id}"> ${esc(u.full_name)} (${esc(u.department)||'-'})</label>`).join('')}
+        </div>
+      </div>
+      <div><label>Permission</label><select id="epa-code">${permData.permissionCatalog.map(g => `<optgroup label="${esc(g.group)}">${g.items.map(it => `<option value="${esc(it.code)}">${esc(it.label)}</option>`).join('')}</optgroup>`).join('')}</select></div>
+    </div>
+    <button class="btn small" onclick="saveExtraPermissionAccess()">Grant Permission</button>`;
+  const listEl = document.getElementById('extra-perm-list');
+  listEl.innerHTML = extras.length ? tableHTML(['Scope', 'Target', 'Permission', ''], extras, e => `
+    <tr><td>${esc(e.scope)}</td><td>${esc(e.scope === 'Department' ? e.department_name : e.user_name)}</td><td>${esc((allCodes.find(p=>p.code===e.permission_code)||{}).label || e.permission_code)}</td>
+    <td><button class="btn small outline" onclick="removeExtraPermissionAccess(${e.id})">Remove</button></td></tr>`) : '<div class="empty">No extra permission grants yet.</div>';
+}
+window.toggleEPAscope = () => {
+  const isDept = val('epa-scope') === 'Department';
+  document.getElementById('epa-dept-wrap').style.display = isDept ? '' : 'none';
+  document.getElementById('epa-users-wrap').style.display = isDept ? 'none' : '';
+};
+window.saveExtraPermissionAccess = async () => {
+  const scope = val('epa-scope');
+  const permission_code = val('epa-code');
+  try {
+    if (scope === 'Department') {
+      await api('/admin/extra-permission-access', { method: 'POST', body: JSON.stringify({ scope, department_id: val('epa-dept'), permission_code }) });
+    } else {
+      const ids = Array.from(document.querySelectorAll('.epa-user:checked')).map(b => Number(b.value));
+      if (!ids.length) { alert('Pick at least one user.'); return; }
+      await api('/admin/extra-permission-access', { method: 'POST', body: JSON.stringify({ scope, user_ids: ids, permission_code }) });
+    }
+    navigate('access');
+  } catch (e) { alert(e.message); }
+};
+window.removeExtraPermissionAccess = async (id) => {
+  await api('/admin/extra-permission-access/' + id, { method: 'DELETE' });
   navigate('access');
 };
 async function renderRoleOversightPanel() {
