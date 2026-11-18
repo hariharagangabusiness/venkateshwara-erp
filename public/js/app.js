@@ -2562,6 +2562,7 @@ async function renderApprovalDrilldown(key) {
       // own real grouping decision instead of just checking for a batch id.
       const inMultiLineBatch = g.grn_batch_id && Number(g.batch_line_count) > 1;
       extraHtml = `
+        ${g.status === 'Revoked' && g.revoked_by_name ? `<div class="msg" style="background:#ede9fe;color:#6d28d9;margin:0 0 8px;"><b>Revoked by ${esc(g.revoked_by_name)}${g.revoked_at ? ' &middot; ' + esc(new Date(g.revoked_at).toLocaleDateString()) : ''}</b><br>"${esc(g.revoke_reason)}"</div>` : ''}
         <h5 style="margin:8px 0 4px;">PO vs Vendor Invoice</h5>
         <p style="font-size:13px;margin:0 0 8px;">
           <b>PO No:</b> ${esc(g.po_no)} &nbsp; <b>Item:</b> ${esc(g.item_name)||'-'} &nbsp; <b>Vendor:</b> ${esc(g.vendor_name)||'-'} (${esc(g.vendor_gstin)||'GSTIN N/A'})
@@ -8638,6 +8639,7 @@ async function renderStockInOutSheet(el) {
         const qtyDiff = g.vendor_invoiced_qty != null && Number(g.vendor_invoiced_qty) !== Number(g.received_qty);
         const rateDiff = g.vendor_invoiced_rate != null && Number(g.vendor_invoiced_rate) !== Number(g.po_rate);
         const canEditRejected = g.status === 'Rejected' && (g.created_by === ME.id || isStoreApprover());
+        const canRevoke = g.status === 'Approved' && ME.role === 'Admin';
         return `<tr><td>${esc(g.po_no)}</td><td>${esc(g.item_name)||'-'}</td><td>${esc(g.vendor_name)||'-'}</td>
           <td>${g.received_qty}</td><td>₹${fmt(g.po_rate)}</td>
           <td>${esc(g.vendor_invoice_no)||'-'}${g.vendor_invoice_date ? ' (' + esc(g.vendor_invoice_date) + ')' : ''}</td>
@@ -8646,8 +8648,10 @@ async function renderStockInOutSheet(el) {
           <td>${actionButtonsCell(`
             <button class="btn small outline" type="button" onclick="toggleGrnAttachments(${g.id})">Attach Invoice</button>
             ${canEditRejected ? `<button class="btn small" type="button" onclick="openEditGrn(${g.id})">Edit &amp; Resubmit</button>` : ''}
+            ${canRevoke ? `<button class="btn small red" type="button" onclick="revokeGrn(${g.id})">Revoke</button>` : ''}
           `)}</td></tr>
           ${g.status === 'Rejected' && g.rejection_reason ? `<tr><td colspan="9"><div class="msg err" style="margin:0;">Rejected by ${esc(g.rejected_by_name)||'-'}: ${esc(g.rejection_reason)}</div></td></tr>` : ''}
+          ${g.status === 'Revoked' && g.revoke_reason ? `<tr><td colspan="9"><div class="msg" style="margin:0;background:#ede9fe;color:#6d28d9;">Revoked by ${esc(g.revoked_by_name)||'-'}: ${esc(g.revoke_reason)} &mdash; back in My Approvals for a fresh decision.</div></td></tr>` : ''}
           <tr id="grn-attach-row-${g.id}" style="display:none;"><td colspan="9"><div id="grn-attach-${g.id}"></div></td></tr>`;
       })}
     `),
@@ -8979,6 +8983,19 @@ window.saveEditGrn = async (grnId) => {
       received_qty: val('geg-recqty'), po_rate: val('geg-porate'),
     })});
     confirmSavedThenClose(`geg-save-btn-${grnId}`, 'stock-in-out');
+  } catch (e) { alert(e.message); }
+};
+// Admin "Revoke" on an already-Approved GRN (2026-11-18) - sends it back for
+// a fresh Store HOD decision. Never touches stock (see routes/purchase.js's
+// own revoke route comment - stock was credited at Receive time, never
+// conditional on GRN approval), only pauses billing eligibility.
+window.revokeGrn = async (grnId) => {
+  const reason = prompt('Reason for revoking this approved reconciliation (required) - it will go back to Store for a fresh decision:');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('A reason is required.'); return; }
+  try {
+    await api(`/purchase/store/grn-reconciliations/${grnId}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('stock-in-out');
   } catch (e) { alert(e.message); }
 };
 // Transportation / Packing & Forwarding, entered by the Store approver on

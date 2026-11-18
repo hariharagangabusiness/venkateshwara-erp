@@ -1581,6 +1581,17 @@ const MIGRATIONS = [
   // Purchase Invoice (see purchase_invoice_items.source_grn_id below).
   `ALTER TABLE grn_reconciliations ADD COLUMN transportation_amount REAL DEFAULT 0`,
   `ALTER TABLE grn_reconciliations ADD COLUMN packing_forwarding_amount REAL DEFAULT 0`,
+  // Admin "Revoke" on an Approved GRN (2026-11-18) - sends it back for a
+  // fresh Store HOD decision without touching stock (stock was credited at
+  // Receive time, never conditional on GRN approval - see POST
+  // /store/receive). status='Revoked' is its own real status, distinct from
+  // Rejected, so the GRN panel and drilldown can show it was specifically
+  // revoked rather than freshly rejected; these 3 columns are the audit
+  // trail of who/when/why, kept forever even once a later Approve/Reject
+  // overwrites status again.
+  `ALTER TABLE grn_reconciliations ADD COLUMN revoked_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE grn_reconciliations ADD COLUMN revoked_at TEXT`,
+  `ALTER TABLE grn_reconciliations ADD COLUMN revoke_reason TEXT`,
   // (2) A Purchase Invoice line can now represent one of the above charges
   // instead of an item - source_grn_id + charge_type identify which GRN and
   // which of the two charges it bills, so "how much of this GRN's

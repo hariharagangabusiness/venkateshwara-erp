@@ -3,7 +3,7 @@ const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const { db, issueRfqToken } = require('../db');
-const { authRequired, requirePermission } = require('../middleware/auth');
+const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateChallanPdf } = require('../lib/challanPdf');
 const { generatePoPdf } = require('../lib/poPdf');
@@ -2003,7 +2003,8 @@ const GRN_REJECTION_REASON_FIELDS = `
 `;
 router.get('/store/grn-reconciliations', (req, res) => {
   let q = `
-    SELECT g.*, po.po_no, po.item_id, i.name as item_name, v.name as vendor_name, ${GRN_REJECTION_REASON_FIELDS}
+    SELECT g.*, po.po_no, po.item_id, i.name as item_name, v.name as vendor_name, ${GRN_REJECTION_REASON_FIELDS},
+      (SELECT full_name FROM users WHERE id = g.revoked_by) as revoked_by_name
     FROM grn_reconciliations g
     JOIN purchase_orders po ON po.id = g.po_id
     LEFT JOIN items i ON i.id = po.item_id
@@ -2028,6 +2029,7 @@ router.get('/store/grn-reconciliations/:id', (req, res) => {
   const g = db.prepare(`
     SELECT g.*, po.po_no, po.item_id, po.quantity as po_quantity, po.unit, po.hsn_code, po.gst_rate,
       i.name as item_name, v.name as vendor_name, v.gstin as vendor_gstin, ${GRN_REJECTION_REASON_FIELDS},
+      (SELECT full_name FROM users WHERE id = g.revoked_by) as revoked_by_name,
       COALESCE((SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_batches' AND a.entity_id = g.grn_batch_id ORDER BY a.id DESC LIMIT 1),
         (SELECT a.file_path FROM attachments a WHERE a.entity_type = 'grn_reconciliation' AND a.entity_id = g.id ORDER BY a.id DESC LIMIT 1)) as invoice_attachment_path,
       (SELECT COUNT(*) FROM grn_reconciliations g2 WHERE g2.grn_batch_id = g.grn_batch_id) as batch_line_count
@@ -2124,6 +2126,57 @@ router.patch('/store/grn-reconciliations/:id', (req, res) => {
   // rather than being reused/overwritten.
   const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', existing.id, 0, req.user.id);
   db.prepare(`UPDATE grn_reconciliations SET status = 'PendingApproval', approval_id = ? WHERE id = ?`).run(approvalId, existing.id);
+  res.json({ ok: true });
+});
+
+// Admin "Revoke" on an already-Approved GRN (2026-11-18) - sends it back for
+// a fresh Store HOD decision. Never touches stock: items.current_stock and
+// stock_movements were both written at Receive time (see POST
+// /store/receive(-batch)) and were never conditional on GRN approval at
+// all - only billing eligibility (poLineBillableQty/grnChargeBillable, both
+// in routes/finance.js, read only Approved GRN rows) is gated by it. So
+// Revoke only ever pauses billing, it never reverses a physical receipt.
+router.post('/store/grn-reconciliations/:id/revoke', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM grn_reconciliations WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.status !== 'Approved') {
+    return res.status(400).json({ error: 'Only an already-Approved reconciliation can be revoked.' });
+  }
+  const reason = (req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to revoke an approved reconciliation.' });
+  // Blocked outright (never a partial unwind) the moment this GRN's own
+  // contribution is load-bearing for real billing already on file -
+  // mirrors poLineBillableQty()/grnChargeBillable()'s own math exactly
+  // (routes/finance.js), computed locally here since those aren't exported
+  // and this route has no reason to import across files for one query each.
+  const otherReconciled = db.prepare(`
+    SELECT COALESCE(SUM(received_qty), 0) as n FROM grn_reconciliations
+    WHERE po_id = ? AND status = 'Approved' AND id != ?
+  `).get(existing.po_id, existing.id).n;
+  const invoicedQty = db.prepare(`
+    SELECT COALESCE(SUM(pii.quantity), 0) as n
+    FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+    WHERE pii.purchase_order_line_id = ? AND pi.status != 'Cancelled' AND pi.status != 'Rejected'
+  `).get(existing.po_id).n;
+  if (invoicedQty > otherReconciled) {
+    return res.status(400).json({ error: `This GRN's quantity has already been billed on a Purchase Invoice (${invoicedQty} of ${otherReconciled + Number(existing.received_qty)} received against this PO line is already invoiced) - it can't be revoked.` });
+  }
+  const billedCharge = db.prepare(`
+    SELECT pi.invoice_no FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+    WHERE pii.source_grn_id = ? AND pi.status != 'Cancelled' AND pi.status != 'Rejected' LIMIT 1
+  `).get(existing.id);
+  if (billedCharge) {
+    return res.status(400).json({ error: `This GRN's Transportation/Packing & Forwarding charges have already been billed on Purchase Invoice ${billedCharge.invoice_no} - it can't be revoked.` });
+  }
+  // A fresh approval (not a resume) - same "never reuse a terminal
+  // approval" discipline Edit & Resubmit above already follows - so the
+  // original Approve's own history stays on file untouched.
+  const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', existing.id, 0, req.user.id);
+  db.prepare(`
+    UPDATE grn_reconciliations SET status = 'Revoked', approval_id = ?, revoked_by = ?, revoked_at = CURRENT_TIMESTAMP, revoke_reason = ?
+    WHERE id = ?
+  `).run(approvalId, req.user.id, reason, existing.id);
+  poAuditLog(req.user.id, 'grn_revoked', existing.po_id, `GRN #${existing.id} revoked by Admin: ${reason}`);
   res.json({ ok: true });
 });
 

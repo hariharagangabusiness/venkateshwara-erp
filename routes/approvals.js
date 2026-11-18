@@ -218,11 +218,12 @@ function describeEntity(entityType, entityId) {
       const r = db.prepare(`
         SELECT g.*, b.vendor_invoice_no as b_inv_no, b.vendor_invoice_date as b_inv_date,
           po.po_no, i.name as item_name, v.name as vendor_name, u.full_name as raised_by_name,
-          u.department_id as department_id, d.name as department_name
+          u.department_id as department_id, d.name as department_name, rv.full_name as revoked_by_name
         FROM grn_reconciliations g JOIN purchase_orders po ON po.id = g.po_id
         LEFT JOIN grn_batches b ON b.id = g.grn_batch_id
         LEFT JOIN items i ON i.id = po.item_id LEFT JOIN vendors v ON v.id = po.vendor_id
         LEFT JOIN users u ON u.id = g.created_by LEFT JOIN departments d ON d.id = u.department_id
+        LEFT JOIN users rv ON rv.id = g.revoked_by
         WHERE g.id = ?`).get(entityId);
       if (!r) return {};
       const variance = r.vendor_invoiced_qty != null && r.vendor_invoiced_rate != null
@@ -236,6 +237,10 @@ function describeEntity(entityType, entityId) {
         grn_received_qty: r.received_qty, grn_po_rate: r.po_rate, grn_po_no: r.po_no, grn_po_id: r.po_id,
         grn_invoice_no: r.b_inv_no || r.vendor_invoice_no, grn_invoice_date: r.b_inv_date || r.vendor_invoice_date,
         grn_vendor_qty: r.vendor_invoiced_qty, grn_vendor_rate: r.vendor_invoiced_rate,
+        // Only set once this GRN has actually been through a Revoke - lets
+        // the drilldown show a "this is a revoked re-review" banner above
+        // the normal Approve/Reject actions (2026-11-18).
+        grn_revoked_by_name: r.revoked_by_name, grn_revoked_at: r.revoked_at, grn_revoke_reason: r.revoke_reason,
       };
     }
     case 'sales_return': {
