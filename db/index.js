@@ -1778,6 +1778,48 @@ const MIGRATIONS = [
   `ALTER TABLE sales_return_items ADD COLUMN sent_back_at TEXT`,
   `ALTER TABLE sales_return_items ADD COLUMN sent_back_ref TEXT`,
   `ALTER TABLE sales_return_items ADD COLUMN sent_back_notes TEXT`,
+  // Challan GST type (2026-11-18) - a required-going-forward Place of
+  // Supply choice (Intra = Within State -> CGST+SGST, Inter = Outside State
+  // -> IGST), manually picked per challan since challans have no structured
+  // state field anywhere to auto-derive it from (only free-text consignor/
+  // consignee name+GSTIN). cgst_amount/sgst_amount/igst_amount are header-
+  // level totals computed server-side from the sum of every line's own
+  // gst_amount, split per supply_type - same "header totals, not a per-line
+  // CGST%/SGST% column" convention Sales/Purchase Invoice already use.
+  // Nullable here since an already-saved challan predates this column, same
+  // "must pick one" rule applying only to a new save as challan_type itself.
+  `ALTER TABLE challans ADD COLUMN supply_type TEXT`,
+  `ALTER TABLE challans ADD COLUMN cgst_amount REAL DEFAULT 0`,
+  `ALTER TABLE challans ADD COLUMN sgst_amount REAL DEFAULT 0`,
+  `ALTER TABLE challans ADD COLUMN igst_amount REAL DEFAULT 0`,
+  // Returnable Challan: incremental partial receipts (2026-11-18) - the
+  // 2026-11-11 "Receive Back" was deliberately a single whole-challan
+  // boolean; this revisits that on the owner's explicit ask for a real
+  // partial/short receipt. challan_items.returned_qty is the cumulative
+  // quantity actually received back so far on that line (never exceeding
+  // its own quantity - enforced in the route, not the DB). Each "Record
+  // Receipt" action is logged as its own event (challan_receive_events +
+  // one challan_receive_event_items row per line that received something
+  // that time) so a challan can be received back in several real-world
+  // batches over time with a full history, rather than one single action.
+  // challans.received_back/received_at keep their existing meaning (the
+  // challan reaching FULLY received) - they're now derived from whether
+  // every line's returned_qty has reached its quantity, recomputed after
+  // every event, rather than a bare manual flag.
+  `ALTER TABLE challan_items ADD COLUMN returned_qty REAL DEFAULT 0`,
+  `CREATE TABLE IF NOT EXISTS challan_receive_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    challan_id INTEGER NOT NULL REFERENCES challans(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS challan_receive_event_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES challan_receive_events(id),
+    challan_item_id INTEGER NOT NULL REFERENCES challan_items(id),
+    qty_received REAL NOT NULL
+  )`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

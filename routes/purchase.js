@@ -1174,7 +1174,11 @@ router.get('/orders', (req, res) => {
   res.json(db.prepare(`
     SELECT po.*, v.name as vendor_name, i.name as item_name,
       ca.label as company_address_label, ca.address_type as company_address_type,
+      ca.line1 as company_address_line1, ca.line2 as company_address_line2, ca.city as company_address_city,
+      ca.state as company_address_state, ca.pincode as company_address_pincode, ca.gstin as company_address_gstin,
       sa.label as company_ship_address_label, sa.address_type as company_ship_address_type,
+      sa.line1 as company_ship_address_line1, sa.line2 as company_ship_address_line2, sa.city as company_ship_address_city,
+      sa.state as company_ship_address_state, sa.pincode as company_ship_address_pincode, sa.gstin as company_ship_address_gstin,
       COALESCE((SELECT SUM(sm.quantity) FROM stock_movements sm WHERE sm.movement_type = 'IN' AND sm.reference = 'PO#' || po.id), 0) as received_qty
     FROM purchase_orders po
     JOIN vendors v ON v.id = po.vendor_id LEFT JOIN items i ON i.id = po.item_id
@@ -2477,23 +2481,32 @@ router.get('/store/low-stock', (req, res) => {
 // predating this column has challan_type=NULL, left as-is rather than
 // backfilled; the "must pick one" rule only applies to a new save.
 const CHALLAN_TYPES = ['Job Work', 'Stock Transfer', 'Delivery Challan', 'Purchase Return', 'Sales Return'];
+// Place of Supply (2026-11-18) - a required-going-forward GST treatment
+// choice, manually picked per challan since challans have no structured
+// state field anywhere to auto-compare against Company Settings' own state
+// the way every other GST-split feature in this app does. 'Intra' = Within
+// State (CGST+SGST), 'Inter' = Outside State (IGST).
+const CHALLAN_SUPPLY_TYPES = ['Intra', 'Inter'];
 router.get('/store/challans', (req, res) => {
   res.json(db.prepare(`
     SELECT c.*, u.full_name as created_by_name, p.project_code,
-      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id) as item_count
+      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id) as item_count,
+      (SELECT 1 FROM challan_items ci WHERE ci.challan_id = c.id AND ci.returned_qty > 0 AND ci.returned_qty < ci.quantity LIMIT 1) IS NOT NULL as has_partial_return
     FROM challans c LEFT JOIN users u ON u.id = c.created_by LEFT JOIN projects p ON p.id = c.project_id
     ORDER BY c.id DESC
   `).all());
 });
 
-// Report: every returnable challan still awaiting its "Received Back" -
+// Report: every returnable challan still awaiting full "Received Back" -
 // oldest first, since that's the one most overdue for follow-up. Registered
 // before the literal-:id route below - this app's own recurring route-
 // shadowing bug class (:id matching any path segment, including this one).
 router.get('/store/challans/open-returnable', (req, res) => {
   res.json(db.prepare(`
     SELECT c.*, u.full_name as created_by_name, p.project_code,
-      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id) as item_count
+      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id) as item_count,
+      (SELECT COUNT(*) FROM challan_items ci WHERE ci.challan_id = c.id AND ci.returned_qty < ci.quantity) as lines_outstanding,
+      (SELECT 1 FROM challan_items ci WHERE ci.challan_id = c.id AND ci.returned_qty > 0 AND ci.returned_qty < ci.quantity LIMIT 1) IS NOT NULL as has_partial_return
     FROM challans c LEFT JOIN users u ON u.id = c.created_by LEFT JOIN projects p ON p.id = c.project_id
     WHERE c.is_returnable = 1 AND c.received_back = 0
     ORDER BY c.challan_date ASC
@@ -2510,6 +2523,22 @@ router.get('/store/challans/:id', (req, res) => {
   res.json({ challan, items });
 });
 
+// History of every "Record Receipt" event against a returnable challan -
+// registered before the literal-:id route above would otherwise shadow it,
+// same recurring route-ordering discipline as /open-returnable.
+router.get('/store/challans/:id/receive-events', (req, res) => {
+  const events = db.prepare(`
+    SELECT e.*, u.full_name as created_by_name FROM challan_receive_events e
+    LEFT JOIN users u ON u.id = e.created_by WHERE e.challan_id = ? ORDER BY e.created_at DESC
+  `).all(req.params.id);
+  const itemStmt = db.prepare(`
+    SELECT ei.*, ci.description FROM challan_receive_event_items ei
+    JOIN challan_items ci ON ci.id = ei.challan_item_id WHERE ei.event_id = ?
+  `);
+  events.forEach(e => { e.items = itemStmt.all(e.id); });
+  res.json(events);
+});
+
 // Line total = taxable (qty*rate) + GST computed server-side on that taxable
 // value - never trusts a client-sent gst_amount, same as qty*rate was always
 // recomputed server-side rather than trusting a client-sent "value".
@@ -2524,28 +2553,39 @@ function challanLineFigures(it) {
 function computeChallanTotal(items) {
   return items.reduce((sum, it) => sum + challanLineFigures(it).lineTotal, 0);
 }
+// CGST+SGST (half each) when Within State, full amount as IGST when
+// Outside State - a header-level split of the sum of every line's own
+// (already server-computed) GST amount, same "header totals, not a
+// per-line CGST%/SGST% column" convention Sales/Purchase Invoice use.
+function challanGstSplit(items, supplyType) {
+  const totalGst = items.reduce((sum, it) => sum + challanLineFigures(it).gstAmount, 0);
+  if (supplyType === 'Intra') return { cgst: totalGst / 2, sgst: totalGst / 2, igst: 0 };
+  return { cgst: 0, sgst: 0, igst: totalGst };
+}
 
 router.post('/store/challans', requirePermission('store.manage'), (req, res) => {
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items, challan_type, is_returnable,
+    po_no, project_id, items, challan_type, is_returnable, supply_type,
   } = req.body;
   if (!from_location || !to_location) return res.status(400).json({ error: 'From and To location are required' });
   if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
+  if (!CHALLAN_SUPPLY_TYPES.includes(supply_type)) return res.status(400).json({ error: 'Pick a GST Type (Within State / Outside State) before saving.' });
   const lineItems = Array.isArray(items) ? items : [];
   const challanNo = 'CH-' + Date.now();
   const total = computeChallanTotal(lineItems);
+  const { cgst, sgst, igst } = challanGstSplit(lineItems, supply_type);
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO challans (challan_no, challan_type, from_location, to_location, vehicle_no, transport_mode, transporter_name,
         distance_km, consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no, po_no,
-        project_id, total_value, is_returnable, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        project_id, total_value, is_returnable, supply_type, cgst_amount, sgst_amount, igst_amount, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(challanNo, challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
-      project_id || null, total, is_returnable ? 1 : 0, req.user.id);
+      project_id || null, total, is_returnable ? 1 : 0, supply_type, cgst, sgst, igst, req.user.id);
     const insertItem = db.prepare(`
       INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, gst_rate, gst_amount, value, sort_order)
       VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -2566,20 +2606,22 @@ router.put('/store/challans/:id', requirePermission('store.manage'), (req, res) 
   const {
     from_location, to_location, vehicle_no, transport_mode, transporter_name, distance_km,
     consignor_name, consignor_gstin, consignee_name, consignee_gstin, reason, eway_bill_no,
-    po_no, project_id, items, challan_type, is_returnable,
+    po_no, project_id, items, challan_type, is_returnable, supply_type,
   } = req.body;
   if (!CHALLAN_TYPES.includes(challan_type)) return res.status(400).json({ error: 'Pick a Challan Type before saving.' });
+  if (!CHALLAN_SUPPLY_TYPES.includes(supply_type)) return res.status(400).json({ error: 'Pick a GST Type (Within State / Outside State) before saving.' });
   const lineItems = Array.isArray(items) ? items : [];
   const total = computeChallanTotal(lineItems);
+  const { cgst, sgst, igst } = challanGstSplit(lineItems, supply_type);
   const tx = db.transaction(() => {
     db.prepare(`
       UPDATE challans SET challan_type=?, from_location=?, to_location=?, vehicle_no=?, transport_mode=?, transporter_name=?,
         distance_km=?, consignor_name=?, consignor_gstin=?, consignee_name=?, consignee_gstin=?, reason=?,
-        eway_bill_no=?, po_no=?, project_id=?, total_value=?, is_returnable=? WHERE id = ?
+        eway_bill_no=?, po_no=?, project_id=?, total_value=?, is_returnable=?, supply_type=?, cgst_amount=?, sgst_amount=?, igst_amount=? WHERE id = ?
     `).run(challan_type, from_location, to_location, vehicle_no || null, transport_mode || 'Road', transporter_name || null,
       distance_km || null, consignor_name || 'Venkateshwara Engineers', consignor_gstin || null, consignee_name || null,
       consignee_gstin || null, reason || 'Stock Transfer (Own Use - Not For Sale)', eway_bill_no || null, po_no || null,
-      project_id || null, total, is_returnable ? 1 : 0, existing.id);
+      project_id || null, total, is_returnable ? 1 : 0, supply_type, cgst, sgst, igst, existing.id);
     db.prepare('DELETE FROM challan_items WHERE challan_id = ?').run(existing.id);
     const insertItem = db.prepare(`
       INSERT INTO challan_items (challan_id, description, hsn_code, quantity, unit, rate, gst_rate, gst_amount, value, sort_order)
@@ -2594,20 +2636,54 @@ router.put('/store/challans/:id', requirePermission('store.manage'), (req, res) 
   res.json({ ok: true });
 });
 
-// A returnable challan (e.g. Job Work material sent out, expected back) is
-// closed out here - whole-challan, not per-line quantity, per the owner's
-// confirmed scope. Only acts on a challan actually marked returnable and not
-// already received back, so this can't double-fire or "receive back" a
-// challan that was never returnable in the first place.
+// "Record Receipt" - a returnable challan can be received back in several
+// real-world batches over time (2026-11-18 revision of the original
+// 2026-11-11 single whole-challan action) - each call here is one event,
+// carrying a per-line quantity (defaulting to 0 for a line not mentioned),
+// clamped so a line's cumulative returned_qty can never exceed what was
+// actually sent (its own quantity). The challan only flips to fully
+// received_back once every line has come back in full, recomputed after
+// every event rather than ever being hand-set.
 router.post('/store/challans/:id/receive-back', requirePermission('store.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM challans WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (!existing.is_returnable) return res.status(400).json({ error: 'This challan is not marked Returnable.' });
-  if (existing.received_back) return res.status(400).json({ error: 'Already received back.' });
+  if (existing.received_back) return res.status(400).json({ error: 'Already fully received back.' });
+  const items = db.prepare('SELECT * FROM challan_items WHERE challan_id = ?').all(existing.id);
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
   const notes = (req.body && req.body.notes) || null;
-  db.prepare(`UPDATE challans SET received_back = 1, received_at = CURRENT_TIMESTAMP, received_notes = ? WHERE id = ?`)
-    .run(notes, existing.id);
-  res.json({ ok: true });
+  const toApply = [];
+  for (const line of lines) {
+    const qty = Number(line.qty) || 0;
+    if (qty <= 0) continue;
+    const item = items.find(it => it.id === Number(line.challan_item_id));
+    if (!item) return res.status(400).json({ error: 'That line does not belong to this challan.' });
+    const remaining = Number(item.quantity) - (Number(item.returned_qty) || 0);
+    if (qty > remaining + 1e-9) {
+      return res.status(400).json({ error: `"${item.description}" only has ${remaining} still outstanding - cannot receive ${qty}.` });
+    }
+    toApply.push({ item, qty });
+  }
+  if (!toApply.length) return res.status(400).json({ error: 'Enter at least one quantity to record.' });
+  const tx = db.transaction(() => {
+    const eventInfo = db.prepare('INSERT INTO challan_receive_events (challan_id, created_by, notes) VALUES (?,?,?)')
+      .run(existing.id, req.user.id, notes);
+    const insertEventItem = db.prepare('INSERT INTO challan_receive_event_items (event_id, challan_item_id, qty_received) VALUES (?,?,?)');
+    const bumpItem = db.prepare('UPDATE challan_items SET returned_qty = returned_qty + ? WHERE id = ?');
+    toApply.forEach(({ item, qty }) => {
+      bumpItem.run(qty, item.id);
+      insertEventItem.run(eventInfo.lastInsertRowid, item.id, qty);
+    });
+    const freshItems = db.prepare('SELECT quantity, returned_qty FROM challan_items WHERE challan_id = ?').all(existing.id);
+    const fullyReceived = freshItems.every(it => Number(it.returned_qty) >= Number(it.quantity) - 1e-9);
+    db.prepare(`UPDATE challans SET received_back = ?,
+        received_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE received_at END,
+        received_notes = ? WHERE id = ?`)
+      .run(fullyReceived ? 1 : 0, fullyReceived ? 1 : 0, notes || existing.received_notes, existing.id);
+    return fullyReceived;
+  });
+  const fullyReceived = tx();
+  res.json({ ok: true, fully_received: fullyReceived });
 });
 
 

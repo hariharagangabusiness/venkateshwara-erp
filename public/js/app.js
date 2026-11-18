@@ -8727,6 +8727,18 @@ const STOCK_RECEIVE_GRID_COLS = 'minmax(150px,1.4fr) 70px 70px 90px 70px 80px 10
 // the selected PO's own line items (each with its own qty-to-receive input
 // and Receive button, for partial/per-line shipments) or, with no PO
 // selected, today's manual item+qty+Receive flow unchanged.
+// Plain, read-only Bill-To/Ship-To text built from whichever company_address
+// fields GET /orders already joins onto every PO line (same label/line1/
+// line2/city/state/pincode/gstin shape the PO PDF's own boxes use) - "" when
+// nothing was picked for that slot on the PO, so the caller can skip the box.
+function stockPoAddressText(line, prefix) {
+  const parts = [line[prefix + '_line1'], line[prefix + '_line2'], line[prefix + '_city'],
+    line[prefix + '_state'], line[prefix + '_pincode']].filter(Boolean);
+  if (!parts.length) return '';
+  let text = parts.join(', ');
+  if (line[prefix + '_gstin']) text += ' (GSTIN: ' + line[prefix + '_gstin'] + ')';
+  return text;
+}
 function renderStockPoLines() {
   const poNo = val('st-po');
   const vendorInput = document.getElementById('st-po-vendor');
@@ -8735,7 +8747,18 @@ function renderStockPoLines() {
   const group = (window.__GROUPED_POS || []).find(g => g.po_no === poNo);
   if (vendorInput) vendorInput.value = group ? group.vendor_name : '';
   if (group) {
+    const first = group.lines[0] || {};
+    const billText = stockPoAddressText(first, 'company_address');
+    const shipText = stockPoAddressText(first, 'company_ship_address');
     linesEl.innerHTML = `
+      ${(billText || shipText) ? `
+      <div class="panel" style="margin:10px 0;">
+        <h4>Bill-To / Ship-To</h4>
+        <div class="form-grid">
+          <div><label>Bill-To Address${first.company_address_label ? ' (' + esc(first.company_address_label) + ')' : ''}</label><p style="margin:4px 0;">${esc(billText) || '-'}</p></div>
+          <div><label>Ship-To Address${first.company_ship_address_label ? ' (' + esc(first.company_ship_address_label) + ')' : ''}</label><p style="margin:4px 0;">${esc(shipText) || '-'}</p></div>
+        </div>
+      </div>` : ''}
       <div class="panel" style="margin:10px 0;">
         <h4>🚛 Step 1: Attach Master Vendor Invoice Copy (Applies to all received lines)</h4>
         <div class="form-grid">
@@ -9046,14 +9069,32 @@ function challanTypeOptions(selected) {
 function challanReturnableOptions(selected) {
   return `<option value="No" ${!selected ? 'selected' : ''}>No</option><option value="Yes" ${selected ? 'selected' : ''}>Yes - expected back</option>`;
 }
+// Place of Supply (2026-11-18) - challans have no structured state field to
+// auto-derive this from, so it's a plain required manual choice, same "must
+// pick one" discipline as Challan Type itself.
+function challanSupplyTypeOptions(selected) {
+  return `<option value="">-- Select --</option>
+    <option value="Intra" ${selected === 'Intra' ? 'selected' : ''}>Within State (CGST + SGST)</option>
+    <option value="Inter" ${selected === 'Inter' ? 'selected' : ''}>Outside State (IGST)</option>`;
+}
 // Shared by the New Challan form and the Edit popup - same columns/markup,
-// just a different backing array/rerender-function name per caller.
-function challanItemsTableHTML(items, arrName, rerenderFn) {
+// just a different backing array/rerender-function name per caller. The
+// footer splits the combined GST into CGST+SGST or IGST per the currently
+// selected Place of Supply (read live via supplyTypeFieldId, so flipping
+// the dropdown re-renders the correct split with no separate recompute).
+function challanItemsTableHTML(items, arrName, rerenderFn, supplyTypeFieldId) {
   const lineFigures = (it) => {
     const taxable = (Number(it.quantity) || 0) * (Number(it.rate) || 0);
     const gstAmt = taxable * (Number(it.gst_rate) || 0) / 100;
     return { taxable, gstAmt };
   };
+  const totals = items.reduce((s, it) => { const { taxable, gstAmt } = lineFigures(it); return { taxable: s.taxable + taxable, gst: s.gst + gstAmt }; }, { taxable: 0, gst: 0 });
+  const supplyType = supplyTypeFieldId ? val(supplyTypeFieldId) : '';
+  const gstFooterRows = supplyType === 'Intra'
+    ? `<tr><td colspan="8" style="text-align:right;">CGST</td><td colspan="2">₹${fmt(totals.gst / 2)}</td></tr><tr><td colspan="8" style="text-align:right;">SGST</td><td colspan="2">₹${fmt(totals.gst / 2)}</td></tr>`
+    : supplyType === 'Inter'
+      ? `<tr><td colspan="8" style="text-align:right;">IGST</td><td colspan="2">₹${fmt(totals.gst)}</td></tr>`
+      : `<tr><td colspan="8" style="text-align:right;">GST</td><td colspan="2">₹${fmt(totals.gst)}</td></tr>`;
   return tableHTML(['Description', 'HSN Code', 'Qty', 'Unit', 'Rate (₹)', 'GST %', 'Taxable (₹)', 'GST (₹)', 'Line Total (₹)', ''], items, (it, i) => {
     const { taxable, gstAmt } = lineFigures(it);
     return `
@@ -9069,7 +9110,11 @@ function challanItemsTableHTML(items, arrName, rerenderFn) {
       <td>₹${fmt(taxable + gstAmt)}</td>
       <td><button class="btn small outline" type="button" onclick="${arrName}.splice(${i},1);${rerenderFn}()">✕</button></td>
     </tr>`;
-  }).replace('</tbody></table>', `</tbody><tfoot><tr><td colspan="8" style="text-align:right;"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(items.reduce((s, it) => { const { taxable, gstAmt } = lineFigures(it); return s + taxable + gstAmt; }, 0))}</b></td></tr></tfoot></table>`);
+  }).replace('</tbody></table>', `</tbody><tfoot>
+    <tr><td colspan="8" style="text-align:right;">Taxable Value</td><td colspan="2">₹${fmt(totals.taxable)}</td></tr>
+    ${gstFooterRows}
+    <tr><td colspan="8" style="text-align:right;"><b>Grand Total</b></td><td colspan="2"><b>₹${fmt(totals.taxable + totals.gst)}</b></td></tr>
+  </tfoot></table>`);
 }
 let CHALLAN_ITEMS = [{ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0, gst_rate: 18 }];
 function renderChallanForm() {
@@ -9079,6 +9124,7 @@ function renderChallanForm() {
     <div class="form-grid">
       <div><label>Challan Date</label><input id="ch-date" type="date" value="${today()}"></div>
       <div><label>Challan Type</label><select id="ch-type">${challanTypeOptions()}</select></div>
+      <div><label>GST Type (Place of Supply)</label><select id="ch-supply" onchange="renderChallanItemRows()">${challanSupplyTypeOptions()}</select></div>
       <div><label>Returnable (expected back)?</label><select id="ch-returnable">${challanReturnableOptions(false)}</select></div>
       <div><label>From Location</label><input id="ch-from" placeholder="e.g. Faridabad Factory"></div>
       <div><label>To Location</label><input id="ch-to" placeholder="e.g. Site / Other Unit"></div>
@@ -9103,14 +9149,15 @@ function renderChallanForm() {
 function renderChallanItemRows() {
   const el = document.getElementById('ch-items');
   if (!el) return;
-  el.innerHTML = challanItemsTableHTML(CHALLAN_ITEMS, 'CHALLAN_ITEMS', 'renderChallanItemRows');
+  el.innerHTML = challanItemsTableHTML(CHALLAN_ITEMS, 'CHALLAN_ITEMS', 'renderChallanItemRows', 'ch-supply');
 }
 window.addChallanItemRow = () => { CHALLAN_ITEMS.push({ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0, gst_rate: CHALLAN_DEFAULT_GST }); renderChallanItemRows(); };
 window.saveChallan = async () => {
   if (!val('ch-type')) return alert('Pick a Challan Type before saving.');
+  if (!val('ch-supply')) return alert('Pick a GST Type (Within State / Outside State) before saving.');
   try {
     await api('/purchase/store/challans', { method: 'POST', body: JSON.stringify({
-      challan_type: val('ch-type'), is_returnable: val('ch-returnable') === 'Yes',
+      challan_type: val('ch-type'), supply_type: val('ch-supply'), is_returnable: val('ch-returnable') === 'Yes',
       from_location: val('ch-from'), to_location: val('ch-to'), vehicle_no: val('ch-vehicle'), transport_mode: val('ch-mode'),
       transporter_name: val('ch-transporter'), distance_km: val('ch-distance') || null, consignor_gstin: val('ch-cgstin'),
       consignee_name: val('ch-consignee'), consignee_gstin: val('ch-econgstin'), reason: val('ch-reason'),
@@ -9123,6 +9170,7 @@ window.saveChallan = async () => {
 function challanReturnableStatusHTML(c) {
   if (!c.is_returnable) return 'No';
   if (c.received_back) return `Yes — Received ${new Date(c.received_at).toLocaleDateString()}`;
+  if (c.has_partial_return) return 'Yes — <b style="color:#b45309;">Partially Received</b>';
   return 'Yes — <b style="color:#b45309;">Open</b>';
 }
 async function renderChallanList() {
@@ -9134,7 +9182,8 @@ async function renderChallanList() {
       <td>${actionButtonsCell(`<button class="btn small outline" onclick="editChallan(${c.id})">Edit</button>
         <button class="btn small outline" onclick="printChallan(${c.id})">Print</button>
         <button class="btn small outline" onclick="downloadChallanPdf(${c.id}, '${esc(c.challan_no)}')">Download PDF</button>
-        ${c.is_returnable && !c.received_back ? `<button class="btn small" onclick="receiveBackChallan(${c.id})">Receive Back</button>` : ''}`)}</td></tr>`);
+        ${c.is_returnable ? `<button class="btn small outline" onclick="showChallanReceiveHistory(${c.id}, '${esc(c.challan_no)}')">Receipt History</button>` : ''}
+        ${c.is_returnable && !c.received_back ? `<button class="btn small" onclick="openRecordReceiptModal(${c.id})">Record Receipt</button>` : ''}`)}</td></tr>`);
   listEl.innerHTML = collapsiblePanel('challans-list', `<span id="ch-list-count">Saved Challans (${challans.length})</span>`, `
     ${renderListSearch('challans', challans, ['challan_no', 'vehicle_no', 'from_location', 'to_location', 'challan_type'], (rows) => {
       document.getElementById('ch-list-table').innerHTML = renderRows(rows);
@@ -9143,13 +9192,45 @@ async function renderChallanList() {
     <div id="ch-list-table">${renderRows(challans)}</div>
   `);
 }
-window.receiveBackChallan = async (id) => {
-  const notes = prompt('Any notes on the material received back? (optional)');
-  if (notes === null) return;
+// Record Receipt (2026-11-18) - replaces the old single whole-challan
+// prompt() with a popup listing every line's own Ordered/Already Received/
+// Outstanding figures and an editable "Receive Now" input (defaulting to
+// the full outstanding amount, freely reducible for a genuine short/partial
+// receipt) - a challan can be received back across any number of these
+// events over time, each one its own logged history entry.
+window.openRecordReceiptModal = async (id) => {
+  const { challan: c, items } = await api('/purchase/store/challans/' + id);
+  const rows = items.map(it => {
+    const returned = Number(it.returned_qty) || 0;
+    const remaining = Math.max(0, Number(it.quantity) - returned);
+    return `<tr>
+      <td>${esc(it.description)}</td><td>${it.quantity} ${esc(it.unit)}</td><td>${returned}</td><td><b>${remaining}</b></td>
+      <td><input type="number" id="rr-qty-${it.id}" value="${remaining}" min="0" max="${remaining}" style="width:90px;" ${remaining <= 0 ? 'disabled' : ''}></td>
+    </tr>`;
+  }).join('');
+  openAppModal('Record Receipt — ' + c.challan_no, `
+    <p class="muted">Enter how much of each line is actually being received back this time - defaults to the full outstanding amount, but can be reduced for a genuine short/partial receipt. Received figures accumulate across however many times this is done.</p>
+    <table><thead><tr><th>Description</th><th>Sent</th><th>Already Received</th><th>Outstanding</th><th>Receive Now</th></tr></thead><tbody>${rows}</tbody></table>
+    <div style="margin-top:10px;"><label>Notes (optional)</label><textarea id="rr-notes" rows="2" style="width:100%;"></textarea></div>
+    <div style="margin-top:12px;"><button class="btn" id="rr-save-btn-${id}" onclick="saveRecordReceipt(${id})">Record Receipt</button></div>
+  `);
+  window.__RR_ITEM_IDS = items.map(it => it.id);
+};
+window.saveRecordReceipt = async (id) => {
+  const lines = (window.__RR_ITEM_IDS || []).map(itemId => ({ challan_item_id: itemId, qty: Number(val('rr-qty-' + itemId)) || 0 }));
+  if (!lines.some(l => l.qty > 0)) return alert('Enter at least one quantity to record.');
   try {
-    await api('/purchase/store/challans/' + id + '/receive-back', { method: 'POST', body: JSON.stringify({ notes: notes || null }) });
-    navigate('challans');
+    await api('/purchase/store/challans/' + id + '/receive-back', { method: 'POST', body: JSON.stringify({ lines, notes: val('rr-notes') || null }) });
+    confirmSavedThenClose('rr-save-btn-' + id, 'challans');
   } catch (e) { alert(e.message); }
+};
+window.showChallanReceiveHistory = async (id, challanNo) => {
+  const events = await api('/purchase/store/challans/' + id + '/receive-events');
+  openAppModal('Receipt History — ' + challanNo, events.length ? events.map(e => `
+    <div class="box" style="margin-bottom:10px;"><p style="margin:0 0 4px;"><b>${new Date(e.created_at).toLocaleString()}</b> &middot; ${esc(e.created_by_name)||'-'}</p>
+      <ul style="margin:4px 0;">${e.items.map(it => `<li>${esc(it.description)}: ${it.qty_received}</li>`).join('')}</ul>
+      ${e.notes ? `<p class="muted" style="margin:4px 0 0;">${esc(e.notes)}</p>` : ''}
+    </div>`).join('') : '<p class="muted">No receipts recorded yet.</p>');
 };
 async function renderChallanReport() {
   const reportEl = document.getElementById('challan-report');
@@ -9158,11 +9239,11 @@ async function renderChallanReport() {
   const today = new Date();
   const daysPending = (d) => Math.max(0, Math.round((today - new Date(d)) / 86400000));
   reportEl.innerHTML = collapsiblePanel('challans-report', `Open Returnable Challans Report (${rows.length})`, rows.length ? `
-    <p class="muted">Every challan marked Returnable that hasn't been marked Received Back yet - oldest first.</p>
-    ${tableHTML(['Challan No', 'Date', 'Days Pending', 'Type', 'From', 'To', 'Consignee', 'Vehicle', 'Value', ''], rows, c => `
-      <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td><b style="color:#b45309;">${daysPending(c.challan_date)}</b></td><td>${esc(c.challan_type)||'-'}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.consignee_name)||'-'}</td><td>${esc(c.vehicle_no)||'-'}</td><td>₹${fmt(c.total_value)}</td>
-      <td>${actionButtonsCell(`<button class="btn small" onclick="receiveBackChallan(${c.id})">Receive Back</button>`)}</td></tr>`)}
-  ` : `<p class="muted">Nothing outstanding - every returnable challan has been received back.</p>`);
+    <p class="muted">Every challan marked Returnable that isn't fully Received Back yet - oldest first. "Lines Outstanding" counts items still owed in full or in part.</p>
+    ${tableHTML(['Challan No', 'Date', 'Days Pending', 'Type', 'Lines Outstanding', 'From', 'To', 'Consignee', 'Vehicle', 'Value', ''], rows, c => `
+      <tr><td>${esc(c.challan_no)}</td><td>${new Date(c.challan_date).toLocaleDateString()}</td><td><b style="color:#b45309;">${daysPending(c.challan_date)}</b></td><td>${esc(c.challan_type)||'-'}</td><td>${c.lines_outstanding} / ${c.item_count}${c.has_partial_return ? ' <b style="color:#b45309;">(Partial)</b>' : ''}</td><td>${esc(c.from_location)}</td><td>${esc(c.to_location)}</td><td>${esc(c.consignee_name)||'-'}</td><td>${esc(c.vehicle_no)||'-'}</td><td>₹${fmt(c.total_value)}</td>
+      <td>${actionButtonsCell(`<button class="btn small" onclick="openRecordReceiptModal(${c.id})">Record Receipt</button><button class="btn small outline" onclick="showChallanReceiveHistory(${c.id}, '${esc(c.challan_no)}')">History</button>`)}</td></tr>`)}
+  ` : `<p class="muted">Nothing outstanding - every returnable challan has been received back in full.</p>`);
 }
 window.downloadChallanPdf = async (id, challanNo) => {
   try {
@@ -9203,13 +9284,20 @@ window.printChallan = async (id) => {
       <div><span>Consignee:</span> <b>${esc(c.consignee_name)||'-'}</b> (${esc(c.consignee_gstin)||'GSTIN N/A'})</div>
       <div><span>E-Way Bill No:</span> <b>${esc(c.eway_bill_no)||'-'}</b></div>
       <div><span>PO/Reference:</span> <b>${esc(c.po_no)||'-'}</b></div>
+      <div><span>Place of Supply:</span> <b>${c.supply_type === 'Intra' ? 'Within State (CGST+SGST)' : c.supply_type === 'Inter' ? 'Outside State (IGST)' : '-'}</b></div>
       <div style="grid-column:1/-1;"><span>Reason for Transport:</span> <b>${esc(c.reason)}</b></div>
     </div>
     <div><span>Returnable:</span> <b>${c.is_returnable ? 'Yes' : 'No'}</b></div>
     ${c.is_returnable ? `<div><span>Received Back:</span> <b>${c.received_back ? 'Yes (' + new Date(c.received_at).toLocaleDateString() + ')' : 'No - still with the other party'}</b></div>` : ''}
     <table><thead><tr><th>#</th><th>Description</th><th>HSN Code</th><th>Qty</th><th>Unit</th><th>Rate (₹)</th><th>Taxable (₹)</th><th>GST %</th><th>GST (₹)</th><th>Line Total (₹)</th></tr></thead>
     <tbody>${items.map((it,i) => `<tr><td>${i+1}</td><td>${esc(it.description)}</td><td>${esc(it.hsn_code)||'-'}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${fmt(it.rate)}</td><td>${fmt(it.value)}</td><td>${fmt(it.gst_rate)}%</td><td>${fmt(it.gst_amount)}</td><td>${fmt((Number(it.value)||0)+(Number(it.gst_amount)||0))}</td></tr>`).join('')}</tbody>
-    <tfoot><tr><td colspan="9" style="text-align:right;"><b>Grand Total</b></td><td><b>₹${fmt(c.total_value)}</b></td></tr></tfoot></table>
+    <tfoot>
+      <tr><td colspan="9" style="text-align:right;">Taxable Value</td><td>₹${fmt(items.reduce((s,it) => s + (Number(it.value)||0), 0))}</td></tr>
+      ${c.supply_type === 'Intra'
+        ? `<tr><td colspan="9" style="text-align:right;">CGST</td><td>₹${fmt(c.cgst_amount)}</td></tr><tr><td colspan="9" style="text-align:right;">SGST</td><td>₹${fmt(c.sgst_amount)}</td></tr>`
+        : `<tr><td colspan="9" style="text-align:right;">IGST</td><td>₹${fmt(c.igst_amount)}</td></tr>`}
+      <tr><td colspan="9" style="text-align:right;"><b>Grand Total</b></td><td><b>₹${fmt(c.total_value)}</b></td></tr>
+    </tfoot></table>
     <div class="foot"><div>Receiver's Signature</div><div>For Venkateshwara Engineers<br><br><br>Authorized Signatory</div></div>
     <script>window.onload = () => window.print();</script>
     </body></html>`);
@@ -9223,6 +9311,7 @@ window.editChallan = async (id) => {
   openAppModal('Edit Challan — ' + c.challan_no, `
     <div class="form-grid">
       <div><label>Challan Type</label><select id="ech-type">${challanTypeOptions(c.challan_type)}</select></div>
+      <div><label>GST Type (Place of Supply)</label><select id="ech-supply" onchange="renderEditChallanItemRows()">${challanSupplyTypeOptions(c.supply_type)}</select></div>
       <div><label>Returnable (expected back)?</label><select id="ech-returnable">${challanReturnableOptions(c.is_returnable)}</select></div>
       <div><label>From Location</label><input id="ech-from" value="${esc(c.from_location)}"></div>
       <div><label>To Location</label><input id="ech-to" value="${esc(c.to_location)}"></div>
@@ -9247,14 +9336,15 @@ window.editChallan = async (id) => {
 function renderEditChallanItemRows() {
   const el = document.getElementById('ech-items');
   if (!el) return;
-  el.innerHTML = challanItemsTableHTML(EDIT_CHALLAN_ITEMS, 'EDIT_CHALLAN_ITEMS', 'renderEditChallanItemRows');
+  el.innerHTML = challanItemsTableHTML(EDIT_CHALLAN_ITEMS, 'EDIT_CHALLAN_ITEMS', 'renderEditChallanItemRows', 'ech-supply');
 }
 window.addEditChallanItemRow = () => { EDIT_CHALLAN_ITEMS.push({ description: '', hsn_code: '', quantity: 1, unit: 'Nos', rate: 0, gst_rate: CHALLAN_DEFAULT_GST }); renderEditChallanItemRows(); };
 window.saveEditChallan = async (id) => {
   if (!val('ech-type')) return alert('Pick a Challan Type before saving.');
+  if (!val('ech-supply')) return alert('Pick a GST Type (Within State / Outside State) before saving.');
   try {
     await api('/purchase/store/challans/' + id, { method: 'PUT', body: JSON.stringify({
-      challan_type: val('ech-type'), is_returnable: val('ech-returnable') === 'Yes',
+      challan_type: val('ech-type'), supply_type: val('ech-supply'), is_returnable: val('ech-returnable') === 'Yes',
       from_location: val('ech-from'), to_location: val('ech-to'), vehicle_no: val('ech-vehicle'), transport_mode: val('ech-mode'),
       transporter_name: val('ech-transporter'), distance_km: val('ech-distance') || null, consignor_gstin: val('ech-cgstin'),
       consignee_name: val('ech-consignee'), consignee_gstin: val('ech-econgstin'), reason: val('ech-reason'),
