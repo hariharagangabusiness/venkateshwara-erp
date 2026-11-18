@@ -278,10 +278,25 @@ function unifiedQueueForUser(user) {
   approvalsLib.pendingForUser(user).forEach(a => {
     const chain = db.prepare('SELECT name, description FROM approval_chains WHERE id = ?').get(a.chain_id);
     const detail = describeEntity(a.entity_type, a.entity_id);
+    // describeEntity()'s department_name is the RAISER's own department
+    // (useful context, kept as department_id for the org-hierarchy filter
+    // below) - but on a multi-step chain whose later steps route to a
+    // different department than the one that raised it (PurchaseOrder's
+    // Purchase->Management, PurchaseInvoice's Accounts->Management, etc),
+    // that label is actively misleading once the item has moved past step
+    // 1: a Management-held item still read "PURCHASE", so an approver
+    // scanning for their own department's bucket could miss it entirely.
+    // Overriding the DISPLAY label with the current step's own approving
+    // role fixes that for every chain, single- or multi-step alike -
+    // department_id itself is left untouched, so the org_node_id filter
+    // further down keeps its existing (raiser-scoped) meaning.
+    const step = db.prepare('SELECT approver_role_id FROM approval_chain_steps WHERE chain_id = ? AND step_order = ?').get(a.chain_id, a.current_step);
+    const approverRole = step ? db.prepare('SELECT name FROM roles WHERE id = ?').get(step.approver_role_id) : null;
     items.push({
       source: 'ApprovalChain', id: a.id, entity_type: a.entity_type, entity_id: a.entity_id,
       chain_name: chain.name, chain_description: chain.description, amount: a.amount,
       current_step: a.current_step, created_at: a.created_at, ...detail,
+      department_name: approverRole ? approverRole.name : detail.department_name,
     });
   });
 
