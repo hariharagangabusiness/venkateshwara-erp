@@ -1664,7 +1664,10 @@ PAGES.dashboard = async (el) => {
         })}`;
     },
     open_service_requests: async () => {
-      const reqs = (await api('/service')).filter(r => !['Resolved','Closed'].includes(r.status));
+      // Rejected is a terminal, closed-out state same as Resolved/Closed -
+      // matches routes/dashboard.js's own projects_active exclusion, so the
+      // tile's number and this drill-down list can't disagree.
+      const reqs = (await api('/service')).filter(r => !['Resolved','Closed','Rejected'].includes(r.status));
       const byStatus = {};
       reqs.forEach(r => { byStatus[r.status] = (byStatus[r.status]||0) + 1; });
       return `<h3>Open Service Requests (${reqs.length})</h3>
