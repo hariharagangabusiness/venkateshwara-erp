@@ -1820,6 +1820,23 @@ const MIGRATIONS = [
     challan_item_id INTEGER NOT NULL REFERENCES challan_items(id),
     qty_received REAL NOT NULL
   )`,
+  // Annexure quantity-edit bug (2026-11-19) - for an offer-based order, the
+  // Annexure's Scope Of Supply table was always sourced from offer_items (a
+  // frozen copy made once at offer-confirm time), never from the order's own
+  // live sales_order_items - so editing a line's quantity via the Sales
+  // Order Items panel correctly regenerated the stored .docx, but from the
+  // unchanged offer_items data, silently never reflecting the edit. This
+  // column lets a sales_order_items row remember which offer_items row it
+  // was copied from at confirm time (routes/offers.js's offer-confirm
+  // transaction, which already copies offer_items into sales_order_items),
+  // so routes/sales.js's loadAnnexureData() can source the Scope Of Supply
+  // table from the live sales_order_items rows (always correct for an edit,
+  // add, or delete) while still enriching each row with its linked
+  // offer_items row's section_title/image_path - the two fields only an
+  // offer item carries, needed for a Standard offer's section headings and
+  // a Spares offer's per-item picture. Nullable - a line added directly via
+  // the Items panel (no offer counterpart) simply has none.
+  `ALTER TABLE sales_order_items ADD COLUMN source_offer_item_id INTEGER REFERENCES offer_items(id)`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

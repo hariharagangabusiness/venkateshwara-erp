@@ -1263,13 +1263,20 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     // against this value is already computed on the post-discount taxable
     // figure with no extra math needed here.
     if (full.items.length) {
+      // source_offer_item_id links this copy back to the offer_items row it
+      // came from, so routes/sales.js's loadAnnexureData() can still show
+      // the offer's own section_title/image_path on the Annexure while
+      // reading quantity/description/unit live off this row - the fix for
+      // an Annexure not picking up a later quantity edit made via the Sales
+      // Order's own Items panel (see the sales_order_items.source_offer_item_id
+      // column comment in db/index.js for the full root cause).
       const insertSoItem = db.prepare(`
-        INSERT INTO sales_order_items (sales_order_id, description, quantity, unit, rate, value, gst_rate, sort_order)
-        VALUES (?,?,?,?,?,?,18,?)
+        INSERT INTO sales_order_items (sales_order_id, description, quantity, unit, rate, value, gst_rate, sort_order, source_offer_item_id)
+        VALUES (?,?,?,?,?,?,18,?,?)
       `);
       full.items.forEach(it => insertSoItem.run(
-        salesOrderId, it.section_title || it.description || it.item_code || 'Item',
-        Number(it.qty) || 1, it.unit || 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0
+        salesOrderId, it.description || it.section_title || it.item_code || 'Item',
+        Number(it.qty) || 1, it.unit || 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0, it.id
       ));
     }
 
