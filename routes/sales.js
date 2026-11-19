@@ -37,10 +37,22 @@ function ensureProjectForOrder(salesOrder, userId) {
 // path. Looks up a linked offer for technical content if one exists - Project
 // Data Sheet and Make Of Bought Out Items only ever come from an offer, so an
 // order with none never gets those sections (there's no data for them). For
-// the Scope Of Supply line items specifically, an offer-less order still has
-// its own sales_order_items (the line-items grid on the New Sales Order form,
-// entered without a price) - generateAnnexureDocx() renders that table off of
-// whichever source is present, so an offer-less order isn't left with nothing.
+// the Scope Of Supply line items specifically, this always reads the order's
+// own live sales_order_items (the line-items grid on the New Sales Order
+// form, and the one editable surface the Items panel actually writes to) -
+// so an edit, add, or delete made there is always reflected, for an
+// offer-based order exactly as it already was for an offer-less one. A line
+// copied from an Offer at confirm time (routes/offers.js's offer-confirm
+// transaction) carries its own source_offer_item_id, so it's enriched here
+// with that offer_items row's section_title/image_path - the two fields only
+// an offer item carries, needed for a Standard offer's section headings and
+// a Spares offer's per-item picture on the Annexure. 2026-11-19 fix: before
+// this, an offer-based order's Scope Of Supply was sourced entirely from the
+// frozen offer_items copy, so editing a line's quantity via the Items panel
+// correctly regenerated the stored .docx but from unchanged data, silently
+// never reflecting the edit - a very old order predating the 2026-10-04
+// sales_order_items retrofit (so it has none at all) still falls back to the
+// frozen offer_items directly, same as before this fix.
 // Shared by the stored .docx (ensureAnnexureForOrder, below) and the PDF
 // route, which always renders on demand from live data rather than a
 // stored file - pulled into one function so the two formats can never
@@ -49,16 +61,36 @@ function loadAnnexureData(salesOrder) {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(salesOrder.client_id);
   const offer = db.prepare('SELECT * FROM offers WHERE sales_order_id = ?').get(salesOrder.id);
   let items = [], techSpecs = [], boughtOut = [];
+  const soItems = db.prepare(`
+    SELECT soi.*, i.item_code as master_item_code
+    FROM sales_order_items soi LEFT JOIN items i ON i.id = soi.item_id
+    WHERE soi.sales_order_id = ? ORDER BY soi.sort_order, soi.id
+  `).all(salesOrder.id);
   if (offer) {
-    items = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY id').all(offer.id);
     techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY id').all(offer.id);
     boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY id').all(offer.id);
-  } else {
-    items = db.prepare(`
-      SELECT soi.description, soi.quantity as qty, soi.unit, i.item_code
-      FROM sales_order_items soi LEFT JOIN items i ON i.id = soi.item_id
-      WHERE soi.sales_order_id = ? ORDER BY soi.sort_order, soi.id
-    `).all(salesOrder.id);
+    const offerItems = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY id').all(offer.id);
+    if (soItems.length) {
+      const offerItemsById = new Map(offerItems.map(it => [it.id, it]));
+      items = soItems.map(soi => {
+        const linked = soi.source_offer_item_id ? offerItemsById.get(soi.source_offer_item_id) : null;
+        return {
+          item_code: linked ? linked.item_code : (soi.master_item_code || null),
+          section_title: linked ? linked.section_title : null,
+          image_path: linked ? linked.image_path : null,
+          description: soi.description,
+          qty: soi.quantity,
+          unit: soi.unit,
+        };
+      });
+    } else {
+      // Predates the 2026-10-04 retrofit that copies offer_items into
+      // sales_order_items at confirm time - nothing live to read, same
+      // frozen-offer-items fallback this order type has always used.
+      items = offerItems;
+    }
+  } else if (soItems.length) {
+    items = soItems.map(soi => ({ description: soi.description, qty: soi.quantity, unit: soi.unit, item_code: soi.master_item_code || null }));
   }
   return { salesOrder, client, offer, items, techSpecs, boughtOut, company: getCompanySettings() };
 }
