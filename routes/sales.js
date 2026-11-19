@@ -619,10 +619,18 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
       blockers.push(...findForeignKeyBlockers('job_cards', jobCardIds, ORDER_DELETE_CASCADE_TABLES).filter(([, n]) => n > 0));
     }
   }
-  const oc = db.prepare('SELECT status FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
-  if (oc && oc.status !== 'Draft') blockers.push(['Order Confirmation letter', 1]);
-  const ar = db.prepare('SELECT status FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
-  if (ar && ar.status !== 'Draft') blockers.push(['Annexure review', 1]);
+  // Draft and Rejected are both genuinely no-activity states here (freely
+  // editable/resubmittable, locked=0, per lib/reviewWorkflow.js's own state
+  // machine - a Rejected review was bounced back and never approved, same
+  // as never having been submitted at all) - only a review someone is
+  // actually waiting on (PendingApproval) or one that's been formally
+  // signed off (Approved/locked) represents real activity worth blocking
+  // delete over. Previously any non-Draft status blocked, which wrongly
+  // caught Rejected too.
+  const oc = db.prepare('SELECT status, locked FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
+  if (oc && (oc.status === 'PendingApproval' || oc.locked)) blockers.push(['Order Confirmation letter', 1]);
+  const ar = db.prepare('SELECT status, locked FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
+  if (ar && (ar.status === 'PendingApproval' || ar.locked)) blockers.push(['Annexure review', 1]);
   if (blockers.length) {
     // A table can carry more than one FK into this check's 3 target tables
     // (e.g. store_material_requests has both job_card_id and project_id) and

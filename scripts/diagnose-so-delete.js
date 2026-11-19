@@ -90,11 +90,16 @@ console.log('\nBlocker checks (generic FK scan against sales_orders/projects/job
 if (!fkBlockers.length) console.log('    (none found)');
 for (const [label, n] of fkBlockers) console.log(`    - ${label}: ${n} row(s)  <-- BLOCKS DELETE`);
 
-const oc = db.prepare('SELECT status FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
-console.log(`\n    - Order Confirmation letter: ${oc ? oc.status : '(none)'}${oc && oc.status !== 'Draft' ? '  <-- BLOCKS DELETE' : ''}`);
+// Draft and Rejected are both no-activity states (freely editable/
+// resubmittable, locked=0) - only PendingApproval or an Approved/locked
+// review actually blocks delete. Mirrors routes/sales.js's own check.
+const oc = db.prepare('SELECT status, locked FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
+const ocBlocks = oc && (oc.status === 'PendingApproval' || oc.locked);
+console.log(`\n    - Order Confirmation letter: ${oc ? oc.status : '(none)'}${ocBlocks ? '  <-- BLOCKS DELETE' : ''}`);
 
-const ar = db.prepare('SELECT status FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
-console.log(`    - Annexure review: ${ar ? ar.status : '(none)'}${ar && ar.status !== 'Draft' ? '  <-- BLOCKS DELETE' : ''}`);
+const ar = db.prepare('SELECT status, locked FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
+const arBlocks = ar && (ar.status === 'PendingApproval' || ar.locked);
+console.log(`    - Annexure review: ${ar ? ar.status : '(none)'}${arBlocks ? '  <-- BLOCKS DELETE' : ''}`);
 
-const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || (oc && oc.status !== 'Draft') || (ar && ar.status !== 'Draft');
+const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || ocBlocks || arBlocks;
 console.log(anyBlocked ? '\nRESULT: delete is blocked (see <-- markers above).' : '\nRESULT: nothing blocks delete - this order should be deletable as Admin.');
