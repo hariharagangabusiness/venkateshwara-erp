@@ -7,13 +7,27 @@ router.use(authRequired);
 router.get('/summary', (req, res) => {
   const counts = {
     employees: db.prepare(`SELECT COUNT(*) c FROM employees WHERE status='active'`).get().c,
-    projects_active: db.prepare(`SELECT COUNT(*) c FROM projects WHERE status != 'Completed'`).get().c,
+    // A project already fully Dispatched (not just PendingApproval, and not a
+    // Cancelled/Rejected dispatch attempt) has physically shipped - it no
+    // longer belongs in "Active Projects" even if some other department's
+    // job card hasn't yet been marked Completed.
+    projects_active: db.prepare(`
+      SELECT COUNT(*) c FROM projects p
+      WHERE p.status != 'Completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM fg_dispatches fd
+          WHERE fd.sales_order_id = p.sales_order_id AND fd.status = 'Dispatched'
+        )
+    `).get().c,
     open_leads: db.prepare(`SELECT COUNT(*) c FROM leads WHERE stage NOT IN ('Won','Lost')`).get().c,
     pending_expense_vouchers: db.prepare(`SELECT COUNT(*) c FROM expense_vouchers WHERE status='Pending'`).get().c,
     pending_leave: db.prepare(`SELECT COUNT(*) c FROM leave_requests WHERE status='Pending'`).get().c,
     pending_purchase_requests: db.prepare(`SELECT COUNT(*) c FROM purchase_requests WHERE status='Pending'`).get().c,
     low_stock_items: db.prepare(`SELECT COUNT(*) c FROM items WHERE current_stock <= reorder_level`).get().c,
-    open_service_requests: db.prepare(`SELECT COUNT(*) c FROM service_requests WHERE status NOT IN ('Resolved','Closed')`).get().c,
+    // Rejected is a terminal, closed-out state same as Resolved/Closed - it
+    // was missing from this exclusion list, so a rejected SR kept counting
+    // as "open" indefinitely.
+    open_service_requests: db.prepare(`SELECT COUNT(*) c FROM service_requests WHERE status NOT IN ('Resolved','Closed','Rejected')`).get().c,
   };
   const expenseByMode = db.prepare(`
     SELECT payment_mode, accounted, SUM(amount) as total FROM expense_vouchers WHERE status != 'Rejected' GROUP BY payment_mode, accounted
