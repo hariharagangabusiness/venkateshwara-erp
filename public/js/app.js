@@ -944,6 +944,14 @@ window.toggleApprovalBucket = (bid) => {
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
 function today() { return new Date().toISOString().slice(0, 10); }
+// Mirrors routes/dashboard.js's GET /window-summary own `since` day math
+// exactly (daily=1, monthly=30, else weekly=7) - used wherever a frontend
+// detail view needs to independently re-filter by the same Dashboard
+// window the backend already scoped its own totals by.
+function windowSinceDate(win) {
+  const days = win === 'daily' ? 1 : win === 'monthly' ? 30 : 7;
+  return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
 // Round 16: color-coded delivery-date badge for SO/PO lists - green if
 // comfortably ahead, amber inside the 7-day warning window (matches the
 // scan job's WARNING_DAYS), red once past due. No date on file renders
@@ -958,6 +966,16 @@ function deliveryBadge(dateStr) {
 }
 
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
+// {from, to} date bounds for a 'YYYY-MM' month string, for passing to
+// GET /finance/ledger's own from/to query params - the route defaults to
+// unbounded (all-time) when neither is given, so a caller labeling its
+// own view "(This Month)" must pass these explicitly or the list silently
+// shows every ledger entry ever, not just the month's.
+function monthRange(month) {
+  const [y, m] = month.split('-').map(Number);
+  const to = new Date(y, m, 0).toISOString().slice(0, 10); // day 0 of next month = last day of this one
+  return { from: month + '-01', to };
+}
 
 function tableHTML(columns, rows, rowRenderer) {
   if (!rows.length) return '<div class="empty">No records yet.</div>';
@@ -1497,10 +1515,10 @@ const DASHBOARD_METRIC_REGISTRY = [
     buildDetail: async () => { const reqs = (await api('/hr/leave-requests')).filter(r => r.status === 'Pending'); return `<h3>Pending Leave Requests (${reqs.length})</h3>${tableHTML(['Employee','Leave Type','From','To'], reqs, r => `<tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${r.from_date}</td><td>${r.to_date}</td></tr>`)}`; } },
   { key: 'finance_outflow_month', label: 'Finance: Total Outflow (This Month)', department: 'Finance',
     fetchValue: async () => { const s = await api('/finance/summary?month=' + thisMonth()); return '₹' + fmt(s.outflow); },
-    buildDetail: async () => { const month = thisMonth(); const s = await api('/finance/summary?month=' + month); const ledger = (await api('/finance/ledger')).filter(l => l.direction === 'Outflow'); return `<h3>Total Outflow (${esc(month)}): ₹${fmt(s.outflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
+    buildDetail: async () => { const month = thisMonth(); const { from, to } = monthRange(month); const s = await api('/finance/summary?month=' + month); const ledger = (await api(`/finance/ledger?from=${from}&to=${to}`)).filter(l => l.direction === 'Outflow'); return `<h3>Total Outflow (${esc(month)}): ₹${fmt(s.outflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
   { key: 'finance_inflow_month', label: 'Finance: Total Inflow (This Month)', department: 'Finance',
     fetchValue: async () => { const s = await api('/finance/summary?month=' + thisMonth()); return '₹' + fmt(s.inflow); },
-    buildDetail: async () => { const month = thisMonth(); const s = await api('/finance/summary?month=' + month); const ledger = (await api('/finance/ledger')).filter(l => l.direction === 'Inflow'); return `<h3>Total Inflow (${esc(month)}): ₹${fmt(s.inflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
+    buildDetail: async () => { const month = thisMonth(); const { from, to } = monthRange(month); const s = await api('/finance/summary?month=' + month); const ledger = (await api(`/finance/ledger?from=${from}&to=${to}`)).filter(l => l.direction === 'Inflow'); return `<h3>Total Inflow (${esc(month)}): ₹${fmt(s.inflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
   { key: 'design_alloc_start', label: 'Design: Avg Allocation-to-Start Time', department: 'Projects',
     fetchValue: async () => { const d = await api('/projects/time-motion-report?stage=Design'); return tmHrs(d.overall?.alloc_to_start.avg); },
     buildDetail: async () => { const d = await api('/projects/time-motion-report?stage=Design'); return `<h3>Design: Avg Allocation→Start: ${tmHrs(d.overall?.alloc_to_start.avg)}</h3>${tableHTML(['Card','Project','Assignee','Alloc→Start'], d.cards.filter(c=>c.alloc_to_start_hrs!==null), c => `<tr><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td><td>${tmHrs(c.alloc_to_start_hrs)}</td></tr>`)}`; } },
@@ -1677,19 +1695,34 @@ PAGES.dashboard = async (el) => {
           <tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.issue_description)||'-'}</td><td>${esc(r.assigned_to_name)||'-'}</td><td>${badge(r.status)}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
     },
     stock_in: async () => {
-      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'IN');
+      // Matches routes/dashboard.js's own window-summary `since` math exactly,
+      // so the header's "(window)" label, the ws.stockIn total it was already
+      // showing, and this row list all agree - the list previously showed
+      // every movement ever recorded regardless of the selected window.
+      const since = windowSinceDate(win);
+      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'IN' && m.moved_at >= since);
       return `<h3>Stock In (${win}) - ${moves.length} movements, ${fmt(ws.stockIn)} units</h3>
         ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
     },
     stock_out: async () => {
-      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'OUT');
+      const since = windowSinceDate(win);
+      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'OUT' && m.moved_at >= since);
       return `<h3>Stock Out (${win}) - ${moves.length} movements, ${fmt(ws.stockOut)} units</h3>
         ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
     },
     opex: async () => {
+      // d.expenseByMode is a wholly different, all-time, unscoped metric
+      // (Expense Vouchers by payment mode - routes/dashboard.js's own
+      // GET /summary) - it doesn't total to ws.opex (routes/dashboard.js's
+      // window-scoped SUM of finance_ledger type='Expense' entries) and
+      // was never actually the breakdown of the figure shown above it.
+      // Query the same ledger rows ws.opex is itself computed from instead,
+      // so the header total and the list beneath it genuinely agree.
+      const since = windowSinceDate(win);
+      const ledger = await api(`/finance/ledger?type=Expense&from=${since}&to=${today()}`);
       return `<h3>Operating Expenses (${win})</h3>
         <p class="muted">Total: <b>₹${fmt(ws.opex)}</b></p>
-        ${tableHTML(['Payment Mode', 'Accounted', 'Total'], d.expenseByMode, r => `<tr><td>${esc(r.payment_mode)}</td><td>${esc(r.accounted)}</td><td>₹${fmt(r.total)}</td></tr>`)}`;
+        ${tableHTML(['Date','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`;
     },
   };
   // Each top-level widget below is independently draggable (Dashboard
