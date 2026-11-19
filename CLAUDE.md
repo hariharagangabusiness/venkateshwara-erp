@@ -1861,3 +1861,11 @@ Reported directly by the repo owner with a screenshot: the tile correctly read a
 **Fix** - added `'Rejected'` to the drill-down's own exclusion list, matching the backend query exactly, so the tile's number and the list a user actually opens can no longer disagree.
 
 Verified end-to-end on a scratch server: created one genuinely-open SR and one Rejected SR, confirmed the dashboard tile correctly reads `1`, and confirmed the drill-down's own filter logic (reproduced against the real `GET /service` response) now also returns exactly 1 row - matching the tile, down from 2 before the fix.
+
+## Dashboard audit: a third independent copy of the Open Service Requests filter, in the "Pinned Metrics" widget (2026-11-19)
+
+Requested directly by the repo owner: "review all of the dashboard links" for the same stale-duplicate-filter bug class the two fixes above just caught. Audited every tile's backend `routes/dashboard.js` count query against every frontend consumer that independently re-fetches and re-filters the same data (the main stat tiles' `window.__STAT_DETAIL_BUILDERS`, and the separate, user-customizable "Pinned Metrics" widget's `DASHBOARD_METRIC_REGISTRY`) - Employees/Open Leads/Pending Expense Vouchers/Pending Leave/Pending Purchase Requests/Low Stock Items all matched their backend definitions correctly across every copy.
+
+**One more real gap found**: `DASHBOARD_METRIC_REGISTRY`'s `service_open` entry - a third, genuinely reachable copy of the Open Service Requests filter (the "Pinned Metrics" panel anyone can add to their own Dashboard, distinct from both the main stat tile and its drill-down, both already fixed this same day) - still excluded only `Resolved`/`Closed`, missing the same `Rejected` fix the other two copies just got. Fixed identically (`!['Resolved','Closed','Rejected'].includes(r.status)`), closing out every known copy of this one filter across the whole Dashboard page.
+
+Verified end-to-end on a scratch server: created one genuinely-open SR and one Rejected SR, confirmed the shared filter logic (reproduced against the real `GET /service` response, the same data this widget fetches) now returns exactly 1 row, not 2 - matching both of the day's earlier fixes.
