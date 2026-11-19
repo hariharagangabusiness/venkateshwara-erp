@@ -1851,3 +1851,13 @@ Reported directly by the repo owner with two screenshots: a Sales Order whose An
 **Fix** - the blocker now checks `status === 'PendingApproval' || locked` instead of `status !== 'Draft'`, for both `order_confirmations` and `annexure_reviews` (both share the identical shape/bug). `scripts/diagnose-so-delete.js` updated to mirror the same corrected check, so it stays a faithful diagnostic for future "why can't I delete this" reports.
 
 Verified end-to-end on a scratch server: confirmed delete is still correctly blocked while the Annexure review is `PendingApproval`; rejected it and confirmed delete now succeeds (the exact fix for the reported case) with `status: 'Rejected', locked: 0`; regression-confirmed a genuinely `Approved`/`locked` review still correctly blocks delete, unaffected by this fix.
+
+## Dashboard follow-up: Open Service Requests drill-down list still showed Rejected ones (2026-11-19)
+
+Reported directly by the repo owner with a screenshot: the tile correctly read a lower number, but clicking into it to see the actual list still showed Rejected service requests mixed in with the genuinely open ones ("Open Service Requests (19)" including 7 Rejected rows, while the tile itself read 12).
+
+**Same bug class as the 2026-11-19 Active Projects drill-down fix, caught the moment the owner's own screenshot showed it.** The 2026-11-19 "Dashboard: exclude Rejected SRs from Open count" round only fixed `routes/dashboard.js`'s backend tile-count query - it never touched the frontend's own independent drill-down builder (`window.__STAT_DETAIL_BUILDERS.open_service_requests` in `public/js/app.js`), which re-fetches `GET /service` and filters by `!['Resolved','Closed'].includes(r.status)` on its own, completely unaware of the backend's newer `Rejected` exclusion - the exact same "tile fixed server-side, drill-down list never updated" pattern the Active Projects fix hit in the very same round, just missed for this second tile at the time.
+
+**Fix** - added `'Rejected'` to the drill-down's own exclusion list, matching the backend query exactly, so the tile's number and the list a user actually opens can no longer disagree.
+
+Verified end-to-end on a scratch server: created one genuinely-open SR and one Rejected SR, confirmed the dashboard tile correctly reads `1`, and confirmed the drill-down's own filter logic (reproduced against the real `GET /service` response) now also returns exactly 1 row - matching the tile, down from 2 before the fix.
