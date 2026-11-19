@@ -69,15 +69,21 @@ router.get('/window-summary', (req, res) => {
 
   const opex = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM finance_ledger WHERE type='Expense' AND entry_date >= ?`).get(since).total;
 
+  // Both lists are genuinely "what's coming up / needs action" widgets, not
+  // a full history - a job card already Completed, or a service request
+  // already Resolved/Closed/Rejected, still carries whatever planned/
+  // scheduled date it was ever given, so without excluding terminal
+  // statuses a finished item kept reappearing here through its own old
+  // date, indistinguishable from something genuinely still pending.
   const upcomingJobCards = db.prepare(`
     SELECT jc.id, jc.stage, jc.title, jc.planned_start, jc.planned_end, p.project_code
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE jc.status != 'NotApplicable' AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))
+    WHERE jc.status NOT IN ('NotApplicable', 'Completed') AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))
     ORDER BY jc.planned_start LIMIT 50
   `).all(today(), until, today(), until);
   const upcomingService = db.prepare(`
     SELECT id, sr_no, scheduled_date, issue_description FROM service_requests
-    WHERE scheduled_date BETWEEN ? AND ? ORDER BY scheduled_date LIMIT 50
+    WHERE status NOT IN ('Resolved', 'Closed', 'Rejected') AND scheduled_date BETWEEN ? AND ? ORDER BY scheduled_date LIMIT 50
   `).all(today(), until);
 
   res.json({ window: win, stockIn, stockOut, opex, upcomingJobCards, upcomingService });
