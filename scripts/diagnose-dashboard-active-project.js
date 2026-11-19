@@ -4,33 +4,44 @@
 // Mirrors routes/dashboard.js's GET /summary projects_active query exactly.
 // Never writes anything.
 //
-// Usage: node scripts/diagnose-dashboard-active-project.js <path-to-erp.db> <order_no>
+// Usage: node scripts/diagnose-dashboard-active-project.js <path-to-erp.db> <order_no_or_project_code>
 'use strict';
 const dbPath = process.argv[2];
-const orderNo = process.argv[3];
-if (!dbPath || !orderNo) {
-  console.error('Usage: node scripts/diagnose-dashboard-active-project.js <path-to-erp.db> <order_no>');
+const key = process.argv[3];
+if (!dbPath || !key) {
+  console.error('Usage: node scripts/diagnose-dashboard-active-project.js <path-to-erp.db> <order_no_or_project_code>');
   process.exit(1);
 }
 const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(dbPath, { readOnly: true });
 
-const order = db.prepare('SELECT * FROM sales_orders WHERE order_no = ?').get(orderNo);
-if (!order) {
-  console.error(`No sales order found with order_no = ${orderNo}`);
+let order = db.prepare('SELECT * FROM sales_orders WHERE order_no = ?').get(key);
+let project = null;
+if (order) {
+  console.log(`Sales Order: ${order.order_no} (id ${order.id})`);
+  project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
+} else {
+  project = db.prepare('SELECT * FROM projects WHERE project_code = ?').get(key);
+  if (project) {
+    console.log(`Project: ${project.project_code} (id ${project.id}) - looked up directly by project_code`);
+    if (project.sales_order_id) order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(project.sales_order_id);
+  }
+}
+if (!order && !project) {
+  console.error(`No sales order or project found matching '${key}'`);
   process.exit(1);
 }
-console.log(`Sales Order: ${order.order_no} (id ${order.id})`);
-
-const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
 if (!project) {
-  console.log('No linked project found.');
+  console.log('No linked project found for this order.');
   process.exit(0);
 }
-console.log(`Project: ${project.project_code} (id ${project.id}), status = '${project.status}'`);
+console.log(`Project: ${project.project_code} (id ${project.id}), status = '${project.status}', sales_order_id = ${project.sales_order_id}`);
+if (order) console.log(`Linked Sales Order: ${order.order_no} (id ${order.id})`);
 
-const dispatches = db.prepare('SELECT id, dispatch_no, status, created_at FROM fg_dispatches WHERE sales_order_id = ?').all(order.id);
-console.log(`\nFG Dispatches against this order (${dispatches.length}):`);
+const dispatches = project.sales_order_id
+  ? db.prepare('SELECT id, dispatch_no, status, created_at FROM fg_dispatches WHERE sales_order_id = ?').all(project.sales_order_id)
+  : [];
+console.log(`\nFG Dispatches against this project's order (${dispatches.length}):`);
 for (const d of dispatches) console.log(`    - [${d.id}] ${d.dispatch_no}: status='${d.status}' (created ${d.created_at})`);
 
 const hasDispatchedRow = dispatches.some(d => d.status === 'Dispatched');
