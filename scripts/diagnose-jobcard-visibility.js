@@ -116,9 +116,46 @@ for (const u of users) {
     }
   }
 
+  // 7. Role-based page-visibility restriction (User Access screen) - the
+  // sidebar filters NAV items through ALLOWED_PAGES (see
+  // lib/pageAccess.js's computeAllowedPages()), completely independent of
+  // the DEPT_OWN_GROUP logic above. A page id missing from an Admin's
+  // explicitly-configured role access (or revoked for this one user via
+  // user_page_overrides) silently disappears from the sidebar with no
+  // error anywhere - this exact bug class has hit this app before.
+  let configured = null;
+  try { configured = db.prepare('SELECT 1 FROM role_access_configured WHERE role_id = ?').get(u.role_id); } catch (e) { configured = null; }
+  console.log(`  Role Access configured (restricted) for role_id ${u.role_id}? ${configured ? 'YES - this role is restricted to a specific page list' : 'NO - unrestricted, sees every page by default'}`);
+  let roleHasJobcards = null;
+  if (configured) {
+    const row = db.prepare(`SELECT 1 FROM role_page_access WHERE role_id = ? AND page_id = 'jobcards'`).get(u.role_id);
+    roleHasJobcards = !!row;
+    console.log(`    Does the role's configured page list include "jobcards"? ${roleHasJobcards ? 'YES' : 'NO'}`);
+    if (!roleHasJobcards) console.log(`    >>> ISSUE: role_page_access for role_id ${u.role_id} does NOT include "jobcards" - every user with this role has it hidden from their sidebar entirely, regardless of department/is_supervisor.`);
+  }
+  let extra = [];
+  try {
+    extra = db.prepare(`SELECT page_id FROM extra_page_access WHERE (user_id = ? OR (department_id IS NOT NULL AND department_id = ?)) AND page_id = 'jobcards'`).all(u.id, u.department_id || -1);
+  } catch (e) { extra = []; }
+  if (configured && !roleHasJobcards) {
+    console.log(`    Extra Page Access grants of "jobcards" for this user/department: ${extra.length ? JSON.stringify(extra) : 'none'}`);
+  }
+  let overrides = [];
+  try { overrides = db.prepare(`SELECT page_id, access FROM user_page_overrides WHERE user_id = ? AND page_id = 'jobcards'`).all(u.id); } catch (e) { overrides = []; }
+  console.log(`  Per-user override on "jobcards" for this specific login: ${overrides.length ? JSON.stringify(overrides) : 'none'}`);
+  if (overrides.some(o => o.access !== 'granted')) console.log(`    >>> ISSUE: this specific user has an explicit REVOKE override on "jobcards" - hidden for them individually even if their role/department would otherwise show it.`);
+
+  const sidebarWillShowJobcards = u.role_name === 'Admin' ? true
+    : (!configured && !overrides.some(o => o.access !== 'granted'))
+    || (configured && (roleHasJobcards || extra.length > 0) && !overrides.some(o => o.access !== 'granted'))
+    || overrides.some(o => o.access === 'granted');
+  console.log(`  FINAL: will "jobcards" actually render in this login's sidebar once ALLOWED_PAGES is applied? ${sidebarWillShowJobcards ? 'YES' : 'NO'}`);
+
   console.log(`  --- Conclusion for this login ---`);
   if (!getsOwnGroup) {
     console.log(`  Will not even see a "<department> Job Cards" sidebar entry. Fix: set department_id to a real department row.`);
+  } else if (!sidebarWillShowJobcards) {
+    console.log(`  >>> ROOT CAUSE: the DEPT_OWN_GROUP logic WOULD add a "jobcards" nav item, but the sidebar then filters every item through ALLOWED_PAGES (the role's configured page-visibility list from the User Access screen) - and "jobcards" is not in it for this login. The item never renders, with no error anywhere. Fix: on the User Access page, either tick "jobcards" under this role's configured page list, or grant it via "Grant Extra Page Access" for this user/department.`);
   } else if (!roleIsAStage) {
     console.log(`  Has a "<department> Job Cards" sidebar entry (so the PAGE loads), but role_name (${JSON.stringify(u.role_name)}) does not match any real pipeline stage name, so GET /job-cards/by-stage/:stage's own backend route (called with the stage derived from role_name) will likely return an empty/wrong board, or the board route itself resolves a DIFFERENT stage than intended. Check whether role_name should instead be exactly "Store" (case-sensitive) to match the pipeline stage.`);
   } else {
