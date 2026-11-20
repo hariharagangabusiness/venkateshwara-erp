@@ -23,7 +23,7 @@ if (!dbPath || !orderNo) {
 const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(dbPath, { readOnly: true });
 
-const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items'];
+const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices'];
 
 function findForeignKeyBlockers(targetTable, ids, exclude) {
   if (!ids.length) return [];
@@ -101,5 +101,12 @@ const ar = db.prepare('SELECT status, locked FROM annexure_reviews WHERE sales_o
 const arBlocks = ar && (ar.status === 'PendingApproval' || ar.locked);
 console.log(`    - Annexure review: ${ar ? ar.status : '(none)'}${arBlocks ? '  <-- BLOCKS DELETE' : ''}`);
 
-const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || ocBlocks || arBlocks;
+// Proforma Invoice is excluded from the generic FK scan above and gets the
+// same status-aware treatment - a Cancelled one never happened and must
+// not block delete, only a live Draft/Received one does.
+const livePi = db.prepare(`SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ? AND status != 'Cancelled'`).get(order.id).n;
+const piBlocks = livePi > 0;
+console.log(`    - Proforma Invoice (non-Cancelled): ${livePi} row(s)${piBlocks ? '  <-- BLOCKS DELETE' : ''}`);
+
+const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || ocBlocks || arBlocks || piBlocks;
 console.log(anyBlocked ? '\nRESULT: delete is blocked (see <-- markers above).' : '\nRESULT: nothing blocks delete - this order should be deletable as Admin.');
