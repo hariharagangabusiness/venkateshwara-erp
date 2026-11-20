@@ -1,6 +1,7 @@
 const express = require('express');
 const { db } = require('../db');
 const { authRequired } = require('../middleware/auth');
+const { localDateStr } = require('../lib/dateUtil');
 const router = express.Router();
 router.use(authRequired);
 
@@ -61,8 +62,8 @@ router.get('/project/:id/drilldown', (req, res) => {
 router.get('/window-summary', (req, res) => {
   const win = req.query.window || 'weekly';
   const days = win === 'daily' ? 1 : win === 'monthly' ? 30 : 7;
-  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const until = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  const since = localDateStr(new Date(Date.now() - days * 86400000));
+  const until = localDateStr(new Date(Date.now() + days * 86400000));
 
   const stockIn = db.prepare(`SELECT COALESCE(SUM(quantity),0) as total FROM stock_movements WHERE movement_type='IN' AND moved_at >= ?`).get(since).total;
   const stockOut = db.prepare(`SELECT COALESCE(SUM(quantity),0) as total FROM stock_movements WHERE movement_type='OUT' AND moved_at >= ?`).get(since).total;
@@ -88,7 +89,7 @@ router.get('/window-summary', (req, res) => {
 
   res.json({ window: win, stockIn, stockOut, opex, upcomingJobCards, upcomingService });
 });
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return localDateStr(); }
 
 // Per-user, per-page panel order (drag-to-reorder) - see db/schema.sql's
 // user_page_layout comment. Originally Dashboard-only (page_key was
@@ -104,7 +105,7 @@ router.put('/layout/:pageKey', (req, res) => {
   const order = req.body && req.body.panel_order;
   if (!Array.isArray(order) || !order.length) return res.status(400).json({ error: 'panel_order must be a non-empty array.' });
   db.prepare(`
-    INSERT INTO user_page_layout (user_id, page_key, panel_order, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO user_page_layout (user_id, page_key, panel_order, updated_at) VALUES (?, ?, ?, (datetime('now','localtime')))
     ON CONFLICT(user_id, page_key) DO UPDATE SET panel_order = excluded.panel_order, updated_at = excluded.updated_at
   `).run(req.user.id, req.params.pageKey, JSON.stringify(order));
   res.json({ ok: true });

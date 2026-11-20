@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
+const { localDateFromValue } = require('../lib/dateUtil');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { submit, approve, reject, unlock } = require('../lib/reviewWorkflow');
 const { generateOrderConfirmationPdf } = require('../lib/orderConfirmationPdf');
@@ -58,7 +59,7 @@ router.put('/order-confirmations/:soId', canEdit, (req, res) => {
     assertEditable(row);
     const { delivery_terms, payment_terms, special_instructions } = req.body;
     db.prepare(`
-      UPDATE order_confirmations SET delivery_terms = ?, payment_terms = ?, special_instructions = ?, updated_at = CURRENT_TIMESTAMP
+      UPDATE order_confirmations SET delivery_terms = ?, payment_terms = ?, special_instructions = ?, updated_at = (datetime('now','localtime'))
       WHERE id = ?
     `).run(delivery_terms || null, payment_terms || null, special_instructions || null, row.id);
     res.json({ ok: true });
@@ -97,7 +98,7 @@ router.get('/order-confirmations/:soId/pdf', canView, async (req, res) => {
       docType: 'Order_Confirmation',
       reference: salesOrder.order_no,
       partyName: client && client.name,
-      date: new Date(salesOrder.order_date).toISOString().slice(0, 10),
+      date: localDateFromValue(salesOrder.order_date),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -133,7 +134,7 @@ router.put('/annexure-reviews/:soId', canEdit, (req, res) => {
     getOrder(req.params.soId);
     const row = ensureAnnexureReview(req.params.soId);
     assertEditable(row);
-    db.prepare(`UPDATE annexure_reviews SET review_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    db.prepare(`UPDATE annexure_reviews SET review_notes = ?, updated_at = (datetime('now','localtime')) WHERE id = ?`)
       .run(req.body.review_notes || null, row.id);
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }

@@ -3,6 +3,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { combinedStagesForRole } = require('../lib/pipeline');
 const { listExportableTables, exportTableXlsx } = require('../lib/tableExport');
+const { localDateStr } = require('../lib/dateUtil');
 const { getOverdueItems } = require('../lib/overdueItems');
 const XLSX = require('xlsx');
 const router = express.Router();
@@ -28,7 +29,7 @@ router.get('/overdue-items/export.xlsx', requirePermission('report.view_all'), (
   const ws = allRows.length ? XLSX.utils.json_to_sheet(allRows) : XLSX.utils.aoa_to_sheet([['(nothing overdue)']]);
   XLSX.utils.book_append_sheet(wb, ws, 'Overdue Items');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', `attachment; filename="Overdue_Items_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="Overdue_Items_${localDateStr()}.xlsx"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.send(buf);
 });
@@ -72,7 +73,7 @@ router.get('/department/:stage', (req, res) => {
     WHERE jc.stage IN (${placeholders}) AND jc.status != 'NotApplicable'
   `).all(...stages);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   const counts = { Pending: 0, InProgress: 0, Completed: 0, OnHold: 0, Delayed: 0 };
   let cycleDaysSum = 0, cycleCount = 0;
   const active = [];

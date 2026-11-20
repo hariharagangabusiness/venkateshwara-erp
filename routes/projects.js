@@ -12,6 +12,7 @@ const {
 } = require('../lib/pipeline');
 const { oversightRoleNames } = require('../lib/roleOversight');
 const { makeUpload } = require('../lib/upload');
+const { localDateStr } = require('../lib/dateUtil');
 const router = express.Router();
 router.use(authRequired);
 
@@ -243,14 +244,14 @@ function cascadePlanDates(startDate, stages) {
       }
       groupEnd = null; // starting a fresh group
     }
-    const plannedStart = groupStart.toISOString().slice(0, 10);
+    const plannedStart = localDateStr(groupStart);
     const end = new Date(groupStart);
     end.setDate(end.getDate() + days - 1);
-    const plannedEnd = end.toISOString().slice(0, 10);
+    const plannedEnd = localDateStr(end);
     if (!groupEnd || end > groupEnd) groupEnd = end;
     return { id: s.id, duration_days: days, parallel_with_previous: isParallel, planned_start: plannedStart, planned_end: plannedEnd, sequence: i + 1 };
   });
-  return { computed, targetDate: groupEnd.toISOString().slice(0, 10) };
+  return { computed, targetDate: localDateStr(groupEnd) };
 }
 
 // True when a project's own Sales Order was confirmed from a Spares-format
@@ -588,10 +589,10 @@ router.put('/job-cards/:id/subplan', requirePermission('job_card.manage'), (req,
     let cursor = new Date(start_date + 'T00:00:00');
     stages.forEach((s, i) => {
       const days = Math.max(1, Number(s.duration_days) || 1);
-      const plannedStart = cursor.toISOString().slice(0, 10);
+      const plannedStart = localDateStr(cursor);
       const end = new Date(cursor);
       end.setDate(end.getDate() + days - 1);
-      const plannedEnd = end.toISOString().slice(0, 10);
+      const plannedEnd = localDateStr(end);
       db.prepare(`UPDATE job_cards SET duration_days = ?, planned_start = ?, planned_end = ?, sequence = ? WHERE id = ? AND parent_job_card_id = ?`)
         .run(days, plannedStart, plannedEnd, i + 1, s.id, parent.id);
       cursor = new Date(end);
@@ -599,7 +600,7 @@ router.put('/job-cards/:id/subplan', requirePermission('job_card.manage'), (req,
     });
     const overallEnd = new Date(cursor);
     overallEnd.setDate(overallEnd.getDate() - 1);
-    return overallEnd.toISOString().slice(0, 10);
+    return localDateStr(overallEnd);
   });
   const subTargetDate = tx();
 
@@ -659,14 +660,14 @@ router.post('/job-cards/:id/subassemblies', requirePermission('job_card.manage')
   const { title, duration_days } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   const nextSeq = (db.prepare('SELECT MAX(sequence) as m FROM job_cards WHERE parent_job_card_id = ?').get(parent.id).m || 0) + 1;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   const days = Math.max(1, Number(duration_days) || 7);
   const end = new Date(today + 'T00:00:00');
   end.setDate(end.getDate() + days - 1);
   const info = db.prepare(`
     INSERT INTO job_cards (project_id, stage, status, parent_job_card_id, title, is_adhoc, sequence, planned_start, planned_end, duration_days)
     VALUES (?, ?, 'Pending', ?, ?, 1, ?, ?, ?, ?)
-  `).run(parent.project_id, parent.stage, parent.id, title, nextSeq, today, end.toISOString().slice(0, 10), days);
+  `).run(parent.project_id, parent.stage, parent.id, title, nextSeq, today, localDateStr(end), days);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -752,7 +753,7 @@ router.post('/job-cards/:id/route-to', requirePermission('job_card.manage'), (re
     }
     // if the source is already Completed, release the new card immediately
     if (source.status === 'Completed') {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       db.prepare(`UPDATE job_cards SET planned_start = ? WHERE id = ?`).run(today, info.lastInsertRowid);
     }
     return info.lastInsertRowid;
@@ -987,8 +988,8 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
   const params = [];
   if (status) {
     updates.push('status = ?'); params.push(status);
-    if (status === 'InProgress' && !jc.started_at) { updates.push('started_at = CURRENT_TIMESTAMP'); }
-    if (status === 'Completed') { updates.push('completed_at = CURRENT_TIMESTAMP'); }
+    if (status === 'InProgress' && !jc.started_at) { updates.push(`started_at = (datetime('now','localtime'))`); }
+    if (status === 'Completed') { updates.push(`completed_at = (datetime('now','localtime'))`); }
   }
   if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
   if (assigned_to !== undefined) {
@@ -999,7 +1000,7 @@ router.patch('/job-cards/:id', requirePermission('job_card.manage'), (req, res) 
     // metric "how long did THIS assignee sit on it before starting" should
     // start fresh for the new person, not carry over the old assignee's wait.
     if (assigned_to !== jc.assigned_to) {
-      updates.push('allocated_at = CURRENT_TIMESTAMP');
+      updates.push(`allocated_at = (datetime('now','localtime'))`);
     }
   }
   params.push(req.params.id);

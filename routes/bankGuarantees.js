@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { db } = require('../db');
+const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
@@ -98,8 +99,8 @@ router.get('/', canView, (req, res) => {
 });
 
 router.get('/summary', canView, (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const today = localDateStr();
+  const in30 = localDateStr(new Date(Date.now() + 30 * 86400000));
   const totals = db.prepare(`SELECT COUNT(*) as live_count, COALESCE(SUM(value),0) as live_value FROM bank_guarantees WHERE status IN ('Active','PendingRelease')`).get();
   const expiring = db.prepare(`SELECT COUNT(*) as c FROM bank_guarantees WHERE status IN ('Active','PendingRelease') AND validity_expiry <= ? AND validity_expiry >= ?`).get(in30, today);
   const pendingReminders = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log WHERE status = 'PendingReview'`).get();
@@ -150,7 +151,7 @@ router.patch('/:id', canManage, (req, res) => {
   if (status === undefined) return res.json({ ok: true });
   if (status === 'Released') {
     db.prepare(`UPDATE bank_guarantees SET status = ?, released_at = ?, released_by = ? WHERE id = ?`)
-      .run(status, new Date().toISOString(), req.user.id, req.params.id);
+      .run(status, localDateTimeStr(), req.user.id, req.params.id);
   } else {
     db.prepare(`UPDATE bank_guarantees SET status = ? WHERE id = ?`).run(status, req.params.id);
   }
@@ -276,14 +277,14 @@ router.post('/pending-changes/:id/approve', requireRole('Admin'), (req, res) => 
   if (!bg) return res.status(400).json({ error: 'This Bank Guarantee no longer exists.' });
   if (bg.status === 'Released') return res.status(400).json({ error: 'This Bank Guarantee has since been released and is closed - reject this request instead.' });
   applyBGEdit(change.bg_id, JSON.parse(change.proposed_fields || '{}'));
-  db.prepare(`UPDATE bg_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?`).run(req.user.id, change.id);
+  db.prepare(`UPDATE bg_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=(datetime('now','localtime')) WHERE id=?`).run(req.user.id, change.id);
   res.json({ ok: true });
 });
 router.post('/pending-changes/:id/reject', requireRole('Admin'), (req, res) => {
   const change = db.prepare('SELECT * FROM bg_pending_changes WHERE id = ?').get(req.params.id);
   if (!change) return res.status(404).json({ error: 'Not found' });
   if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
-  db.prepare(`UPDATE bg_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, review_note=? WHERE id=?`)
+  db.prepare(`UPDATE bg_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=(datetime('now','localtime')), review_note=? WHERE id=?`)
     .run(req.user.id, (req.body && req.body.review_note) || null, change.id);
   res.json({ ok: true });
 });
@@ -331,7 +332,7 @@ router.post('/reminders/:id/verify', canManage, (req, res) => {
   if (!log) return res.status(404).json({ error: 'Not found' });
   if (log.status !== 'PendingReview') return res.status(400).json({ error: `Already ${log.status}` });
   db.prepare(`UPDATE bg_reminder_log SET status = 'Verified', reviewed_by = ?, reviewed_at = ? WHERE id = ?`)
-    .run(req.user.id, new Date().toISOString(), req.params.id);
+    .run(req.user.id, localDateTimeStr(), req.params.id);
   db.prepare(`UPDATE notifications SET is_read = 1 WHERE source_type = 'BG_EXPIRY' AND source_id = ?`).run(log.bg_id);
   res.json({ ok: true });
 });
@@ -353,7 +354,7 @@ router.post('/reminders/:id/send-email', canManage, async (req, res) => {
   });
   if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });
   db.prepare(`UPDATE bg_reminder_log SET status = 'EmailSent', email_sent_to = ?, email_sent_at = ? WHERE id = ?`)
-    .run(toAddress, new Date().toISOString(), req.params.id);
+    .run(toAddress, localDateTimeStr(), req.params.id);
   db.prepare(`UPDATE bank_guarantees SET status = 'PendingRelease' WHERE id = ? AND status = 'Active'`).run(bg.id);
   res.json({ ok: true, sent: true, to: toAddress });
 });
@@ -362,7 +363,7 @@ router.post('/reminders/:id/dismiss', canManage, (req, res) => {
   const log = db.prepare('SELECT id FROM bg_reminder_log WHERE id = ?').get(req.params.id);
   if (!log) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE bg_reminder_log SET status = 'Dismissed', reviewed_by = ?, reviewed_at = ? WHERE id = ?`)
-    .run(req.user.id, new Date().toISOString(), req.params.id);
+    .run(req.user.id, localDateTimeStr(), req.params.id);
   res.json({ ok: true });
 });
 

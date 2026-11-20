@@ -63,7 +63,7 @@ router.put('/visits/:id', requirePermission('site_visit.manage'), (req, res) => 
   const { site_name, client_id, project_id, purpose, status, arrival_date, close_date, expenses_note, employee_ids } = req.body;
   const tx = db.transaction(() => {
     db.prepare(`
-      UPDATE site_visits SET site_name=?, client_id=?, project_id=?, purpose=?, status=?, arrival_date=?, close_date=?, expenses_note=?, updated_at=CURRENT_TIMESTAMP
+      UPDATE site_visits SET site_name=?, client_id=?, project_id=?, purpose=?, status=?, arrival_date=?, close_date=?, expenses_note=?, updated_at=(datetime('now','localtime'))
       WHERE id=?
     `).run(
       site_name !== undefined ? site_name : existing.site_name,
@@ -115,7 +115,7 @@ router.post('/daily-log/bulk', requirePermission('site_visit.manage'), (req, res
     VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(employee_id, log_date) DO UPDATE SET
       note = excluded.note, status = excluded.status, assigned_by = excluded.assigned_by,
-      updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+      updated_by = excluded.updated_by, updated_at = (datetime('now','localtime'))
   `);
   const del = db.prepare(`DELETE FROM daily_work_logs WHERE employee_id = ? AND log_date = ?`);
   const tx = db.transaction(() => {

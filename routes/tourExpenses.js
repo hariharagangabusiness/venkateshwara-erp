@@ -2,6 +2,7 @@ const express = require('express');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { makeUpload } = require('../lib/upload');
+const { localDateStr, localMonthStr } = require('../lib/dateUtil');
 const router = express.Router();
 router.use(authRequired);
 
@@ -36,7 +37,7 @@ function resolveEmployeeId(req, requestedId) {
   if (isReviewer(req.user)) return requestedId ? Number(requestedId) : (req.user.employee_id || null);
   return req.user.employee_id || null;
 }
-const todayMonth = () => new Date().toISOString().slice(0, 7);
+const todayMonth = () => localMonthStr();
 
 function legsTotal(legs) { return (legs || []).reduce((s, l) => s + (Number(l.amount) || 0), 0); }
 function dayClaimed(day, legs) {
@@ -60,7 +61,7 @@ router.post('/advances', requireReviewer, (req, res) => {
   const info = db.prepare(`
     INSERT INTO tour_advances (employee_id, amount, issued_date, payment_mode, notes, issued_by)
     VALUES (?,?,?,?,?,?)
-  `).run(employee_id, Number(amount), issued_date || new Date().toISOString().slice(0, 10), payment_mode || 'Cash', notes || null, req.user.id);
+  `).run(employee_id, Number(amount), issued_date || localDateStr(), payment_mode || 'Cash', notes || null, req.user.id);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -104,7 +105,7 @@ router.post('/days', (req, res) => {
     if (existing) {
       dayId = existing.id;
       db.prepare(`
-        UPDATE tour_expense_days SET food_claimed=?, food_amount=?, lodging_claimed=?, lodging_name=?, lodging_amount=?, claimed_amount=?, updated_at=CURRENT_TIMESTAMP
+        UPDATE tour_expense_days SET food_claimed=?, food_amount=?, lodging_claimed=?, lodging_name=?, lodging_amount=?, claimed_amount=?, updated_at=(datetime('now','localtime'))
         WHERE id=?
       `).run(foodClaimed ? 1 : 0, foodClaimed ? (Number(food.amount) || 0) : 0, lodgingClaimed ? 1 : 0, lodgingClaimed ? (lodging.name || null) : null, lodgingClaimed ? (Number(lodging.amount) || 0) : 0, claimed, dayId);
       db.prepare('DELETE FROM tour_expense_legs WHERE day_id = ?').run(dayId);
@@ -188,7 +189,7 @@ router.post('/months/submit', (req, res) => {
   if (!dayCount) return res.status(400).json({ error: 'No days logged for that month yet.' });
   const tx = db.transaction(() => {
     db.prepare(`UPDATE tour_expense_days SET status = 'PendingReview' WHERE employee_id = ? AND entry_date LIKE ? AND status = 'Open'`).run(employeeId, month + '%');
-    db.prepare(`UPDATE tour_expense_months SET status = 'Submitted', submitted_at = CURRENT_TIMESTAMP, submitted_by = ? WHERE id = ?`).run(req.user.id, monthRow.id);
+    db.prepare(`UPDATE tour_expense_months SET status = 'Submitted', submitted_at = (datetime('now','localtime')), submitted_by = ? WHERE id = ?`).run(req.user.id, monthRow.id);
   });
   tx();
   res.json({ ok: true });
@@ -209,7 +210,7 @@ router.post('/days/:id/decide', requireReviewer, (req, res) => {
     if (!reason || !reason.trim()) return res.status(400).json({ error: 'A reason is required to adjust a day.' });
   } else return res.status(400).json({ error: 'action must be Approve, Reject, or Adjust.' });
   db.prepare(`
-    UPDATE tour_expense_days SET status=?, approved_amount=?, review_reason=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?
+    UPDATE tour_expense_days SET status=?, approved_amount=?, review_reason=?, reviewed_by=?, reviewed_at=(datetime('now','localtime')) WHERE id=?
   `).run(status, amount, reason || null, req.user.id, day.id);
   res.json({ ok: true });
 });
@@ -277,7 +278,7 @@ router.post('/service-reports/:id/updown-decide', requireReviewer, (req, res) =>
     if (!reason || !reason.trim()) return res.status(400).json({ error: 'A reason is required to adjust.' });
   } else return res.status(400).json({ error: 'action must be Approve, Reject, or Adjust.' });
   db.prepare(`
-    UPDATE service_reports SET updown_food_status=?, updown_food_approved_amount=?, updown_food_reason=?, updown_food_reviewed_by=?, updown_food_reviewed_at=CURRENT_TIMESTAMP WHERE id=?
+    UPDATE service_reports SET updown_food_status=?, updown_food_approved_amount=?, updown_food_reason=?, updown_food_reviewed_by=?, updown_food_reviewed_at=(datetime('now','localtime')) WHERE id=?
   `).run(status, amount, reason || null, req.user.id, report.id);
   res.json({ ok: true });
 });
@@ -328,7 +329,7 @@ router.post('/months/:employeeId/:month/finalize', requireReviewer, (req, res) =
   const pending = db.prepare(`SELECT COUNT(*) as n FROM tour_expense_days WHERE employee_id = ? AND entry_date LIKE ? AND status = 'PendingReview'`).get(employeeId, month + '%').n;
   if (pending > 0) return res.status(400).json({ error: `${pending} day(s) still need a decision before this month can be finalized.` });
   if (monthRow.allowance_amount != null && monthRow.allowance_status === 'Pending') return res.status(400).json({ error: 'The monthly allowance claim still needs a decision.' });
-  db.prepare(`UPDATE tour_expense_months SET status='Closed', closed_at=CURRENT_TIMESTAMP, closed_by=? WHERE id=?`).run(req.user.id, monthRow.id);
+  db.prepare(`UPDATE tour_expense_months SET status='Closed', closed_at=(datetime('now','localtime')), closed_by=? WHERE id=?`).run(req.user.id, monthRow.id);
   res.json({ ok: true });
 });
 

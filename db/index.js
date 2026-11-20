@@ -75,7 +75,7 @@ const MIGRATIONS = [
     file_path TEXT NOT NULL,
     original_name TEXT,
     uploaded_by INTEGER REFERENCES users(id),
-    uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+    uploaded_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 5: Vendor Master expansion ----
   `ALTER TABLE vendors ADD COLUMN legal_name TEXT`,
@@ -117,7 +117,7 @@ const MIGRATIONS = [
     invoice_no TEXT UNIQUE,
     sales_order_id INTEGER REFERENCES sales_orders(id),
     client_id INTEGER REFERENCES clients(id),
-    invoice_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    invoice_date TEXT DEFAULT (datetime('now','localtime')),
     place_of_supply TEXT,
     buyer_gstin TEXT,
     buyer_state TEXT,
@@ -128,7 +128,7 @@ const MIGRATIONS = [
     total_value REAL DEFAULT 0,
     status TEXT DEFAULT 'Draft',
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS sales_invoice_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,13 +145,13 @@ const MIGRATIONS = [
   // ---- Round 5: Operating Expenses ----
   `CREATE TABLE IF NOT EXISTS operating_expenses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    expense_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    expense_date TEXT DEFAULT (datetime('now','localtime')),
     category TEXT,
     description TEXT,
     amount REAL NOT NULL,
     paid_via TEXT DEFAULT 'Bank',
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 5: Asset Management ----
   `CREATE TABLE IF NOT EXISTS assets (
@@ -171,19 +171,19 @@ const MIGRATIONS = [
     disposal_date TEXT,
     disposal_value REAL,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS asset_maintenance_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     asset_id INTEGER NOT NULL REFERENCES assets(id),
-    log_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    log_date TEXT DEFAULT (datetime('now','localtime')),
     type TEXT DEFAULT 'Preventive',
     description TEXT,
     cost REAL DEFAULT 0,
     performed_by TEXT,
     next_due_date TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 5: Ticketing ----
   `CREATE TABLE IF NOT EXISTS tickets (
@@ -197,15 +197,15 @@ const MIGRATIONS = [
     raised_by INTEGER REFERENCES users(id),
     assigned_to INTEGER REFERENCES users(id),
     status TEXT DEFAULT 'Open',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS ticket_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id INTEGER NOT NULL REFERENCES tickets(id),
     user_id INTEGER REFERENCES users(id),
     comment TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 6: Sales & Marketing upgrade ----
   `ALTER TABLE leads ADD COLUMN lead_source TEXT`,
@@ -223,7 +223,7 @@ const MIGRATIONS = [
     due_date TEXT,
     completed_at TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 7: Service Centers ----
   `ALTER TABLE stock_movements ADD COLUMN service_center_id INTEGER REFERENCES service_centers(id)`,
@@ -233,7 +233,7 @@ const MIGRATIONS = [
     owner_id INTEGER REFERENCES users(id),   -- NULL = company-wide target
     target_value REAL NOT NULL DEFAULT 0,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 9: Service Report - replicate the printed field-service form ----
   `ALTER TABLE service_reports ADD COLUMN sl_no TEXT`,
@@ -296,7 +296,7 @@ const MIGRATIONS = [
     amount REAL,
     status TEXT DEFAULT 'Pending',         -- Pending, Invoiced, Received, Overdue
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS bank_guarantees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,7 +316,7 @@ const MIGRATIONS = [
     released_at TEXT,
     released_by INTEGER REFERENCES users(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -325,7 +325,7 @@ const MIGRATIONS = [
     source_id INTEGER NOT NULL,
     message TEXT NOT NULL,
     is_read INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 17: parallel department scheduling on the Targets sheet ----
   // A stage marked parallel_with_previous starts on the same day as the
@@ -336,7 +336,7 @@ const MIGRATIONS = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bg_id INTEGER NOT NULL REFERENCES bank_guarantees(id),
     trigger_reason TEXT NOT NULL,          -- ExpiryApproaching, ProjectCompleted, MilestoneReached, ClaimExpiryApproaching
-    triggered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    triggered_at TEXT DEFAULT (datetime('now','localtime')),
     status TEXT DEFAULT 'PendingReview',   -- PendingReview, Verified, EmailSent, Dismissed
     reviewed_by INTEGER REFERENCES users(id),
     reviewed_at TEXT,
@@ -362,7 +362,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'Pending',         -- Pending, InProgress, Completed, OnHold
     created_by INTEGER REFERENCES users(id),
     completed_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 20: FOC customer capture independent of an SO, auto-generated
   // Client ID, and structured Bill-to/Ship-to addresses per client.
@@ -393,7 +393,7 @@ const MIGRATIONS = [
     pincode TEXT,
     gstin TEXT,
     is_default INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 21: admin-editable dropdown options for the Offers/Quotations
   // form's Application / Type of System / Material of Construction fields -
@@ -418,7 +418,7 @@ const MIGRATIONS = [
     client_id INTEGER REFERENCES clients(id),
     milestone_id INTEGER REFERENCES payment_milestones(id),
     invoice_type TEXT NOT NULL,        -- 'Advance' or 'PreDispatch'
-    proforma_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    proforma_date TEXT DEFAULT (datetime('now','localtime')),
     place_of_supply TEXT,
     buyer_gstin TEXT,
     buyer_state TEXT,
@@ -429,7 +429,7 @@ const MIGRATIONS = [
     total_value REAL DEFAULT 0,
     status TEXT DEFAULT 'Draft',       -- Draft, Sent, Received, Cancelled
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS proforma_invoice_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -448,7 +448,7 @@ const MIGRATIONS = [
     user_id INTEGER REFERENCES users(id),
     note TEXT NOT NULL,
     status_at_update TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 24: BG claim-expiry compliance workflow - a system-generated
   // To-Do needs a priority to flag urgency, and a source_type/source_id
@@ -473,7 +473,7 @@ const MIGRATIONS = [
     parent_id INTEGER REFERENCES org_nodes(id),
     department_id INTEGER REFERENCES departments(id),
     sort_order INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 26: Offer version-control gaps closed - an offer's iteration
   // history had no link back to the enquiry/RFQ that started it (only to the
@@ -497,7 +497,7 @@ const MIGRATIONS = [
     reference_no TEXT,
     notes TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // SOA dispatch cadence config: one row with client_id NULL is the org-wide
   // default; a row with client_id set overrides it for that client only
@@ -509,7 +509,7 @@ const MIGRATIONS = [
     frequency TEXT NOT NULL DEFAULT 'Off',   -- Off, Monthly, Quarterly
     enabled INTEGER NOT NULL DEFAULT 0,
     updated_by INTEGER REFERENCES users(id),
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // A generated-but-not-yet-emailed statement, mirroring bg_reminder_log's
   // internal-verify-then-email pattern so no statement reaches a customer's
@@ -521,7 +521,7 @@ const MIGRATIONS = [
     period_end TEXT NOT NULL,
     closing_balance REAL,
     status TEXT DEFAULT 'PendingReview',     -- PendingReview, Verified, EmailSent, Dismissed
-    generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    generated_at TEXT DEFAULT (datetime('now','localtime')),
     reviewed_by INTEGER REFERENCES users(id),
     reviewed_at TEXT,
     email_sent_to TEXT,
@@ -546,8 +546,8 @@ const MIGRATIONS = [
     approved_at TEXT,
     rejection_reason TEXT,
     locked INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // The annexure's actual technical content still comes from its sales
   // order's (frozen, version-controlled) offer - this row is the review
@@ -568,8 +568,8 @@ const MIGRATIONS = [
     locked INTEGER DEFAULT 0,
     unlocked_by INTEGER REFERENCES users(id),   -- Admin who reopened an Approved review for revision (2026-10-09) - approved_by/approved_at stay untouched as the original approval's own record
     unlocked_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 29: Password reset + welcome email + SR activity log.
   // users had no email at all - it's needed both to look someone up for a
@@ -596,7 +596,7 @@ const MIGRATIONS = [
     purpose TEXT NOT NULL DEFAULT 'PasswordReset',   -- PasswordReset, AccountActivation
     expires_at TEXT NOT NULL,
     used_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // Free-form activity log for a Service Request, independent of the
   // formal status/job-status state machines already in service_requests -
@@ -612,7 +612,7 @@ const MIGRATIONS = [
     note TEXT,
     status_change TEXT,
     action_taken TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 22: Cross-department oversight (e.g. one HOD covering both
   // Electrical and Service without merging the two departments/roles - see
@@ -623,7 +623,7 @@ const MIGRATIONS = [
     user_id INTEGER NOT NULL REFERENCES users(id),
     oversees_role_id INTEGER NOT NULL REFERENCES roles(id),
     granted_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `ALTER TABLE daily_work_logs ADD COLUMN status TEXT`,
   `ALTER TABLE daily_work_logs ADD COLUMN assigned_by INTEGER REFERENCES users(id)`,
@@ -641,7 +641,7 @@ const MIGRATIONS = [
     proposed_fields TEXT,               -- JSON of {field: value} - null for Delete
     status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
     requested_by INTEGER REFERENCES users(id),
-    requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    requested_at TEXT DEFAULT (datetime('now','localtime')),
     reviewed_by INTEGER REFERENCES users(id),
     reviewed_at TEXT,
     review_note TEXT
@@ -680,7 +680,7 @@ const MIGRATIONS = [
     pincode TEXT,
     gstin TEXT,
     is_default INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `ALTER TABLE purchase_orders ADD COLUMN company_address_id INTEGER REFERENCES company_addresses(id)`,
   // ---- Round 26: per-offer section include/exclude toggles for the
@@ -708,7 +708,7 @@ const MIGRATIONS = [
     summary TEXT,
     image_path TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Round 28: Sales Order Bank Guarantee terms. bank_guarantees (Round
   // 17-ish) already tracks an actual BG once someone creates one, but
@@ -807,7 +807,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'Pending',
     reviewed_by INTEGER REFERENCES users(id),
     reviewed_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Per-user page access overrides ----
   // The role matrix (role_page_access) and Extra Page Access are additive
@@ -824,7 +824,7 @@ const MIGRATIONS = [
     page_id TEXT NOT NULL,
     access TEXT NOT NULL CHECK (access IN ('granted', 'revoked')),
     granted_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (user_id, page_id)
   )`,
   // ---- Extra permission grants (2026-11-17) ----
@@ -842,7 +842,7 @@ const MIGRATIONS = [
     department_id INTEGER REFERENCES departments(id),
     user_id INTEGER REFERENCES users(id),
     permission_code TEXT NOT NULL,
-    granted_at TEXT DEFAULT CURRENT_TIMESTAMP
+    granted_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // ---- Per-project pipeline stage exclusion ----
   // Every project got the exact same fixed 10-stage (+5 Manufacturing
@@ -943,7 +943,7 @@ const MIGRATIONS = [
     summary TEXT,
     image_path TEXT,
     sort_order INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
 
   // Purchase Order line items (Round: PO multi-line items): payment_terms is
@@ -987,7 +987,7 @@ const MIGRATIONS = [
     vendor_id INTEGER NOT NULL REFERENCES vendors(id),
     vendor_invoice_no TEXT NOT NULL,     -- the vendor's own bill number - needed for GSTR-2B matching
     vendor_invoice_date TEXT NOT NULL,   -- date printed on the vendor's bill
-    booking_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    booking_date TEXT DEFAULT (datetime('now','localtime')),
     vendor_gstin TEXT,
     vendor_state TEXT,
     taxable_value REAL DEFAULT 0,
@@ -1001,7 +1001,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'PendingApproval', -- PendingApproval, Approved, Rejected, InfoRequested, PartiallyPaid, Paid, Cancelled
     approval_id INTEGER REFERENCES approvals(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS purchase_invoice_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1036,7 +1036,7 @@ const MIGRATIONS = [
     total_value REAL DEFAULT 0,
     status TEXT DEFAULT 'Active',        -- Active, Cancelled
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // The original `company_address_id` only ever let a PO carry ONE of our
   // addresses, printed as a single "Our Address" box regardless of whether
@@ -1084,7 +1084,7 @@ const MIGRATIONS = [
     payment_reference TEXT,
     paid_date TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // Permanent hike history, one row per actual raise - exists independently
   // of salary_hike_cycles so a manually-entered historical hike (from before
@@ -1103,7 +1103,7 @@ const MIGRATIONS = [
     source TEXT DEFAULT 'Manual',
     cycle_id INTEGER REFERENCES salary_hike_cycles(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // The annual planning run itself. Draft (HR builds/edits
   // salary_hike_cycle_items below) -> PendingApproval (HR submits - starts
@@ -1120,7 +1120,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'Draft',
     approval_id INTEGER REFERENCES approvals(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
     applied_at TEXT
   )`,
   // current_salary is a snapshot taken when the item is added/edited (not
@@ -1177,7 +1177,7 @@ const MIGRATIONS = [
     sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
     project_id INTEGER REFERENCES projects(id),
     client_id INTEGER REFERENCES clients(id),
-    dispatch_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    dispatch_date TEXT DEFAULT (datetime('now','localtime')),
     vehicle_no TEXT,
     transporter_name TEXT,
     eway_bill_no TEXT,
@@ -1187,7 +1187,7 @@ const MIGRATIONS = [
     payment_override_by INTEGER REFERENCES users(id),
     payment_override_note TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS fg_dispatch_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1213,7 +1213,7 @@ const MIGRATIONS = [
     sales_order_id INTEGER NOT NULL REFERENCES sales_orders(id),
     project_id INTEGER REFERENCES projects(id),
     client_id INTEGER REFERENCES clients(id),
-    rejection_date TEXT DEFAULT CURRENT_TIMESTAMP,
+    rejection_date TEXT DEFAULT (datetime('now','localtime')),
     reason TEXT,
     description TEXT,
     disposition TEXT DEFAULT 'Rework',
@@ -1221,7 +1221,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'PendingApproval',
     approval_id INTEGER REFERENCES approvals(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS sale_rejection_mrn_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1249,7 +1249,7 @@ const MIGRATIONS = [
     total_value REAL DEFAULT 0,
     status TEXT DEFAULT 'Active',
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // Traces a replacement FOC request back to the MRN that caused it - the
   // existing foc_requests table already carries everything else needed
@@ -1395,7 +1395,7 @@ const MIGRATIONS = [
     status TEXT DEFAULT 'PendingApproval', -- PendingApproval, Approved, Rejected, InfoRequested
     approval_id INTEGER REFERENCES approvals(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // Supports both the "how much of this PO line is reconciled" rollup
   // (routes/finance.js's poLineReconciledQty()) and the Stock In/Out page's
@@ -1408,7 +1408,7 @@ const MIGRATIONS = [
     po_id INTEGER REFERENCES purchase_orders(id),
     invoice_attachment_path TEXT NOT NULL,
     uploaded_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `ALTER TABLE grn_batches ADD COLUMN is_placeholder INTEGER DEFAULT 0`,
   // Invoice no/date live once on the batch header (2026-10-22); line-level copies stay for unbatched legacy rows.
@@ -1441,7 +1441,7 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS client_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `ALTER TABLE clients ADD COLUMN group_id INTEGER REFERENCES client_groups(id)`,
   // Offer Scope Of Supply: Unit of Measurement + flat Discount Amount,
@@ -1518,7 +1518,7 @@ const MIGRATIONS = [
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
     updated_by INTEGER REFERENCES users(id),
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // Vendor web portal (2026-10-20): one hashed, expiring link per (RFQ, vendor).
   `CREATE TABLE IF NOT EXISTS rfq_tokens (
@@ -1528,7 +1528,7 @@ const MIGRATIONS = [
     token_hash TEXT NOT NULL UNIQUE,
     expires_at TEXT NOT NULL,
     revoked INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
     last_opened_at TEXT,
     UNIQUE (rfq_request_id, vendor_id)
   )`,
@@ -1536,7 +1536,7 @@ const MIGRATIONS = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     rfq_token_id INTEGER NOT NULL UNIQUE REFERENCES rfq_tokens(id),
     remarks TEXT,
-    submitted_at TEXT DEFAULT CURRENT_TIMESTAMP
+    submitted_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS vendor_response_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1661,7 +1661,7 @@ const MIGRATIONS = [
     rate REAL,
     unit TEXT DEFAULT 'Nos',
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   // A spare typed directly on a Spares offer line (not picked from
   // spares_library) goes through the identical Admin-review queue
@@ -1755,7 +1755,7 @@ const MIGRATIONS = [
     approval_id INTEGER REFERENCES approvals(id),
     challan_id INTEGER REFERENCES challans(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`,
   `CREATE TABLE IF NOT EXISTS sales_return_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1811,7 +1811,7 @@ const MIGRATIONS = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     challan_id INTEGER NOT NULL REFERENCES challans(id),
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
     notes TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS challan_receive_event_items (
@@ -1882,7 +1882,7 @@ function migratePurchaseOrdersDropPoNoUnique() {
       total_value REAL,
       status TEXT DEFAULT 'Open',
       created_by INTEGER REFERENCES users(id),
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
       hsn_code TEXT,
       gst_rate REAL DEFAULT 18,
       gst_amount REAL DEFAULT 0,
@@ -2353,6 +2353,181 @@ try {
   }
 } catch (e) { console.error('[db] Expense Voucher Accounts-supervisor migration failed:', e.message); }
 
+// Server timezone switched from UTC to IST (Asia/Kolkata) (2026-11-20),
+// requested directly by the owner - the server had no TZ set at all, so
+// every stored CURRENT_TIMESTAMP default (and every hand-written
+// new Date().toISOString() timestamp) was written in UTC wall-clock time,
+// not IST. This one-time migration shifts every already-stored
+// datetime-WITH-TIME value by the fixed UTC->IST offset (+5 hours 30
+// minutes) - both SQLite's own space-separated 'YYYY-MM-DD HH:MM:SS'
+// format, and the handful of hand-written 'YYYY-MM-DDTHH:MM:SS[.sss]Z' ISO
+// timestamps a few routes used - normalizing the ISO ones onto the same
+// space-separated format everything else already uses, so the whole
+// database settles on one consistent IST wall-clock convention. Skipped
+// entirely on a brand-new database (isNew) - there's nothing to shift yet
+// (seed.js hasn't run), and running it there would be pure wasted work, not
+// a correctness risk either way since a fresh table has zero rows.
+//
+// Deliberately generic (introspects every real table/column via PRAGMA at
+// migration time, rather than a hand-maintained column list) - this
+// codebase's own history (lib/pageCatalog.js falling behind NAV,
+// lib/permissionCatalog.js missing real permission codes, the Sales Order
+// delete route's original hand-maintained FK-blocker list) shows a
+// hand-typed "every timestamp column in the app" list would go stale the
+// moment a future feature adds one. A plain date-only value ('YYYY-MM-DD',
+// from an <input type="date">) is left completely untouched by both GLOB
+// patterns below (neither matches a bare 10-character date) - shifting a
+// calendar date by a clock offset would silently inject a spurious
+// time-of-day, and a date-only field carries no timezone ambiguity to
+// begin with. Runs exactly once, guarded by the same settings-flag pattern
+// as every other one-time migration in this file.
+// SQLite's CURRENT_TIMESTAMP keyword default is ALWAYS computed in UTC,
+// completely independent of the process's own TZ env var (confirmed
+// directly - only datetime('now','localtime') reads the process timezone,
+// which is why db/schema.sql's own column defaults were changed to that
+// form). But editing schema.sql alone does nothing for a column on a table
+// that ALREADY EXISTS on a deployed database - `CREATE TABLE IF NOT EXISTS`
+// is a no-op against an existing table, and SQLite has no `ALTER TABLE
+// ... ALTER COLUMN ... SET DEFAULT` at all - a column's default expression
+// is baked into the table's own stored definition (sqlite_master.sql) at
+// the moment the table was first created, and stays exactly what it was
+// until the table itself is rebuilt. Left alone, every INSERT in the app
+// that relies on this implicit default (the entire reason the default
+// exists) would keep silently writing UTC on an already-existing database,
+// forever, even after every other part of this fix landed.
+//
+// Rebuilds every such table using SQLite's own documented procedure for
+// this exact situation (rename the old table out of the way, recreate it
+// fresh under the real name, copy the data across, drop the old copy,
+// restore whatever indexes/triggers were bound to it) - generically, by
+// regex-replacing the single CURRENT_TIMESTAMP token directly in the
+// table's own verbatim, already-stored CREATE TABLE text (not by
+// reconstructing column definitions from PRAGMA table_info(), which would
+// silently drop any inline UNIQUE/CHECK constraint PRAGMA table_info()
+// doesn't report at all - confirmed 17 of these tables have one). This
+// also means the single flag below genuinely has two jobs: fix the
+// schema's own stored defaults once, then fix the historical data once.
+// `ALTER TABLE x RENAME TO y` doesn't just rename x - SQLite also walks
+// every OTHER schema object and textually rewrites any reference to the
+// OLD name it finds (confirmed the hard way, twice: a trigger bound to a
+// completely different table but whose body names the renamed table, AND a
+// completely unrelated table's own FK column referencing it, e.g. offers'
+// `lead_id INTEGER REFERENCES leads(id)` silently became
+// `REFERENCES "leads__ist_rebuild_tmp"(id)` the moment `leads` was renamed
+// away - and since plenty of tables that are NOT even rebuild targets
+// themselves still have an FK pointing at one that IS, e.g. clients'/items'
+// own created_by -> users, that corruption would stick forever on every
+// such table, not just the ones in this migration's own rebuild list).
+// Avoided entirely by never renaming the REAL table name away in the first
+// place: build the new structure under a disposable temp name, copy the
+// data across, THEN drop the original (a plain DROP, not a rename, carries
+// no such side effect), and only then rename the temp table INTO the real
+// name - by which point nothing else in the database was ever touched.
+// Must also drop every cross-referencing trigger (see the batch-level
+// caller) before any of this, not just after - SQLite tries to validate a
+// trigger's own table reference as part of the final rename step, and
+// fails if that trigger is still live and its target doesn't exist at that
+// exact instant (also confirmed the hard way).
+function rebuildTableWithLocaltimeDefault(table, originalSql) {
+  if (!originalSql || !originalSql.includes('CURRENT_TIMESTAMP')) return false;
+  const tmp = `${table}__ist_rebuild_tmp`;
+  const nameRe = new RegExp(`^(CREATE TABLE\\s+(?:IF NOT EXISTS\\s+)?)(["\`]?)${table}\\2`, 'i');
+  if (!nameRe.test(originalSql)) { console.error(`[db] Timezone migration: could not locate ${table}'s own name in its captured CREATE TABLE text - skipped.`); return false; }
+  const tmpCreateSql = originalSql.replace(nameRe, `$1$2${tmp}$2`).replace(/CURRENT_TIMESTAMP/g, "(datetime('now','localtime'))");
+  const indexDeps = raw.prepare(`SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type = 'index' AND sql IS NOT NULL`).all(table);
+  const colList = raw.prepare(`PRAGMA table_info("${table}")`).all().map(c => `"${c.name}"`).join(', ');
+  raw.exec(tmpCreateSql);
+  raw.exec(`INSERT INTO "${tmp}" (${colList}) SELECT ${colList} FROM "${table}"`);
+  raw.exec(`DROP TABLE "${table}"`);
+  raw.exec(`ALTER TABLE "${tmp}" RENAME TO "${table}"`);
+  for (const dep of indexDeps) {
+    try { raw.exec(dep.sql); } catch (e) { console.error(`[db] Timezone migration: failed to recreate an index on ${table}:`, e.message); }
+  }
+  return true;
+}
+
+try {
+  const TZ_MIGRATION_FLAG = 'timestamps_shifted_to_ist_v1';
+  const alreadyMigrated = raw.prepare(`SELECT value FROM settings WHERE key = ?`).get(TZ_MIGRATION_FLAG);
+  if (!isNew && !alreadyMigrated) {
+    // Same FK-disable/rebuild/foreign_key_check/re-enable procedure
+    // migrateOffersClientIdNullable() above already established for a
+    // single table - applied here across every affected table in one
+    // transaction, since many of them reference each other (e.g. most
+    // tables' created_by/user_id FKs point at `users`, which is itself one
+    // of the 44 tables being rebuilt).
+    const rebuildRows = raw.prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND sql LIKE '%CURRENT_TIMESTAMP%'`).all();
+    const rebuildTargets = rebuildRows.map(r => r.name);
+    // Captured ONCE, before any rename in the whole batch starts - every
+    // table's own pristine original text, so a later table's rebuild never
+    // has to (and never does) re-query sqlite_master mid-batch, where an
+    // earlier sibling's rename could already have silently rewritten this
+    // table's own FK references to it (see rebuildTableWithLocaltimeDefault's
+    // own comment).
+    const originalSqlByTable = new Map(rebuildRows.map(r => [r.name, r.sql]));
+    if (rebuildTargets.length) {
+      // Every trigger anywhere in the database whose own SQL text names one
+      // of the tables about to be rebuilt - bound to it (tbl_name match) or
+      // merely referencing it in a subquery - captured and dropped BEFORE
+      // any rename happens, so the captured text still names the real
+      // table, then recreated once every rebuild is done.
+      const nameBoundary = n => new RegExp(`\\b${n}\\b`, 'i');
+      const allTriggers = raw.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL`).all();
+      const triggerDeps = allTriggers.filter(t => rebuildTargets.some(n => nameBoundary(n).test(t.sql)));
+      raw.exec('PRAGMA foreign_keys = OFF');
+      raw.exec('BEGIN');
+      let committed = false;
+      try {
+        let rebuilt = 0;
+        for (const t of triggerDeps) raw.exec(`DROP TRIGGER IF EXISTS "${t.name}"`);
+        for (const table of rebuildTargets) { if (rebuildTableWithLocaltimeDefault(table, originalSqlByTable.get(table))) rebuilt++; }
+        for (const t of triggerDeps) {
+          try { raw.exec(t.sql); } catch (e) { console.error(`[db] Timezone migration: failed to recreate trigger ${t.name}:`, e.message); }
+        }
+        raw.exec('COMMIT');
+        committed = true;
+        const violations = raw.prepare('PRAGMA foreign_key_check').all();
+        if (violations.length) throw new Error('foreign_key_check failed after timestamp-default rebuild: ' + JSON.stringify(violations));
+        console.log(`[db] Timezone migration: rebuilt ${rebuilt} table(s) so their CURRENT_TIMESTAMP column defaults now compute in IST going forward.`);
+      } finally {
+        // Only roll back if the transaction never actually committed - a
+        // violation caught AFTER a successful COMMIT has nothing left to
+        // roll back (and attempting one would itself error, since no
+        // transaction would be open at that point).
+        if (!committed) { try { raw.exec('ROLLBACK'); } catch (e) { /* nothing to roll back */ } }
+        raw.exec('PRAGMA foreign_keys = ON');
+      }
+    }
+    const tables = raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
+    let shifted = 0;
+    for (const { name: table } of tables) {
+      let cols;
+      try { cols = raw.prepare(`PRAGMA table_info("${table}")`).all(); } catch (e) { continue; }
+      for (const col of cols) {
+        const c = col.name;
+        try {
+          const r1 = raw.prepare(`
+            UPDATE "${table}" SET "${c}" = strftime('%Y-%m-%d %H:%M:%S', datetime("${c}", '+5 hours', '+30 minutes'))
+            WHERE "${c}" GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+          `).run();
+          shifted += r1.changes || 0;
+        } catch (e) { /* column type mismatch or similar - skip */ }
+        try {
+          const r2 = raw.prepare(`
+            UPDATE "${table}" SET "${c}" = strftime('%Y-%m-%d %H:%M:%S', datetime("${c}", '+5 hours', '+30 minutes'))
+            WHERE "${c}" GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'
+          `).run();
+          shifted += r2.changes || 0;
+        } catch (e) { /* skip */ }
+      }
+    }
+    console.log(`[db] Timezone migration: shifted ${shifted} stored timestamp value(s) from UTC to IST.`);
+  }
+  if (!alreadyMigrated) {
+    raw.prepare(`INSERT INTO settings (key, value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'`).run(TZ_MIGRATION_FLAG);
+  }
+} catch (e) { console.error('[db] Timezone (UTC->IST) migration failed:', e.message); }
+
 // Thin wrapper so the rest of the app can keep using the better-sqlite3-style
 // db.prepare(sql).run/get/all(...) API, plus a db.transaction(fn) helper
 // (node:sqlite's DatabaseSync has no built-in transaction wrapper).
@@ -2792,7 +2967,7 @@ function issueRfqToken(rfqId, vendorId, expiresAt) {
   if (!(days >= 1 && days <= 365)) days = 14;
   const d = expiresAt ? new Date(expiresAt) : new Date(Date.now() + Math.round(days) * 86400000);
   if (isNaN(d)) throw new Error('Invalid expiresAt');
-  const exp = d.toISOString().slice(0, 19).replace('T', ' '); // same format as SQLite datetime('now')
+  const exp = require('../lib/dateUtil').localDateTimeStr(d); // same format as SQLite datetime('now')
   db.prepare('INSERT INTO rfq_tokens (rfq_request_id, vendor_id, token_hash, expires_at) VALUES (?,?,?,?)')
     .run(rfqId, vendorId, hash, exp);
   return token;

@@ -9,6 +9,7 @@ const { getCompanySettings } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
+const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 
 const router = express.Router();
 router.use(authRequired);
@@ -79,7 +80,7 @@ router.get('/ledger/:clientId/pdf', requirePermission('payment_receipt.manage', 
       docType: 'Statement_of_Account',
       reference: client.client_code,
       partyName: client.name,
-      date: to || new Date().toISOString().slice(0, 10),
+      date: to || localDateStr(),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -107,7 +108,7 @@ function upsertSettings(clientId, frequency, enabled, userId) {
     ? db.prepare('SELECT id FROM soa_settings WHERE client_id = ?').get(clientId)
     : db.prepare('SELECT id FROM soa_settings WHERE client_id IS NULL').get();
   if (existing) {
-    db.prepare(`UPDATE soa_settings SET frequency=?, enabled=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    db.prepare(`UPDATE soa_settings SET frequency=?, enabled=?, updated_by=?, updated_at=(datetime('now','localtime')) WHERE id=?`)
       .run(frequency, enabled ? 1 : 0, userId, existing.id);
     return existing.id;
   }
@@ -150,14 +151,14 @@ router.post('/:id/verify', canManage, (req, res) => {
   if (!log) return res.status(404).json({ error: 'Not found' });
   if (log.status !== 'PendingReview') return res.status(400).json({ error: `Already ${log.status}` });
   db.prepare(`UPDATE soa_dispatch_log SET status = 'Verified', reviewed_by = ?, reviewed_at = ? WHERE id = ?`)
-    .run(req.user.id, new Date().toISOString(), req.params.id);
+    .run(req.user.id, localDateTimeStr(), req.params.id);
   res.json({ ok: true });
 });
 router.post('/:id/dismiss', canManage, (req, res) => {
   const log = db.prepare('SELECT id FROM soa_dispatch_log WHERE id = ?').get(req.params.id);
   if (!log) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE soa_dispatch_log SET status = 'Dismissed', reviewed_by = ?, reviewed_at = ? WHERE id = ?`)
-    .run(req.user.id, new Date().toISOString(), req.params.id);
+    .run(req.user.id, localDateTimeStr(), req.params.id);
   res.json({ ok: true });
 });
 router.post('/:id/send-email', canManage, async (req, res) => {
@@ -188,7 +189,7 @@ router.post('/:id/send-email', canManage, async (req, res) => {
     });
     if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });
     db.prepare(`UPDATE soa_dispatch_log SET status = 'EmailSent', email_sent_to = ?, email_sent_at = ? WHERE id = ?`)
-      .run(client.email, new Date().toISOString(), req.params.id);
+      .run(client.email, localDateTimeStr(), req.params.id);
     res.json({ ok: true, sent: true, to: client.email });
   } catch (e) {
     console.error(e);

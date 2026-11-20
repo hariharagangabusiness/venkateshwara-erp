@@ -199,7 +199,7 @@ router.post('/transfers/:id/receive', requirePermission('service_center.manage')
     else if (allAccountedFor && !anyShort && allLines.every(l => l.quantity_received === l.quantity_sent)) status = 'Received';
     else status = 'PartiallyReceived';
     db.prepare(`
-      UPDATE service_center_transfers SET status = ?, received_by = ?, received_at = CURRENT_TIMESTAMP,
+      UPDATE service_center_transfers SET status = ?, received_by = ?, received_at = (datetime('now','localtime')),
         notes = COALESCE(?, notes) WHERE id = ?
     `).run(status, req.user.id, notes || null, transfer.id);
     return status;

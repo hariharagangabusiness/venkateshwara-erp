@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
+const { localDateStr, localMonthStr, localDateTimeStr } = require('../lib/dateUtil');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const { generateServiceReportPdf } = require('../lib/serviceReportPdf');
 const { getCompanySettings, getServiceSettings, getServiceAckMailSettings, setServiceAckMailSettings, getInboundMailSettings } = require('../lib/settings');
@@ -132,7 +133,7 @@ router.post('/inbox/:id/confirm', requirePermission('service_request.manage'), (
       contact_phone !== undefined ? contact_phone : item.guessed_contact_phone,
       finalIssue, spare_parts_needed || null);
     db.prepare(`
-      UPDATE incoming_service_emails SET status = 'Confirmed', confirmed_sr_id = ?, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP WHERE id = ?
+      UPDATE incoming_service_emails SET status = 'Confirmed', confirmed_sr_id = ?, confirmed_by = ?, confirmed_at = (datetime('now','localtime')) WHERE id = ?
     `).run(info.lastInsertRowid, req.user.id, item.id);
     return info;
   });
@@ -148,7 +149,7 @@ router.post('/inbox/:id/dismiss', requirePermission('service_request.manage'), (
   if (!item) return res.status(404).json({ error: 'Not found' });
   if (!['Pending', 'Quarantined'].includes(item.status)) return res.status(400).json({ error: `Already ${item.status}.` });
   db.prepare(`
-    UPDATE incoming_service_emails SET status = 'Dismissed', dismissed_by = ?, dismissed_at = CURRENT_TIMESTAMP, dismiss_reason = ? WHERE id = ?
+    UPDATE incoming_service_emails SET status = 'Dismissed', dismissed_by = ?, dismissed_at = (datetime('now','localtime')), dismiss_reason = ? WHERE id = ?
   `).run(req.user.id, req.body && req.body.reason || null, item.id);
   res.json({ ok: true });
 });
@@ -225,7 +226,7 @@ router.patch('/:id', requirePermission('service_request.manage'), (req, res) => 
   const fields = { status, assigned_to, employee_id, scheduled_date, client_id, customer_name, contact_person, contact_phone, issue_description, spare_parts_needed };
   const updates = [], params = [];
   Object.entries(fields).forEach(([k, v]) => { if (v !== undefined) { updates.push(`${k} = ?`); params.push(v === '' ? null : v); } });
-  if (status === 'Closed' && existing.status !== 'Closed') { updates.push('closed_at = ?'); params.push(new Date().toISOString()); }
+  if (status === 'Closed' && existing.status !== 'Closed') { updates.push('closed_at = ?'); params.push(localDateTimeStr()); }
   if (!updates.length) return res.json({ ok: true });
   params.push(req.params.id);
   db.prepare(`UPDATE service_requests SET ${updates.join(', ')} WHERE id = ?`).run(...params);
@@ -250,7 +251,7 @@ router.patch('/:id/job-status', (req, res) => {
   const lngNum = (lng !== undefined && lng !== null && lng !== '') ? Number(lng) : null;
   const tx = db.transaction(() => {
     const startCols = action === 'start'
-      ? ', start_lat = ?, start_lng = ?, start_captured_at = CURRENT_TIMESTAMP'
+      ? `, start_lat = ?, start_lng = ?, start_captured_at = (datetime('now','localtime'))`
       : '';
     const params = action === 'start' ? [rule.to, latNum, lngNum, sr.id] : [rule.to, sr.id];
     db.prepare(`UPDATE service_requests SET job_status = ?${startCols} WHERE id = ?`).run(...params);
@@ -529,7 +530,7 @@ router.post('/:id/report', upload.single('handwritten_report'), (req, res) => {
       db.prepare(`
         UPDATE service_reports SET
           pending_items=?, pending_items_comments=?, amount_travel=?, amount_service=?, amount_spares=?,
-          handwritten_report_path=?, status=?, updated_at=CURRENT_TIMESTAMP,
+          handwritten_report_path=?, status=?, updated_at=(datetime('now','localtime')),
           ${extraCols.map(c => `${c}=?`).join(', ')}
         WHERE id=?
       `).run(
@@ -580,13 +581,13 @@ router.post('/:id/report', upload.single('handwritten_report'), (req, res) => {
         // reassigned to, but its end location for this leg is still logged.
         db.prepare(`
           UPDATE service_requests SET status = 'Pending Items', reopen_reason = ?, job_status = 'Assigned',
-            end_lat = ?, end_lng = ?, end_captured_at = CURRENT_TIMESTAMP
+            end_lat = ?, end_lng = ?, end_captured_at = (datetime('now','localtime'))
           WHERE id = ?
         `).run(pending_items_comments || null, endLat, endLng, sr.id);
       } else {
         db.prepare(`
           UPDATE service_requests SET status = 'Resolved', job_status = 'Completed',
-            end_lat = ?, end_lng = ?, end_captured_at = CURRENT_TIMESTAMP
+            end_lat = ?, end_lng = ?, end_captured_at = (datetime('now','localtime'))
           WHERE id = ?
         `).run(endLat, endLng, sr.id);
       }
@@ -647,7 +648,7 @@ router.post('/reconciliation/:reportId/approve', requirePermission('service_requ
   const report = db.prepare('SELECT * FROM service_reports WHERE id = ?').get(req.params.reportId);
   if (!report) return res.status(404).json({ error: 'Not found' });
   if (report.status !== 'Reconciliation') return res.status(400).json({ error: 'Must be in Reconciliation status.' });
-  db.prepare(`UPDATE service_reports SET status = 'Approved', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(report.id);
+  db.prepare(`UPDATE service_reports SET status = 'Approved', updated_at = (datetime('now','localtime')) WHERE id = ?`).run(report.id);
   // Round 3 finance hook: record the amount collected against this service visit.
   try {
     const total = (report.amount_travel || 0) + (report.amount_service || 0) + (report.amount_spares || 0);
@@ -663,7 +664,7 @@ router.post('/reconciliation/:reportId/approve', requirePermission('service_requ
 
 // ===================== Monthly Reconciliation (Supervisor/HOD -> Accounts) =====================
 router.get('/reconciliation/monthly', requirePermission('service_request.manage', 'expense_voucher.approve'), (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
+  const month = req.query.month || localMonthStr();
   const rows = db.prepare(`
     SELECT sr.*, e.full_name as employee_name, req.sr_no
     FROM service_reports sr
@@ -679,7 +680,7 @@ router.post('/reconciliation/monthly/:month/submit-to-accounts', requirePermissi
   const month = req.params.month;
   const tx = db.transaction(() => {
     db.prepare(`
-      UPDATE service_reports SET status = 'SubmittedToAccounts', submitted_to_accounts_at = CURRENT_TIMESTAMP, submitted_to_accounts_by = ?
+      UPDATE service_reports SET status = 'SubmittedToAccounts', submitted_to_accounts_at = (datetime('now','localtime')), submitted_to_accounts_by = ?
       WHERE status = 'Approved' AND updated_at LIKE ?
     `).run(req.user.id, month + '%');
   });
@@ -689,7 +690,7 @@ router.post('/reconciliation/monthly/:month/submit-to-accounts', requirePermissi
 
 // ===================== Dashboard / trends =====================
 router.get('/dashboard/summary', requirePermission('service_request.manage', 'report.view_all'), (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   const all = db.prepare('SELECT * FROM service_requests').all();
   const counts = { pending: 0, delayed: 0, ongoing: 0, held: 0, pendingItems: 0, resolved: 0, closed: 0 };
   all.forEach(r => {

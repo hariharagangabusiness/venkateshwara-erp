@@ -1,3 +1,11 @@
+// The whole business runs in India - every timestamp this app stores or
+// displays (created_at defaults, "today" calculations for overdue/SLA/
+// escalation logic, etc.) should be IST, not whatever zone the host happens
+// to boot in (previously UTC, with no TZ set at all). Must be the very
+// first thing this file does, before dotenv or any other require, so every
+// Date computation anywhere in the process - including inside modules
+// required below - reads the correct local wall-clock value from the start.
+process.env.TZ = process.env.TZ || 'Asia/Kolkata';
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

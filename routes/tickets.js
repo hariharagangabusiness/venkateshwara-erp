@@ -69,7 +69,7 @@ router.patch('/:id', (req, res) => {
   const validStatuses = ['Open', 'InProgress', 'Resolved', 'Closed', 'Reopened'];
   const newStatus = status !== undefined ? status : existing.status;
   if (status !== undefined && !validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
-  db.prepare(`UPDATE tickets SET status=?, assigned_to=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+  db.prepare(`UPDATE tickets SET status=?, assigned_to=?, updated_at=(datetime('now','localtime')) WHERE id=?`)
     .run(newStatus, assigned_to !== undefined ? (assigned_to || null) : existing.assigned_to, existing.id);
   res.json({ ok: true });
 });
@@ -81,7 +81,7 @@ router.post('/:id/comments', (req, res) => {
   if (!comment || !comment.trim()) return res.status(400).json({ error: 'Comment cannot be empty.' });
   const info = db.prepare(`INSERT INTO ticket_comments (ticket_id, user_id, comment) VALUES (?,?,?)`)
     .run(existing.id, req.user.id, comment.trim());
-  db.prepare(`UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(existing.id);
+  db.prepare(`UPDATE tickets SET updated_at=(datetime('now','localtime')) WHERE id=?`).run(existing.id);
   res.json({ id: info.lastInsertRowid });
 });
 

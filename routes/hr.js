@@ -3,6 +3,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
+const { localDateStr } = require('../lib/dateUtil');
 const approvals = require('../lib/approvals');
 const { inOversightDept, oversightDepartmentIds } = require('../lib/roleOversight');
 const router = express.Router();
@@ -445,7 +446,7 @@ router.post('/leave-requests', (req, res) => {
   res.json({ id: info.lastInsertRowid, approval_id: approvalId });
 });
 
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return localDateStr(); }
 function monthsBetween(fromDateStr, toDateStr) {
   const from = new Date(fromDateStr), to = new Date(toDateStr);
   return Math.max(0, (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth()) + (to.getDate() >= from.getDate() ? 0 : -1));
@@ -676,7 +677,7 @@ router.post('/salary-schedule/:id/mark-paid', requirePermission('payroll.manage'
   if (row.status !== 'Approved') return res.status(400).json({ error: 'Must be Approved before paying' });
   const { cash_or_bank } = req.body;
   const tx = db.transaction(() => {
-    db.prepare(`UPDATE salary_schedule SET status='Paid', paid_on = CURRENT_TIMESTAMP WHERE id = ?`).run(row.id);
+    db.prepare(`UPDATE salary_schedule SET status='Paid', paid_on = (datetime('now','localtime')) WHERE id = ?`).run(row.id);
     db.prepare(`INSERT INTO payroll_vouchers (month, employee_id, amount, voucher_type, cash_or_bank) VALUES (?,?,?,'Salary',?)`)
       .run(row.month, row.employee_id, row.net_pay, cash_or_bank || 'Bank');
     try {

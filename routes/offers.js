@@ -8,6 +8,7 @@ const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { createJobCardsForProject } = require('../lib/pipeline');
+const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { autoCompleteSystemTodos } = require('../lib/systemTodos');
 const { ensureEditableVersion } = require('../lib/offerVersioning');
 const { offerVisibilityWhere, canSeeOffer } = require('../lib/offerVisibility');
@@ -84,8 +85,8 @@ function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summ
   const libraryLabel = type === 'Spares' ? 'Spares Library' : 'Machine Library';
   const brief = `Review new ${libraryLabel} suggestion: "${trimmed}"`;
   const admins = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'Admin' AND u.is_active = 1`).all();
-  const today = new Date().toISOString().slice(0, 10);
-  const targetDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const today = localDateStr();
+  const targetDate = localDateStr(new Date(Date.now() + 5 * 86400000));
   for (const admin of admins) {
     db.prepare(`
       INSERT INTO todos (hod_id, assigned_to, start_date, target_date, brief_description, details, priority, source_type, source_id)
@@ -218,7 +219,7 @@ router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req
   } catch (e) {
     return res.status(400).json({ error: 'That title already exists in the library - reject this suggestion instead.' });
   }
-  db.prepare(`UPDATE section_title_suggestions SET status = 'Approved', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+  db.prepare(`UPDATE section_title_suggestions SET status = 'Approved', reviewed_by = ?, reviewed_at = (datetime('now','localtime')) WHERE id = ?`)
     .run(req.user.id, suggestion.id);
   autoCompleteSystemTodos('SECTION_TITLE_SUGGESTION', suggestion.id);
   res.json({ ok: true });
@@ -228,7 +229,7 @@ router.post('/section-title-suggestions/:id/reject', requireRole('Admin'), (req,
   if (!suggestion) return res.status(404).json({ error: 'Not found' });
   if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
   if (suggestion.image_path) fs.unlink(resolveUploadPath(suggestion.image_path), () => {});
-  db.prepare(`UPDATE section_title_suggestions SET status = 'Rejected', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+  db.prepare(`UPDATE section_title_suggestions SET status = 'Rejected', reviewed_by = ?, reviewed_at = (datetime('now','localtime')) WHERE id = ?`)
     .run(req.user.id, suggestion.id);
   autoCompleteSystemTodos('SECTION_TITLE_SUGGESTION', suggestion.id);
   res.json({ ok: true });
@@ -819,7 +820,7 @@ router.put('/:id', offerPerm(), (req, res) => {
       application=?, type_of_system=?, material_of_construction=?, drawing_no=?,
       inclusions=?, exclusions=?, utilities_requirement=?, instrument_air_supply=?,
       show_tech_specs=?, show_bought_out=?, show_inclusions_exclusions=?, offer_format=?, customer_reference=?,
-      status=?, updated_at=CURRENT_TIMESTAMP
+      status=?, updated_at=(datetime('now','localtime'))
     WHERE id=?
   `).run(f.subject, f.contact_person, f.contact_phone, f.contact_email,
     f.application, f.type_of_system, f.material_of_construction, f.drawing_no,
@@ -1163,7 +1164,7 @@ router.get('/:id/pdf', async (req, res) => {
       docType: 'Offer',
       reference: full.offer.offer_no,
       partyName: full.client && full.client.name,
-      date: new Date(full.offer.offer_date).toISOString().slice(0, 10),
+      date: localDateFromValue(full.offer.offer_date),
       version: full.offer.version ? 'v' + full.offer.version : undefined,
     });
     res.download(gen.outPath, filename, () => {
@@ -1194,7 +1195,7 @@ router.post('/:id/mark-sent', offerPerm(), (req, res) => {
   if (existing.status !== 'Draft') {
     return res.status(400).json({ error: `This offer is already ${existing.status} - only a Draft offer can be marked as Sent.` });
   }
-  db.prepare(`UPDATE offers SET status = 'Sent', offer_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(existing.id);
+  db.prepare(`UPDATE offers SET status = 'Sent', offer_date = (datetime('now','localtime')), updated_at = (datetime('now','localtime')) WHERE id = ?`).run(existing.id);
   res.json({ ok: true });
 });
 
@@ -1296,9 +1297,9 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     const governance = getOfferGovernanceSettings();
     const lockIt = governance.lock_on_so_conversion;
     db.prepare(`
-      UPDATE offers SET status = 'Won', sales_order_id = ?, locked = ?, locked_at = ?, locked_reason = ?, updated_at = CURRENT_TIMESTAMP
+      UPDATE offers SET status = 'Won', sales_order_id = ?, locked = ?, locked_at = ?, locked_reason = ?, updated_at = (datetime('now','localtime'))
       WHERE id = ?
-    `).run(salesOrderId, lockIt ? 1 : 0, lockIt ? new Date().toISOString() : null,
+    `).run(salesOrderId, lockIt ? 1 : 0, lockIt ? localDateTimeStr() : null,
       lockIt ? ('Converted to Sales Order ' + orderNo) : null, full.offer.id);
 
     return { salesOrderId, orderNo, projectId, projCode };
@@ -1336,7 +1337,7 @@ router.post('/:id/unlock', requireRole('Admin'), (req, res) => {
   if (!existing.locked) return res.status(400).json({ error: 'This offer is not locked.' });
   const reason = String((req.body && req.body.reason) || '').trim();
   if (!reason) return res.status(400).json({ error: 'Enter a reason for unlocking this offer.' });
-  db.prepare(`UPDATE offers SET locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(existing.id);
+  db.prepare(`UPDATE offers SET locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = (datetime('now','localtime')) WHERE id = ?`).run(existing.id);
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(req.user.id, 'offer_unlock', 'offer', existing.id, reason);
   res.json({ ok: true });
