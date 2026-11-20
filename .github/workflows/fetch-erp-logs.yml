@@ -1,0 +1,42 @@
+name: Fetch recent erp.service error logs
+
+# One-off, manually-triggered, READ-ONLY tail of the erp systemd service's
+# recent journal output, to find the real exception behind a raw "Something
+# went wrong" the frontend shows whenever a route throws an uncaught
+# exception instead of a clean 400 - journald already captures stdout/
+# stderr for the service (see erp.service), this just reads it. Never
+# writes, restarts, or otherwise touches the running service.
+on:
+  workflow_dispatch:
+    inputs:
+      lines:
+        description: 'How many recent journal lines to fetch (default 300)'
+        required: false
+        type: string
+        default: '300'
+      grep:
+        description: 'Optional: only lines containing this text (case-insensitive). Leave blank for everything.'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  fetch-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH in and read the journal
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            LINES="${{ inputs.lines }}"
+            GREP="${{ inputs.grep }}"
+            if [ -n "$GREP" ]; then
+              sudo journalctl -u erp -n "$LINES" --no-pager | grep -i "$GREP" || echo "(no matching lines in the last $LINES)"
+            else
+              sudo journalctl -u erp -n "$LINES" --no-pager
+            fi
