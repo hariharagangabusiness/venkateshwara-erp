@@ -102,6 +102,18 @@ for (const u of users) {
     const placeholders = stages.map(() => '?').join(',');
     const count = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE stage IN (${placeholders})`).get(...stages).n;
     console.log(`  Real job_cards rows at stage(s) ${JSON.stringify(stages)}: ${count} total in the whole system (board shows these regardless of is_supervisor - is_supervisor only gates WHICH ACTIONS are available, not visibility of the board itself for a role whose name matches a real stage).`);
+
+    // GET /job-cards/mine (what a non-Admin/PM login like this one actually
+    // hits) only ever surfaces a card once it's been released/planned
+    // (planned_start IS NOT NULL) and not NotApplicable - this is the gate
+    // most likely to explain "0 cards visible" despite real rows existing.
+    const visibleCount = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE stage IN (${placeholders}) AND planned_start IS NOT NULL AND status != 'NotApplicable'`).get(...stages).n;
+    const noPlanCount = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE stage IN (${placeholders}) AND planned_start IS NULL`).get(...stages).n;
+    const notApplicableCount = db.prepare(`SELECT COUNT(*) as n FROM job_cards WHERE stage IN (${placeholders}) AND status = 'NotApplicable'`).get(...stages).n;
+    console.log(`  Of those ${count}: ${visibleCount} would actually appear on GET /job-cards/mine (planned_start set AND status != NotApplicable); ${noPlanCount} have no planned_start yet (never released via a project's Plan/Edit Department Targets step); ${notApplicableCount} are excluded from this project's plan (NotApplicable).`);
+    if (count > 0 && visibleCount === 0) {
+      console.log(`    >>> LIKELY ROOT CAUSE: every real Store job card in the system is still unplanned (planned_start NULL) or excluded (NotApplicable) - GET /job-cards/mine's own WHERE clause hides ALL of them regardless of role/supervisor correctness. This would read as "can't see Job Cards" even though the config is otherwise entirely correct.`);
+    }
   }
 
   console.log(`  --- Conclusion for this login ---`);
