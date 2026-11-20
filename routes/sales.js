@@ -6,6 +6,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { generateAnnexurePdf } = require('../lib/annexurePdf');
 const { createJobCardsForProject } = require('../lib/pipeline');
+const { localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
@@ -168,7 +169,7 @@ router.post('/leads', requirePermission('lead.manage'), (req, res) => {
   const { client_id, enquiry_details, product_interest, expected_value, lead_source } = req.body;
   const info = db.prepare(`
     INSERT INTO leads (client_id, enquiry_details, product_interest, owner_id, expected_value, lead_source, stage_changed_at)
-    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    VALUES (?,?,?,?,?,?,(datetime('now','localtime')))
   `).run(client_id, enquiry_details, product_interest, req.user.id, expected_value || 0, lead_source || null);
   res.json({ id: info.lastInsertRowid });
 });
@@ -189,10 +190,10 @@ router.patch('/leads/:id/stage', requirePermission('lead.manage'), (req, res) =>
     if (lost_reason === 'Other' && !String(lost_reason_detail || '').trim()) {
       return res.status(400).json({ error: 'Please provide a detail for "Other".' });
     }
-    db.prepare(`UPDATE leads SET stage=?, lost_reason=?, lost_reason_detail=?, stage_changed_at=CURRENT_TIMESTAMP WHERE id=?`)
+    db.prepare(`UPDATE leads SET stage=?, lost_reason=?, lost_reason_detail=?, stage_changed_at=(datetime('now','localtime')) WHERE id=?`)
       .run(stage, lost_reason, lost_reason_detail || null, lead.id);
   } else {
-    db.prepare(`UPDATE leads SET stage=?, stage_changed_at=CURRENT_TIMESTAMP WHERE id=?`).run(stage, lead.id);
+    db.prepare(`UPDATE leads SET stage=?, stage_changed_at=(datetime('now','localtime')) WHERE id=?`).run(stage, lead.id);
   }
   res.json({ ok: true });
 });
@@ -213,13 +214,13 @@ router.post('/leads/:id/activities', requirePermission('lead.manage'), (req, res
   const info = db.prepare(`
     INSERT INTO lead_activities (lead_id, activity_type, notes, due_date, completed_at, created_by)
     VALUES (?,?,?,?,?,?)
-  `).run(lead.id, activity_type, notes || null, due_date || null, completed ? new Date().toISOString() : null, req.user.id);
+  `).run(lead.id, activity_type, notes || null, due_date || null, completed ? localDateTimeStr() : null, req.user.id);
   res.json({ id: info.lastInsertRowid });
 });
 router.patch('/leads/activities/:activityId/complete', requirePermission('lead.manage'), (req, res) => {
   const a = db.prepare('SELECT * FROM lead_activities WHERE id = ?').get(req.params.activityId);
   if (!a) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE lead_activities SET completed_at = CURRENT_TIMESTAMP WHERE id = ?').run(a.id);
+  db.prepare(`UPDATE lead_activities SET completed_at = (datetime('now','localtime')) WHERE id = ?`).run(a.id);
   res.json({ ok: true });
 });
 
@@ -662,7 +663,7 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     const offer = db.prepare('SELECT id FROM offers WHERE sales_order_id = ?').get(order.id);
     if (offer) {
       db.prepare(`
-        UPDATE offers SET status = 'Sent', sales_order_id = NULL, locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = CURRENT_TIMESTAMP
+        UPDATE offers SET status = 'Sent', sales_order_id = NULL, locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = (datetime('now','localtime'))
         WHERE id = ?
       `).run(offer.id);
     }
@@ -812,7 +813,7 @@ router.post('/orders/:id/po/acknowledge-mismatch', requirePermission('sales_orde
   const reason = String((req.body && req.body.reason) || '').trim();
   if (!reason) return res.status(400).json({ error: 'Enter a reason for acknowledging this mismatch.' });
   db.prepare(`
-    UPDATE sales_orders SET po_terms_status = 'MismatchAcknowledged', po_terms_resolution_notes = ?, po_terms_resolved_by = ?, po_terms_resolved_at = CURRENT_TIMESTAMP
+    UPDATE sales_orders SET po_terms_status = 'MismatchAcknowledged', po_terms_resolution_notes = ?, po_terms_resolved_by = ?, po_terms_resolved_at = (datetime('now','localtime'))
     WHERE id = ?
   `).run(reason, req.user.id, order.id);
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
@@ -1031,7 +1032,7 @@ router.get('/dispatches/:id/pdf', async (req, res) => {
     const filename = buildDownloadFilename({
       reference: bundle.dispatch.dispatch_no,
       partyName: client && (client.legal_name || client.name),
-      date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+      date: bundle.dispatch.dispatch_date ? localDateFromValue(bundle.dispatch.dispatch_date) : null,
     });
     res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
@@ -1088,7 +1089,7 @@ function streamDispatchDoc(generator, suffix) {
         docType: suffix,
         reference: bundle.dispatch.dispatch_no,
         partyName: client && (client.legal_name || client.name),
-        date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+        date: bundle.dispatch.dispatch_date ? localDateFromValue(bundle.dispatch.dispatch_date) : null,
       });
       res.download(gen.outPath, filename, () => {
         fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
@@ -1129,7 +1130,7 @@ router.get('/dispatches/:id/customer-bundle', async (req, res) => {
       docType: 'FG_Dispatch_Bundle',
       reference: bundle.dispatch.dispatch_no,
       partyName: client && (client.legal_name || client.name),
-      date: bundle.dispatch.dispatch_date ? new Date(bundle.dispatch.dispatch_date).toISOString().slice(0, 10) : null,
+      date: bundle.dispatch.dispatch_date ? localDateFromValue(bundle.dispatch.dispatch_date) : null,
       version: bundle.dispatch.po_number || undefined,
     });
     res.set({
@@ -1434,7 +1435,7 @@ router.post('/returns/:id/items/:itemId/send-back', requirePermission('sales_ord
   if (!['Damaged', 'Repair'].includes(item.condition_status)) return res.status(400).json({ error: 'Only a Damaged or Repair line can be sent back to the customer.' });
   if (item.sent_back_at) return res.status(400).json({ error: 'This line has already been sent back to the customer.' });
   const { ref, notes } = req.body;
-  db.prepare(`UPDATE sales_return_items SET sent_back_at = CURRENT_TIMESTAMP, sent_back_ref = ?, sent_back_notes = ? WHERE id = ?`)
+  db.prepare(`UPDATE sales_return_items SET sent_back_at = (datetime('now','localtime')), sent_back_ref = ?, sent_back_notes = ? WHERE id = ?`)
     .run(ref || null, notes || null, item.id);
   res.json({ ok: true });
 });

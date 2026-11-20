@@ -545,14 +545,14 @@ router.post('/items/pending-changes/:id/approve', requireRole('Admin'), (req, re
   let result = {};
   if (change.change_type === 'Edit') applyItemEdit(change.item_id, JSON.parse(change.proposed_fields || '{}'));
   else result = applyItemDelete(change.item_id);
-  db.prepare(`UPDATE item_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?`).run(req.user.id, change.id);
+  db.prepare(`UPDATE item_pending_changes SET status='Approved', reviewed_by=?, reviewed_at=(datetime('now','localtime')) WHERE id=?`).run(req.user.id, change.id);
   res.json({ ok: true, deleted: result.deleted });
 });
 router.post('/items/pending-changes/:id/reject', requireRole('Admin'), (req, res) => {
   const change = db.prepare('SELECT * FROM item_pending_changes WHERE id = ?').get(req.params.id);
   if (!change) return res.status(404).json({ error: 'Not found' });
   if (change.status !== 'Pending') return res.status(400).json({ error: 'Already reviewed.' });
-  db.prepare(`UPDATE item_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, review_note=? WHERE id=?`)
+  db.prepare(`UPDATE item_pending_changes SET status='Rejected', reviewed_by=?, reviewed_at=(datetime('now','localtime')), review_note=? WHERE id=?`)
     .run(req.user.id, req.body.review_note || null, change.id);
   res.json({ ok: true });
 });

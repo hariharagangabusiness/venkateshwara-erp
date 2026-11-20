@@ -6,6 +6,7 @@ const { db } = require('../db');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
 const { generateInvoicePdf } = require('../lib/invoicePdf');
+const { localDateStr, localMonthStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { generateProformaInvoicePdf } = require('../lib/proformaInvoicePdf');
 const { generateFocAnnexurePdf } = require('../lib/focAnnexurePdf');
 const { autoCompleteSystemTodos } = require('../lib/systemTodos');
@@ -47,7 +48,7 @@ router.get('/expense-vouchers', (req, res) => {
   if (from) { q += ' AND ev.voucher_date >= ?'; params.push(from); }
   if (to) { q += ' AND ev.voucher_date <= ?'; params.push(to); }
   if (!from && !to && !status && month !== 'all') {
-    const m = /^\d{4}-\d{2}$/.test(month || '') ? month : new Date().toISOString().slice(0, 7);
+    const m = /^\d{4}-\d{2}$/.test(month || '') ? month : localMonthStr();
     q += ' AND ev.voucher_date LIKE ?';
     params.push(m + '%');
   }
@@ -186,10 +187,10 @@ router.post('/expense-vouchers/:id/mark-paid', requirePermission('expense_vouche
   const tx = db.transaction(() => {
     const oeInfo = db.prepare(`
       INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
-      VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+      VALUES ((datetime('now','localtime')), ?, ?, ?, ?, ?)
     `).run(mapRow.name, oeDescription, row.amount, row.payment_mode, req.user.id);
     db.prepare(`
-      UPDATE expense_vouchers SET status = 'Paid', payment_reference = ?, paid_at = CURRENT_TIMESTAMP, operating_expense_id = ? WHERE id = ?
+      UPDATE expense_vouchers SET status = 'Paid', payment_reference = ?, paid_at = (datetime('now','localtime')), operating_expense_id = ? WHERE id = ?
     `).run(paymentReference, oeInfo.lastInsertRowid, row.id);
     db.prepare(`
       INSERT INTO finance_ledger (type, reference_table, reference_id, department_id, amount, direction, description, created_by)
@@ -343,7 +344,7 @@ router.put('/foc/:id', requirePermission('foc.request', 'foc.approve'), (req, re
   }
   db.prepare(`
     UPDATE foc_requests SET sales_order_id=?, project_id=?, client_id=?, customer_name=?, contact_person=?, contact_phone=?,
-      item_description=?, quantity=?, unit=?, estimated_value=?, reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
+      item_description=?, quantity=?, unit=?, estimated_value=?, reason=?, updated_at=(datetime('now','localtime')) WHERE id=?
   `).run(
     sales_order_id !== undefined ? (sales_order_id || null) : existing.sales_order_id, projectId, clientId,
     sales_order_id !== undefined && sales_order_id ? null : (customer_name !== undefined ? customer_name : existing.customer_name),
@@ -388,8 +389,8 @@ function userHasPermission(user, ...codes) {
 function notifyFocRouted(focNo, items, departmentId) {
   const hod = departmentHOD(departmentId);
   if (!hod) return; // no active supervisor on file for that department yet - skip silently, same as bgReminderScan.js's equivalent guard
-  const today = new Date().toISOString().slice(0, 10);
-  const dueDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+  const today = localDateStr();
+  const dueDate = localDateStr(new Date(Date.now() + 2 * 86400000));
   const brief = `Issue FOC material - ${focNo}${items.length > 1 ? ` (${items.length} items)` : ''}`;
   const itemsList = items.map(it => `${it.item_description} (Qty: ${it.quantity} ${it.unit})`).join('; ');
   const info = db.prepare(`
@@ -419,7 +420,7 @@ router.post('/foc/:id/approve', requirePermission('foc.approve'), (req, res) => 
   const tx = db.transaction(() => {
     const items = db.prepare(`SELECT * FROM foc_requests WHERE foc_no = ? AND status = 'Pending' ORDER BY id`).all(existing.foc_no);
     db.prepare(`
-      UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, fulfilling_department_id = ? WHERE foc_no = ? AND status = 'Pending'
+      UPDATE foc_requests SET status = 'Approved', approved_by = ?, approved_at = (datetime('now','localtime')), fulfilling_department_id = ? WHERE foc_no = ? AND status = 'Pending'
     `).run(req.user.id, departmentId, existing.foc_no);
     notifyFocRouted(existing.foc_no, items, departmentId);
   });
@@ -430,7 +431,7 @@ router.post('/foc/:id/reject', requirePermission('foc.approve'), (req, res) => {
   const existing = db.prepare('SELECT * FROM foc_requests WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.status !== 'Pending') return res.status(400).json({ error: 'This request has already been actioned.' });
-  db.prepare(`UPDATE foc_requests SET status = 'Rejected', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE foc_no = ? AND status = 'Pending'`)
+  db.prepare(`UPDATE foc_requests SET status = 'Rejected', approved_by = ?, approved_at = (datetime('now','localtime')) WHERE foc_no = ? AND status = 'Pending'`)
     .run(req.user.id, existing.foc_no);
   res.json({ ok: true });
 });
@@ -448,7 +449,7 @@ router.post('/foc/:id/issue', (req, res) => {
     || (existing.fulfilling_department_id && req.user.department_id === existing.fulfilling_department_id)
     || (!existing.fulfilling_department_id && userHasPermission(req.user, 'store.manage'));
   if (!allowed) return res.status(403).json({ error: 'Only the department this was routed to (or Admin) can mark it issued.' });
-  db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = CURRENT_TIMESTAMP WHERE foc_no = ? AND status = 'Approved'`)
+  db.prepare(`UPDATE foc_requests SET status = 'Issued', issued_by = ?, issued_at = (datetime('now','localtime')) WHERE foc_no = ? AND status = 'Approved'`)
     .run(req.user.id, existing.foc_no);
   const groupIds = db.prepare('SELECT id FROM foc_requests WHERE foc_no = ?').all(existing.foc_no).map(r => r.id);
   autoCompleteSystemTodos('FOC_ROUTED', groupIds);
@@ -482,7 +483,7 @@ router.get('/foc/:id/pdf', async (req, res) => {
       docType: 'FOC_Annexure',
       reference: foc.foc_no,
       partyName: foc.client_master_name || foc.customer_name,
-      date: new Date(foc.created_at).toISOString().slice(0, 10),
+      date: localDateFromValue(foc.created_at),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -517,7 +518,7 @@ router.get('/ledger', requirePermission('report.view_all', 'expense_voucher.view
 });
 
 router.get('/summary', requirePermission('report.view_all', 'expense_voucher.view_all'), (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
+  const month = req.query.month || localMonthStr();
   const rows = db.prepare(`SELECT * FROM finance_ledger WHERE entry_date LIKE ?`).all(month + '%');
   const inflow = rows.filter(r => r.direction === 'Inflow').reduce((s, r) => s + r.amount, 0);
   const outflow = rows.filter(r => r.direction === 'Outflow').reduce((s, r) => s + r.amount, 0);
@@ -669,7 +670,7 @@ router.post('/invoices/:id/email', requirePermission('sales_order.manage'), asyn
       docType: 'Tax_Invoice',
       reference: inv.invoice_no,
       partyName: client && client.name,
-      date: new Date(inv.invoice_date).toISOString().slice(0, 10),
+      date: localDateFromValue(inv.invoice_date),
       version: buildVersionStamp(),
     });
     const result = await sendMail({
@@ -700,7 +701,7 @@ router.get('/invoices/:id/pdf', async (req, res) => {
       docType: 'Tax_Invoice',
       reference: inv.invoice_no,
       partyName: client && client.name,
-      date: new Date(inv.invoice_date).toISOString().slice(0, 10),
+      date: localDateFromValue(inv.invoice_date),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -1092,7 +1093,7 @@ router.get('/pending-purchase-bills', requirePermission('purchase_invoice.manage
     const termsDays = r.vendor_payment_terms_days || 30;
     const dueDate = new Date(new Date(r.booking_date).getTime() + termsDays * 86400000);
     const daysOverdue = Math.max(0, Math.round((today - dueDate) / 86400000));
-    return { ...r, paid_amount: paid, credited_amount: credited, due_amount: due, due_date: dueDate.toISOString().slice(0, 10), days_overdue: daysOverdue };
+    return { ...r, paid_amount: paid, credited_amount: credited, due_amount: due, due_date: localDateStr(dueDate), days_overdue: daysOverdue };
   }).filter(r => r.due_amount > 0.01);
   res.json(result);
 });
@@ -1390,7 +1391,7 @@ router.post('/proforma-invoices/:id/email', requirePermission('sales_order.manag
       docType: 'Proforma_Invoice',
       reference: pf.proforma_no,
       partyName: client && client.name,
-      date: new Date(pf.proforma_date).toISOString().slice(0, 10),
+      date: localDateFromValue(pf.proforma_date),
       version: buildVersionStamp(),
     });
     const result = await sendMail({
@@ -1423,7 +1424,7 @@ router.get('/proforma-invoices/:id/pdf', async (req, res) => {
       docType: 'Proforma_Invoice',
       reference: pf.proforma_no,
       partyName: client && client.name,
-      date: new Date(pf.proforma_date).toISOString().slice(0, 10),
+      date: localDateFromValue(pf.proforma_date),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -1484,7 +1485,7 @@ router.get('/operating-expenses', requirePermission('report.view_all', 'expense_
   if (req.query.month === 'all') {
     return res.json(db.prepare('SELECT * FROM operating_expenses ORDER BY id DESC').all());
   }
-  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : new Date().toISOString().slice(0, 7);
+  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : localMonthStr();
   res.json(db.prepare(`SELECT * FROM operating_expenses WHERE expense_date LIKE ? ORDER BY id DESC`).all(month + '%'));
 });
 router.post('/operating-expenses', requirePermission('expense_voucher.create'), (req, res) => {
@@ -1497,7 +1498,7 @@ router.post('/operating-expenses', requirePermission('expense_voucher.create'), 
   const info = db.prepare(`
     INSERT INTO operating_expenses (expense_date, category, description, amount, paid_via, created_by)
     VALUES (?,?,?,?,?,?)
-  `).run(expense_date || new Date().toISOString(), category || null, description || null, amount, paid_via || 'Bank', req.user.id);
+  `).run(expense_date || localDateTimeStr(), category || null, description || null, amount, paid_via || 'Bank', req.user.id);
   try {
     db.prepare(`
       INSERT INTO finance_ledger (type, reference_table, reference_id, amount, direction, description, created_by)
@@ -1603,7 +1604,7 @@ router.get('/vendor-ledger/:vendorId/pdf', requirePermission('purchase_invoice.m
     const gen = await generateVendorLedgerPdf(vendor, ledger, { start: from || null, end: to || null }, getCompanySettings());
     const filename = buildDownloadFilename({
       docType: 'Vendor_Ledger', reference: vendor.id, partyName: vendor.legal_name || vendor.name,
-      date: to || new Date().toISOString().slice(0, 10), version: buildVersionStamp(),
+      date: to || localDateStr(), version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
       fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});

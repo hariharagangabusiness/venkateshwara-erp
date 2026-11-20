@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS users (
   employee_id INTEGER REFERENCES employees(id),
   department_id INTEGER REFERENCES departments(id),
   is_active INTEGER DEFAULT 1,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== ATTENDANCE / LEAVE / PAYROLL =====================
@@ -93,14 +93,14 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   reason TEXT,
   status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
   approval_id INTEGER REFERENCES approvals(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS salary_advances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER NOT NULL REFERENCES employees(id),
   amount REAL NOT NULL,
-  request_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  request_date TEXT DEFAULT (datetime('now','localtime')),
   reason TEXT,
   status TEXT DEFAULT 'Pending',
   approval_id INTEGER REFERENCES approvals(id),
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS payroll_vouchers (
   amount REAL NOT NULL,
   voucher_type TEXT DEFAULT 'Salary', -- Salary, Advance, Reimbursement
   cash_or_bank TEXT DEFAULT 'Bank',   -- Cash, Bank
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== EXPENSES / VOUCHERS =====================
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS expense_categories (
 CREATE TABLE IF NOT EXISTS expense_vouchers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   voucher_no TEXT UNIQUE,
-  voucher_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  voucher_date TEXT DEFAULT (datetime('now','localtime')),
   department_id INTEGER REFERENCES departments(id),
   category_id INTEGER REFERENCES expense_categories(id),
   raised_by INTEGER REFERENCES users(id),
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS expense_vouchers (
   attachment_path TEXT,
   status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected, Paid
   approval_id INTEGER REFERENCES approvals(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== MONTHLY EXPENSE TRACKER (Round 11) =====================
@@ -184,8 +184,8 @@ CREATE TABLE IF NOT EXISTS expense_tracker_entries (
   notes TEXT,
   created_by INTEGER REFERENCES users(id),
   updated_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
   UNIQUE(category_id, entry_date)
 );
 
@@ -219,8 +219,8 @@ CREATE TABLE IF NOT EXISTS site_visits (
   close_date TEXT,
   expenses_note TEXT,                           -- free-text running note, e.g. "All expenses in customer scope"
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS site_visit_engineers (
@@ -243,8 +243,8 @@ CREATE TABLE IF NOT EXISTS daily_work_logs (
   site_visit_id INTEGER REFERENCES site_visits(id),  -- optional link when the note is about a tracked site visit
   created_by INTEGER REFERENCES users(id),
   updated_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
   UNIQUE(employee_id, log_date)
 );
 
@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   current_step INTEGER DEFAULT 1,
   status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
   requested_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS approval_actions (
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS approval_actions (
   actor_user_id INTEGER REFERENCES users(id),
   action TEXT NOT NULL,               -- Approved, Rejected
   comment TEXT,
-  acted_at TEXT DEFAULT CURRENT_TIMESTAMP
+  acted_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== CLIENTS / VENDORS =====================
@@ -329,7 +329,7 @@ CREATE TABLE IF NOT EXISTS leads (
   stage TEXT DEFAULT 'New',           -- New, Quoted, Negotiation, Won, Lost
   owner_id INTEGER REFERENCES users(id),
   expected_value REAL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS sales_orders (
@@ -337,7 +337,7 @@ CREATE TABLE IF NOT EXISTS sales_orders (
   order_no TEXT UNIQUE,
   lead_id INTEGER REFERENCES leads(id),
   client_id INTEGER NOT NULL REFERENCES clients(id),
-  order_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  order_date TEXT DEFAULT (datetime('now','localtime')),
   description TEXT,
   order_value REAL,
   status TEXT DEFAULT 'Confirmed',    -- Confirmed, InProduction, Completed, Cancelled
@@ -355,7 +355,7 @@ CREATE TABLE IF NOT EXISTS projects (
   start_date TEXT,
   target_date TEXT,
   status TEXT DEFAULT 'Planning',     -- Planning, Design, Purchase, Production, Assembly, Packing, Shipping, Installation, Completed, OnHold
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Generic stage-tracking table used by Design, Purchase, Store, Laser&Bending,
@@ -371,7 +371,7 @@ CREATE TABLE IF NOT EXISTS job_cards (
   started_at TEXT,
   completed_at TEXT,
   allocated_at TEXT,                  -- when assigned_to was last (re)set
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Files attached to a job card (any level - top-level department, HOD
@@ -383,7 +383,7 @@ CREATE TABLE IF NOT EXISTS job_card_attachments (
   file_path TEXT NOT NULL,
   file_name TEXT NOT NULL,
   uploaded_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- A running comment/handover trail on a job card - notes passed between
@@ -393,7 +393,7 @@ CREATE TABLE IF NOT EXISTS job_card_comments (
   job_card_id INTEGER NOT NULL REFERENCES job_cards(id),
   user_id INTEGER REFERENCES users(id),
   comment TEXT NOT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Explicit hand-off links for work that fans out to more than one
@@ -424,7 +424,7 @@ CREATE TABLE IF NOT EXISTS customer_communications (
   subject TEXT NOT NULL,
   message TEXT NOT NULL,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS customer_communication_recipients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -456,7 +456,7 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   estimated_value REAL,
   status TEXT DEFAULT 'Pending',      -- Draft, PendingQuotes, Pending, Approved, OrderPlaced, Received, Rejected, Cancelled
   approval_id INTEGER REFERENCES approvals(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   total_value REAL,
   status TEXT DEFAULT 'Open',         -- Draft, PendingApproval, Open, PartiallyReceived, Received, Closed, Rejected, Cancelled
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS stock_movements (
@@ -485,7 +485,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   reference TEXT,                     -- PO no / project code
   project_id INTEGER REFERENCES projects(id),
   moved_by INTEGER REFERENCES users(id),
-  moved_at TEXT DEFAULT CURRENT_TIMESTAMP
+  moved_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- A shop-floor department's request for raw material against a specific
@@ -511,8 +511,8 @@ CREATE TABLE IF NOT EXISTS store_material_requests (
   request_notes TEXT,
   decision_notes TEXT,
   stock_movement_id INTEGER REFERENCES stock_movements(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== SERVICE & SPARE PARTS =====================
@@ -530,7 +530,7 @@ CREATE TABLE IF NOT EXISTS service_requests (
   closed_at TEXT,                     -- set when status becomes 'Closed' - anchors the 15-day reopen window
   start_lat REAL, start_lng REAL, start_captured_at TEXT,   -- best-effort geolocation captured on "Start Work"
   end_lat REAL, end_lng REAL, end_captured_at TEXT,         -- best-effort geolocation captured on final report submit
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Timestamped technician job-state transitions (Assigned -> InProgress -> OnHold -> InProgress -> Completed),
@@ -541,7 +541,7 @@ CREATE TABLE IF NOT EXISTS service_request_status_log (
   from_status TEXT,
   to_status TEXT NOT NULL,
   changed_by INTEGER REFERENCES users(id),
-  changed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  changed_at TEXT DEFAULT (datetime('now','localtime')),
   lat REAL, lng REAL
 );
 
@@ -551,7 +551,7 @@ CREATE TABLE IF NOT EXISTS service_request_reopenings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sr_id INTEGER NOT NULL REFERENCES service_requests(id),
   original_closed_at TEXT,
-  reopened_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  reopened_at TEXT DEFAULT (datetime('now','localtime')),
   reopened_by INTEGER REFERENCES users(id),
   technician_id INTEGER REFERENCES employees(id),
   reason TEXT
@@ -581,7 +581,7 @@ CREATE TABLE IF NOT EXISTS incoming_service_emails (
   dismissed_by INTEGER REFERENCES users(id),
   dismissed_at TEXT,
   dismiss_reason TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== OFFERS / QUOTATIONS =====================
@@ -598,7 +598,7 @@ CREATE TABLE IF NOT EXISTS offers (
   contact_phone TEXT,
   contact_email TEXT,
   subject TEXT,                       -- e.g. "Offer for Electronic Weighing and Bagging System"
-  offer_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  offer_date TEXT DEFAULT (datetime('now','localtime')),
   drawing_no TEXT,
   application TEXT,                   -- Project Data Sheet: Application
   type_of_system TEXT,
@@ -611,8 +611,8 @@ CREATE TABLE IF NOT EXISTS offers (
   version INTEGER DEFAULT 1,
   created_by INTEGER REFERENCES users(id),
   sales_order_id INTEGER REFERENCES sales_orders(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Scope of Supply / Machinery Description lines (with picture, qty, price, total)
@@ -672,7 +672,7 @@ CREATE TABLE IF NOT EXISTS offer_clause_library (
   sort_order INTEGER DEFAULT 0,
   active INTEGER DEFAULT 1,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== Offer immutability (Round 40) =====================
@@ -726,7 +726,7 @@ CREATE TABLE IF NOT EXISTS role_access_configured (
 CREATE TABLE IF NOT EXISTS challans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   challan_no TEXT UNIQUE,
-  challan_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  challan_date TEXT DEFAULT (datetime('now','localtime')),
   challan_type TEXT,
   from_location TEXT NOT NULL,
   to_location TEXT NOT NULL,
@@ -748,7 +748,7 @@ CREATE TABLE IF NOT EXISTS challans (
   received_at TEXT,
   received_notes TEXT,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS challan_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -783,8 +783,8 @@ CREATE TABLE IF NOT EXISTS foc_requests (
   status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected, Issued
   approved_by INTEGER REFERENCES users(id),
   approved_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== SERVICE REPORTS (Round 3) =====================
@@ -842,8 +842,8 @@ CREATE TABLE IF NOT EXISTS service_reports (
   status TEXT DEFAULT 'Draft',        -- Draft, Submitted, Reconciliation, Approved, SubmittedToAccounts
   submitted_to_accounts_at TEXT,
   submitted_to_accounts_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== LEAVE BALANCE POLICIES (Round 3) =====================
@@ -863,7 +863,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_policies (
 -- ===================== FINANCE LEDGER (Round 3) =====================
 CREATE TABLE IF NOT EXISTS finance_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entry_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  entry_date TEXT DEFAULT (datetime('now','localtime')),
   type TEXT NOT NULL,                 -- Expense, Payroll, ServiceCollection, AdvanceRecovery, PurchaseInvoice, Other
   reference_table TEXT,
   reference_id INTEGER,
@@ -872,7 +872,7 @@ CREATE TABLE IF NOT EXISTS finance_ledger (
   direction TEXT NOT NULL,            -- Inflow / Outflow
   description TEXT,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== EXTRA PAGE ACCESS (Round 3) =====================
@@ -885,7 +885,7 @@ CREATE TABLE IF NOT EXISTS extra_page_access (
   department_id INTEGER REFERENCES departments(id),
   user_id INTEGER REFERENCES users(id),
   page_id TEXT NOT NULL,
-  granted_at TEXT DEFAULT CURRENT_TIMESTAMP
+  granted_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== SERVICE CENTERS (Round 7) =====================
@@ -902,7 +902,7 @@ CREATE TABLE IF NOT EXISTS service_centers (
   phone TEXT,
   email TEXT,
   status TEXT DEFAULT 'Active',       -- Active, Inactive
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Per-location stock, parallel to (not part of) items.current_stock.
@@ -922,7 +922,7 @@ CREATE TABLE IF NOT EXISTS service_center_transfers (
   service_center_id INTEGER NOT NULL REFERENCES service_centers(id),
   status TEXT DEFAULT 'Dispatched',   -- Dispatched, Received, PartiallyReceived, Disputed
   dispatched_by INTEGER REFERENCES users(id),
-  dispatched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  dispatched_at TEXT DEFAULT (datetime('now','localtime')),
   received_by INTEGER REFERENCES users(id),
   received_at TEXT,
   notes TEXT
@@ -963,7 +963,7 @@ CREATE TABLE IF NOT EXISTS purchase_request_quotes (
   notes TEXT,
   is_selected INTEGER DEFAULT 0,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== PURCHASE: RFQ (REQUEST FOR QUOTATION) =====================
@@ -983,7 +983,7 @@ CREATE TABLE IF NOT EXISTS rfq_requests (
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS rfq_request_vendors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1035,7 +1035,7 @@ CREATE TABLE IF NOT EXISTS incoming_rfq_responses (
   dismissed_by INTEGER REFERENCES users(id),
   dismissed_at TEXT,
   dismiss_reason TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ===================== BACKUPS =====================
@@ -1047,7 +1047,7 @@ CREATE TABLE IF NOT EXISTS incoming_rfq_responses (
 -- still physically exists - see lib/backup.js.
 CREATE TABLE IF NOT EXISTS backup_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  started_at TEXT DEFAULT (datetime('now','localtime')),
   finished_at TEXT,
   status TEXT DEFAULT 'Running',        -- Running, Success, Failed
   trigger_type TEXT NOT NULL,           -- Scheduled, Manual
@@ -1074,7 +1074,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   entity_type TEXT,
   entity_id INTEGER,
   details TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- Per-user, per-page panel order (drag-to-reorder) - a JSON array of panel
@@ -1093,7 +1093,7 @@ CREATE TABLE IF NOT EXISTS user_page_layout (
   user_id INTEGER REFERENCES users(id),
   page_key TEXT NOT NULL,
   panel_order TEXT NOT NULL,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
   PRIMARY KEY (user_id, page_key)
 );
 
@@ -1109,7 +1109,7 @@ CREATE TABLE IF NOT EXISTS bg_pending_changes (
   proposed_fields TEXT,               -- JSON of {field: value} - null for Delete
   status TEXT DEFAULT 'Pending',      -- Pending, Approved, Rejected
   requested_by INTEGER REFERENCES users(id),
-  requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  requested_at TEXT DEFAULT (datetime('now','localtime')),
   reviewed_by INTEGER REFERENCES users(id),
   reviewed_at TEXT,
   review_note TEXT
@@ -1132,7 +1132,7 @@ CREATE TABLE IF NOT EXISTS foreign_payment_requests (
   status TEXT DEFAULT 'Draft',                  -- Draft, Pending, Approved, Rejected, InfoRequested, PaymentMade, Closed
   approval_id INTEGER REFERENCES approvals(id),
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
 
   -- For Office Use (bank-assigned; usually filled in after the bank processes it)
   ad_code TEXT,
@@ -1257,11 +1257,11 @@ CREATE TABLE IF NOT EXISTS tour_advances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER NOT NULL REFERENCES employees(id),
   amount REAL NOT NULL,
-  issued_date TEXT DEFAULT CURRENT_TIMESTAMP,
+  issued_date TEXT DEFAULT (datetime('now','localtime')),
   payment_mode TEXT DEFAULT 'Cash',    -- Cash, Bank
   notes TEXT,
   issued_by INTEGER REFERENCES users(id),
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- One row per calendar date a technician actually travelled. Lodging and
@@ -1288,8 +1288,8 @@ CREATE TABLE IF NOT EXISTS tour_expense_days (
   review_reason TEXT,
   reviewed_by INTEGER REFERENCES users(id),
   reviewed_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
   UNIQUE(employee_id, entry_date)
 );
 

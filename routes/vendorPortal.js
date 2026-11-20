@@ -68,7 +68,7 @@ function rfqLines(rfq) {
 router.get('/vendor-portal/rfq/:token', (req, res) => {
   const rfq = resolveToken(req.params.token);
   if (!rfq) return res.status(404).json(NOT_FOUND);
-  db.prepare("UPDATE rfq_tokens SET last_opened_at = CURRENT_TIMESTAMP WHERE id = ?").run(rfq.token_id);
+  db.prepare("UPDATE rfq_tokens SET last_opened_at = (datetime('now','localtime')) WHERE id = ?").run(rfq.token_id);
   const submitted = !!db.prepare('SELECT 1 FROM vendor_responses WHERE rfq_token_id = ?').get(rfq.token_id);
   res.json({
     reference: rfq.pr_no || ('RFQ-' + rfq.rfq_id),

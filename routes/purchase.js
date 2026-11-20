@@ -7,6 +7,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const approvals = require('../lib/approvals');
 const { generateChallanPdf } = require('../lib/challanPdf');
 const { generatePoPdf } = require('../lib/poPdf');
+const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
@@ -221,8 +222,8 @@ router.get('/vendors-for-item/:itemId', (req, res) => {
 router.get('/items/:itemId/price-history', requirePermission('purchase_order.manage', 'purchase_request.create'), (req, res) => {
   const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.itemId);
   if (!item) return res.status(404).json({ error: 'Item not found' });
-  const to = req.query.to || new Date().toISOString().slice(0, 10);
-  const from = req.query.from || new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const to = req.query.to || localDateStr();
+  const from = req.query.from || localDateStr(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
   const rows = db.prepare(`
     SELECT po.id, po.po_no, po.vendor_id, v.name as vendor_name, po.quantity, po.rate, po.total_value,
       po.status, po.created_at
@@ -277,8 +278,8 @@ const VELOCITY_SQL = `
 
 function velocityRange(q) {
   const ok = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
-  const to = ok(q.to) ? q.to : new Date().toISOString().slice(0, 10);
-  const from = ok(q.from) ? q.from : new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const to = ok(q.to) ? q.to : localDateStr();
+  const from = ok(q.from) ? q.from : localDateStr(new Date(Date.now() - 90 * 86400000));
   return { from, to };
 }
 // "In flight" = started but the end event hasn't happened yet.
@@ -362,7 +363,7 @@ function openPoRows() {
     ORDER BY po.po_no, po.id
   `).all(...OPEN_PO_STATUSES);
   const lineNoByPoNo = {};
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   return rows.map((r) => {
     lineNoByPoNo[r.po_no] = (lineNoByPoNo[r.po_no] || 0) + 1;
     const received_qty = poReceivedQty(r.id);
@@ -412,7 +413,7 @@ function openPrRows() {
       AND NOT EXISTS (SELECT 1 FROM purchase_request_items pri2 WHERE pri2.purchase_request_id = pr.id)
     ORDER BY pr_no
   `).all(...OPEN_PR_STATUSES, ...OPEN_PR_STATUSES);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   return rows.map((r) => {
     const created = String(r.created_at || '').slice(0, 10);
     const days_pending = created ? Math.max(0, Math.round((new Date(today) - new Date(created)) / 86400000)) : null;
@@ -439,7 +440,7 @@ router.get('/velocity/open-pos/export.xlsx', requirePermission('purchase_order.m
   const ws = rows.length ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['(no open PO lines)']]);
   XLSX.utils.book_append_sheet(wb, ws, 'Open POs');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'xlsx' })}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs', date: localDateStr(), version: buildVersionStamp(), ext: 'xlsx' })}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.send(buf);
 });
@@ -455,7 +456,7 @@ router.get('/velocity/open-prs/export.xlsx', requirePermission('purchase_order.m
   const ws = rows.length ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['(no open PR items)']]);
   XLSX.utils.book_append_sheet(wb, ws, 'Open PRs');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_PRs', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'xlsx' })}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_PRs', date: localDateStr(), version: buildVersionStamp(), ext: 'xlsx' })}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.send(buf);
 });
@@ -484,7 +485,7 @@ router.get('/velocity/open-pos/export.pptx', requirePermission('purchase_order.m
 
   const titleSlide = pptx.addSlide();
   titleSlide.addText('Open Purchase Orders', { x: 0.5, y: 2.8, w: 10.7, h: 1, fontSize: 32, bold: true, align: 'center' });
-  titleSlide.addText(`${groups.length} open PO(s) · ${lines.length} open line(s) · as of ${new Date().toISOString().slice(0, 10)}`, { x: 0.5, y: 3.9, w: 10.7, h: 0.5, fontSize: 14, align: 'center', color: '666666' });
+  titleSlide.addText(`${groups.length} open PO(s) · ${lines.length} open line(s) · as of ${localDateStr()}`, { x: 0.5, y: 3.9, w: 10.7, h: 0.5, fontSize: 14, align: 'center', color: '666666' });
 
   const header = ['PO No.', 'PO Date', 'Status', 'Vendor', 'Lines', 'Qty', 'Received', 'Max Delay (d)'];
   const rowsPerSlide = 12;
@@ -505,7 +506,7 @@ router.get('/velocity/open-pos/export.pptx', requirePermission('purchase_order.m
   }
 
   const buf = await pptx.write({ outputType: 'nodebuffer' });
-  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs_Summary', date: new Date().toISOString().slice(0, 10), version: buildVersionStamp(), ext: 'pptx' })}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${buildDownloadFilename({ docType: 'Open_POs_Summary', date: localDateStr(), version: buildVersionStamp(), ext: 'pptx' })}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
   res.send(buf);
 });
@@ -597,7 +598,7 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, bas
   const updateVendorRow = db.prepare(`UPDATE rfq_request_vendors SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
   const insertEmailRow = db.prepare(`INSERT INTO rfq_request_emails (rfq_request_id, email, email_status) VALUES (?,?,'Pending')`);
   const updateEmailRow = db.prepare(`UPDATE rfq_request_emails SET email_status=?, email_error=?, sent_at=?, sent_message_id=? WHERE id=?`);
-  const now = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+  const now = () => localDateTimeStr();
   const fromIdentity = getDepartmentEmailIdentity('Purchase');
 
   // Plain-text requirement list for {{items_table}}. Spec = the PR line's "Additional Details"
@@ -779,7 +780,7 @@ router.post('/rfqs/:id/close', requirePermission('purchase_request.create', 'pur
   const rfq = db.prepare('SELECT * FROM rfq_requests WHERE id = ?').get(req.params.id);
   if (!rfq) return res.status(404).json({ error: 'Not found' });
   if (rfq.status !== 'Sent') return res.status(400).json({ error: 'Only a Sent RFQ can be closed.' });
-  db.prepare(`UPDATE rfq_requests SET status = 'Closed', closed_by = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(req.user.id, rfq.id);
+  db.prepare(`UPDATE rfq_requests SET status = 'Closed', closed_by = ?, closed_at = (datetime('now','localtime')) WHERE id = ?`).run(req.user.id, rfq.id);
   res.json({ ok: true });
 });
 
@@ -929,7 +930,7 @@ router.post('/rfq-inbox/:id/confirm', requirePermission('purchase_request.create
       itemId, payment_terms || null, delivery_commit_date || null, quoted_qty ? Number(quoted_qty) : null,
       rfqRequestId, req.user.id);
     db.prepare(`
-      UPDATE incoming_rfq_responses SET status = 'Confirmed', confirmed_quote_id = ?, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP WHERE id = ?
+      UPDATE incoming_rfq_responses SET status = 'Confirmed', confirmed_quote_id = ?, confirmed_by = ?, confirmed_at = (datetime('now','localtime')) WHERE id = ?
     `).run(info.lastInsertRowid, req.user.id, item.id);
     return info;
   });
@@ -942,7 +943,7 @@ router.post('/rfq-inbox/:id/dismiss', requirePermission('purchase_request.create
   if (!item) return res.status(404).json({ error: 'Not found' });
   if (item.status !== 'Pending') return res.status(400).json({ error: `Already ${item.status}.` });
   db.prepare(`
-    UPDATE incoming_rfq_responses SET status = 'Dismissed', dismissed_by = ?, dismissed_at = CURRENT_TIMESTAMP, dismiss_reason = ? WHERE id = ?
+    UPDATE incoming_rfq_responses SET status = 'Dismissed', dismissed_by = ?, dismissed_at = (datetime('now','localtime')), dismiss_reason = ? WHERE id = ?
   `).run(req.user.id, req.body && req.body.reason || null, item.id);
   res.json({ ok: true });
 });
@@ -1841,7 +1842,7 @@ router.post('/orders/bulk-upload', requirePermission('purchase_order.manage'), u
     // an imported row sorts/compares consistently against natively-created
     // ones rather than mixing in ISO8601 with a 'T'/'Z'.
     const poDate = String(row.po_date || '').trim();
-    const createdAt = poDate ? poDate + ' 00:00:00' : new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    const createdAt = poDate ? poDate + ' 00:00:00' : localDateTimeStr();
     insertPO.run(poNo, vendor.id, item.id, qty, rate, total, status, req.user.id,
       String(row.hsn_code || '') || null, gstRate, gstAmount, unit, discountPercent, freight, freightGstRate, String(row.terms || '') || null,
       String(row.delivery_date || '') || null, createdAt, billAddressId, shipAddressId);
@@ -2177,7 +2178,7 @@ router.post('/store/grn-reconciliations/:id/revoke', requireRole('Admin'), (req,
   // original Approve's own history stays on file untouched.
   const approvalId = approvals.startApproval('GrnReconciliation', 'grn_reconciliation', existing.id, 0, req.user.id);
   db.prepare(`
-    UPDATE grn_reconciliations SET status = 'Revoked', approval_id = ?, revoked_by = ?, revoked_at = CURRENT_TIMESTAMP, revoke_reason = ?
+    UPDATE grn_reconciliations SET status = 'Revoked', approval_id = ?, revoked_by = ?, revoked_at = (datetime('now','localtime')), revoke_reason = ?
     WHERE id = ?
   `).run(approvalId, req.user.id, reason, existing.id);
   poAuditLog(req.user.id, 'grn_revoked', existing.po_id, `GRN #${existing.id} revoked by Admin: ${reason}`);
@@ -2306,7 +2307,7 @@ router.post('/store/material-requests/:id/action', requirePermission('store.mana
   if (action !== 'Issue' && action !== 'Reject') return res.status(400).json({ error: "action must be 'Issue' or 'Reject'." });
   const notes = req.body.notes || null;
   if (action === 'Reject') {
-    db.prepare(`UPDATE store_material_requests SET status = 'Rejected', issued_by = ?, decision_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    db.prepare(`UPDATE store_material_requests SET status = 'Rejected', issued_by = ?, decision_notes = ?, updated_at = (datetime('now','localtime')) WHERE id = ?`)
       .run(req.user.id, notes, reqRow.id);
     return res.json({ ok: true });
   }
@@ -2322,7 +2323,7 @@ router.post('/store/material-requests/:id/action', requirePermission('store.mana
     `).run(reqRow.item_id, reqRow.quantity_requested, 'JobCard#' + reqRow.job_card_id, reqRow.project_id || null, reqRow.department_id || null, req.user.id);
     db.prepare('UPDATE items SET current_stock = current_stock - ? WHERE id = ?').run(reqRow.quantity_requested, reqRow.item_id);
     db.prepare(`
-      UPDATE store_material_requests SET status = 'Issued', issued_by = ?, decision_notes = ?, stock_movement_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      UPDATE store_material_requests SET status = 'Issued', issued_by = ?, decision_notes = ?, stock_movement_id = ?, updated_at = (datetime('now','localtime')) WHERE id = ?
     `).run(req.user.id, notes, moveInfo.lastInsertRowid, reqRow.id);
   });
   tx();
@@ -2677,7 +2678,7 @@ router.post('/store/challans/:id/receive-back', requirePermission('store.manage'
     const freshItems = db.prepare('SELECT quantity, returned_qty FROM challan_items WHERE challan_id = ?').all(existing.id);
     const fullyReceived = freshItems.every(it => Number(it.returned_qty) >= Number(it.quantity) - 1e-9);
     db.prepare(`UPDATE challans SET received_back = ?,
-        received_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE received_at END,
+        received_at = CASE WHEN ? = 1 THEN (datetime('now','localtime')) ELSE received_at END,
         received_notes = ? WHERE id = ?`)
       .run(fullyReceived ? 1 : 0, fullyReceived ? 1 : 0, notes || existing.received_notes, existing.id);
     return fullyReceived;
@@ -2697,7 +2698,7 @@ router.get('/store/challans/:id/pdf', async (req, res) => {
       docType: 'Delivery_Challan',
       reference: challan.challan_no,
       partyName: challan.consignee_name,
-      date: new Date(challan.challan_date).toISOString().slice(0, 10),
+      date: localDateFromValue(challan.challan_date),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -2767,7 +2768,7 @@ router.get('/orders/:id/pdf', async (req, res) => {
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
       partyName: bundle.vendor && (bundle.vendor.legal_name || bundle.vendor.name),
-      date: new Date(bundle.po.created_at).toISOString().slice(0, 10),
+      date: localDateFromValue(bundle.po.created_at),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -2790,7 +2791,7 @@ router.get('/orders/:id/docx', async (req, res) => {
       docType: 'Purchase_Order',
       reference: bundle.po.po_no,
       partyName: bundle.vendor && (bundle.vendor.legal_name || bundle.vendor.name),
-      date: new Date(bundle.po.created_at).toISOString().slice(0, 10),
+      date: localDateFromValue(bundle.po.created_at),
       version: buildVersionStamp(),
       ext: 'docx',
     });
@@ -2819,7 +2820,7 @@ router.post('/orders/:id/email', requirePermission('purchase_order.manage'), asy
       docType: 'Purchase_Order',
       reference: po.po_no,
       partyName: vendor && (vendor.legal_name || vendor.name),
-      date: new Date(po.created_at).toISOString().slice(0, 10),
+      date: localDateFromValue(po.created_at),
       version: buildVersionStamp(),
     });
     const result = await sendMail({

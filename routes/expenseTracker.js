@@ -60,7 +60,7 @@ router.post('/entries/bulk', requirePermission('expense_tracker.manage'), (req, 
     INSERT INTO expense_tracker_entries (category_id, entry_date, amount, notes, created_by, updated_by)
     VALUES (?,?,?,?,?,?)
     ON CONFLICT(category_id, entry_date) DO UPDATE SET
-      amount = excluded.amount, notes = excluded.notes, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+      amount = excluded.amount, notes = excluded.notes, updated_by = excluded.updated_by, updated_at = (datetime('now','localtime'))
   `);
   const del = db.prepare(`DELETE FROM expense_tracker_entries WHERE category_id = ? AND entry_date = ?`);
   const tx = db.transaction(() => {

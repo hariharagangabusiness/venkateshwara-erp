@@ -350,14 +350,14 @@ router.post('/:entity/upload', uploadMemory.single('file'), (req, res) => {
           db.prepare(`
             INSERT INTO expense_tracker_entries (category_id, entry_date, amount, notes, created_by, updated_by)
             VALUES (?,?,?,?,?,?)
-            ON CONFLICT(category_id, entry_date) DO UPDATE SET amount = excluded.amount, notes = excluded.notes, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT(category_id, entry_date) DO UPDATE SET amount = excluded.amount, notes = excluded.notes, updated_by = excluded.updated_by, updated_at = (datetime('now','localtime'))
           `).run(result.upsert.category_id, result.upsert.entry_date, result.upsert.amount, result.upsert.notes, req.user.id, req.user.id);
           inserted++;
         } else if (entity.table === 'daily_work_logs') {
           db.prepare(`
             INSERT INTO daily_work_logs (employee_id, log_date, note, created_by, updated_by)
             VALUES (?,?,?,?,?)
-            ON CONFLICT(employee_id, log_date) DO UPDATE SET note = excluded.note, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT(employee_id, log_date) DO UPDATE SET note = excluded.note, updated_by = excluded.updated_by, updated_at = (datetime('now','localtime'))
           `).run(result.upsert.employee_id, result.upsert.log_date, result.upsert.note, req.user.id, req.user.id);
           inserted++;
         } else if (entity.table === 'bank_guarantees') {

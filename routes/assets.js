@@ -1,6 +1,7 @@
 const express = require('express');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
+const { localDateTimeStr } = require('../lib/dateUtil');
 const router = express.Router();
 router.use(authRequired);
 
@@ -90,7 +91,7 @@ router.post('/:id/maintenance', requirePermission('asset.manage'), (req, res) =>
   const info = db.prepare(`
     INSERT INTO asset_maintenance_logs (asset_id, log_date, type, description, cost, performed_by, next_due_date, created_by)
     VALUES (?,?,?,?,?,?,?,?)
-  `).run(asset.id, log_date || new Date().toISOString(), type || 'Preventive', description || null, cost || 0,
+  `).run(asset.id, log_date || localDateTimeStr(), type || 'Preventive', description || null, cost || 0,
     performed_by || null, next_due_date || null, req.user.id);
   if (type === 'Breakdown' || type === 'Repair') {
     db.prepare(`UPDATE assets SET status = 'UnderMaintenance' WHERE id = ? AND status = 'Active'`).run(asset.id);

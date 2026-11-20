@@ -11,6 +11,7 @@ const fs = require('fs');
 const { db } = require('../db');
 const { authRequired, requirePermission } = require('../middleware/auth');
 const approvals = require('../lib/approvals');
+const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { generateForeignPaymentPdf } = require('../lib/foreignPaymentPdf');
 const { getCompanySettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
@@ -97,7 +98,7 @@ router.get('/:id/pdf', canManage, async (req, res) => {
       docType: 'Foreign_Payment_Request',
       reference: full.request_no,
       partyName: full.beneficiary_name,
-      date: new Date(full.created_at).toISOString().slice(0, 10),
+      date: localDateFromValue(full.created_at),
       version: buildVersionStamp(),
     });
     res.download(gen.outPath, filename, () => {
@@ -193,8 +194,8 @@ router.post('/:id/mark-payment-made', canManage, (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (existing.status !== 'Approved') return res.status(400).json({ error: 'Only an Approved request can be marked as paid.' });
   const { payment_reference, actual_debited_amount, actual_exchange_rate, boe_due_date } = req.body;
-  const paidAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-  const dueDate = boe_due_date || new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+  const paidAt = localDateTimeStr();
+  const dueDate = boe_due_date || localDateStr(new Date(Date.now() + 90 * 86400000));
   db.prepare(`
     UPDATE foreign_payment_requests SET status='PaymentMade', payment_made_at=?, payment_made_by=?,
       payment_reference=?, actual_debited_amount=?, actual_exchange_rate=?, boe_due_date=?

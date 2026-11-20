@@ -943,14 +943,23 @@ window.toggleApprovalBucket = (bid) => {
 };
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 function fmt(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
-function today() { return new Date().toISOString().slice(0, 10); }
+// The viewer's own browser-local calendar date - never toISOString(), which
+// is always UTC regardless of the viewer's timezone and would silently
+// shift "today" backward by up to a full day during the ~5.5-hour window
+// between IST midnight and the following UTC midnight. This app's whole
+// user base is in India, so a browser's own local date is the IST date.
+function localDateStr(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function today() { return localDateStr(new Date()); }
 // Mirrors routes/dashboard.js's GET /window-summary own `since` day math
 // exactly (daily=1, monthly=30, else weekly=7) - used wherever a frontend
 // detail view needs to independently re-filter by the same Dashboard
 // window the backend already scoped its own totals by.
 function windowSinceDate(win) {
   const days = win === 'daily' ? 1 : win === 'monthly' ? 30 : 7;
-  return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  return localDateStr(new Date(Date.now() - days * 86400000));
 }
 // Round 16: color-coded delivery-date badge for SO/PO lists - green if
 // comfortably ahead, amber inside the 7-day warning window (matches the
@@ -965,7 +974,7 @@ function deliveryBadge(dateStr) {
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
-function thisMonth() { return new Date().toISOString().slice(0, 7); }
+function thisMonth() { return localDateStr(new Date()).slice(0, 7); }
 // {from, to} date bounds for a 'YYYY-MM' month string, for passing to
 // GET /finance/ledger's own from/to query params - the route defaults to
 // unbounded (all-time) when neither is given, so a caller labeling its
@@ -973,7 +982,7 @@ function thisMonth() { return new Date().toISOString().slice(0, 7); }
 // shows every ledger entry ever, not just the month's.
 function monthRange(month) {
   const [y, m] = month.split('-').map(Number);
-  const to = new Date(y, m, 0).toISOString().slice(0, 10); // day 0 of next month = last day of this one
+  const to = localDateStr(new Date(y, m, 0)); // day 0 of next month = last day of this one
   return { from: month + '-01', to };
 }
 
@@ -6112,7 +6121,7 @@ let DC_MONTH = null; // {year, month} - month is 0-indexed; lazily set to the cu
 function monthRange(year, month) {
   const from = new Date(year, month, 1);
   const to = new Date(year, month + 1, 0);
-  const fmt = d => d.toISOString().slice(0, 10);
+  const fmt = d => localDateStr(d);
   return { from: fmt(from), to: fmt(to), startWeekday: from.getDay() };
 }
 function capacityMonthGridHTML(days, startWeekday) {
@@ -10167,7 +10176,7 @@ PAGES['service-reports-dashboard'] = async (el) => {
       return `<h3>Pending Items (${rows.length})</h3>${tableHTML(srCols, rows, srRow)}`;
     },
     sr_delayed: async () => {
-      const today = new Date().toISOString().slice(0,10);
+      const today = localDateStr(new Date());
       const rows = (await api('/service')).filter(r => r.scheduled_date && r.scheduled_date < today && !['Resolved','Closed'].includes(r.status));
       return `<h3>Delayed (${rows.length})</h3><p class="muted">Scheduled date has passed and the request is still open, oldest first.</p>
         ${tableHTML(srCols, rows.sort((a,b) => a.scheduled_date.localeCompare(b.scheduled_date)), srRow)}`;
@@ -10583,7 +10592,7 @@ window.__UPCOMING_LEAVES_ROWS = [];
 function dateAddDays(dateStr, n) {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 function upcomingLeaveRowHTML(r) {
   return `<tr>
@@ -10829,7 +10838,7 @@ function temResetState() {
 }
 PAGES['tour-expenses-mine'] = async (el) => {
   if (!ME.employee_id) { el.innerHTML = `<div class="panel"><p class="msg err">Your login has no linked employee record, so there's nothing to log travel/expense against. Ask Admin to link one under Users & Roles.</p></div>`; return; }
-  const month = window.__TEM_MONTH || new Date().toISOString().slice(0, 7);
+  const month = window.__TEM_MONTH || thisMonth();
   window.__TEM_MONTH = month;
   const [days, months, advances] = await Promise.all([
     api(`/tour-expenses/days?month=${month}`), api('/tour-expenses/months'), api('/tour-expenses/advances'),
@@ -10901,7 +10910,7 @@ function renderTemEditor() {
   el.innerHTML = `
     <div class="panel" style="background:var(--panel-bg,#f7f8fa);">
       <h4 style="margin-top:0;">${s.editingId ? 'Edit' : 'Log'} Day ${s.entryDate ? '- ' + esc(s.entryDate) : ''}</h4>
-      ${!s.editingId ? `<div class="form-grid"><div><label>Date</label><input type="date" id="tem-date" value="${new Date().toISOString().slice(0,10)}"></div></div>` : ''}
+      ${!s.editingId ? `<div class="form-grid"><div><label>Date</label><input type="date" id="tem-date" value="${today()}"></div></div>` : ''}
       <h5>Travel</h5>
       <div id="tem-legs">${s.legs.map((l, i) => `
         <div class="form-grid" style="margin-bottom:6px;">
@@ -10974,7 +10983,7 @@ PAGES['tour-expenses-review'] = async (el) => {
   const employees = await api('/hr/employees');
   window.__TER_EMPLOYEES = employees;
   const employeeId = window.__TER_EMPLOYEE_ID || (employees[0] && employees[0].id);
-  const month = window.__TER_MONTH || new Date().toISOString().slice(0, 7);
+  const month = window.__TER_MONTH || thisMonth();
   window.__TER_EMPLOYEE_ID = employeeId; window.__TER_MONTH = month;
   el.innerHTML = `
     <div class="panel">
@@ -10990,7 +10999,7 @@ PAGES['tour-expenses-review'] = async (el) => {
       <h4>Issue Tour Advance</h4>
       <div class="form-grid">
         <div><label>Amount (&#8377;)</label><input type="number" id="ter-adv-amount"></div>
-        <div><label>Date</label><input type="date" id="ter-adv-date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div><label>Date</label><input type="date" id="ter-adv-date" value="${today()}"></div>
         <div><label>Mode</label><select id="ter-adv-mode"><option>Cash</option><option>Bank</option></select></div>
         <div><label>Notes</label><input id="ter-adv-notes"></div>
       </div>
@@ -11248,7 +11257,7 @@ window.saveLeaveBalance = async (employeeId, leaveTypeId, year) => {
 // ---- Expense Vouchers ----
 let EV_LIST_MONTH = null;
 PAGES.expenses = async (el) => {
-  const listMonth = EV_LIST_MONTH || new Date().toISOString().slice(0, 7);
+  const listMonth = EV_LIST_MONTH || thisMonth();
   EV_LIST_MONTH = listMonth;
   const vouchers = await api('/finance/expense-vouchers?month=' + listMonth);
   const depts = await api('/masters/departments');
@@ -14931,7 +14940,7 @@ window.sendSoaEmail = async (id) => {
 let OE_LIST_MONTH = null;
 let OE_SUMMARY_YEAR = null;
 PAGES['operating-expenses'] = async (el) => {
-  const listMonth = OE_LIST_MONTH || new Date().toISOString().slice(0, 7);
+  const listMonth = OE_LIST_MONTH || thisMonth();
   OE_LIST_MONTH = listMonth;
   const summaryYear = OE_SUMMARY_YEAR || String(new Date().getFullYear());
   OE_SUMMARY_YEAR = summaryYear;

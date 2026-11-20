@@ -6,6 +6,7 @@ const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
+const { localDateStr } = require('../lib/dateUtil');
 const { poReceivedQty } = require('../lib/purchaseOrders');
 const router = express.Router();
 router.use(authRequired);
@@ -465,7 +466,7 @@ function syncEntityStatus(entityType, entityId, result) {
       `);
       const updateSalary = db.prepare('UPDATE employees SET monthly_salary = ? WHERE id = ?');
       const cycle = db.prepare('SELECT * FROM salary_hike_cycles WHERE id = ?').get(entityId);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       const tx = db.transaction(() => {
         items.forEach(item => {
           insertHike.run(item.employee_id, item.current_salary, item.hike_type, item.hike_value, item.proposed_salary,
@@ -499,7 +500,7 @@ function syncEntityStatus(entityType, entityId, result) {
         ['Packing', 'Shipping'].forEach(stage => {
           const jc = db.prepare(`SELECT * FROM job_cards WHERE project_id = ? AND stage = ? AND parent_job_card_id IS NULL`).get(dispatch.project_id, stage);
           if (jc && jc.status !== 'Completed' && jc.status !== 'NotApplicable') {
-            db.prepare(`UPDATE job_cards SET status = 'Completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(jc.id);
+            db.prepare(`UPDATE job_cards SET status = 'Completed', completed_at = (datetime('now','localtime')) WHERE id = ?`).run(jc.id);
             advanceProjectStatus(db, dispatch.project_id);
             releaseDependents(db, jc.id);
           }
@@ -592,7 +593,7 @@ function syncEntityStatus(entityType, entityId, result) {
   // PendingReview, never writing 'Completed' directly.
   if (entityType === 'todo') {
     if (result === 'Approved') {
-      db.prepare(`UPDATE todos SET status = 'Completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?`).run(entityId);
+      db.prepare(`UPDATE todos SET status = 'Completed', completed_at = (datetime('now','localtime')) WHERE id = ?`).run(entityId);
       return;
     }
     const statusByResult = { Rejected: 'InProgress', InfoRequested: 'InfoRequested', Pending: 'PendingReview' };
