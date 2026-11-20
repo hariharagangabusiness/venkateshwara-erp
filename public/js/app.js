@@ -4082,7 +4082,8 @@ async function renderOrderConfirmationModal(orderId) {
     <textarea id="oc-notes-${orderId}" rows="2" style="width:100%;" ${oc.locked ? 'disabled' : ''}>${esc(oc.special_instructions)}</textarea>
     <div style="margin-top:6px;">
       ${!oc.locked ? `<button class="btn small" onclick="saveOrderConfirmation(${orderId})">Save</button>
-      ${['Draft', 'Rejected'].includes(oc.status) ? `<button class="btn small outline" onclick="submitOrderConfirmation(${orderId})">Submit for Approval</button>` : ''}` : ''}
+      ${['Draft', 'Rejected'].includes(oc.status) ? `<button class="btn small outline" onclick="submitOrderConfirmation(${orderId})">Submit for Approval</button>` : ''}`
+        : (oc.status === 'Approved' && ME.role === 'Admin' ? `<button class="btn small outline red" onclick="unlockOrderConfirmation(${orderId})">Unlock for Revision</button>` : '')}
       <a href="#" onclick="downloadOrderConfirmationPdf(${orderId});return false;">Download PDF</a>
     </div>
 
@@ -4127,6 +4128,15 @@ window.rejectOrderConfirmation = async (orderId) => {
   catch (e) { alert(e.message); }
 };
 window.downloadOrderConfirmationPdf = (orderId) => downloadTemplateFile(`/order-confirmation/order-confirmations/${orderId}/pdf`, `Order-Confirmation-${orderId}.pdf`);
+// Admin-only - the only way back to an editable state for an Order
+// Confirmation letter already Approved/locked, since Reject only ever acts
+// on PendingApproval. Mirrors unlockAnnexure() exactly.
+window.unlockOrderConfirmation = async (orderId) => {
+  const reason = prompt('Why does this approved Order Confirmation letter need to be unlocked for revision? (required)');
+  if (reason === null) return;
+  try { await api(`/order-confirmation/order-confirmations/${orderId}/unlock`, { method: 'POST', body: JSON.stringify({ reason }) }); await renderOrderConfirmationModal(orderId); }
+  catch (e) { alert(e.message); }
+};
 window.regenerateAnnexureInModal = async (orderId, isManual) => {
   if (isManual && !confirm('A manually uploaded file is currently on file - regenerating will replace it with a fresh copy built from the order\'s own live data. Continue?')) return;
   try {
