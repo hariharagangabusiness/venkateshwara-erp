@@ -1837,6 +1837,21 @@ const MIGRATIONS = [
   // a Spares offer's per-item picture. Nullable - a line added directly via
   // the Items panel (no offer counterpart) simply has none.
   `ALTER TABLE sales_order_items ADD COLUMN source_offer_item_id INTEGER REFERENCES offer_items(id)`,
+  // Order Confirmation letter had no Unlock-for-Revision escape hatch at
+  // all - annexure_reviews got one on 2026-10-09 (lib/reviewWorkflow.js's
+  // unlock(), gated on the table actually having these two columns), but
+  // order_confirmations was explicitly left out of that round ("worth a
+  // follow-up if the owner hits the same wall there") despite sharing the
+  // identical Draft/PendingApproval/Approved/Rejected schema. An Admin who
+  // approved an Order Confirmation letter - even by mistake, or before
+  // later deciding the whole Sales Order itself needs deleting - had no way
+  // back to an editable state short of direct DB surgery, and DELETE
+  // /orders/:id correctly (by design) still treats an Approved/locked
+  // Order Confirmation as real activity worth blocking delete over - so
+  // this was a genuine dead end, reported directly against
+  // SO-1794373108479.
+  `ALTER TABLE order_confirmations ADD COLUMN unlocked_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE order_confirmations ADD COLUMN unlocked_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

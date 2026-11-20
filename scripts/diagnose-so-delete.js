@@ -23,7 +23,14 @@ if (!dbPath || !orderNo) {
 const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(dbPath, { readOnly: true });
 
-const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices'];
+const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices', 'sales_invoices', 'foc_requests'];
+
+// Mirrors routes/sales.js's SALES_ORDER_STATUS_AWARE_CHILDREN exactly (2026-11-20).
+const SALES_ORDER_STATUS_AWARE_CHILDREN = [
+  ['proforma_invoices', 'Proforma Invoice', ['Cancelled']],
+  ['sales_invoices', 'Sales Invoice', ['Cancelled']],
+  ['foc_requests', 'FOC Request', ['Rejected']],
+];
 
 function findForeignKeyBlockers(targetTable, ids, exclude) {
   if (!ids.length) return [];
@@ -95,18 +102,38 @@ for (const [label, n] of fkBlockers) console.log(`    - ${label}: ${n} row(s)  <
 // review actually blocks delete. Mirrors routes/sales.js's own check.
 const oc = db.prepare('SELECT status, locked FROM order_confirmations WHERE sales_order_id = ?').get(order.id);
 const ocBlocks = oc && (oc.status === 'PendingApproval' || oc.locked);
-console.log(`\n    - Order Confirmation letter: ${oc ? oc.status : '(none)'}${ocBlocks ? '  <-- BLOCKS DELETE' : ''}`);
+console.log(`\n    - Order Confirmation letter: ${oc ? oc.status : '(none)'}${ocBlocks ? '  <-- BLOCKS DELETE' : ''}${oc && oc.status === 'Approved' && oc.locked ? ' (Admin can "Unlock for Revision" on the Order Confirmation & Annexure modal to clear this, since 2026-11-20)' : ''}`);
 
 const ar = db.prepare('SELECT status, locked FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
 const arBlocks = ar && (ar.status === 'PendingApproval' || ar.locked);
-console.log(`    - Annexure review: ${ar ? ar.status : '(none)'}${arBlocks ? '  <-- BLOCKS DELETE' : ''}`);
+console.log(`    - Annexure review: ${ar ? ar.status : '(none)'}${arBlocks ? '  <-- BLOCKS DELETE' : ''}${ar && ar.status === 'Approved' && ar.locked ? ' (Admin can "Unlock for Revision" to clear this)' : ''}`);
 
-// Proforma Invoice is excluded from the generic FK scan above and gets the
-// same status-aware treatment - a Cancelled one never happened and must
-// not block delete, only a live Draft/Received one does.
-const livePi = db.prepare(`SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ? AND status != 'Cancelled'`).get(order.id).n;
-const piBlocks = livePi > 0;
-console.log(`    - Proforma Invoice (non-Cancelled): ${livePi} row(s)${piBlocks ? '  <-- BLOCKS DELETE' : ''}`);
+// Each of these is excluded from the generic FK scan above and gets its own
+// status-aware check instead - a Cancelled/Rejected row never actually
+// happened and must not block delete, only a genuinely live one does.
+let statusAwareBlocks = false;
+for (const [table, label, nonBlockingStatuses] of SALES_ORDER_STATUS_AWARE_CHILDREN) {
+  const placeholders = nonBlockingStatuses.map(() => '?').join(',');
+  const n = db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE sales_order_id = ? AND status NOT IN (${placeholders})`).get(order.id, ...nonBlockingStatuses).n;
+  const blocks = n > 0;
+  if (blocks) statusAwareBlocks = true;
+  console.log(`    - ${label} (not ${nonBlockingStatuses.join('/')}): ${n} row(s)${blocks ? '  <-- BLOCKS DELETE' : ''}`);
+}
 
-const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || ocBlocks || arBlocks || piBlocks;
+// A Cancelled sales_invoice is otherwise non-blocking, but a real
+// payment_receipts/sales_credit_notes row recorded against it (both nullable
+// FKs with no ON DELETE CASCADE, neither reachable via the generic
+// sales_orders-level scan since they reference sales_invoices directly)
+// represents genuine money received/credited and must still block.
+const invoiceIds = db.prepare('SELECT id FROM sales_invoices WHERE sales_order_id = ?').all(order.id).map(r => r.id);
+let prCount = 0, scnCount = 0;
+if (invoiceIds.length) {
+  const ph = invoiceIds.map(() => '?').join(',');
+  prCount = db.prepare(`SELECT COUNT(*) as n FROM payment_receipts WHERE sales_invoice_id IN (${ph})`).get(...invoiceIds).n;
+  scnCount = db.prepare(`SELECT COUNT(*) as n FROM sales_credit_notes WHERE sales_invoice_id IN (${ph})`).get(...invoiceIds).n;
+}
+console.log(`    - Payment Receipt (against this order's own invoices): ${prCount} row(s)${prCount > 0 ? '  <-- BLOCKS DELETE' : ''}`);
+console.log(`    - Sales Credit Note (against this order's own invoices): ${scnCount} row(s)${scnCount > 0 ? '  <-- BLOCKS DELETE' : ''}`);
+
+const anyBlocked = manualBlockers.some(([, n]) => n > 0) || fkBlockers.length > 0 || ocBlocks || arBlocks || statusAwareBlocks || prCount > 0 || scnCount > 0;
 console.log(anyBlocked ? '\nRESULT: delete is blocked (see <-- markers above).' : '\nRESULT: nothing blocks delete - this order should be deletable as Admin.');

@@ -88,6 +88,20 @@ router.post('/order-confirmations/:soId/reject', requirePermission('order_confir
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Admin-only - reject() can't reach an already-Approved letter (it only
+// acts on PendingApproval), so this is the only way back to an editable
+// state for one that genuinely needs revision after sign-off - mirrors
+// annexure-reviews/:soId/unlock exactly (same lib/reviewWorkflow.js helper,
+// same two columns, added 2026-11-20 after a real order got stuck with no
+// escape hatch). See lib/reviewWorkflow.js.
+router.post('/order-confirmations/:soId/unlock', requireRole('Admin'), (req, res) => {
+  try {
+    const row = ensureOrderConfirmation(req.params.soId);
+    unlock('order_confirmations', row.id, req.user.id, req.body.reason);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.get('/order-confirmations/:soId/pdf', canView, async (req, res) => {
   try {
     const salesOrder = getOrder(req.params.soId);

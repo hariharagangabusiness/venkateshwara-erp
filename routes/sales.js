@@ -542,7 +542,30 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
 // (surfaced to the user as a bare "Something went wrong"/"Request failed")
 // the instant any of those FKs had a matching row - exactly the same bug
 // class already hit once this same day for sales_order_items specifically.
-const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices'];
+const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices', 'sales_invoices', 'foc_requests'];
+
+// Every child document type below has its own "this never actually
+// happened" terminal status (set via its own cancel/reject route) that must
+// NOT count as real activity blocking a Sales Order delete - same reasoning
+// order_confirmations/annexure_reviews already apply via their own
+// locked/status check just below. Each is excluded from the generic FK scan
+// (added to ORDER_DELETE_CASCADE_TABLES above) and given this explicit,
+// status-aware check instead; `cascadeFirst` names any child table that has
+// its own hard FK into it with no ON DELETE CASCADE, which must be deleted
+// before the row itself once a delete is allowed to proceed (see the
+// delete transaction below). Audited 2026-11-20 after Proforma Invoice hit
+// this exact bug (SO-1794373108479) - fg_dispatches/sale_rejection_mrns/
+// sales_returns carry the identical gap (each has a real Cancelled/Rejected
+// terminal status too) but were deliberately left out of this round: unlike
+// these two, they have their own further child rows (fg_dispatch_items,
+// stock_movements already posted for a Sales Return's 'Good' lines, a
+// Sales Credit Note/FOC Replacement spawned off an MRN's own resolution)
+// that would need a materially more careful cascade to get right - tracked
+// as a known follow-up, not silently left broken.
+const SALES_ORDER_STATUS_AWARE_CHILDREN = [
+  { table: 'sales_invoices', label: 'Sales Invoice', nonBlockingStatuses: ['Cancelled'], cascadeFirst: 'sales_invoice_items', cascadeFk: 'invoice_id' },
+  { table: 'foc_requests', label: 'FOC Request', nonBlockingStatuses: ['Rejected'] },
+];
 
 // A few tables' names contain acronyms that Title-Case alone mangles
 // (fg_dispatches -> "Fg Dispatches", foc_requests -> "Foc Requests") -
@@ -641,6 +664,29 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
   // way a live Draft/Received one correctly still does.
   const livePiCount = db.prepare(`SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ? AND status != 'Cancelled'`).get(order.id).n;
   if (livePiCount > 0) blockers.push(['Proforma Invoice', livePiCount]);
+  for (const { table, label, nonBlockingStatuses } of SALES_ORDER_STATUS_AWARE_CHILDREN) {
+    const placeholders = nonBlockingStatuses.map(() => '?').join(',');
+    const n = db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE sales_order_id = ? AND status NOT IN (${placeholders})`).get(order.id, ...nonBlockingStatuses).n;
+    if (n > 0) blockers.push([label, n]);
+  }
+  // A Cancelled sales_invoice is otherwise non-blocking (see above), but
+  // payment_receipts.sales_invoice_id/sales_credit_notes.sales_invoice_id
+  // are both nullable FKs into it with no ON DELETE CASCADE - neither is
+  // reachable via the generic sales_orders-level FK scan (they reference
+  // sales_invoices, not sales_orders, directly), so a payment or credit
+  // note recorded against an invoice before it was cancelled would
+  // otherwise throw a raw FK error the moment the cascade below tried to
+  // delete that invoice row. Both represent genuine, real-money financial
+  // records that must never be silently deleted - so this blocks instead
+  // of cascading, regardless of the invoice's own Cancelled status.
+  const invoiceIds = db.prepare('SELECT id FROM sales_invoices WHERE sales_order_id = ?').all(order.id).map(r => r.id);
+  if (invoiceIds.length) {
+    const ph = invoiceIds.map(() => '?').join(',');
+    const prCount = db.prepare(`SELECT COUNT(*) as n FROM payment_receipts WHERE sales_invoice_id IN (${ph})`).get(...invoiceIds).n;
+    if (prCount > 0) blockers.push(['Payment Receipt', prCount]);
+    const scnCount = db.prepare(`SELECT COUNT(*) as n FROM sales_credit_notes WHERE sales_invoice_id IN (${ph})`).get(...invoiceIds).n;
+    if (scnCount > 0) blockers.push(['Sales Credit Note', scnCount]);
+  }
   if (blockers.length) {
     // A table can carry more than one FK into this check's 3 target tables
     // (e.g. store_material_requests has both job_card_id and project_id) and
@@ -651,6 +697,23 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
   }
 
   const tx = db.transaction(() => {
+    // Every row left in these tables at this point is already in one of its
+    // own nonBlockingStatuses (the check above already refused the delete
+    // otherwise) - a child table with its own hard FK (cascadeFirst) has to
+    // go first, same reasoning as proforma_invoice_items below. Must run
+    // BEFORE the project is deleted further down: foc_requests carries its
+    // own project_id FK (caught live - deleting the project first while a
+    // Rejected foc_requests row still pointed at it threw a raw "FOREIGN
+    // KEY constraint failed" instead of succeeding), and a future addition
+    // to this list could carry the same risk, so this whole cascade is
+    // ordered ahead of it on principle, not just for the one table that
+    // happens to need it today.
+    for (const { table, cascadeFirst, cascadeFk } of SALES_ORDER_STATUS_AWARE_CHILDREN) {
+      if (cascadeFirst) {
+        db.prepare(`DELETE FROM ${cascadeFirst} WHERE ${cascadeFk} IN (SELECT id FROM ${table} WHERE sales_order_id = ?)`).run(order.id);
+      }
+      db.prepare(`DELETE FROM ${table} WHERE sales_order_id = ?`).run(order.id);
+    }
     if (project) {
       db.prepare(`DELETE FROM job_card_attachments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
       db.prepare(`DELETE FROM job_card_comments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
