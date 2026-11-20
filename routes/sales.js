@@ -542,7 +542,7 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
 // (surfaced to the user as a bare "Something went wrong"/"Request failed")
 // the instant any of those FKs had a matching row - exactly the same bug
 // class already hit once this same day for sales_order_items specifically.
-const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items'];
+const ORDER_DELETE_CASCADE_TABLES = ['job_card_attachments', 'job_card_comments', 'job_card_dependencies', 'job_cards', 'order_confirmations', 'annexure_reviews', 'sales_order_items', 'proforma_invoices'];
 
 // A few tables' names contain acronyms that Title-Case alone mangles
 // (fg_dispatches -> "Fg Dispatches", foc_requests -> "Foc Requests") -
@@ -632,6 +632,15 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
   if (oc && (oc.status === 'PendingApproval' || oc.locked)) blockers.push(['Order Confirmation letter', 1]);
   const ar = db.prepare('SELECT status, locked FROM annexure_reviews WHERE sales_order_id = ?').get(order.id);
   if (ar && (ar.status === 'PendingApproval' || ar.locked)) blockers.push(['Annexure review', 1]);
+  // Proforma Invoice is excluded from the generic FK scan above (added to
+  // ORDER_DELETE_CASCADE_TABLES) so it can get the same status-aware
+  // treatment order_confirmations/annexure_reviews already have - a
+  // Cancelled proforma was never actually paid/received and represents no
+  // real activity (same "never happened" reasoning that status already
+  // carries everywhere else in this app), so it must not block a delete the
+  // way a live Draft/Received one correctly still does.
+  const livePiCount = db.prepare(`SELECT COUNT(*) as n FROM proforma_invoices WHERE sales_order_id = ? AND status != 'Cancelled'`).get(order.id).n;
+  if (livePiCount > 0) blockers.push(['Proforma Invoice', livePiCount]);
   if (blockers.length) {
     // A table can carry more than one FK into this check's 3 target tables
     // (e.g. store_material_requests has both job_card_id and project_id) and
@@ -657,6 +666,12 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     // fg_dispatch_items) exists, so these lines are genuinely orphaned once
     // the order itself goes and can be removed outright.
     db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(order.id);
+    // Every proforma_invoices row left at this point is Cancelled (the
+    // blockers check above already refused the delete if any live one
+    // exists) - proforma_invoice_items has its own hard FK into
+    // proforma_invoices with no ON DELETE CASCADE, so it has to go first.
+    db.prepare(`DELETE FROM proforma_invoice_items WHERE proforma_id IN (SELECT id FROM proforma_invoices WHERE sales_order_id = ?)`).run(order.id);
+    db.prepare('DELETE FROM proforma_invoices WHERE sales_order_id = ?').run(order.id);
     // If this order came from a confirmed offer, undo that conversion so the
     // offer becomes a normal, editable Sent offer again rather than being
     // left locked and pointing at a sales order that no longer exists.
