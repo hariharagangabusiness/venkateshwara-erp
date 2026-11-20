@@ -151,6 +151,14 @@ for (const u of users) {
     || overrides.some(o => o.access === 'granted');
   console.log(`  FINAL: will "jobcards" actually render in this login's sidebar once ALLOWED_PAGES is applied? ${sidebarWillShowJobcards ? 'YES' : 'NO'}`);
 
+  // 8. Rule out a duplicate/second login against the same employee - if the
+  // person is actually signing in with a DIFFERENT username than this one,
+  // every check above is answering the wrong question.
+  const siblingLogins = db.prepare(`SELECT id, username, is_active FROM users WHERE employee_id = ? AND id != ?`).all(u.employee_id, u.id);
+  if (siblingLogins.length) {
+    console.log(`  >>> NOTE: employee_id ${u.employee_id} has ${siblingLogins.length} OTHER user login(s) too: ${JSON.stringify(siblingLogins)} - if the real person is signing in under one of THOSE usernames instead of "${u.username}", every check above answers the wrong question.`);
+  }
+
   console.log(`  --- Conclusion for this login ---`);
   if (!getsOwnGroup) {
     console.log(`  Will not even see a "<department> Job Cards" sidebar entry. Fix: set department_id to a real department row.`);
