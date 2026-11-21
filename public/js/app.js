@@ -4090,8 +4090,10 @@ async function renderOrderConfirmationModal(orderId) {
     <h4 style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px;">Annexure</h4>
     ${reviewStatusBlock(ar, 'annexure.approve', `approveAnnexure(${orderId})`, `rejectAnnexure(${orderId})`)}
     ${ar.annexure_is_manual ? `<div class="msg" style="display:block;background:#fff3cd;border:1px solid #ffe08a;">A manually uploaded file is currently on file for this Annexure - it will NOT be overwritten by editing the order's Customer PO/line items, only by clicking "Regenerate Annexure" below or uploading another file.</div>` : ''}
-    <label>Review Notes</label>
+    <label>Review Notes <span class="muted">(internal, not printed on the document)</span></label>
     <textarea id="ar-notes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.review_notes)}</textarea>
+    <label style="margin-top:8px;display:block;">Annexure Notes <span class="muted">(printed on the Annexure document itself)</span></label>
+    <textarea id="ar-docnotes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.notes)}</textarea>
     <div style="margin-top:6px;">
       ${!ar.locked ? `<button class="btn small" onclick="saveAnnexureNotes(${orderId})">Save Notes</button>
       <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId}, ${!!ar.annexure_is_manual})">Regenerate Annexure</button>
@@ -4146,7 +4148,9 @@ window.regenerateAnnexureInModal = async (orderId, isManual) => {
 };
 window.saveAnnexureNotes = async (orderId) => {
   try {
-    await api(`/order-confirmation/annexure-reviews/${orderId}`, { method: 'PUT', body: JSON.stringify({ review_notes: val(`ar-notes-${orderId}`) }) });
+    await api(`/order-confirmation/annexure-reviews/${orderId}`, { method: 'PUT', body: JSON.stringify({
+      review_notes: val(`ar-notes-${orderId}`), notes: val(`ar-docnotes-${orderId}`),
+    })});
     await renderOrderConfirmationModal(orderId);
   } catch (e) { alert(e.message); }
 };

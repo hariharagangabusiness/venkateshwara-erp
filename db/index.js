@@ -1288,6 +1288,13 @@ const MIGRATIONS = [
   // unlock().
   `ALTER TABLE annexure_reviews ADD COLUMN unlocked_by INTEGER REFERENCES users(id)`,
   `ALTER TABLE annexure_reviews ADD COLUMN unlocked_at TEXT`,
+  // Free-text notes printed ON the Annexure document itself (2026-11-21) -
+  // deliberately separate from review_notes above, which is a reviewer-only
+  // remark never printed anywhere; this one is business content ("see
+  // drawing rev 3", a scope caveat, etc.) shown near the end of both the
+  // PDF and Word Annexure. Lives on its own column so regenerating the
+  // document (ensureAnnexureForOrder) never wipes it.
+  `ALTER TABLE annexure_reviews ADD COLUMN notes TEXT`,
   // Admin-manageable Expense Voucher category list (2026-10-09) - mirrors
   // operating_expense_categories' own sort_order/active columns, which the
   // New Expense Voucher form's category list never had; previously the only
