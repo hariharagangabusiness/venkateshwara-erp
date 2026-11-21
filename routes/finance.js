@@ -31,7 +31,7 @@ const uploadExpense = makeUpload('expenses', 15);
 // current month server-side - same convention as Operating Expenses.
 // ?month=YYYY-MM asks for a specific month; ?month=all is the explicit
 // opt-out to fetch full history.
-router.get('/expense-vouchers', (req, res) => {
+router.get('/expense-vouchers', requirePermission('expense_voucher.view_all'), (req, res) => {
   const { department_id, accounted, status, from, to, month } = req.query;
   let q = `
     SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
@@ -129,7 +129,7 @@ router.put('/expense-vouchers/category-oe-map/:expenseCategoryId', requireRole('
 // view) that need one specific voucher regardless of which month it falls
 // in - the plain list above is month-scoped by default, so it can't be
 // used to look up an older voucher by id.
-router.get('/expense-vouchers/:id', (req, res) => {
+router.get('/expense-vouchers/:id', requirePermission('expense_voucher.view_all'), (req, res) => {
   const row = db.prepare(`
     SELECT ev.*, d.name as department_name, c.name as category_name, u.full_name as raised_by_name
     FROM expense_vouchers ev
