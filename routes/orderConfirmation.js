@@ -11,6 +11,7 @@ const { getCompanySettings } = require('../lib/settings');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 
 const { makeUpload } = require('../lib/upload');
+const { regenerateAnnexureIfUnlocked } = require('./sales');
 const router = express.Router();
 router.use(authRequired);
 
@@ -143,13 +144,18 @@ router.get('/annexure-reviews/:soId', canView, (req, res) => {
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });
 
-router.put('/annexure-reviews/:soId', canEdit, (req, res) => {
+router.put('/annexure-reviews/:soId', canEdit, async (req, res) => {
   try {
     getOrder(req.params.soId);
     const row = ensureAnnexureReview(req.params.soId);
     assertEditable(row);
-    db.prepare(`UPDATE annexure_reviews SET review_notes = ?, updated_at = (datetime('now','localtime')) WHERE id = ?`)
-      .run(req.body.review_notes || null, row.id);
+    db.prepare(`UPDATE annexure_reviews SET review_notes = ?, notes = ?, updated_at = (datetime('now','localtime')) WHERE id = ?`)
+      .run(req.body.review_notes || null, req.body.notes || null, row.id);
+    // So a changed "Annexure Notes" value (printed on the document) shows
+    // up in the stored .docx immediately, not only after a separate
+    // "Regenerate Annexure" click - mirrors every other incidental order-
+    // edit route that already does this (Customer PO, line items, etc.).
+    await regenerateAnnexureIfUnlocked(req.params.soId);
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });

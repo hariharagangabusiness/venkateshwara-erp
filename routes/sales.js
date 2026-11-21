@@ -93,7 +93,24 @@ function loadAnnexureData(salesOrder) {
   } else if (soItems.length) {
     items = soItems.map(soi => ({ description: soi.description, qty: soi.quantity, unit: soi.unit, item_code: soi.master_item_code || null }));
   }
-  return { salesOrder, client, offer, items, techSpecs, boughtOut, company: getCompanySettings() };
+  // GA Drawing (2026-11-21) - reuses the Offer's own existing "GADrawing"
+  // attachment slot (Offer Builder's Attachments tab) rather than a new
+  // upload point; an offer-less order has no offer to carry one, so there's
+  // simply nothing to show. Most recent one wins if more than one was ever
+  // uploaded (re-uploads aren't deduped on that tab).
+  let gaDrawing = null;
+  if (offer) {
+    const att = db.prepare(`
+      SELECT file_path, original_name FROM attachments
+      WHERE entity_type = 'offer' AND entity_id = ? AND document_type = 'GADrawing'
+      ORDER BY id DESC LIMIT 1
+    `).get(offer.id);
+    if (att) gaDrawing = att;
+  }
+  // Free-text notes printed on the document itself - see annexure_reviews.notes.
+  const reviewRow = db.prepare('SELECT notes FROM annexure_reviews WHERE sales_order_id = ?').get(salesOrder.id);
+  const notes = reviewRow ? reviewRow.notes : null;
+  return { salesOrder, client, offer, items, techSpecs, boughtOut, gaDrawing, notes, company: getCompanySettings() };
 }
 
 async function ensureAnnexureForOrder(salesOrder) {
@@ -1543,3 +1560,9 @@ router.post('/returns/:id/cancel', requirePermission('sales_order.manage'), (req
 });
 
 module.exports = router;
+// Attached onto the router (a function, so extra properties are harmless to
+// server.js's app.use(...)) so routes/orderConfirmation.js can trigger the
+// same auto-regeneration when Annexure Notes is saved (2026-11-21) - the
+// printed Notes field would otherwise sit stale in the stored .docx until
+// someone separately clicked "Regenerate Annexure".
+module.exports.regenerateAnnexureIfUnlocked = regenerateAnnexureIfUnlocked;
