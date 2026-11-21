@@ -4748,6 +4748,7 @@ async function renderOfferBuilder(panel) {
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
       ${!o.is_template && o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
+      ${!o.is_template && o.status !== 'Won' ? `<button class="btn outline" onclick="downloadOfferAnnexurePreview()">Preview Annexure (PDF)</button>` : ''}
       ${o.is_template ? '' : (o.status !== 'Won' ? `<button class="btn green" onclick="confirmOffer()">Confirm Order &rarr; Create Sales Order &amp; Queue for Execution</button>` : `<span class="muted">Confirmed as Sales Order #${o.sales_order_id}</span>`)}
       ${!o.is_template && ME.role === 'Admin' ? `<button class="btn outline" onclick="saveOfferAsTemplate()">Save as Template</button>` : ''}
     </div>
@@ -4810,6 +4811,20 @@ window.downloadOfferPdf = async () => {
     const match = cd.match(/filename="?([^"]+)"?/);
     const blob = await res.blob();
     openOrDownloadBlob(blob, match ? match[1] : 'offer.pdf');
+  } catch (e) { alert(e.message); }
+};
+// Preview of the Sales Order Annexure document before this Offer has been
+// confirmed into a real order - rendered fresh server-side from the Offer's
+// own scope-of-supply/tech-specs/bought-out data, never stored (there's no
+// Sales Order yet to attach a stored file to).
+window.downloadOfferAnnexurePreview = async () => {
+  try {
+    const res = await fetch('/api/offers/' + CURRENT_OFFER_ID + '/annexure/preview-pdf', { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Annexure preview generation failed'); }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const blob = await res.blob();
+    openOrDownloadBlob(blob, match ? match[1] : 'annexure-preview.pdf');
   } catch (e) { alert(e.message); }
 };
 window.confirmOffer = async () => {
@@ -11269,7 +11284,9 @@ let EV_LIST_MONTH = null;
 PAGES.expenses = async (el) => {
   const listMonth = EV_LIST_MONTH || thisMonth();
   EV_LIST_MONTH = listMonth;
-  const vouchers = await api('/finance/expense-vouchers?month=' + listMonth);
+  const canViewAll = has('expense_voucher.view_all');
+  const canMarkPaid = has('expense_voucher.approve');
+  const vouchers = canViewAll ? await api('/finance/expense-vouchers?month=' + listMonth) : [];
   const depts = await api('/masters/departments');
   const cats = await api('/masters/expense-categories');
   const activeCats = cats.filter(c => c.active);
@@ -11293,7 +11310,7 @@ PAGES.expenses = async (el) => {
       <div class="muted" style="margin-bottom:8px;">Marking a voucher Paid auto-creates a matching Operating Expense entry - pick which Operating Expense category each Expense Voucher category should land in. A category left unmapped blocks Mark Paid until it's set here.</div>
       <div id="ev-oe-map-wrap">${await exOeMapHTML()}</div>
     `) : ''}
-    ${collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
+    ${canViewAll ? collapsiblePanel('expense-vouchers-list', `Expense Vouchers - ${listMonth === 'all' ? 'All Time' : listMonth} (${vouchers.length})`, `
       <div class="form-grid">
         <div><label>Month</label><input type="month" id="ex-list-month" value="${listMonth === 'all' ? '' : listMonth}" onchange="EV_LIST_MONTH=this.value;navigate('expenses')"></div>
         <div><button class="btn small outline" type="button" onclick="EV_LIST_MONTH='all';navigate('expenses')">Show All</button></div>
@@ -11302,10 +11319,10 @@ PAGES.expenses = async (el) => {
         <tr><td>${esc(v.voucher_no)}</td><td>${esc(v.department_name)}</td><td>${esc(v.category_name)}</td><td>₹${fmt(v.amount)}</td><td>${esc(v.payment_mode)}</td><td>${esc(v.accounted)}</td><td>${esc(v.raised_by_name)}</td>
         <td>${v.attachment_path ? `<a href="${v.attachment_path}" target="_blank">View</a>` : '-'}</td><td>${badge(v.status)}</td>
         <td>${actionButtonsCell(`
-          ${v.status === 'Approved' ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
+          ${v.status === 'Approved' && canMarkPaid ? `<button class="btn small green" onclick="payExpense(${v.id})">Mark Paid</button>` : ''}
           <button class="btn small outline" type="button" onclick="showExpenseVoucherHistory(${v.approval_id || 'null'}, 'Approval History - ${esc(v.voucher_no)}')">History</button>
         `)}</td></tr>`)}
-    `)}`;
+    `) : `<div class="panel"><div class="muted">The company-wide Expense Vouchers list and approval history are visible only to Accounts/Management/Admin. See <a href="#" onclick="navigate('expenses-mine');return false;">My Expense Vouchers</a> for your own submissions.</div></div>`}`;
 };
 // Admin-only Expense Voucher category -> Operating Expense category mapping
 // table (2026-10-12) - every expense category gets a row with a dropdown

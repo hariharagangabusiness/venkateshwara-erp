@@ -7,6 +7,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
+const { generateAnnexurePdf } = require('../lib/annexurePdf');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { autoCompleteSystemTodos } = require('../lib/systemTodos');
@@ -1173,6 +1174,50 @@ router.get('/:id/pdf', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Preview of the Sales Order Annexure document, before this Offer has even
+// been confirmed into a Sales Order - genAnnexurePdf()/generateAnnexureDocx()
+// (routes/sales.js's loadAnnexureData()) are both hard-wired to a real
+// sales_orders row, so this builds the identical {salesOrder, client, offer,
+// items, techSpecs, boughtOut, company} shape directly from the Offer's own
+// data instead - a fake "salesOrder" carrying just the 4 header fields
+// annexureHtml()/annexureDocx() actually read (order_no/description/
+// order_date; no po_number/po_date, since there's no customer PO at this
+// stage). Always rendered fresh, same "never stored, always current" choice
+// the real post-confirm Annexure PDF route already makes - there's nothing
+// to persist here anyway, since the real document doesn't exist until a
+// Sales Order does.
+function offerAsFakeSalesOrder(offer) {
+  return { order_no: offer.offer_no, description: offer.subject, order_date: offer.offer_date, po_number: null, po_date: null };
+}
+router.get('/:id/annexure/preview-pdf', offerPerm(), async (req, res) => {
+  try {
+    const full = getFullOffer(req.params.id);
+    if (!full) return res.status(404).json({ error: 'Not found' });
+    const data = {
+      salesOrder: offerAsFakeSalesOrder(full.offer),
+      client: full.client || {},
+      offer: full.offer,
+      items: full.items,
+      techSpecs: full.techSpecs,
+      boughtOut: full.boughtOut,
+      company: getCompanySettings(),
+    };
+    const gen = await generateAnnexurePdf(data);
+    const filename = buildDownloadFilename({
+      docType: 'Annexure_Preview',
+      reference: full.offer.offer_no,
+      partyName: full.client && full.client.name,
+      date: localDateFromValue(full.offer.offer_date),
+    });
+    res.download(gen.outPath, filename, () => {
+      fs.rm(gen.tmpDir, { recursive: true, force: true }, () => {});
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 
