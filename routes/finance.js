@@ -1142,11 +1142,25 @@ router.get('/proforma-invoices/:id', requirePermission('report.view_all', 'sales
   res.json({ proforma: pf, items });
 });
 
+// One GST-taxable surcharge (Packing & Forwarding / Courier Charges /
+// Insurance) - percent-or-flat-₹-overrides-percent, taxed at the first
+// line's own GST rate, folded into cgst/sgst/igst the same way a real line
+// item is. Pulled into one function (2026-11-23, added alongside the new
+// Insurance charge) so the three surcharges can't silently diverge in how
+// they're computed - each caller just names its own two request-body keys.
+function computeSurcharge(req, percentKey, amountKey, taxableTotal, taxRate) {
+  const percent = Math.max(0, Number(req.body[percentKey]) || 0);
+  const amountGiven = req.body[amountKey] !== undefined && req.body[amountKey] !== '' && req.body[amountKey] !== null;
+  const amount = Math.max(0, amountGiven ? (Number(req.body[amountKey]) || 0) : taxableTotal * percent / 100);
+  const tax = amount * taxRate / 100;
+  return { percent, amount, tax };
+}
+
 // Shared by create (POST .../from-sales-order/:soId) and edit (PUT .../:id) -
-// the line-item/GST/Packing & Forwarding/Courier Charges/Advance Received
-// math has to stay identical between the two, or an edited proforma's totals
-// could silently drift from what a freshly-created one would compute for the
-// same inputs.
+// the line-item/GST/Packing & Forwarding/Courier Charges/Insurance/Advance
+// Received math has to stay identical between the two, or an edited
+// proforma's totals could silently drift from what a freshly-created one
+// would compute for the same inputs.
 function computeProformaCharges(req, items, company, sameState) {
   let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
   const lineRows = items.map((it, i) => {
@@ -1160,22 +1174,27 @@ function computeProformaCharges(req, items, company, sameState) {
     return { description: it.description, quantity: qty, unit: it.unit || 'Nos', rate, taxable_value: taxable, gst_rate: gstRate, sort_order: i, sales_order_item_id: it.sales_order_item_id || null };
   });
 
-  const pfPercent = Math.max(0, Number(req.body.packing_forwarding_percent) || 0);
-  const pfRate = lineRows[0] ? lineRows[0].gst_rate : (company.default_gst_rate || 18);
-  const pfAmountGiven = req.body.packing_forwarding_amount !== undefined && req.body.packing_forwarding_amount !== '' && req.body.packing_forwarding_amount !== null;
-  const packingAmount = Math.max(0, pfAmountGiven ? (Number(req.body.packing_forwarding_amount) || 0) : taxableTotal * pfPercent / 100);
-  const packingTax = packingAmount * pfRate / 100;
-  if (sameState) { cgst += packingTax / 2; sgst += packingTax / 2; } else { igst += packingTax; }
+  const surchargeRate = lineRows[0] ? lineRows[0].gst_rate : (company.default_gst_rate || 18);
+  const applyTax = (tax) => { if (sameState) { cgst += tax / 2; sgst += tax / 2; } else { igst += tax; } };
 
-  const ccPercent = Math.max(0, Number(req.body.courier_charges_percent) || 0);
-  const ccAmountGiven = req.body.courier_charges_amount !== undefined && req.body.courier_charges_amount !== '' && req.body.courier_charges_amount !== null;
-  const courierAmount = Math.max(0, ccAmountGiven ? (Number(req.body.courier_charges_amount) || 0) : taxableTotal * ccPercent / 100);
-  const courierTax = courierAmount * pfRate / 100;
-  if (sameState) { cgst += courierTax / 2; sgst += courierTax / 2; } else { igst += courierTax; }
+  const pf = computeSurcharge(req, 'packing_forwarding_percent', 'packing_forwarding_amount', taxableTotal, surchargeRate);
+  applyTax(pf.tax);
+  const cc = computeSurcharge(req, 'courier_charges_percent', 'courier_charges_amount', taxableTotal, surchargeRate);
+  applyTax(cc.tax);
+  // Insurance (2026-11-23) - identical GST-taxable surcharge shape to
+  // Packing & Forwarding/Courier Charges above, per the locked design.
+  const ins = computeSurcharge(req, 'insurance_percent', 'insurance_amount', taxableTotal, surchargeRate);
+  applyTax(ins.tax);
 
   const advanceReceived = Math.max(0, Number(req.body.advance_received) || 0);
-  const total = taxableTotal + packingAmount + courierAmount + cgst + sgst + igst - advanceReceived;
-  return { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total };
+  const total = taxableTotal + pf.amount + cc.amount + ins.amount + cgst + sgst + igst - advanceReceived;
+  return {
+    lineRows, taxableTotal, cgst, sgst, igst,
+    pfPercent: pf.percent, packingAmount: pf.amount,
+    ccPercent: cc.percent, courierAmount: cc.amount,
+    insPercent: ins.percent, insuranceAmount: ins.amount,
+    advanceReceived, total,
+  };
 }
 
 router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sales_order.manage'), (req, res) => {
@@ -1234,18 +1253,19 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
     ? [shipAddr.line1, shipAddr.line2, [shipAddr.city, shipAddr.state, shipAddr.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n')
     : (client.address || '');
 
-  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total } =
+  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, insPercent, insuranceAmount, advanceReceived, total } =
     computeProformaCharges(req, items, company, sameState);
   const proformaNo = nextProformaNo();
   const tx = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO proforma_invoices (proforma_no, sales_order_id, client_id, milestone_id, invoice_type,
         place_of_supply, buyer_gstin, buyer_state, ship_to_address, taxable_value, cgst, sgst, igst,
-        packing_forwarding_percent, packing_forwarding_amount, courier_charges_percent, courier_charges_amount, advance_received, total_value, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        packing_forwarding_percent, packing_forwarding_amount, courier_charges_percent, courier_charges_amount,
+        insurance_percent, insurance_amount, advance_received, total_value, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(proformaNo, so.id, client.id, milestone_id || null, invoice_type,
       buyerState || company.default_place_of_supply, buyerGstin, buyerState, shipToAddress, taxableTotal, cgst, sgst, igst,
-      pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total, 'Draft', req.user.id);
+      pfPercent, packingAmount, ccPercent, courierAmount, insPercent, insuranceAmount, advanceReceived, total, 'Draft', req.user.id);
     const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order, sales_order_item_id) VALUES (?,?,?,?,?,?,?,?,?)`);
     lineRows.forEach(r => insertItem.run(info.lastInsertRowid, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order, r.sales_order_item_id));
     // The tax-invoice pipeline uses 'Invoiced' for this same transition -
@@ -1324,7 +1344,7 @@ router.put('/proforma-invoices/:id', requirePermission('sales_order.manage'), (r
   const buyerGstin = buyer_gstin || client.gstin || '';
   const sameState = buyerState && company.state && buyerState.trim().toLowerCase() === company.state.trim().toLowerCase();
 
-  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total } =
+  const { lineRows, taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, insPercent, insuranceAmount, advanceReceived, total } =
     computeProformaCharges(req, items, company, sameState);
 
   const tx = db.transaction(() => {
@@ -1333,10 +1353,11 @@ router.put('/proforma-invoices/:id', requirePermission('sales_order.manage'), (r
         milestone_id = ?, invoice_type = ?, place_of_supply = ?, buyer_gstin = ?, buyer_state = ?,
         taxable_value = ?, cgst = ?, sgst = ?, igst = ?,
         packing_forwarding_percent = ?, packing_forwarding_amount = ?,
-        courier_charges_percent = ?, courier_charges_amount = ?, advance_received = ?, total_value = ?
+        courier_charges_percent = ?, courier_charges_amount = ?,
+        insurance_percent = ?, insurance_amount = ?, advance_received = ?, total_value = ?
       WHERE id = ?
     `).run(milestone_id || null, invoice_type, buyerState || company.default_place_of_supply, buyerGstin, buyerState,
-      taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, advanceReceived, total, pf.id);
+      taxableTotal, cgst, sgst, igst, pfPercent, packingAmount, ccPercent, courierAmount, insPercent, insuranceAmount, advanceReceived, total, pf.id);
     db.prepare(`DELETE FROM proforma_invoice_items WHERE proforma_id = ?`).run(pf.id);
     const insertItem = db.prepare(`INSERT INTO proforma_invoice_items (proforma_id, description, quantity, unit, rate, taxable_value, gst_rate, sort_order, sales_order_item_id) VALUES (?,?,?,?,?,?,?,?,?)`);
     lineRows.forEach(r => insertItem.run(pf.id, r.description, r.quantity, r.unit, r.rate, r.taxable_value, r.gst_rate, r.sort_order, r.sales_order_item_id));

@@ -1859,6 +1859,12 @@ const MIGRATIONS = [
   // SO-1794373108479.
   `ALTER TABLE order_confirmations ADD COLUMN unlocked_by INTEGER REFERENCES users(id)`,
   `ALTER TABLE order_confirmations ADD COLUMN unlocked_at TEXT`,
+  // Insurance charge on the Proforma Invoice (2026-11-23) - built exactly
+  // like the existing Packing & Forwarding/Courier Charges pair (percent-or-
+  // flat-amount-overrides-percent, GST-taxable, omitted from the PDF when
+  // zero) - see computeProformaCharges() in routes/finance.js.
+  `ALTER TABLE proforma_invoices ADD COLUMN insurance_percent REAL DEFAULT 0`,
+  `ALTER TABLE proforma_invoices ADD COLUMN insurance_amount REAL DEFAULT 0`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

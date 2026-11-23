@@ -14335,6 +14335,47 @@ window.testPurchaseInboundMailConnection = async () => {
   }
 };
 
+// Proforma Invoice surcharge field (2026-11-23) - Packing & Forwarding,
+// Courier Charges and Insurance all used to be two separate inputs (a %
+// box and a flat-₹-override box shown at once); replaced with one input
+// plus a Percentage/Amount type selector so only the relevant field shows.
+// Whichever mode is selected is simply the one key sent to the backend
+// (the other is sent blank) - computeProformaCharges() in routes/finance.js
+// already treats "amount given" as an override of percent, so no backend
+// schema/logic change was needed beyond adding the new Insurance pair of
+// columns. Shared by both the New Proforma form (prefix "pf") and the Edit
+// Draft Proforma popup (prefix "pfe") so the two forms can't drift apart.
+function proformaChargeFieldHTML(idPrefix, label, percentVal, amountVal) {
+  // A stored % always wins the mode guess (same priority the old two-field
+  // layout had: typing a % hid the computed flat-amount column) - only
+  // falls to "amount" when there's no % on file at all.
+  const mode = (Number(percentVal) || 0) > 0 ? 'percent' : ((Number(amountVal) || 0) > 0 ? 'amount' : 'percent');
+  const value = mode === 'amount' ? (amountVal || '') : (percentVal || '');
+  return `<div>
+    <label>${esc(label)}</label>
+    <div style="display:flex;gap:6px;">
+      <select id="${idPrefix}-mode" style="width:128px;flex:0 0 auto;" onchange="proformaChargeModeChanged('${idPrefix}')">
+        <option value="percent" ${mode === 'percent' ? 'selected' : ''}>Percentage (%)</option>
+        <option value="amount" ${mode === 'amount' ? 'selected' : ''}>Fixed Amount (₹)</option>
+      </select>
+      <input id="${idPrefix}-value" type="number" value="${esc(value)}" placeholder="${mode === 'percent' ? 'e.g. 2.5' : 'Flat amount in ₹'}" style="flex:1;">
+    </div>
+  </div>`;
+}
+window.proformaChargeModeChanged = (idPrefix) => {
+  const inp = document.getElementById(idPrefix + '-value');
+  if (!inp) return;
+  inp.placeholder = val(idPrefix + '-mode') === 'percent' ? 'e.g. 2.5' : 'Flat amount in ₹';
+};
+// Reads one charge field back into the two request-body keys the backend
+// expects - whichever mode isn't selected is sent blank, so it can never
+// linger from a previous save made in the other mode.
+function proformaChargePayload(idPrefix, percentKey, amountKey) {
+  const mode = val(idPrefix + '-mode');
+  const value = val(idPrefix + '-value') || '';
+  return mode === 'amount' ? { [percentKey]: '', [amountKey]: value } : { [percentKey]: value, [amountKey]: '' };
+}
+
 // ===================== Round 5: Sales Invoices =====================
 PAGES['sales-invoices'] = async (el) => {
   const [invoices, orders, proformas] = await Promise.all([api('/finance/invoices'), api('/sales/orders').catch(() => api('/sales')), api('/finance/proforma-invoices')]);
@@ -14385,10 +14426,9 @@ PAGES['sales-invoices'] = async (el) => {
       <div class="form-grid" style="margin-top:8px;">
         <div><label>Amount (₹, if no milestone and no lines ticked above)</label><input id="pf-amount" type="number"></div>
         <div><label>Item Description</label><input id="pf-desc" placeholder="Defaults to order description (ignored if a milestone is picked or lines are ticked)"></div>
-        <div><label>Packing &amp; Forwarding (%)</label><input id="pf-pf-percent" type="number" placeholder="e.g. 2.5"></div>
-        <div><label>Packing &amp; Forwarding (₹, overrides %)</label><input id="pf-pf-amount" type="number" placeholder="Flat amount, optional"></div>
-        <div><label>Courier Charges (%)</label><input id="pf-cc-percent" type="number" placeholder="e.g. 1"></div>
-        <div><label>Courier Charges (₹, overrides %)</label><input id="pf-cc-amount" type="number" placeholder="Flat amount, optional"></div>
+        ${proformaChargeFieldHTML('pf-pf', 'Packing & Forwarding', '', '')}
+        ${proformaChargeFieldHTML('pf-cc', 'Courier Charges', '', '')}
+        ${proformaChargeFieldHTML('pf-ins', 'Insurance', '', '')}
         <div><label>Advance Received (₹)</label><input id="pf-advance" type="number" placeholder="Deducted from the total payable"></div>
       </div>
       <p class="muted" style="margin-top:4px;">Ship To and Payment Terms are picked up automatically from the client's Shipping address and the order's own Payment Terms (Sales Orders → Commercial Terms) and printed on the document.</p>
@@ -14470,8 +14510,9 @@ window.generateProforma = async () => {
         gst_rate: l.gst_rate_override, sales_order_item_id: l.id,
       })) : undefined,
       buyer_state: val('pf-buyer-state'), buyer_gstin: val('pf-buyer-gstin'),
-      packing_forwarding_percent: val('pf-pf-percent') || undefined, packing_forwarding_amount: val('pf-pf-amount') || undefined,
-      courier_charges_percent: val('pf-cc-percent') || undefined, courier_charges_amount: val('pf-cc-amount') || undefined,
+      ...proformaChargePayload('pf-pf', 'packing_forwarding_percent', 'packing_forwarding_amount'),
+      ...proformaChargePayload('pf-cc', 'courier_charges_percent', 'courier_charges_amount'),
+      ...proformaChargePayload('pf-ins', 'insurance_percent', 'insurance_amount'),
       advance_received: val('pf-advance') || undefined,
     })});
     // Doesn't block creation (Finance may legitimately need to invoice
@@ -14530,10 +14571,9 @@ window.openEditProforma = async (id) => {
     <div class="form-grid" style="margin-top:8px;">
       <div><label>Amount (₹, if no milestone and no lines ticked)</label><input id="pfe-amount" type="number" value="${manualItem ? manualItem.rate : ''}"></div>
       <div><label>Item Description</label><input id="pfe-desc" value="${manualItem ? esc(manualItem.description) : ''}"></div>
-      <div><label>Packing &amp; Forwarding (%)</label><input id="pfe-pf-percent" type="number" value="${pf.packing_forwarding_percent || ''}"></div>
-      <div><label>Packing &amp; Forwarding (₹, overrides %)</label><input id="pfe-pf-amount" type="number" value="${pf.packing_forwarding_percent ? '' : (pf.packing_forwarding_amount || '')}"></div>
-      <div><label>Courier Charges (%)</label><input id="pfe-cc-percent" type="number" value="${pf.courier_charges_percent || ''}"></div>
-      <div><label>Courier Charges (₹, overrides %)</label><input id="pfe-cc-amount" type="number" value="${pf.courier_charges_percent ? '' : (pf.courier_charges_amount || '')}"></div>
+      ${proformaChargeFieldHTML('pfe-pf', 'Packing & Forwarding', pf.packing_forwarding_percent, pf.packing_forwarding_amount)}
+      ${proformaChargeFieldHTML('pfe-cc', 'Courier Charges', pf.courier_charges_percent, pf.courier_charges_amount)}
+      ${proformaChargeFieldHTML('pfe-ins', 'Insurance', pf.insurance_percent, pf.insurance_amount)}
       <div><label>Advance Received (₹)</label><input id="pfe-advance" type="number" value="${pf.advance_received || ''}"></div>
     </div>
     <button class="btn" id="pfe-save-btn-${pf.id}" onclick="saveEditProforma(${pf.id})">Save Changes</button>
@@ -14573,8 +14613,9 @@ window.saveEditProforma = async (id) => {
         gst_rate: l.gst_rate_override, sales_order_item_id: l.id,
       })) : undefined,
       buyer_state: val('pfe-buyer-state'), buyer_gstin: val('pfe-buyer-gstin'),
-      packing_forwarding_percent: val('pfe-pf-percent') || undefined, packing_forwarding_amount: val('pfe-pf-amount') || undefined,
-      courier_charges_percent: val('pfe-cc-percent') || undefined, courier_charges_amount: val('pfe-cc-amount') || undefined,
+      ...proformaChargePayload('pfe-pf', 'packing_forwarding_percent', 'packing_forwarding_amount'),
+      ...proformaChargePayload('pfe-cc', 'courier_charges_percent', 'courier_charges_amount'),
+      ...proformaChargePayload('pfe-ins', 'insurance_percent', 'insurance_amount'),
       advance_received: val('pfe-advance') || undefined,
     })});
     confirmSavedThenClose(`pfe-save-btn-${id}`, 'sales-invoices');

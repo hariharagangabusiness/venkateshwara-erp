@@ -1315,6 +1315,18 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     // (2026-10-15's Unit/Discount Amount fields) - GST applied downstream
     // against this value is already computed on the post-discount taxable
     // figure with no extra math needed here.
+    //
+    // `rate` is the per-unit price AFTER the line's own discount_amount,
+    // not offer_items.unit_price itself (2026-11-23 fix) - previously this
+    // stored the raw pre-discount unit_price while `value`/total_price was
+    // already discount-adjusted, so rate*qty != value for any discounted
+    // line. That silent mismatch was invisible on the Sales Order's own
+    // total (summed from `value`), but the Proforma Invoice's "Order Line
+    // Items" screen bills off qty*rate, so a ticked discounted line
+    // silently re-added the discount back into the invoiced amount.
+    // Computing rate as total_price/qty keeps qty*rate == value exactly
+    // (same identity a plain, never-discounted line already had, since
+    // total_price was just qty*unit_price with discount_amount=0 then).
     if (full.items.length) {
       // source_offer_item_id links this copy back to the offer_items row it
       // came from, so routes/sales.js's loadAnnexureData() can still show
@@ -1327,10 +1339,15 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
         INSERT INTO sales_order_items (sales_order_id, description, quantity, unit, rate, value, gst_rate, sort_order, source_offer_item_id)
         VALUES (?,?,?,?,?,?,18,?,?)
       `);
-      full.items.forEach(it => insertSoItem.run(
-        salesOrderId, it.description || it.section_title || it.item_code || 'Item',
-        Number(it.qty) || 1, it.unit || 'Nos', Number(it.unit_price) || 0, Number(it.total_price) || 0, it.sort_order || 0, it.id
-      ));
+      full.items.forEach(it => {
+        const qty = Number(it.qty) || 1;
+        const totalPrice = Number(it.total_price) || 0;
+        const discountedRate = qty ? totalPrice / qty : (Number(it.unit_price) || 0);
+        insertSoItem.run(
+          salesOrderId, it.description || it.section_title || it.item_code || 'Item',
+          qty, it.unit || 'Nos', discountedRate, totalPrice, it.sort_order || 0, it.id
+        );
+      });
     }
 
     const projCode = 'PRJ-' + Date.now();
