@@ -1238,8 +1238,7 @@ window.openEditSalesOrder = async (id) => {
         <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${soItems.length ? 'readonly title="Computed from the line items below"' : ''}></div>
     </div>
     ${soItems.length ? `<h4 style="margin-top:14px;">Line Items (${soItems.length})</h4>
-    <div class="grid-line-table" style="overflow-x:auto;">
-      ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 80px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
+    ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 80px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
         const disp = it.quantity - it.dispatchable_qty;
         return `<div><input id="eso-it-desc-${i}" value="${esc(it.description)}"></div>
           <div><input id="eso-it-qty-${i}" type="number" min="${disp || 0}" step="any" value="${it.quantity}" oninput="esoRecalc()"></div>
@@ -1250,7 +1249,6 @@ window.openEditSalesOrder = async (id) => {
           <div id="eso-it-val-${i}">₹${fmt(it.value)}</div>
           <div>${disp}</div>`;
       })}
-    </div>
     <p id="eso-totals" style="text-align:right;margin:6px 0;"></p>` : ''}
     <h4 style="margin-top:14px;">Commercial Terms</h4>
     <div class="form-grid">
