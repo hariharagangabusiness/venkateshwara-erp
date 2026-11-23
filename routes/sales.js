@@ -14,6 +14,10 @@ const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soI
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
+const { sendMail } = require('../lib/mailer');
+const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
+const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
+const { formatDate } = require('../lib/dateFormat');
 const router = express.Router();
 router.use(authRequired);
 
@@ -997,6 +1001,51 @@ router.get('/orders/:id/annexure/pdf', async (req, res) => {
     console.error('Annexure PDF generation failed:', e);
     if (tmpDir) fs.rm(tmpDir, { recursive: true, force: true }, () => {});
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Emails the Annexure (PDF, built live from the order's current data - the stored .docx and any manual
+// upload are left alone) to every active HOD. HOD = department supervisor (is_supervisor, the app-wide
+// convention) or anyone whose role/designation says "HOD"; inactive users and duplicate addresses dropped.
+router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'), async (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const hods = db.prepare(`
+    SELECT u.full_name, u.email FROM users u JOIN roles r ON r.id = u.role_id
+    WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
+      AND (u.is_supervisor = 1 OR LOWER(COALESCE(u.designation, '')) LIKE '%hod%' OR LOWER(r.name) LIKE '%hod%')
+    ORDER BY u.id
+  `).all();
+  const seen = new Set();
+  const recipients = hods.filter(h => { const k = h.email.trim().toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  if (!recipients.length) return res.status(400).json({ error: 'No active HOD with an email address was found.' });
+  const data = loadAnnexureData(order);
+  let tmpDir;
+  try {
+    const result = await generateAnnexurePdf(data);
+    tmpDir = result.tmpDir;
+    const filename = buildDownloadFilename({ docType: 'Annexure', reference: order.order_no, partyName: data.client && data.client.name, date: order.order_date });
+    const tpl = renderTemplate(getEmailTemplate('so_annexure_hods'), {
+      order_no: order.order_no, client_name: (data.client && data.client.name) || '-',
+      order_date: order.order_date ? formatDate(order.order_date) : '-',
+      delivery_date: order.promised_delivery_date ? formatDate(order.promised_delivery_date) : 'not set',
+      order_value: Number(order.order_value || 0).toLocaleString('en-IN'), sender_name: req.user.full_name,
+    });
+    const mail = await sendMail({
+      to: recipients[0].email.trim(), cc: recipients.slice(1).map(r => r.email.trim()),
+      subject: tpl.subject, text: tpl.body, skipDefaultCc: true,
+      attachments: [{ filename, path: result.outPath }],
+      ...getDepartmentEmailIdentity('Sales'),
+    });
+    if (!mail.sent) return res.status(502).json({ error: mail.reason || 'Email could not be sent.' });
+    db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+      .run(req.user.id, 'email_annexure_to_hods', 'sales_order', order.id, recipients.map(r => r.email).join(', '));
+    res.json({ ok: true, count: recipients.length, recipients: recipients.map(r => `${r.full_name} <${r.email}>`) });
+  } catch (e) {
+    console.error('Email annexure failed:', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (tmpDir) fs.rm(tmpDir, { recursive: true, force: true }, () => {});
   }
 });
 

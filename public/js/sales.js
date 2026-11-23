@@ -688,6 +688,7 @@ function orderRowHTML(o) {
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
     <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
+    <button class="btn small outline" type="button" onclick="emailAnnexureToHODs(${o.id}, this)">Email Annexure to HODs</button>
     ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}
     `)}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
@@ -1290,6 +1291,18 @@ window.saveEditSalesOrder = async (id) => {
     })});
     confirmSavedThenClose('eso-save-btn-' + id, 'orders');
   } catch (e) { alert(e.message); }
+};
+window.emailAnnexureToHODs = async (id, btn) => {
+  const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
+  if (!confirm(`Email the Annexure PDF for ${o ? o.order_no : 'this order'} to all active HODs?`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/sales/orders/${id}/email-annexure`, { method: 'POST' });
+    alert(`Annexure emailed to ${r.count} HOD${r.count === 1 ? '' : 's'}:
+` + r.recipients.join('
+'));
+  } catch (e) { alert(e.message); }
+  btn.disabled = false;
 };
 window.deleteOrderRow = async (id) => {
   if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
