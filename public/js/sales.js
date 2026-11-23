@@ -2011,7 +2011,8 @@ async function renderOfferBuilder(panel) {
     ['terms', 'Terms & Conditions'],
     ['text', 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : '')],
     ['commercial', 'Commercial Terms'],
-    ['equipment-ref', 'Reference Equipment'],
+    // Spares offers print no equipment pages and the picker below lists the Machine library only
+    ...(o.offer_format === 'Spares' ? [] : [['equipment-ref', 'Reference Equipment']]),
     ['attachments', 'Attachments (GA Drawing / CAD)'],
     ['annexure', 'Annexure' + (data.annexures && data.annexures.length ? ` (${data.annexures.length})` : '')],
   ];

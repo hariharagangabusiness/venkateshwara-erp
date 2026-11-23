@@ -1676,6 +1676,8 @@ const MIGRATIONS = [
   // reused via this same table rather than a duplicate one, distinguished
   // by library_type so the two review queues never mix.
   `ALTER TABLE section_title_suggestions ADD COLUMN library_type TEXT DEFAULT 'Machine'`,
+  `ALTER TABLE section_title_suggestions ADD COLUMN rate REAL`,
+  `ALTER TABLE section_title_suggestions ADD COLUMN unit TEXT`,
   // Spares Price Comparison (2026-11-01) - a line picked from spares_library
   // needs its own stable identity recorded on the offer line itself (the
   // library id can be reused across any number of future offers/orders),

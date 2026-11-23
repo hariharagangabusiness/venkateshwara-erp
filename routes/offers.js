@@ -67,7 +67,7 @@ function copyLibraryImage(libraryImagePath) {
 // libraryType: 'Machine' (default, Section Title Library) or 'Spares'
 // (Spares Library, 2026-11-01) - a Spares-format offer's items route here
 // too, just checked/filed against spares_library instead.
-function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summary, imagePath, userId, libraryType }) {
+function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summary, imagePath, userId, libraryType, rate, unit }) {
   const trimmed = String(title || '').trim();
   if (!trimmed) return;
   const type = libraryType === 'Spares' ? 'Spares' : 'Machine';
@@ -79,9 +79,9 @@ function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summ
 
   const suggestionImagePath = imagePath ? copyLibraryImage(imagePath) : null;
   const info = db.prepare(`
-    INSERT INTO section_title_suggestions (title, description, summary, image_path, offer_id, offer_item_id, suggested_by, library_type)
-    VALUES (?,?,?,?,?,?,?,?)
-  `).run(trimmed, description || null, summary || null, suggestionImagePath, offerId, itemId || null, userId, type);
+    INSERT INTO section_title_suggestions (title, description, summary, image_path, offer_id, offer_item_id, suggested_by, library_type, rate, unit)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(trimmed, description || null, summary || null, suggestionImagePath, offerId, itemId || null, userId, type, type === 'Spares' ? (Number(rate) || null) : null, type === 'Spares' ? (unit || null) : null);
 
   const libraryLabel = type === 'Spares' ? 'Spares Library' : 'Machine Library';
   const brief = `Review new ${libraryLabel} suggestion: "${trimmed}"`;
@@ -215,8 +215,13 @@ router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req
   if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
   const libraryTable = suggestion.library_type === 'Spares' ? 'spares_library' : 'section_title_library';
   try {
-    db.prepare(`INSERT INTO ${libraryTable} (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
-      .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, req.user.id);
+    if (suggestion.library_type === 'Spares') {
+      db.prepare(`INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by) VALUES (?,?,?,?,?,?,?)`)
+        .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, suggestion.rate, suggestion.unit || 'Nos', req.user.id);
+    } else {
+      db.prepare(`INSERT INTO ${libraryTable} (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)`)
+        .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, req.user.id);
+    }
   } catch (e) {
     return res.status(400).json({ error: 'That title already exists in the library - reject this suggestion instead.' });
   }
@@ -868,7 +873,7 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: info.lastInsertRowid, title: section_title,
-      description, summary, imagePath, userId: req.user.id,
+      description, summary, imagePath, userId: req.user.id, rate, unit,
       libraryType: offerRow && offerRow.offer_format === 'Spares' ? 'Spares' : 'Machine',
     });
   }
@@ -915,7 +920,7 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
       offerId: version.id, itemId: targetItemId, title: section_title,
-      description, summary, imagePath, userId: req.user.id,
+      description, summary, imagePath, userId: req.user.id, rate, unit,
       libraryType: offerRow && offerRow.offer_format === 'Spares' ? 'Spares' : 'Machine',
     });
   }
