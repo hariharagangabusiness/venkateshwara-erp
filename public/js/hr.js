@@ -42,7 +42,8 @@ PAGES.employees = async (el) => {
         <div><label>Blood Group</label><input id="em-blood"></div>
         <div><label>Emergency Contact Name</label><input id="em-ec-name"></div>
         <div><label>Emergency Contact Phone</label><input id="em-ec-phone"></div>
-        <div><label>Address</label><input id="em-address"></div>
+        <div><label>Permanent Address</label><textarea id="em-perm-address" rows="2" oninput="syncTempAddress('em')"></textarea></div>
+        <div><label>Temporary Address <span style="font-weight:400;"><input type="checkbox" id="em-same-address" onchange="syncTempAddress('em')"> Same as Permanent Address</span></label><textarea id="em-temp-address" rows="2"></textarea></div>
       </div>
       <h4>Referral</h4>
       <div class="form-grid">
@@ -80,6 +81,12 @@ PAGES.employees = async (el) => {
     `)}`;
   window.__EMP_CACHE = emps; window.__EMP_DEPTS = depts;
 };
+window.syncTempAddress = (pre) => {
+  const cb = document.getElementById(pre + '-same-address'), t = document.getElementById(pre + '-temp-address');
+  if (!cb || !t) return;
+  if (cb.checked) t.value = document.getElementById(pre + '-perm-address').value;
+  t.readOnly = cb.checked;
+};
 window.addEmployee = async () => {
   if (!val('em-name').trim()) { alert('Full Name is required.'); return; }
   try {
@@ -87,7 +94,7 @@ window.addEmployee = async () => {
       employee_code: val('em-code'), full_name: val('em-name'), department_id: val('em-dept'), designation: val('em-desig'),
       employment_type: val('em-emptype'), date_of_joining: val('em-doj'), phone: val('em-phone'), email: val('em-email'),
       monthly_salary: val('em-salary'), pan_number: val('em-pan'), blood_group: val('em-blood'),
-      emergency_contact_name: val('em-ec-name'), emergency_contact_phone: val('em-ec-phone'), address: val('em-address'),
+      emergency_contact_name: val('em-ec-name'), emergency_contact_phone: val('em-ec-phone'), permanent_address: val('em-perm-address'), temporary_address: val('em-temp-address'),
       bank_name: val('em-bank-name'), account_number: val('em-bank-acct'), ifsc_code: val('em-bank-ifsc'),
       aadhaar_number: val('em-aadhaar'), passport_number: val('em-passport'), visa_availability: val('em-visa'),
       driving_license_number: val('em-dl'),
@@ -121,7 +128,8 @@ window.openEditEmployee = (id) => {
       <div><label>Blood Group</label><input id="eme-blood" value="${esc(e.blood_group)||''}"></div>
       <div><label>Emergency Contact Name</label><input id="eme-ec-name" value="${esc(e.emergency_contact_name)||''}"></div>
       <div><label>Emergency Contact Phone</label><input id="eme-ec-phone" value="${esc(e.emergency_contact_phone)||''}"></div>
-      <div><label>Address</label><input id="eme-address" value="${esc(e.address)||''}"></div>
+      <div><label>Permanent Address</label><textarea id="eme-perm-address" rows="2" oninput="syncTempAddress('eme')">${esc(e.permanent_address||e.address)||''}</textarea></div>
+        <div><label>Temporary Address <span style="font-weight:400;"><input type="checkbox" id="eme-same-address" onchange="syncTempAddress('eme')"> Same as Permanent Address</span></label><textarea id="eme-temp-address" rows="2">${esc(e.temporary_address)||''}</textarea></div>
       <div><label>Status</label><select id="eme-status"><option value="active" ${e.status==='active'?'selected':''}>Active</option><option value="resigned" ${e.status==='resigned'?'selected':''}>Resigned</option><option value="terminated" ${e.status==='terminated'?'selected':''}>Terminated</option></select></div>
       <div><label>Exit Date (if resigned/terminated)</label><input id="eme-exit" type="date" value="${e.exit_date||''}"></div>
       <div><label>Exit Reason</label><select id="eme-exit-reason"><option value="">-</option>${EXIT_REASONS.map(r => `<option ${r===e.exit_reason?'selected':''}>${r}</option>`).join('')}</select></div>
@@ -157,7 +165,7 @@ window.saveEditEmployee = async (id) => {
       employee_code: val('eme-code'), full_name: val('eme-name'), department_id: val('eme-dept'), designation: val('eme-desig'),
       employment_type: val('eme-emptype'), date_of_joining: val('eme-doj'), phone: val('eme-phone'), email: val('eme-email'),
       monthly_salary: val('eme-salary'), pan_number: val('eme-pan'), blood_group: val('eme-blood'),
-      emergency_contact_name: val('eme-ec-name'), emergency_contact_phone: val('eme-ec-phone'), address: val('eme-address'),
+      emergency_contact_name: val('eme-ec-name'), emergency_contact_phone: val('eme-ec-phone'), permanent_address: val('eme-perm-address'), temporary_address: val('eme-temp-address'),
       status: val('eme-status'), exit_date: val('eme-exit') || null,
       exit_reason: val('eme-exit-reason') || null, exit_recommendation: val('eme-exit-rec') || null,
       bank_name: val('eme-bank-name'), account_number: val('eme-bank-acct'), ifsc_code: val('eme-bank-ifsc'),

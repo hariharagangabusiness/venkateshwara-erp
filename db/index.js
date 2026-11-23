@@ -43,6 +43,8 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_requests ADD COLUMN item_text TEXT`,
   `ALTER TABLE approval_chain_steps ADD COLUMN requires_supervisor INTEGER DEFAULT 0`,
   `ALTER TABLE employees ADD COLUMN employment_type TEXT DEFAULT 'Full-time'`,
+  `ALTER TABLE employees ADD COLUMN permanent_address TEXT`,
+  `ALTER TABLE employees ADD COLUMN temporary_address TEXT`,
   `ALTER TABLE employees ADD COLUMN pan_number TEXT`,
   `ALTER TABLE employees ADD COLUMN blood_group TEXT`,
   `ALTER TABLE employees ADD COLUMN emergency_contact_name TEXT`,
@@ -2981,6 +2983,8 @@ function repairCorruptedEmployeeNumericFields() {
   try {
     raw.exec(`UPDATE employees SET monthly_salary = 0 WHERE typeof(monthly_salary) IN ('text', 'blob')`);
     raw.exec(`UPDATE employees SET referral_incentive_amount = 0 WHERE typeof(referral_incentive_amount) IN ('text', 'blob')`);
+    // legacy single `address` becomes the Permanent Address where none is set yet (idempotent)
+    raw.exec(`UPDATE employees SET permanent_address = address WHERE permanent_address IS NULL AND address IS NOT NULL AND address <> ''`);
   } catch (e) { console.error('[db] employee numeric-field repair failed:', e.message); }
 }
 
