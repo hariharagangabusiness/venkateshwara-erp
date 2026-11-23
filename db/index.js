@@ -43,6 +43,9 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_requests ADD COLUMN item_text TEXT`,
   `ALTER TABLE approval_chain_steps ADD COLUMN requires_supervisor INTEGER DEFAULT 0`,
   `ALTER TABLE employees ADD COLUMN employment_type TEXT DEFAULT 'Full-time'`,
+  `ALTER TABLE purchase_request_items ADD COLUMN unit TEXT`,
+  `ALTER TABLE employees ADD COLUMN permanent_address TEXT`,
+  `ALTER TABLE employees ADD COLUMN temporary_address TEXT`,
   `ALTER TABLE employees ADD COLUMN pan_number TEXT`,
   `ALTER TABLE employees ADD COLUMN blood_group TEXT`,
   `ALTER TABLE employees ADD COLUMN emergency_contact_name TEXT`,
@@ -1676,6 +1679,8 @@ const MIGRATIONS = [
   // reused via this same table rather than a duplicate one, distinguished
   // by library_type so the two review queues never mix.
   `ALTER TABLE section_title_suggestions ADD COLUMN library_type TEXT DEFAULT 'Machine'`,
+  `ALTER TABLE section_title_suggestions ADD COLUMN rate REAL`,
+  `ALTER TABLE section_title_suggestions ADD COLUMN unit TEXT`,
   // Spares Price Comparison (2026-11-01) - a line picked from spares_library
   // needs its own stable identity recorded on the offer line itself (the
   // library id can be reused across any number of future offers/orders),
@@ -2979,6 +2984,8 @@ function repairCorruptedEmployeeNumericFields() {
   try {
     raw.exec(`UPDATE employees SET monthly_salary = 0 WHERE typeof(monthly_salary) IN ('text', 'blob')`);
     raw.exec(`UPDATE employees SET referral_incentive_amount = 0 WHERE typeof(referral_incentive_amount) IN ('text', 'blob')`);
+    // legacy single `address` becomes the Permanent Address where none is set yet (idempotent)
+    raw.exec(`UPDATE employees SET permanent_address = address WHERE permanent_address IS NULL AND address IS NOT NULL AND address <> ''`);
   } catch (e) { console.error('[db] employee numeric-field repair failed:', e.message); }
 }
 

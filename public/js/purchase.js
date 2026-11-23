@@ -189,24 +189,32 @@ window.downloadVendorTemplate = () => downloadTemplateFile('/masters/vendors/tem
 window.uploadVendorTemplate = () => uploadTemplateFile('/masters/vendors/bulk-upload', 've-upload-file', 've-upload-result', () => navigate('vendors'));
 
 // ---- Purchase Requests ----
+const PR_STATUS_ORDER = ['Draft', 'PendingQuotes', 'Pending', 'InfoRequested', 'Approved', 'OrderPlaced', 'Received', 'Rejected', 'Cancelled'];
+const PR_STATUS_LABELS = { PendingQuotes: 'Pending Quotes', Pending: 'Pending Approval', InfoRequested: 'Info Requested', OrderPlaced: 'Order Placed' };
+window.refreshPRList = () => {
+  const box = document.getElementById('pr-table-wrap');
+  const q = box && box.parentElement.querySelector('.list-search');
+  filterList('purchase-requests', q ? q.value : '');
+};
 let PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
 PAGES['purchase-requests'] = async (el) => {
   // All 6 of these are independent reads - fired together (rather than one
   // `await` after another) so the page's total load time is the slowest of
   // them, not their sum. Panel keys are static, so fetchPanelOrder's layout
   // read doesn't need to wait for the panels themselves to be built.
-  const [reqs, items, projects, thresholdSetting, rfqInbox, prOrder] = await Promise.all([
+  const [reqs, items, projects, thresholdSetting, rfqInbox, unitOpts, prOrder] = await Promise.all([
     api('/purchase/requests'),
     api('/masters/items'),
     api('/projects'),
     api('/settings/purchase-quote-threshold'),
     api('/purchase/rfq-inbox').catch(() => []),
+    api('/offers/field-options/unit').catch(() => []),
     fetchPanelOrder('purchase-requests', ['rfq-inbox', 'new-request', 'list']),
   ]);
   const threshold = thresholdSetting.quote_threshold;
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
-  window.__RFQ_INBOX = rfqInbox;
+  window.__RFQ_INBOX = rfqInbox; window.__UNIT_OPTS = unitOpts;
   PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
   const prPanels = {
     'rfq-inbox': collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
@@ -241,9 +249,28 @@ PAGES['purchase-requests'] = async (el) => {
     'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">A new request starts as a <b>Draft</b> — click Edit to review/change the items, project, quantities or values, then <b>Submit for Approval</b> when ready. A Pending request can still be edited up to the point it's approved.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
+        // layered on top of the text search: status filter, then sort
+        const st = (document.getElementById('pr-status-filter') || {}).value || '';
+        const sort = (document.getElementById('pr-sort') || {}).value || 'newest';
+        rows = (st ? rows.filter(r => r.status === st) : rows).slice();
+        const num = r => String(r.created_at || '') + String(r.id).padStart(9, '0');
+        const cmp = {
+          newest: (a, b) => num(b).localeCompare(num(a)),
+          oldest: (a, b) => num(a).localeCompare(num(b)),
+          status: (a, b) => (PR_STATUS_ORDER.indexOf(a.status) - PR_STATUS_ORDER.indexOf(b.status)) || num(b).localeCompare(num(a)),
+          status_az: (a, b) => String(a.status).localeCompare(String(b.status)) || num(b).localeCompare(num(a)),
+          pr_no: (a, b) => String(a.pr_no).localeCompare(String(b.pr_no)),
+        }[sort];
+        rows.sort(cmp);
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="font-size:12px;">Status <select id="pr-status-filter" onchange="refreshPRList()"><option value="">All</option>${PR_STATUS_ORDER.map(x => `<option value="${x}">${esc(PR_STATUS_LABELS[x] || x)}</option>`).join('')}</select></label>
+        <label style="font-size:12px;">Sort by <select id="pr-sort" onchange="refreshPRList()">
+          <option value="newest">Newest First</option><option value="oldest">Oldest First</option>
+          <option value="status">Status (workflow order)</option><option value="status_az">Status A→Z</option><option value="pr_no">PR No</option></select></label>
+      </div>
       <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
     `),
   };
@@ -337,26 +364,45 @@ window.updatePRStockBadge = (badgeId, itemId) => {
 };
 // Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
 // 6 columns in both forms.
-const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 120px 44px';
+const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 100px 120px 44px';
+// Unit of Measurement per PR line: the Admin-managed 'unit' Offer Field Options when this user can read
+// them, else the PO presets. A line's own unit wins; picking a master item pre-fills that item's unit.
+function prUnitSelectHTML(arr, i, current, disabled) {
+  const base = (window.__UNIT_OPTS || []).length ? window.__UNIT_OPTS.map(o => o.value) : PO_UNIT_PRESETS;
+  const vals = base.includes(current) || !current ? base : [current, ...base];
+  const cur = current || 'Nos';
+  return `<select id="${arr}-unit-${i}" onchange="${arr}[${i}].unit=this.value" ${disabled ? 'disabled' : ''}>${(vals.includes(cur) ? vals : [cur, ...vals]).map(v => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+}
+window.prAutoFillUnit = (arr, i, itemId) => {
+  const it = (window.__PR_ITEMS || []).find(x => x.id === Number(itemId));
+  if (!it || !it.unit) return;
+  (arr === 'PR_LINES' ? PR_LINES : EDIT_PR_LINES)[i].unit = it.unit;
+  const sel = document.getElementById(`${arr}-unit-${i}`);
+  if (sel) {
+    if (!Array.from(sel.options).some(o => o.value === it.unit)) sel.add(new Option(it.unit, it.unit));
+    sel.value = it.unit;
+  }
+};
 function renderPRLines() {
   const el = document.getElementById('pr-lines');
   if (!el) return;
   const total = PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
-  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Unit', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
       <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:0 0 auto;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';updatePRStockBadge('pr-stock-${i}',this.value);showVendorsForPRLine(${i})"`)}</div>
+          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';prAutoFillUnit('PR_LINES',${i},this.value);updatePRStockBadge('pr-stock-${i}',this.value);showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
         ${prStockBadgeHTML(`pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
       </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value"></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></div>
       <div><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)"></div>
+      <div>${prUnitSelectHTML('PR_LINES', i, l.unit, false)}</div>
       <div><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()"></div>
       <div>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</div>`,
-    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
+    `<div style="grid-column:span 5;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
-window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderPRLines(); };
+window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '', unit: '' }); renderPRLines(); };
 function renderPRRows(rows) {
   return tableHTML(['PR No', 'Item(s)', 'Project', 'Lines', 'Total Est. Value', 'Status', 'Action'], rows, r => `
     <tr id="pr-row-${r.id}">
@@ -367,6 +413,7 @@ function renderPRRows(rows) {
         ${canEditPR(r) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
+        ${ME.role === 'Admin' && r.status === 'Pending' && r.approval_id ? `<button class="btn small red" type="button" onclick="adminRejectPR(${r.id})">Reject</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
         ${['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id}, ${r.status === 'Draft'})">${r.status === 'Draft' ? 'Delete' : 'Withdraw'}</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
@@ -377,6 +424,16 @@ function renderPRRows(rows) {
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
     <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>`);
 }
+window.adminRejectPR = async (id) => {
+  const r = (window.__PR_CACHE || []).find(x => x.id === id);
+  const reason = prompt('Reason for rejecting ' + (r ? r.pr_no : 'this request') + ' (required):');
+  if (reason === null) return;
+  if (!reason.trim()) return alert('A rejection reason is required.');
+  try {
+    await api(`/approvals/${r.approval_id}/act`, { method: 'POST', body: JSON.stringify({ action: 'Rejected', comment: reason.trim() }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
 window.provideInfoPR = async (id) => {
   const comment = prompt('Response to the reviewer (optional):');
   try {
@@ -419,7 +476,7 @@ window.repeatPR = async (id) => {
   try {
     const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
     PR_LINES = lines.length
-      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '', unit: l.unit || l.item_unit || '' }))
       : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
     renderPRLines();
     const projectSel = document.getElementById('pr-project');
@@ -702,7 +759,7 @@ window.addPR = async () => {
   errEl.style.display = 'none';
   try {
     const lines = PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null, unit: l.unit || null }));
     if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests', { method: 'POST', body: JSON.stringify({
       project_id: val('pr-project') || null, items: lines
@@ -727,7 +784,7 @@ window.openEditPR = async (id) => {
   if (!r) return;
   const projects = window.__PR_PROJECTS || [];
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
-  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '', unit: l.unit || l.item_unit || '' }))
     : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
   EDIT_PR_ITEMS_LOCKED = ['Approved', 'OrderPlaced'].includes(r.status);
   openAppModal('Edit PR — ' + esc(r.pr_no), `
@@ -750,20 +807,21 @@ function renderEditPRLines() {
   if (!el) return;
   const ro = EDIT_PR_ITEMS_LOCKED;
   const total = EDIT_PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
-  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Unit', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
       <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
         ${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-          `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}
+          `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';prAutoFillUnit('EDIT_PR_LINES',${i},this.value);renderEditPRLines()" ${ro ? 'disabled' : ''}`)}
         ${prStockBadgeHTML(`edit-pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
       </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" ${ro ? 'disabled' : ''}></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></div>
       <div><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" ${ro ? 'disabled' : ''}></div>
+      <div>${prUnitSelectHTML('EDIT_PR_LINES', i, l.unit, ro)}</div>
       <div><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" ${ro ? 'disabled' : ''}></div>
       <div>${!ro && EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</div>`,
-    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
+    `<div style="grid-column:span 5;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
-window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderEditPRLines(); };
+window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '', unit: '' }); renderEditPRLines(); };
 window.saveEditPR = async (id) => {
   const errEl = document.getElementById('pre-err');
   errEl.style.display = 'none';
@@ -771,7 +829,7 @@ window.saveEditPR = async (id) => {
     const payload = { project_id: val('pre-project') || null };
     if (!EDIT_PR_ITEMS_LOCKED) {
       const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-        .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
+        .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null, unit: l.unit || null }));
       if (!lines.length) throw new Error('Add at least one item line with a quantity.');
       payload.items = lines;
     }
@@ -1403,7 +1461,7 @@ window.fillPOFromPR = async () => {
   detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
     Project: <b>${esc(r.project_code)||'-'}</b>`;
   PO_LINES = lines.length ? lines.map(l => ({
-    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',
+    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: l.item_unit || 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',
   })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null, details: '' }];
   renderPOLines();
   window.showVendorsForPOLines();

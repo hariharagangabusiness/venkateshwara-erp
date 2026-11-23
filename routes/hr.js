@@ -20,7 +20,7 @@ const { uploadMemory } = require('../lib/upload');
 const EMPLOYEE_TEMPLATE_COLUMNS = [
   'employee_code', 'full_name', 'department', 'designation', 'employment_type', 'date_of_joining',
   'phone', 'email', 'monthly_salary', 'pan_number', 'blood_group',
-  'emergency_contact_name', 'emergency_contact_phone', 'address',
+  'emergency_contact_name', 'emergency_contact_phone', 'permanent_address', 'temporary_address',
   'bank_name', 'account_number', 'ifsc_code',
   'aadhaar_number', 'passport_number', 'visa_availability', 'driving_license_number',
 ];
@@ -52,7 +52,7 @@ router.get('/employees/template', requirePermission('payroll.manage'), (req, res
     employee_code: 'EMP-1001', full_name: 'Jane Doe', department: depts[0] || 'Design', designation: 'Engineer',
     employment_type: 'Full-time', date_of_joining: '2024-01-15', phone: '9876543210', email: 'jane@example.com',
     monthly_salary: 25000, pan_number: 'ABCDE1234F', blood_group: 'O+',
-    emergency_contact_name: 'John Doe', emergency_contact_phone: '9123456780', address: 'Faridabad',
+    emergency_contact_name: 'John Doe', emergency_contact_phone: '9123456780', permanent_address: 'Faridabad', temporary_address: '',
     bank_name: 'State Bank of India', account_number: '000123456789', ifsc_code: 'SBIN0001234',
     aadhaar_number: '123456789012', passport_number: '', visa_availability: '', driving_license_number: '',
   };
@@ -75,10 +75,14 @@ router.get('/employees/:id', (req, res) => {
   res.json(e);
 });
 router.post('/employees', requirePermission('payroll.manage'), (req, res) => {
-  const { employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account,
+  const { employee_code, full_name, department_id, designation, date_of_joining, phone, email, bank_account,
     monthly_salary, reporting_manager_id, employment_type, pan_number, blood_group, emergency_contact_name, emergency_contact_phone,
     bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number,
     referred_by_employee_id, referral_incentive_amount, probation_end_date } = req.body;
+  // `address` (legacy column) mirrors Permanent Address; old clients may still send only `address`
+  const permanent_address = String(req.body.permanent_address ?? req.body.address ?? '').trim() || null;
+  const temporary_address = String(req.body.temporary_address ?? '').trim() || null;
+  const address = permanent_address;
   // Nothing enforced this before, so an employee could be added with the
   // Full Name field left blank - it saved silently and then sat in the
   // Employees table forever with a blank Name column, with no obvious way
@@ -95,14 +99,14 @@ router.post('/employees', requirePermission('payroll.manage'), (req, res) => {
     INSERT INTO employees (employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account,
       monthly_salary, reporting_manager_id, employment_type, pan_number, blood_group, emergency_contact_name, emergency_contact_phone,
       bank_name, account_number, ifsc_code, aadhaar_number, passport_number, visa_availability, driving_license_number,
-      referred_by_employee_id, referral_incentive_amount, probation_end_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      referred_by_employee_id, referral_incentive_amount, probation_end_date, permanent_address, temporary_address)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(employee_code, full_name, department_id, designation, date_of_joining, phone, email, address, bank_account, monthly_salary || 0,
     reporting_manager_id || null, employment_type || 'Full-time', pan_number || null, blood_group || null,
     emergency_contact_name || null, emergency_contact_phone || null,
     bank_name || null, account_number || null, ifsc_code || null, aadhaar_number || null, passport_number || null,
     visa_availability || null, driving_license_number || null,
-    referred_by_employee_id || null, referral_incentive_amount || 0, probation_end_date || null);
+    referred_by_employee_id || null, referral_incentive_amount || 0, probation_end_date || null, permanent_address, temporary_address);
   // A referral only ever produces one referral_incentives row, created here
   // at hire time - not something HR adds separately later. No incentive
   // amount or no referrer means nothing to track, so this silently no-ops
@@ -142,17 +146,20 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     return Number(f[key]) || 0;
   };
   const newStatus = pick('status', existing.status) || 'active';
+  // legacy `address` mirrors Permanent Address (old clients may send only `address`)
+  const newPermanent = (f.permanent_address !== undefined ? f.permanent_address : f.address !== undefined ? f.address : (existing.permanent_address ?? existing.address)) || null;
   db.prepare(`
     UPDATE employees SET employee_code=?, full_name=?, department_id=?, designation=?, date_of_joining=?, phone=?, email=?, address=?,
       bank_account=?, monthly_salary=?, status=?, reporting_manager_id=?, employment_type=?, pan_number=?, blood_group=?,
       emergency_contact_name=?, emergency_contact_phone=?, exit_date=?,
       bank_name=?, account_number=?, ifsc_code=?, aadhaar_number=?, passport_number=?, visa_availability=?, driving_license_number=?,
-      referred_by_employee_id=?, referral_incentive_amount=?, probation_end_date=?, exit_reason=?, exit_recommendation=?
+      referred_by_employee_id=?, referral_incentive_amount=?, probation_end_date=?, exit_reason=?, exit_recommendation=?,
+      permanent_address=?, temporary_address=?
     WHERE id=?
   `).run(
     pick('employee_code', existing.employee_code), pick('full_name', existing.full_name), pick('department_id', existing.department_id),
     pick('designation', existing.designation), pick('date_of_joining', existing.date_of_joining), pick('phone', existing.phone),
-    pick('email', existing.email), pick('address', existing.address), pick('bank_account', existing.bank_account),
+    pick('email', existing.email), newPermanent, pick('bank_account', existing.bank_account),
     pickNum('monthly_salary', existing.monthly_salary), newStatus,
     f.reporting_manager_id !== undefined ? (f.reporting_manager_id || null) : existing.reporting_manager_id,
     pick('employment_type', existing.employment_type) || 'Full-time', pick('pan_number', existing.pan_number),
@@ -165,6 +172,7 @@ router.put('/employees/:id', requirePermission('payroll.manage'), (req, res) => 
     pickNum('referral_incentive_amount', existing.referral_incentive_amount),
     pick('probation_end_date', existing.probation_end_date) || null,
     pick('exit_reason', existing.exit_reason) || null, pick('exit_recommendation', existing.exit_recommendation) || null,
+    newPermanent, pick('temporary_address', existing.temporary_address) || null,
     existing.id
   );
   // An employee who is THEMSELVES a referred hire still has a live
@@ -217,7 +225,7 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
   const cols = [
     'employee_code', 'full_name', 'department_id', 'designation', 'employment_type', 'date_of_joining',
     'phone', 'email', 'monthly_salary', 'pan_number', 'blood_group',
-    'emergency_contact_name', 'emergency_contact_phone', 'address',
+    'emergency_contact_name', 'emergency_contact_phone', 'address', 'permanent_address', 'temporary_address',
     'bank_name', 'account_number', 'ifsc_code',
     'aadhaar_number', 'passport_number', 'visa_availability', 'driving_license_number',
   ];
@@ -236,6 +244,9 @@ router.post('/employees/bulk-upload', requirePermission('payroll.manage'), uploa
       const empTypeRaw = String(row.employment_type || '').trim();
       const empType = empTypeRaw ? empTypeByLower.get(empTypeRaw.toLowerCase()) : null;
       if (empTypeRaw && !empType) { errors.push(`Row ${rowNum}: employment_type "${empTypeRaw}" not recognized - skipped. Use one of: ${EMPLOYMENT_TYPES.join(', ')}.`); return; }
+      // legacy `address` column mirrors Permanent Address (old templates may still use `address`)
+      row.permanent_address = String(row.permanent_address || row.address || '').trim();
+      row.address = row.permanent_address;
       const code = String(row.employee_code || '').trim() || null;
       const existing = code ? findByCode.get(code) : null;
       if (existing) {

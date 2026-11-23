@@ -711,6 +711,9 @@ router.post('/:id/act', (req, res) => {
   try {
     const approval = db.prepare('SELECT * FROM approvals WHERE id = ?').get(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
+    if (approval.entity_type === 'purchase_request' && action === 'Rejected' && !String(comment || '').trim()) {
+      return res.status(400).json({ error: 'A rejection reason is required.' });
+    }
     const result = approvalsLib.act(req.params.id, req.user, action, comment);
     syncEntityStatus(approval.entity_type, approval.entity_id, result);
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)

@@ -688,6 +688,7 @@ function orderRowHTML(o) {
     <button class="btn small outline" type="button" onclick="toggleSOPo(${o.id})">Customer PO</button>
     <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
+    <button class="btn small outline" type="button" onclick="emailAnnexureToHODs(${o.id}, this)">Email Annexure to HODs</button>
     ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}
     `)}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
@@ -1222,7 +1223,8 @@ const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancell
 window.openEditSalesOrder = async (id) => {
   const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
   if (!o) return alert('Could not find this order - try refreshing the page.');
-  const clients = await api('/masters/clients');
+  const [clients, soItems] = await Promise.all([api('/masters/clients'), api(`/sales/orders/${id}/items`).catch(() => [])]);
+  window.__ESO_ITEMS = soItems;
   const wonLeads = window.__SO_WON_LEADS_CACHE || [];
   openAppModal('Edit Sales Order — ' + o.order_no, `
     <div class="form-grid">
@@ -1234,8 +1236,21 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Description</label><textarea id="eso-desc" rows="2" style="width:100%;">${esc(o.description || '')}</textarea></div>
     <div class="form-grid">
       <div><label>Order Value (₹) <span class="muted">(if this order has line items, this value is recomputed from them the next time any item is added, edited, or removed)</span></label>
-        <input id="eso-value" type="number" value="${o.order_value ?? ''}"></div>
+        <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${soItems.length ? 'readonly title="Computed from the line items below"' : ''}></div>
     </div>
+    ${soItems.length ? `<h4 style="margin-top:14px;">Line Items (${soItems.length})</h4>
+    ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 80px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
+        const disp = it.quantity - it.dispatchable_qty;
+        return `<div><input id="eso-it-desc-${i}" value="${esc(it.description)}"></div>
+          <div><input id="eso-it-qty-${i}" type="number" min="${disp || 0}" step="any" value="${it.quantity}" oninput="esoRecalc()"></div>
+          <div><input id="eso-it-unit-${i}" value="${esc(it.unit || 'Nos')}"></div>
+          <div><input id="eso-it-rate-${i}" type="number" min="0" step="any" value="${it.rate}" oninput="esoRecalc()"></div>
+          <div><input id="eso-it-hsn-${i}" value="${esc(it.hsn_code || '')}"></div>
+          <div><input id="eso-it-gst-${i}" type="number" min="0" step="any" value="${it.gst_rate}" oninput="esoRecalc()"></div>
+          <div id="eso-it-val-${i}">₹${fmt(it.value)}</div>
+          <div>${disp}</div>`;
+      })}
+    <p id="eso-totals" style="text-align:right;margin:6px 0;"></p>` : ''}
     <h4 style="margin-top:14px;">Commercial Terms</h4>
     <div class="form-grid">
       <div><label>Promised Delivery Date</label><input id="eso-delivery" type="date" value="${o.promised_delivery_date || ''}"></div>
@@ -1247,19 +1262,46 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Payment Terms</label><textarea id="eso-payment-terms" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
     <div style="margin-top:12px;"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
   `);
+  if (soItems.length) document.querySelector('.app-modal-box').style.width = 'min(1000px,100%)'; // 8-column line grid needs more than the default 560px
+  esoRecalc();
+};
+window.esoRecalc = () => {
+  const items = window.__ESO_ITEMS || [];
+  let taxable = 0, gst = 0;
+  items.forEach((it, i) => {
+    const v = (Number(val(`eso-it-qty-${i}`)) || 0) * (Number(val(`eso-it-rate-${i}`)) || 0);
+    taxable += v; gst += v * (Number(val(`eso-it-gst-${i}`)) || 0) / 100;
+    document.getElementById(`eso-it-val-${i}`).textContent = '₹' + fmt(v);
+  });
+  const t = document.getElementById('eso-totals');
+  if (t) t.innerHTML = `Taxable <b>₹${fmt(taxable)}</b> &nbsp; GST <b>₹${fmt(gst)}</b> &nbsp; Total <b>₹${fmt(taxable + gst)}</b>`;
+  const ov = document.getElementById('eso-value');
+  if (ov && items.length) ov.value = taxable;
 };
 window.saveEditSalesOrder = async (id) => {
   try {
+    const items = (window.__ESO_ITEMS || []).map((it, i) => ({ id: it.id, description: val(`eso-it-desc-${i}`), quantity: val(`eso-it-qty-${i}`),
+      unit: val(`eso-it-unit-${i}`), rate: val(`eso-it-rate-${i}`), hsn_code: val(`eso-it-hsn-${i}`), gst_rate: val(`eso-it-gst-${i}`) }));
     await api('/sales/orders/' + id, { method: 'PUT', body: JSON.stringify({
       client_id: val('eso-client'), lead_id: val('eso-lead') || null, description: val('eso-desc'),
       order_date: val('eso-date') || null, order_value: val('eso-value'), status: val('eso-status'),
       promised_delivery_date: val('eso-delivery') || null, ld_percentage: val('eso-ld-pct') || null,
       ld_cap_percentage: val('eso-ld-cap') || null, ld_trigger_notes: val('eso-ld-notes') || null,
-      payment_terms: val('eso-payment-terms') || null,
+      payment_terms: val('eso-payment-terms') || null, items,
       ...readBgTermsFields('eso'),
     })});
     confirmSavedThenClose('eso-save-btn-' + id, 'orders');
   } catch (e) { alert(e.message); }
+};
+window.emailAnnexureToHODs = async (id, btn) => {
+  const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
+  if (!confirm(`Email the Annexure PDF for ${o ? o.order_no : 'this order'} to all active HODs?`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/sales/orders/${id}/email-annexure`, { method: 'POST' });
+    alert(`Annexure emailed to ${r.count} HOD${r.count === 1 ? '' : 's'}:\n` + r.recipients.join('\n'));
+  } catch (e) { alert(e.message); }
+  btn.disabled = false;
 };
 window.deleteOrderRow = async (id) => {
   if (!confirm('Permanently delete this sales order? Only allowed while nothing has been built on it yet. This cannot be undone.')) return;
@@ -2011,7 +2053,8 @@ async function renderOfferBuilder(panel) {
     ['terms', 'Terms & Conditions'],
     ['text', 'Inclusions / Exclusions / Utilities' + (o.show_inclusions_exclusions === 0 ? ' (excluded)' : '')],
     ['commercial', 'Commercial Terms'],
-    ['equipment-ref', 'Reference Equipment'],
+    // Spares offers print no equipment pages and the picker below lists the Machine library only
+    ...(o.offer_format === 'Spares' ? [] : [['equipment-ref', 'Reference Equipment']]),
     ['attachments', 'Attachments (GA Drawing / CAD)'],
     ['annexure', 'Annexure' + (data.annexures && data.annexures.length ? ` (${data.annexures.length})` : '')],
   ];
