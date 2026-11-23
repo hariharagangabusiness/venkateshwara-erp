@@ -1294,21 +1294,37 @@ window.loadPFLines = async () => {
   if (!soId) { wrap.innerHTML = '<p class="muted">Pick a Sales Order first.</p>'; return; }
   try {
     const items = await api(`/sales/orders/${soId}/items`);
-    PF_LINES = items.map(it => ({ ...it, selected: false, gst_rate_override: it.gst_rate }));
+    PF_LINES = items.map(it => pfWithOriginals(it));
   } catch (e) { PF_LINES = []; }
-  renderPFLines();
+  pfApplyDefaultSelection();
 };
+// Editable line picker shared by create and Edit. Description/Qty/Rate default to the order's own
+// values (o_* keep the originals, shown as a hint once changed); edits apply to the proforma only.
+function pfLinesHTML(lines, arr, rerender) {
+  const hint = (l, k) => String(l[k]) !== String(l['o_' + k]) ? `<div class="muted" style="font-size:11px;">orig: ${esc(String(l['o_' + k]))}</div>` : '';
+  return gridLineTableHTML('36px minmax(220px,2fr) 90px 90px 110px 100px', ['', 'Description', 'Qty', 'Unit', 'Rate (₹)', 'GST %'], lines, (l, i) => `
+      <div><input type="checkbox" ${l.selected ? 'checked' : ''} onchange="${arr}[${i}].selected=this.checked"></div>
+      <div><input value="${esc(l.description)}" style="width:100%;" onchange="${arr}[${i}].description=this.value;${rerender}()">${hint(l, 'description')}</div>
+      <div><input type="number" min="0" step="any" value="${l.quantity}" style="width:80px;" onchange="${arr}[${i}].quantity=Number(this.value);${rerender}()">${hint(l, 'quantity')}</div>
+      <div>${esc(l.unit || 'Nos')}</div>
+      <div><input type="number" min="0" step="any" value="${l.rate}" style="width:100px;" onchange="${arr}[${i}].rate=Number(this.value);${rerender}()">${hint(l, 'rate')}</div>
+      <div><input type="number" value="${l.gst_rate_override}" onchange="${arr}[${i}].gst_rate_override=Number(this.value)" style="width:70px;"></div>`);
+}
+const pfWithOriginals = (it, over = {}) => ({ ...it, o_description: it.description, o_quantity: it.quantity, o_rate: it.rate, gst_rate_override: it.gst_rate, ...over });
 function renderPFLines() {
   const wrap = document.getElementById('pf-lines');
   if (!wrap) return;
   if (!PF_LINES.length) { wrap.innerHTML = '<p class="muted">This order has no line items on file - use the Amount field below instead.</p>'; return; }
-  wrap.innerHTML = gridLineTableHTML('36px minmax(220px,2fr) 90px 90px 100px 100px', ['', 'Description', 'Qty', 'Unit', 'Rate (₹)', 'GST %'], PF_LINES, (l, i) => `
-      <div><input type="checkbox" ${l.selected ? 'checked' : ''} onchange="PF_LINES[${i}].selected=this.checked"></div>
-      <div>${esc(l.description)}</div>
-      <div>${l.quantity}</div>
-      <div>${esc(l.unit || 'Nos')}</div>
-      <div>₹${fmt(l.rate)}</div>
-      <div><input type="number" value="${l.gst_rate_override}" onchange="PF_LINES[${i}].gst_rate_override=Number(this.value)" style="width:70px;"></div>`);
+  wrap.innerHTML = pfLinesHTML(PF_LINES, 'PF_LINES', 'renderPFLines');
+}
+// Default = bill the order's real lines. When a milestone or the order's Advance %/Payment Before
+// Dispatch % (commercial terms) drives the amount, lines start unticked so that amount is used.
+function pfApplyDefaultSelection() {
+  const o = (window.__INV_ORDERS || []).find(x => x.id === Number(val('pf-so')));
+  const pct = o ? (val('pf-type') === 'Advance' ? Number(o.advance_percent) : Number(o.predispatch_percent)) || 0 : 0;
+  const driven = !!val('pf-milestone') || pct > 0;
+  PF_LINES.forEach(l => { l.selected = !driven; });
+  renderPFLines();
 }
 window.generateProforma = async () => {
   const errEl = document.getElementById('pf-err'); errEl.style.display = 'none';
@@ -1371,7 +1387,9 @@ window.openEditProforma = async (id) => {
   const linkedIds = new Set(items.filter(it => it.sales_order_item_id).map(it => it.sales_order_item_id));
   PFE_LINES = soItems.map(it => {
     const pfItem = items.find(x => x.sales_order_item_id === it.id);
-    return { ...it, selected: linkedIds.has(it.id), gst_rate_override: pfItem ? pfItem.gst_rate : it.gst_rate };
+    return pfWithOriginals(it, pfItem
+      ? { selected: true, description: pfItem.description, quantity: pfItem.quantity, rate: pfItem.rate, gst_rate_override: pfItem.gst_rate }
+      : { selected: false });
   });
   const manualItem = (!linkedIds.size && items.length === 1) ? items[0] : null;
   openAppModal(`Edit Proforma — ${esc(pf.proforma_no)}`, `
@@ -1400,13 +1418,7 @@ function renderPFELines() {
   const wrap = document.getElementById('pfe-lines');
   if (!wrap) return;
   if (!PFE_LINES.length) { wrap.innerHTML = '<p class="muted">This order has no line items on file - use the Amount field below instead.</p>'; return; }
-  wrap.innerHTML = gridLineTableHTML('36px minmax(220px,2fr) 90px 90px 100px 100px', ['', 'Description', 'Qty', 'Unit', 'Rate (₹)', 'GST %'], PFE_LINES, (l, i) => `
-      <div><input type="checkbox" ${l.selected ? 'checked' : ''} onchange="PFE_LINES[${i}].selected=this.checked"></div>
-      <div>${esc(l.description)}</div>
-      <div>${l.quantity}</div>
-      <div>${esc(l.unit || 'Nos')}</div>
-      <div>₹${fmt(l.rate)}</div>
-      <div><input type="number" value="${l.gst_rate_override}" onchange="PFE_LINES[${i}].gst_rate_override=Number(this.value)" style="width:70px;"></div>`);
+  wrap.innerHTML = pfLinesHTML(PFE_LINES, 'PFE_LINES', 'renderPFELines');
 }
 window.pfePrefillAmountFromPercent = (soId) => {
   const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
@@ -1482,6 +1494,7 @@ window.pfPrefillAmountFromPercent = () => {
   const soId = Number(val('pf-so'));
   const o = (window.__INV_ORDERS || []).find(x => x.id === soId);
   const amountEl = document.getElementById('pf-amount');
+  pfApplyDefaultSelection();
   if (!o || !amountEl || val('pf-milestone')) return;
   const pct = val('pf-type') === 'Advance' ? Number(o.advance_percent) || 0 : Number(o.predispatch_percent) || 0;
   amountEl.value = pct > 0 ? Math.round((pct / 100 * (Number(o.order_value) || 0)) * 100) / 100 : '';
