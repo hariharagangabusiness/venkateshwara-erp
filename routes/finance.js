@@ -1161,6 +1161,12 @@ function computeSurcharge(req, percentKey, amountKey, taxableTotal, taxRate) {
 // Received math has to stay identical between the two, or an edited
 // proforma's totals could silently drift from what a freshly-created one
 // would compute for the same inputs.
+// What the order is actually for: its line-item descriptions (e.g. "Hydraulic Stacker-Mobile-12.5 M Long"),
+// falling back to the order-level description, then the order number.
+function soItemsDescription(so) {
+  const d = db.prepare(`SELECT description FROM sales_order_items WHERE sales_order_id = ? ORDER BY id`).all(so.id).map(r => r.description).filter(Boolean);
+  return d.length ? [...new Set(d)].join(' / ') : (so.description || so.order_no);
+}
 function computeProformaCharges(req, items, company, sameState) {
   let taxableTotal = 0, cgst = 0, sgst = 0, igst = 0;
   const lineRows = items.map((it, i) => {
@@ -1234,7 +1240,7 @@ router.post('/proforma-invoices/from-sales-order/:soId', requirePermission('sale
     // only when nothing was typed.
     const typedDesc = req.body.description && String(req.body.description).trim();
     items = [{
-      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`),
+      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${soItemsDescription(so)}`),
       quantity: 1, unit: 'Nos', rate: amount, gst_rate: company.default_gst_rate || 18,
     }];
   }
@@ -1336,7 +1342,7 @@ router.put('/proforma-invoices/:id', requirePermission('sales_order.manage'), (r
     if (!amount) return res.status(400).json({ error: 'Give an amount, pick a milestone that has one, or set this order\'s Advance %/Payment Before Dispatch % first.' });
     const typedDesc = req.body.description && String(req.body.description).trim();
     items = [{
-      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${so.description || so.order_no}`),
+      description: milestone ? milestone.milestone_name : (typedDesc || `${invoice_type === 'Advance' ? 'Advance payment' : 'Payment before dispatch'} - ${soItemsDescription(so)}`),
       quantity: 1, unit: 'Nos', rate: amount, gst_rate: company.default_gst_rate || 18,
     }];
   }
