@@ -1006,14 +1006,14 @@ router.get('/orders/:id/annexure/pdf', async (req, res) => {
 
 // Emails the Annexure (PDF, built live from the order's current data - the stored .docx and any manual
 // upload are left alone) to every active HOD. HOD = department supervisor (is_supervisor, the app-wide
-// convention) or anyone whose role/designation says "HOD"; inactive users and duplicate addresses dropped.
+// convention) or anyone whose role name says "HOD" (users have no designation column); inactive users and duplicate addresses dropped.
 router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'), async (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   const hods = db.prepare(`
     SELECT u.full_name, u.email FROM users u JOIN roles r ON r.id = u.role_id
     WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
-      AND (u.is_supervisor = 1 OR LOWER(COALESCE(u.designation, '')) LIKE '%hod%' OR LOWER(r.name) LIKE '%hod%')
+      AND (u.is_supervisor = 1 OR LOWER(r.name) LIKE '%hod%')
     ORDER BY u.id
   `).all();
   const seen = new Set();
