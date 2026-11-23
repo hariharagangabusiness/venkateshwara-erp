@@ -5,3 +5,27 @@ db/erp.db-wal
 public/uploads/*
 !public/uploads/.gitkeep
 .env
+# graphify output
+graphify-out/
+
+# private keys and local secrets - never commit
+/key
+/key.pub
+/keys
+/keys.pub
+/SSH Key*
+/RSA Key*
+*.pem
+*.ppk
+id_rsa*
+id_ed25519*
+
+# database backups and local scratch/helper files
+db/*.bak
+/_scratch_verify/
+/python_edit.py
+/replace_buttons.py
+
+# local Claude Code config (graphify hooks/skill copy need a local install; settings.local.json is per-user)
+/.claude/
+db/backups/
