@@ -1262,6 +1262,7 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Payment Terms</label><textarea id="eso-payment-terms" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
     <div style="margin-top:12px;"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
   `);
+  if (soItems.length) document.querySelector('.app-modal-box').style.width = 'min(1000px,100%)'; // 8-column line grid needs more than the default 560px
   esoRecalc();
 };
 window.esoRecalc = () => {
