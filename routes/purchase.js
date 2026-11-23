@@ -92,7 +92,7 @@ router.get('/requests/my-pending-count', (req, res) => {
 // picker on Purchase Order creation.
 router.get('/requests/:id/items', (req, res) => {
   res.json(db.prepare(`
-    SELECT pri.*, i.name as item_name, i.status as item_master_status, i.unit as item_unit
+    SELECT pri.*, i.name as item_name, i.status as item_master_status, COALESCE(pri.unit, i.unit) as item_unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
     WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
   `).all(req.params.id));
@@ -127,7 +127,7 @@ router.post('/requests', requirePermission('purchase_request.create', 'job_card.
       const qty = Number(line.quantity);
       if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
       const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
-      return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null };
+      return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null, unit: String(line.unit || '').trim() || null };
     });
   } catch (e) { return res.status(400).json({ error: e.message }); }
 
@@ -142,11 +142,11 @@ router.post('/requests', requirePermission('purchase_request.create', 'job_card.
     `).run(prNo, project_id || null, req.user.id, first.itemId, first.itemText, first.quantity, totalValue);
     const prId = info.lastInsertRowid;
     const insertLine = db.prepare(`
-      INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order)
-      VALUES (?,?,?,?,?,?,?)
+      INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order, unit)
+      VALUES (?,?,?,?,?,?,?,?)
     `);
     resolved.forEach((l, i) => {
-      insertLine.run(prId, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i);
+      insertLine.run(prId, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i, l.unit);
       if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(prId, l.itemId);
     });
     return prId;
@@ -387,7 +387,7 @@ function openPrRows() {
   const placeholders = OPEN_PR_STATUSES.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT pr.pr_no, pr.status, COALESCE(i.item_code, pri.item_text) as item_code,
-      COALESCE(i.name, pri.item_text) as item_description, i.unit as unit, pri.details,
+      COALESCE(i.name, pri.item_text) as item_description, COALESCE(pri.unit, i.unit) as unit, pri.details,
       pri.quantity, pri.estimated_value,
       pr.created_at, u.full_name as created_by, d.name as department, p.project_code as project
     FROM purchase_request_items pri
@@ -606,7 +606,7 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, bas
   const rfqRow = db.prepare('SELECT item_ids FROM rfq_requests WHERE id = ?').get(rfqId);
   const itemIds = JSON.parse((rfqRow && rfqRow.item_ids) || '[]').map(Number);
   const itemRows = itemIds.length ? db.prepare(`
-    SELECT COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(i.unit, 'Nos') as unit
+    SELECT COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(pri.unit, i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
     WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...itemIds) : [];
@@ -821,7 +821,7 @@ router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 
   if (!rfq) return res.status(404).json({ error: 'Not found' });
   const itemIds = JSON.parse(rfq.item_ids || '[]').map(Number);
   const items = itemIds.length ? db.prepare(`
-    SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(i.unit, 'Nos') as unit
+    SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(pri.unit, i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
     WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...itemIds) : [];
@@ -1037,7 +1037,7 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
         const qty = Number(line.quantity);
         if (!qty || qty <= 0) throw new Error('Every line needs a quantity greater than 0.');
         const { itemId, wasAdhoc } = resolvePRLineItem(line, req.user.id);
-        return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null };
+        return { itemId, wasAdhoc, quantity: qty, estimatedValue: Number(line.estimated_value) || 0, itemText: line.item_text || null, details: line.details || null, unit: String(line.unit || '').trim() || null };
       });
     } catch (e) { return res.status(400).json({ error: e.message }); }
   }
@@ -1045,11 +1045,11 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
     if (resolved) {
       db.prepare('DELETE FROM purchase_request_items WHERE purchase_request_id = ?').run(existing.id);
       const insertLine = db.prepare(`
-        INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order)
-        VALUES (?,?,?,?,?,?,?)
+        INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order, unit)
+        VALUES (?,?,?,?,?,?,?,?)
       `);
       resolved.forEach((l, i) => {
-        insertLine.run(existing.id, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i);
+        insertLine.run(existing.id, l.itemId, l.itemText, l.quantity, l.estimatedValue, l.details, i, l.unit);
         if (l.wasAdhoc) db.prepare('UPDATE items SET created_from_pr_id = ? WHERE id = ?').run(existing.id, l.itemId);
       });
       const first = resolved[0];

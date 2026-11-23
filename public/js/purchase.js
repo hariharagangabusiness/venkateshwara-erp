@@ -195,18 +195,19 @@ PAGES['purchase-requests'] = async (el) => {
   // `await` after another) so the page's total load time is the slowest of
   // them, not their sum. Panel keys are static, so fetchPanelOrder's layout
   // read doesn't need to wait for the panels themselves to be built.
-  const [reqs, items, projects, thresholdSetting, rfqInbox, prOrder] = await Promise.all([
+  const [reqs, items, projects, thresholdSetting, rfqInbox, unitOpts, prOrder] = await Promise.all([
     api('/purchase/requests'),
     api('/masters/items'),
     api('/projects'),
     api('/settings/purchase-quote-threshold'),
     api('/purchase/rfq-inbox').catch(() => []),
+    api('/offers/field-options/unit').catch(() => []),
     fetchPanelOrder('purchase-requests', ['rfq-inbox', 'new-request', 'list']),
   ]);
   const threshold = thresholdSetting.quote_threshold;
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
-  window.__RFQ_INBOX = rfqInbox;
+  window.__RFQ_INBOX = rfqInbox; window.__UNIT_OPTS = unitOpts;
   PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
   const prPanels = {
     'rfq-inbox': collapsiblePanel('rfq-inbox-panel', `Vendor Quote Responses (Email) (${rfqInbox.length})`, `
@@ -337,26 +338,45 @@ window.updatePRStockBadge = (badgeId, itemId) => {
 };
 // Shared by both New PR (here) and Edit PR (renderEditPRLines below) - same
 // 6 columns in both forms.
-const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 120px 44px';
+const PR_LINES_GRID_COLS = 'minmax(220px,1.6fr) minmax(140px,1.2fr) minmax(160px,1.3fr) 80px 100px 120px 44px';
+// Unit of Measurement per PR line: the Admin-managed 'unit' Offer Field Options when this user can read
+// them, else the PO presets. A line's own unit wins; picking a master item pre-fills that item's unit.
+function prUnitSelectHTML(arr, i, current, disabled) {
+  const base = (window.__UNIT_OPTS || []).length ? window.__UNIT_OPTS.map(o => o.value) : PO_UNIT_PRESETS;
+  const vals = base.includes(current) || !current ? base : [current, ...base];
+  const cur = current || 'Nos';
+  return `<select id="${arr}-unit-${i}" onchange="${arr}[${i}].unit=this.value" ${disabled ? 'disabled' : ''}>${(vals.includes(cur) ? vals : [cur, ...vals]).map(v => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+}
+window.prAutoFillUnit = (arr, i, itemId) => {
+  const it = (window.__PR_ITEMS || []).find(x => x.id === Number(itemId));
+  if (!it || !it.unit) return;
+  (arr === 'PR_LINES' ? PR_LINES : EDIT_PR_LINES)[i].unit = it.unit;
+  const sel = document.getElementById(`${arr}-unit-${i}`);
+  if (sel) {
+    if (!Array.from(sel.options).some(o => o.value === it.unit)) sel.add(new Option(it.unit, it.unit));
+    sel.value = it.unit;
+  }
+};
 function renderPRLines() {
   const el = document.getElementById('pr-lines');
   if (!el) return;
   const total = PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
-  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Unit', 'Est. Value (₹)', ''], PR_LINES, (l, i) => `
       <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:0 0 auto;">${itemPickerHTML(`pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';updatePRStockBadge('pr-stock-${i}',this.value);showVendorsForPRLine(${i})"`)}</div>
+          `onchange="PR_LINES[${i}].item_id=this.value?Number(this.value):'';prAutoFillUnit('PR_LINES',${i},this.value);updatePRStockBadge('pr-stock-${i}',this.value);showVendorsForPRLine(${i})"`)}</div>
         <button class="btn small outline" type="button" style="white-space:nowrap;" onclick="showItemPriceHistory(PR_LINES[${i}].item_id)">Price History</button>
         ${prStockBadgeHTML(`pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
       </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="PR_LINES[${i}].details=this.value"></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="PR_LINES[${i}].item_text=this.value" ${l.item_id ? 'disabled' : ''}></div>
       <div><input type="number" value="${l.quantity}" onchange="PR_LINES[${i}].quantity=Number(this.value)"></div>
+      <div>${prUnitSelectHTML('PR_LINES', i, l.unit, false)}</div>
       <div><input type="number" value="${l.estimated_value}" onchange="PR_LINES[${i}].estimated_value=Number(this.value);renderPRLines()"></div>
       <div>${PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="PR_LINES.splice(${i},1);renderPRLines()">✕</button>` : ''}</div>`,
-    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
+    `<div style="grid-column:span 5;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
-window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderPRLines(); };
+window.addPRLine = () => { PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '', unit: '' }); renderPRLines(); };
 function renderPRRows(rows) {
   return tableHTML(['PR No', 'Item(s)', 'Project', 'Lines', 'Total Est. Value', 'Status', 'Action'], rows, r => `
     <tr id="pr-row-${r.id}">
@@ -419,7 +439,7 @@ window.repeatPR = async (id) => {
   try {
     const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
     PR_LINES = lines.length
-      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+      ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '', unit: l.unit || l.item_unit || '' }))
       : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
     renderPRLines();
     const projectSel = document.getElementById('pr-project');
@@ -702,7 +722,7 @@ window.addPR = async () => {
   errEl.style.display = 'none';
   try {
     const lines = PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
+      .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null, unit: l.unit || null }));
     if (!lines.length) throw new Error('Add at least one item line with a quantity.');
     await api('/purchase/requests', { method: 'POST', body: JSON.stringify({
       project_id: val('pr-project') || null, items: lines
@@ -727,7 +747,7 @@ window.openEditPR = async (id) => {
   if (!r) return;
   const projects = window.__PR_PROJECTS || [];
   const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
-  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '' }))
+  EDIT_PR_LINES = lines.length ? lines.map(l => ({ item_id: l.item_id || '', item_text: l.item_text || '', quantity: l.quantity, estimated_value: l.estimated_value || 0, details: l.details || '', unit: l.unit || l.item_unit || '' }))
     : [{ item_id: r.item_id || '', item_text: '', quantity: r.quantity, estimated_value: r.estimated_value || 0, details: '' }];
   EDIT_PR_ITEMS_LOCKED = ['Approved', 'OrderPlaced'].includes(r.status);
   openAppModal('Edit PR — ' + esc(r.pr_no), `
@@ -750,20 +770,21 @@ function renderEditPRLines() {
   if (!el) return;
   const ro = EDIT_PR_ITEMS_LOCKED;
   const total = EDIT_PR_LINES.reduce((s, l) => s + (Number(l.estimated_value) || 0), 0);
-  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
+  el.innerHTML = gridLineTableHTML(PR_LINES_GRID_COLS, ['Item (pick from master)', 'Additional Details', 'Or type a new item', 'Qty', 'Unit', 'Est. Value (₹)', ''], EDIT_PR_LINES, (l, i) => `
       <div><div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
         ${itemPickerHTML(`edit-pr-item-${i}`, window.__PR_ITEMS || [], l.item_id, prItemOptions,
-          `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';renderEditPRLines()" ${ro ? 'disabled' : ''}`)}
+          `onchange="EDIT_PR_LINES[${i}].item_id=this.value?Number(this.value):'';prAutoFillUnit('EDIT_PR_LINES',${i},this.value);renderEditPRLines()" ${ro ? 'disabled' : ''}`)}
         ${prStockBadgeHTML(`edit-pr-stock-${i}`, window.__PR_ITEMS || [], l.item_id)}
       </div></div>
       <div><input value="${esc(l.details||'')}" placeholder="e.g. grade, size, drawing ref" onchange="EDIT_PR_LINES[${i}].details=this.value" ${ro ? 'disabled' : ''}></div>
       <div><input value="${esc(l.item_text||'')}" placeholder="Not in the master? Type it here" onchange="EDIT_PR_LINES[${i}].item_text=this.value" ${l.item_id || ro ? 'disabled' : ''}></div>
       <div><input type="number" value="${l.quantity}" onchange="EDIT_PR_LINES[${i}].quantity=Number(this.value)" ${ro ? 'disabled' : ''}></div>
+      <div>${prUnitSelectHTML('EDIT_PR_LINES', i, l.unit, ro)}</div>
       <div><input type="number" value="${l.estimated_value}" onchange="EDIT_PR_LINES[${i}].estimated_value=Number(this.value);renderEditPRLines()" ${ro ? 'disabled' : ''}></div>
       <div>${!ro && EDIT_PR_LINES.length > 1 ? `<button class="btn small outline" type="button" onclick="EDIT_PR_LINES.splice(${i},1);renderEditPRLines()">✕</button>` : ''}</div>`,
-    `<div style="grid-column:span 4;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
+    `<div style="grid-column:span 5;text-align:right;"><b>Total Est. Value</b></div><div><b>₹${fmt(total)}</b></div><div></div>`);
 }
-window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '' }); renderEditPRLines(); };
+window.addEditPRLine = () => { EDIT_PR_LINES.push({ item_id: '', item_text: '', quantity: 1, estimated_value: 0, details: '', unit: '' }); renderEditPRLines(); };
 window.saveEditPR = async (id) => {
   const errEl = document.getElementById('pre-err');
   errEl.style.display = 'none';
@@ -771,7 +792,7 @@ window.saveEditPR = async (id) => {
     const payload = { project_id: val('pre-project') || null };
     if (!EDIT_PR_ITEMS_LOCKED) {
       const lines = EDIT_PR_LINES.filter(l => (l.item_id || (l.item_text||'').trim()) && Number(l.quantity) > 0)
-        .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null }));
+        .map(l => ({ item_id: l.item_id || null, item_text: l.item_text || null, quantity: Number(l.quantity), estimated_value: Number(l.estimated_value) || 0, details: l.details || null, unit: l.unit || null }));
       if (!lines.length) throw new Error('Add at least one item line with a quantity.');
       payload.items = lines;
     }
@@ -1403,7 +1424,7 @@ window.fillPOFromPR = async () => {
   detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
     Project: <b>${esc(r.project_code)||'-'}</b>`;
   PO_LINES = lines.length ? lines.map(l => ({
-    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',
+    item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: l.item_unit || 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',
   })) : [{ item_id: '', quantity: 1, rate: 0, hsn_code: '', gst_rate: 18, unit: 'Nos', discount_percent: 0, purchase_request_item_id: null, details: '' }];
   renderPOLines();
   window.showVendorsForPOLines();

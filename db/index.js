@@ -43,6 +43,7 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_requests ADD COLUMN item_text TEXT`,
   `ALTER TABLE approval_chain_steps ADD COLUMN requires_supervisor INTEGER DEFAULT 0`,
   `ALTER TABLE employees ADD COLUMN employment_type TEXT DEFAULT 'Full-time'`,
+  `ALTER TABLE purchase_request_items ADD COLUMN unit TEXT`,
   `ALTER TABLE employees ADD COLUMN permanent_address TEXT`,
   `ALTER TABLE employees ADD COLUMN temporary_address TEXT`,
   `ALTER TABLE employees ADD COLUMN pan_number TEXT`,

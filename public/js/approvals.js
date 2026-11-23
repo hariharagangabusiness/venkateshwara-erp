@@ -267,8 +267,8 @@ async function renderApprovalDrilldown(key) {
         api(`/purchase/requests/${r.entity_id}/items`),
         api(`/purchase/requests/${r.entity_id}/approval-history`),
       ]);
-      extraHtml = `<h5 style="margin:8px 0 4px;">Line Items</h5>${tableHTML(['Item', 'Additional Details', 'Qty', 'Est. Value'], lines, l => `
-        <tr><td>${esc(l.item_name)||esc(l.item_text)||'-'}</td><td>${esc(l.details)||'-'}</td><td>${l.quantity}</td><td>₹${fmt(l.estimated_value)}</td></tr>`)}`;
+      extraHtml = `<h5 style="margin:8px 0 4px;">Line Items</h5>${tableHTML(['Item', 'Additional Details', 'Qty', 'Unit', 'Est. Value'], lines, l => `
+        <tr><td>${esc(l.item_name)||esc(l.item_text)||'-'}</td><td>${esc(l.details)||'-'}</td><td>${l.quantity}</td><td>${esc(l.item_unit)||'-'}</td><td>₹${fmt(l.estimated_value)}</td></tr>`)}`;
       history = hist;
       attachType = 'purchase_request';
     } else if (r.entity_type === 'expense_voucher') {
