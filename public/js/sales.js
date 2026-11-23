@@ -1222,7 +1222,8 @@ const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancell
 window.openEditSalesOrder = async (id) => {
   const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
   if (!o) return alert('Could not find this order - try refreshing the page.');
-  const clients = await api('/masters/clients');
+  const [clients, soItems] = await Promise.all([api('/masters/clients'), api(`/sales/orders/${id}/items`).catch(() => [])]);
+  window.__ESO_ITEMS = soItems;
   const wonLeads = window.__SO_WON_LEADS_CACHE || [];
   openAppModal('Edit Sales Order — ' + o.order_no, `
     <div class="form-grid">
@@ -1234,8 +1235,23 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Description</label><textarea id="eso-desc" rows="2" style="width:100%;">${esc(o.description || '')}</textarea></div>
     <div class="form-grid">
       <div><label>Order Value (₹) <span class="muted">(if this order has line items, this value is recomputed from them the next time any item is added, edited, or removed)</span></label>
-        <input id="eso-value" type="number" value="${o.order_value ?? ''}"></div>
+        <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${soItems.length ? 'readonly title="Computed from the line items below"' : ''}></div>
     </div>
+    ${soItems.length ? `<h4 style="margin-top:14px;">Line Items (${soItems.length})</h4>
+    <div class="grid-line-table" style="overflow-x:auto;">
+      ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 80px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
+        const disp = it.quantity - it.dispatchable_qty;
+        return `<div><input id="eso-it-desc-${i}" value="${esc(it.description)}"></div>
+          <div><input id="eso-it-qty-${i}" type="number" min="${disp || 0}" step="any" value="${it.quantity}" oninput="esoRecalc()"></div>
+          <div><input id="eso-it-unit-${i}" value="${esc(it.unit || 'Nos')}"></div>
+          <div><input id="eso-it-rate-${i}" type="number" min="0" step="any" value="${it.rate}" oninput="esoRecalc()"></div>
+          <div><input id="eso-it-hsn-${i}" value="${esc(it.hsn_code || '')}"></div>
+          <div><input id="eso-it-gst-${i}" type="number" min="0" step="any" value="${it.gst_rate}" oninput="esoRecalc()"></div>
+          <div id="eso-it-val-${i}">₹${fmt(it.value)}</div>
+          <div>${disp}</div>`;
+      })}
+    </div>
+    <p id="eso-totals" style="text-align:right;margin:6px 0;"></p>` : ''}
     <h4 style="margin-top:14px;">Commercial Terms</h4>
     <div class="form-grid">
       <div><label>Promised Delivery Date</label><input id="eso-delivery" type="date" value="${o.promised_delivery_date || ''}"></div>
@@ -1247,15 +1263,31 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Payment Terms</label><textarea id="eso-payment-terms" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
     <div style="margin-top:12px;"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
   `);
+  esoRecalc();
+};
+window.esoRecalc = () => {
+  const items = window.__ESO_ITEMS || [];
+  let taxable = 0, gst = 0;
+  items.forEach((it, i) => {
+    const v = (Number(val(`eso-it-qty-${i}`)) || 0) * (Number(val(`eso-it-rate-${i}`)) || 0);
+    taxable += v; gst += v * (Number(val(`eso-it-gst-${i}`)) || 0) / 100;
+    document.getElementById(`eso-it-val-${i}`).textContent = '₹' + fmt(v);
+  });
+  const t = document.getElementById('eso-totals');
+  if (t) t.innerHTML = `Taxable <b>₹${fmt(taxable)}</b> &nbsp; GST <b>₹${fmt(gst)}</b> &nbsp; Total <b>₹${fmt(taxable + gst)}</b>`;
+  const ov = document.getElementById('eso-value');
+  if (ov && items.length) ov.value = taxable;
 };
 window.saveEditSalesOrder = async (id) => {
   try {
+    const items = (window.__ESO_ITEMS || []).map((it, i) => ({ id: it.id, description: val(`eso-it-desc-${i}`), quantity: val(`eso-it-qty-${i}`),
+      unit: val(`eso-it-unit-${i}`), rate: val(`eso-it-rate-${i}`), hsn_code: val(`eso-it-hsn-${i}`), gst_rate: val(`eso-it-gst-${i}`) }));
     await api('/sales/orders/' + id, { method: 'PUT', body: JSON.stringify({
       client_id: val('eso-client'), lead_id: val('eso-lead') || null, description: val('eso-desc'),
       order_date: val('eso-date') || null, order_value: val('eso-value'), status: val('eso-status'),
       promised_delivery_date: val('eso-delivery') || null, ld_percentage: val('eso-ld-pct') || null,
       ld_cap_percentage: val('eso-ld-cap') || null, ld_trigger_notes: val('eso-ld-notes') || null,
-      payment_terms: val('eso-payment-terms') || null,
+      payment_terms: val('eso-payment-terms') || null, items,
       ...readBgTermsFields('eso'),
     })});
     confirmSavedThenClose('eso-save-btn-' + id, 'orders');

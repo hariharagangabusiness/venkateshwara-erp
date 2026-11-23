@@ -423,8 +423,28 @@ router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
     client_id, lead_id, description, order_date, order_value, status,
     promised_delivery_date, ld_percentage, ld_cap_percentage, ld_trigger_notes,
     abg_required, abg_percentage, abg_amount, abg_validity_days,
-    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes, payment_terms,
+    pbg_required, pbg_percentage, pbg_amount, pbg_validity_days, bg_terms_notes, payment_terms, items,
   } = req.body;
+  // Optional line edits (Edit Sales Order popup): validated in full BEFORE anything is written, so a
+  // qty below what's already dispatched rejects the whole save instead of half-applying.
+  const lineUpdates = [];
+  if (Array.isArray(items)) {
+    for (const l of items) {
+      const item = db.prepare('SELECT * FROM sales_order_items WHERE id = ? AND sales_order_id = ?').get(l.id, order.id);
+      if (!item) return res.status(400).json({ error: 'A line item in this edit no longer belongs to the order - refresh and try again.' });
+      const qty = Number(l.quantity), rate = Number(l.rate);
+      const desc = String(l.description ?? item.description).trim();
+      if (!desc) return res.status(400).json({ error: 'Every line needs a description.' });
+      if (!(qty > 0)) return res.status(400).json({ error: `"${desc}": enter a quantity greater than 0.` });
+      if (!(rate >= 0)) return res.status(400).json({ error: `"${desc}": enter a valid rate.` });
+      const alreadyDispatched = item.quantity - soLineDispatchableQty(item);
+      if (qty < alreadyDispatched) {
+        return res.status(400).json({ error: `"${desc}": cannot reduce quantity below ${alreadyDispatched} - that much has already been dispatched against this line.` });
+      }
+      const gst = l.gst_rate !== undefined && l.gst_rate !== '' ? Number(l.gst_rate) : item.gst_rate;
+      lineUpdates.push({ item, desc, qty, rate, gst, unit: String(l.unit || item.unit || 'Nos').trim() || 'Nos', hsn: l.hsn_code !== undefined ? (String(l.hsn_code).trim() || null) : item.hsn_code });
+    }
+  }
   if (client_id !== undefined) {
     const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(client_id);
     if (!client) return res.status(400).json({ error: 'Selected customer not found.' });
@@ -466,6 +486,11 @@ router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
     payment_terms !== undefined ? (payment_terms ? String(payment_terms).trim() : null) : order.payment_terms,
     order.id
   );
+  if (lineUpdates.length) {
+    const upd = db.prepare('UPDATE sales_order_items SET description=?, hsn_code=?, quantity=?, unit=?, rate=?, value=?, gst_rate=? WHERE id=?');
+    lineUpdates.forEach(u => upd.run(u.desc, u.hsn, u.qty, u.unit, u.rate, u.qty * u.rate, u.gst, u.item.id));
+    recomputeOrderValue(order.id);
+  }
   recomputePoTermsStatus(db, order.id);
   // Client/Description changes affect what the annexure's own header prints
   // (customer name, subject) - same "don't leave it silently stale" guard
