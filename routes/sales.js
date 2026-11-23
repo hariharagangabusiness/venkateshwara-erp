@@ -1029,7 +1029,7 @@ router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'
       order_no: order.order_no, client_name: (data.client && data.client.name) || '-',
       order_date: order.order_date ? formatDate(order.order_date) : '-',
       delivery_date: order.promised_delivery_date ? formatDate(order.promised_delivery_date) : 'not set',
-      order_value: Number(order.order_value || 0).toLocaleString('en-IN'), sender_name: req.user.full_name,
+      sender_name: req.user.full_name,
     });
     const mail = await sendMail({
       to: recipients[0].email.trim(), cc: recipients.slice(1).map(r => r.email.trim()),

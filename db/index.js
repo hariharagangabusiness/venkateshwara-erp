@@ -43,7 +43,6 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_requests ADD COLUMN item_text TEXT`,
   `ALTER TABLE approval_chain_steps ADD COLUMN requires_supervisor INTEGER DEFAULT 0`,
   `ALTER TABLE employees ADD COLUMN employment_type TEXT DEFAULT 'Full-time'`,
-  `ALTER TABLE purchase_request_items ADD COLUMN unit TEXT`,
   `ALTER TABLE employees ADD COLUMN permanent_address TEXT`,
   `ALTER TABLE employees ADD COLUMN temporary_address TEXT`,
   `ALTER TABLE employees ADD COLUMN pan_number TEXT`,
@@ -1284,6 +1283,7 @@ const MIGRATIONS = [
   // stage itself needs no schema change - both status columns are plain
   // TEXT with no CHECK constraint, see routes/purchase.js.
   `ALTER TABLE purchase_request_items ADD COLUMN details TEXT`,
+  `ALTER TABLE purchase_request_items ADD COLUMN unit TEXT`,
   `ALTER TABLE purchase_orders ADD COLUMN details TEXT`,
   // Admin-only "Unlock for Revision" on an Approved+locked annexure review
   // (2026-10-09) - reject() only ever worked from PendingApproval, so an
