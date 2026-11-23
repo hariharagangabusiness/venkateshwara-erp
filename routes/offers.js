@@ -7,7 +7,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const defaults = require('../lib/offerDefaults');
 const { generateOfferPdf } = require('../lib/offerPdf');
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
-const { generateAnnexurePdf } = require('../lib/annexurePdf');
+const { generateAnnexurePdf, pickGaDrawing } = require('../lib/annexurePdf');
 const { createJobCardsForProject } = require('../lib/pipeline');
 const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { autoCompleteSystemTodos } = require('../lib/systemTodos');
@@ -1201,11 +1201,11 @@ router.get('/:id/annexure/preview-pdf', offerPerm(), async (req, res) => {
   try {
     const full = getFullOffer(req.params.id);
     if (!full) return res.status(404).json({ error: 'Not found' });
-    const gaDrawingAtt = db.prepare(`
+    const gaDrawingAtt = pickGaDrawing(db.prepare(`
       SELECT file_path, original_name FROM attachments
       WHERE entity_type = 'offer' AND entity_id = ? AND document_type = 'GADrawing'
-      ORDER BY id DESC LIMIT 1
-    `).get(full.offer.id);
+      ORDER BY id DESC
+    `).all(full.offer.id));
     const data = {
       salesOrder: offerAsFakeSalesOrder(full.offer),
       client: full.client || {},
