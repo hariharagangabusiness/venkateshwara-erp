@@ -1298,9 +1298,7 @@ window.emailAnnexureToHODs = async (id, btn) => {
   btn.disabled = true;
   try {
     const r = await api(`/sales/orders/${id}/email-annexure`, { method: 'POST' });
-    alert(`Annexure emailed to ${r.count} HOD${r.count === 1 ? '' : 's'}:
-` + r.recipients.join('
-'));
+    alert(`Annexure emailed to ${r.count} HOD${r.count === 1 ? '' : 's'}:\n` + r.recipients.join('\n'));
   } catch (e) { alert(e.message); }
   btn.disabled = false;
 };
