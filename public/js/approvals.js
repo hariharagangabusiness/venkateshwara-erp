@@ -165,7 +165,10 @@ PAGES.approvals = async (el) => {
 };
 window.actOnApproval = async (id, action) => {
   let comment = null;
-  if (action === 'Rejected') comment = prompt('Reason for rejection (optional):');
+  if (action === 'Rejected') {
+    comment = prompt('Reason for rejection (required for Purchase Requests):');
+    if (comment === null) return;
+  }
   else if (action === 'InfoRequested') {
     comment = prompt('What information do you need from the requester?');
     if (!comment || !comment.trim()) return; // required - a blank note means "cancelled"

@@ -189,6 +189,13 @@ window.downloadVendorTemplate = () => downloadTemplateFile('/masters/vendors/tem
 window.uploadVendorTemplate = () => uploadTemplateFile('/masters/vendors/bulk-upload', 've-upload-file', 've-upload-result', () => navigate('vendors'));
 
 // ---- Purchase Requests ----
+const PR_STATUS_ORDER = ['Draft', 'PendingQuotes', 'Pending', 'InfoRequested', 'Approved', 'OrderPlaced', 'Received', 'Rejected', 'Cancelled'];
+const PR_STATUS_LABELS = { PendingQuotes: 'Pending Quotes', Pending: 'Pending Approval', InfoRequested: 'Info Requested', OrderPlaced: 'Order Placed' };
+window.refreshPRList = () => {
+  const box = document.getElementById('pr-table-wrap');
+  const q = box && box.parentElement.querySelector('.list-search');
+  filterList('purchase-requests', q ? q.value : '');
+};
 let PR_LINES = [{ item_id: '', item_text: '', quantity: 1, estimated_value: 0 }];
 PAGES['purchase-requests'] = async (el) => {
   // All 6 of these are independent reads - fired together (rather than one
@@ -242,9 +249,28 @@ PAGES['purchase-requests'] = async (el) => {
     'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
       <p class="muted">A new request starts as a <b>Draft</b> — click Edit to review/change the items, project, quantities or values, then <b>Submit for Approval</b> when ready. A Pending request can still be edited up to the point it's approved.</p>
       ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
+        // layered on top of the text search: status filter, then sort
+        const st = (document.getElementById('pr-status-filter') || {}).value || '';
+        const sort = (document.getElementById('pr-sort') || {}).value || 'newest';
+        rows = (st ? rows.filter(r => r.status === st) : rows).slice();
+        const num = r => String(r.created_at || '') + String(r.id).padStart(9, '0');
+        const cmp = {
+          newest: (a, b) => num(b).localeCompare(num(a)),
+          oldest: (a, b) => num(a).localeCompare(num(b)),
+          status: (a, b) => (PR_STATUS_ORDER.indexOf(a.status) - PR_STATUS_ORDER.indexOf(b.status)) || num(b).localeCompare(num(a)),
+          status_az: (a, b) => String(a.status).localeCompare(String(b.status)) || num(b).localeCompare(num(a)),
+          pr_no: (a, b) => String(a.pr_no).localeCompare(String(b.pr_no)),
+        }[sort];
+        rows.sort(cmp);
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="font-size:12px;">Status <select id="pr-status-filter" onchange="refreshPRList()"><option value="">All</option>${PR_STATUS_ORDER.map(x => `<option value="${x}">${esc(PR_STATUS_LABELS[x] || x)}</option>`).join('')}</select></label>
+        <label style="font-size:12px;">Sort by <select id="pr-sort" onchange="refreshPRList()">
+          <option value="newest">Newest First</option><option value="oldest">Oldest First</option>
+          <option value="status">Status (workflow order)</option><option value="status_az">Status A→Z</option><option value="pr_no">PR No</option></select></label>
+      </div>
       <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
     `),
   };
@@ -387,6 +413,7 @@ function renderPRRows(rows) {
         ${canEditPR(r) ? `<button class="btn small outline" onclick="openEditPR(${r.id})">Edit</button>` : ''}
         ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
+        ${ME.role === 'Admin' && r.status === 'Pending' && r.approval_id ? `<button class="btn small red" type="button" onclick="adminRejectPR(${r.id})">Reject</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
         ${['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id}, ${r.status === 'Draft'})">${r.status === 'Draft' ? 'Delete' : 'Withdraw'}</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
@@ -397,6 +424,16 @@ function renderPRRows(rows) {
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
     <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>`);
 }
+window.adminRejectPR = async (id) => {
+  const r = (window.__PR_CACHE || []).find(x => x.id === id);
+  const reason = prompt('Reason for rejecting ' + (r ? r.pr_no : 'this request') + ' (required):');
+  if (reason === null) return;
+  if (!reason.trim()) return alert('A rejection reason is required.');
+  try {
+    await api(`/approvals/${r.approval_id}/act`, { method: 'POST', body: JSON.stringify({ action: 'Rejected', comment: reason.trim() }) });
+    navigate('purchase-requests');
+  } catch (e) { alert(e.message); }
+};
 window.provideInfoPR = async (id) => {
   const comment = prompt('Response to the reviewer (optional):');
   try {
