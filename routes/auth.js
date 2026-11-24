@@ -53,7 +53,7 @@ router.post('/forgot-password', (req, res) => {
   const rawToken = createToken(user.id, 'PasswordReset');
   const resetLink = `${req.protocol}://${req.get('host')}/?reset_token=${rawToken}`;
   sendMail({
-    to: user.email,
+    to: user.email, channel: 'app_user',
     subject: 'Password Reset - Venkateshwara Engineers ERP',
     text: `Hello ${user.full_name},\n\nA password reset was requested for your account (${user.username}). Click the link below to set a new password - it expires in 30 minutes and can only be used once:\n\n${resetLink}\n\nIf you didn't request this, you can safely ignore this email; your password won't change unless you use the link above.\n\nRegards,\nVenkateshwara Engineers ERP`,
   }).catch(() => { /* best-effort - the generic response never reveals whether sending succeeded */ });

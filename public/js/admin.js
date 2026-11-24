@@ -1333,7 +1333,7 @@ window.saveMatrixChain = async (chainId) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest, dailyPurchaseDigest] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest, dailyPurchaseDigest, emailChannels] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
     api('/settings/purchase').catch(() => null),
@@ -1342,6 +1342,7 @@ PAGES['company-settings'] = async (el) => {
     api('/admin/email-templates').catch(() => []),
     api('/settings/weekly-digest').catch(() => null),
     api('/settings/daily-purchase-digest').catch(() => null),
+    api('/settings/email-channels').catch(() => null),
   ]);
   // Every group label the Admin might want to position: the 11 static NAV
   // groups, plus every real department name (covers both the per-login
@@ -1415,6 +1416,26 @@ PAGES['company-settings'] = async (el) => {
           <p class="muted">Sends a one-off test message using whatever's saved above (or the SMTP_* env vars if left blank) - the quickest way to confirm delivery actually works.</p>
           <div id="es-test-result" class="msg" style="display:none;"></div>
         </div>
+      `) : ''}
+      ${emailChannels ? collapsibleSubsection('email-channels', 'System Outbound Channels', `
+        <p class="muted">Automated system emails each go out from their own sender address instead of the shared one above. Host, port and TLS come from the SMTP Settings above. If the mail server only lets a mailbox send as itself, enter that mailbox's own SMTP username and password here; leave them blank to authenticate with the global account and send <i>as</i> this address (the mail server must allow that alias). If the server rejects a channel's sender, the email is retried once from the normal sender so it isn't lost.</p>
+        ${Object.keys(emailChannels).map(k => { const c = emailChannels[k]; return `
+          <div class="panel-sub">
+            <h4 style="margin:0 0 8px;">${esc(c.label)}</h4>
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));">
+              <div><label>From Email</label><input id="ec-${k}-addr" value="${esc(c.from_address)}"></div>
+              <div><label>From Display Name</label><input id="ec-${k}-name" value="${esc(c.from_name)}"></div>
+              <div><label>Channel SMTP Username (optional)</label><input id="ec-${k}-user" value="${esc(c.smtp_user)}" autocomplete="off"></div>
+              <div><label>Channel SMTP Password (optional)</label><input id="ec-${k}-pass" type="password" value="${esc(c.smtp_pass)}" autocomplete="new-password"></div>
+            </div>
+            <div class="form-grid">
+              <div><label>Send Test Email To</label><input id="ec-${k}-to" placeholder="you@example.com"></div>
+              <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendChannelTest('${k}')">Send Test Email</button></div>
+            </div>
+            <div id="ec-${k}-result" class="msg" style="display:none;"></div>
+          </div>`; }).join('')}
+        <button class="btn" id="ec-save-btn" onclick="saveEmailChannels()" style="margin-top:6px;">Save Outbound Channels</button>
+        <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
       `) : ''}
       ${inboundMail ? collapsibleSubsection('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
         <p class="muted">Reads a dedicated mailbox over IMAP. A genuinely new request automatically creates a Service Request and routes it to the Service HOD/Supervisor for approval (My Approvals) - a follow-up in an existing conversation is appended to that request instead of creating a new one, and a message that can't be processed automatically is quarantined for manual review. See the Service Requests page's Incoming Requests panel for the acknowledgement-email template and the review queue.</p>
@@ -1771,6 +1792,34 @@ window.saveEmailSettings = async () => {
     })});
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// System Outbound Channels (see lib/mailer.js sendMail({ channel })): save all four, or save then test one.
+const ecBody = () => {
+  const channels = {};
+  document.querySelectorAll('[id^="ec-"][id$="-addr"]').forEach(el => {
+    const k = el.id.slice(3, -5);
+    channels[k] = { from_address: val(`ec-${k}-addr`), from_name: val(`ec-${k}-name`), smtp_user: val(`ec-${k}-user`), smtp_pass: val(`ec-${k}-pass`) };
+  });
+  return { channels };
+};
+window.saveEmailChannels = async () => {
+  const errEl = document.getElementById('ec-err'); errEl.style.display = 'none';
+  try {
+    await api('/settings/email-channels', { method: 'PUT', body: JSON.stringify(ecBody()) });
+    confirmSavedThenClose('ec-save-btn', 'company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.sendChannelTest = async (k) => {
+  const resultEl = document.getElementById(`ec-${k}-result`);
+  const to = val(`ec-${k}-to`);
+  if (!to) { alert('Enter an email address to send the test to.'); return; }
+  resultEl.className = 'msg'; resultEl.style.display = 'block'; resultEl.textContent = 'Sending...';
+  try {
+    await api('/settings/email-channels', { method: 'PUT', body: JSON.stringify(ecBody()) });
+    const r = await api(`/settings/email-channels/${k}/test`, { method: 'POST', body: JSON.stringify({ to }) });
+    resultEl.className = r.sent ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.sent ? `Sent from ${r.from} to ${to}. Check that inbox to confirm.` : (r.reason || 'Failed to send - check the channel settings.');
+  } catch (e) { resultEl.className = 'msg err'; resultEl.textContent = e.message; }
 };
 window.sendTestEmail = async () => {
   const resultEl = document.getElementById('es-test-result');

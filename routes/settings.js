@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, getEmailChannels, setEmailChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -105,6 +105,38 @@ router.post('/email/test', requireRole('Admin'), async (req, res) => {
     to,
     subject: 'Venkateshwara ERP - Test Email',
     text: `This is a test email from the Venkateshwara Engineers ERP, confirming SMTP is configured correctly.\n\nSent by: ${req.user.full_name || req.user.username}\nSent at: ${new Date().toLocaleString()}`,
+  });
+  res.json(result);
+});
+
+// System Outbound Channels - per-purpose sender identity (daily reports, weekly summary, escalations, user accounts).
+// Admin-only like the rest of Email Settings; smtp_pass is masked and a masked value on save means "keep the stored one".
+const maskChannels = (all) => Object.fromEntries(Object.entries(all).map(([k, c]) => [k, { ...c, smtp_pass: c.smtp_pass ? '••••••••' : '' }]));
+router.get('/email-channels', requireRole('Admin'), (req, res) => res.json(maskChannels(getEmailChannels())));
+router.put('/email-channels', requireRole('Admin'), (req, res) => {
+  const body = (req.body && req.body.channels) || {};
+  const patch = {};
+  for (const k of EMAIL_CHANNEL_KEYS) {
+    const c = body[k];
+    if (!c) continue;
+    const from_address = String(c.from_address || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(from_address)) return res.status(400).json({ error: 'Enter a valid From address for ' + k + '.' });
+    patch[k] = { from_address, from_name: String(c.from_name || '').trim(), smtp_user: String(c.smtp_user || '').trim() };
+    if (c.smtp_pass !== '••••••••') patch[k].smtp_pass = String(c.smtp_pass || '');
+    if (!patch[k].smtp_user) patch[k].smtp_pass = ''; // a password without a username can't be used
+  }
+  setEmailChannels(patch);
+  res.json(maskChannels(getEmailChannels()));
+});
+// One-off test through a single channel - never falls back to the global sender, so a rejected alias shows its real error.
+router.post('/email-channels/:key/test', requireRole('Admin'), async (req, res) => {
+  if (!EMAIL_CHANNEL_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown channel.' });
+  const to = String((req.body && req.body.to) || '').trim();
+  if (!to) return res.status(400).json({ error: 'Enter an email address to send the test to.' });
+  const result = await sendMail({
+    to, channel: req.params.key, noFallback: true,
+    subject: 'Venkateshwara ERP - Test Email (' + getEmailChannels()[req.params.key].label + ')',
+    text: 'This is a test email sent through the "' + getEmailChannels()[req.params.key].label + '" outbound channel, confirming the sender address and SMTP login work. Sent by: ' + (req.user.full_name || req.user.username),
   });
   res.json(result);
 });

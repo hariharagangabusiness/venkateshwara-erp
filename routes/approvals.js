@@ -702,7 +702,7 @@ async function notifyApproversPending(approval) {
       summary: info.summary ? ' (' + info.summary + ')' : '',
     });
     const emails = approvers.map(u => u.email);
-    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true });
+    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true, channel: 'escalations' });
   } catch (e) { /* best-effort - never let a notification failure affect the approval itself */ }
 }
 
