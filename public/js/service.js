@@ -72,12 +72,20 @@ PAGES.service = async (el) => {
       const activeReqs = reqs.filter(r => !CLOSED_STATUSES.includes(r.status));
       const closedReqs = reqs.filter(r => CLOSED_STATUSES.includes(r.status));
       const cols = ['SR No', 'Customer', 'Contact', 'Scheduled', 'Assigned', 'Issue', 'Status', 'Prev. Report', 'Action'];
+      window.__SR_ALL = reqs;
+      window.__SR_COLS = cols;
+      window.__SR_CLOSED = CLOSED_STATUSES;
       return `
-      <div class="panel"><h3>Service Request Queue (${activeReqs.length})</h3>
-        <p class="muted">Newly logged requests appear here first. The Service HOD/Supervisor opens one and schedules it (assigns an employee + date) - only then does it move to In Progress. Closed/Rejected requests move to the Closed section below.</p>
-        ${tableHTML(cols, activeReqs, srRowHTML)}
+      <div class="panel"><h3>Find a Service Request</h3>
+        <input id="sr-search" type="text" placeholder="Search by SR no, customer, contact name, phone number, technician or issue..."
+          oninput="filterSRQueues()" style="width:100%;max-width:520px;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:13px;">
+        <span id="sr-search-count" class="muted" style="margin-left:8px;"></span>
       </div>
-      ${collapsiblePanel('service-request-queue-closed', `Closed (${closedReqs.length})`, tableHTML(cols, closedReqs, srRowHTML))}`;
+      <div class="panel"><h3 id="sr-active-title">Service Request Queue (${activeReqs.length})</h3>
+        <p class="muted">Newly logged requests appear here first. The Service HOD/Supervisor opens one and schedules it (assigns an employee + date) - only then does it move to In Progress. Closed/Rejected requests move to the Closed section below.</p>
+        <div id="sr-active-wrap">${tableHTML(cols, activeReqs, srRowHTML)}</div>
+      </div>
+      ${collapsiblePanel('service-request-queue-closed', `<span id="sr-closed-title">Closed (${closedReqs.length})</span>`, `<div id="sr-closed-wrap">${tableHTML(cols, closedReqs, srRowHTML)}</div>`)}`;
     })()}
     <div class="panel" id="sr-history-panel" style="display:none;"><h3 id="sr-history-title">Previous Technician Report(s)</h3><div id="sr-history-body"></div></div>
     <div class="panel" id="sr-updates-panel" style="display:none;"><h3 id="sr-updates-title">Activity Log</h3><div id="sr-updates-body"></div></div>
@@ -107,6 +115,26 @@ window.saveServiceAckTemplate = async () => {
     setTimeout(() => savedEl.style.display = 'none', 2000);
   } catch (e) { alert(e.message); }
 };
+// Filters both queues by one search box. Matches SR no, customer (master or manual), contact person,
+// phone (also digits-only, so "98765 43210" finds "9876543210"), assigned technician and issue text.
+window.filterSRQueues = () => {
+  const q = (document.getElementById('sr-search').value || '').trim().toLowerCase();
+  const qDigits = q.replace(/D/g, '');
+  const hit = r => !q || [r.sr_no, r.client_master_name, r.customer_name, r.contact_person, r.contact_phone, r.employee_name, r.assigned_to_name, r.issue_description]
+    .some(v => String(v ?? '').toLowerCase().includes(q))
+    || (qDigits.length >= 3 && String(r.contact_phone || '').replace(/D/g, '').includes(qDigits));
+  const rows = (window.__SR_ALL || []).filter(hit);
+  const closed = window.__SR_CLOSED || [];
+  const act = rows.filter(r => !closed.includes(r.status)), cl = rows.filter(r => closed.includes(r.status));
+  document.getElementById('sr-active-wrap').innerHTML = tableHTML(window.__SR_COLS, act, srRowHTML);
+  document.getElementById('sr-closed-wrap').innerHTML = tableHTML(window.__SR_COLS, cl, srRowHTML);
+  document.getElementById('sr-active-title').textContent = 'Service Request Queue (' + act.length + ')';
+  document.getElementById('sr-closed-title').textContent = 'Closed (' + cl.length + ')';
+  // a search that only matches closed SRs should show them, not leave the panel collapsed
+  const cp = document.getElementById('cp-service-request-queue-closed');
+  if (q && cl.length && cp && cp.classList.contains('collapsed')) toggleCollapsiblePanel('service-request-queue-closed');
+  document.getElementById('sr-search-count').textContent = q ? rows.length + ' match' + (rows.length === 1 ? '' : 'es') : '';
+};
 // Shared row renderer for both the active and Closed Service Request Queue
 // tables - the Issue cell now also shows the auto-captured email excerpt
 // (lib/inboundMail.js's emailExcerpt()) and, for an email-sourced SR, a
@@ -123,7 +151,7 @@ function srRowHTML(r) {
       ${r.source === 'Email' ? `<br><a href="#" style="font-size:11px;" onclick="viewSrSourceEmail(${r.id},'${esc(r.sr_no)}');return false;">View Original Email</a>` : ''}
     </td>
     <td>${badge(r.status)}${r.status==='Pending Items' ? ' <span class="muted" style="font-size:11px;">(back from technician)</span>' : ''}</td>
-    <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button>` : '-'}</td>
+    <td>${r.report_count ? `<button class="btn small outline" onclick="viewSrReportHistory(${r.id},'${esc(r.sr_no)}')">View (${r.report_count})</button> <button class="btn small outline" type="button" onclick="downloadSvcReportPdf(${r.id})">Report PDF</button>` : '-'}</td>
     <td>${actionButtonsCell(`${srActions(r)}
       <button class="btn small outline" type="button" onclick="openEditSR(${r.id})">Edit</button>
       <button class="btn small outline" type="button" onclick="viewSrUpdates(${r.id},'${esc(r.sr_no)}')">Updates</button>`)}</td></tr>`;
