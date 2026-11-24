@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -184,6 +184,35 @@ router.put('/weekly-digest', requireRole('Admin'), (req, res) => {
     bucket2_max_days: bucket2,
   });
   res.json(getWeeklyDigestSettings());
+});
+
+// Daily Purchase Digest (Purchase Velocity + open PO/PR aging, with an Excel attachment) - GET open to any authenticated
+// user so Company Settings can always show the schedule, PUT and the manual send Admin-only. See lib/purchaseDailyDigest.js.
+router.get('/daily-purchase-digest', (req, res) => res.json(getDailyPurchaseDigestSettings()));
+router.put('/daily-purchase-digest', requireRole('Admin'), (req, res) => {
+  const b = req.body || {};
+  const send_time = String(b.send_time || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(send_time)) return res.status(400).json({ error: 'Send time must be HH:MM (24-hour).' });
+  const list = String(b.recipients || '').split(/[,;\s]+/).map((e) => e.trim()).filter(Boolean);
+  const bad = list.filter((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  if (bad.length) return res.status(400).json({ error: 'Not a valid email address: ' + bad.join(', ') });
+  setDailyPurchaseDigestSettings({
+    enabled: !!b.enabled, recipients: [...new Map(list.map((e) => [e.toLowerCase(), e])).values()].join(', '), include_hod_management: !!b.include_hod_management, send_time,
+  });
+  res.json(getDailyPurchaseDigestSettings());
+});
+// Manual "Send Daily Purchase Report Now" - sends immediately, ignoring enabled/schedule/last-sent, and does not
+// consume today's scheduled send. Returns the recipients on success or the SMTP/config reason on failure.
+router.post('/daily-purchase-digest/send', requireRole('Admin'), async (req, res) => {
+  try {
+    const { sendDailyPurchaseDigest } = require('../lib/purchaseDailyDigest');
+    const r = await sendDailyPurchaseDigest({ userId: req.user.id, manual: true });
+    if (!r.sent) return res.status(r.status || 502).json({ error: r.reason });
+    res.json({ ok: true, recipients: r.recipients, open_pos: r.openPoCount, open_prs: r.openPrCount, over_5_pos: r.poOver5, over_5_prs: r.prOver5 });
+  } catch (e) {
+    console.error('[daily-purchase-digest] manual send failed:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Scope for the project.plan_spares permission (2026-11-14) - GET open to

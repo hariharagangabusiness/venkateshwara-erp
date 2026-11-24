@@ -253,6 +253,19 @@ function runWeeklyApprovalDigestSafely() {
     console.error('[weekly-approval-digest] run failed:', e.message);
   }
 }
+// Daily Purchase Velocity & Aging digest - checked every 5 minutes; lib/purchaseDailyDigest.js decides whether the
+// Admin-configured IST send time has passed and it hasn't already gone out today (last_sent_date guard, restart-safe).
+const { runDailyPurchaseDigest } = require('./lib/purchaseDailyDigest');
+async function runDailyPurchaseDigestSafely() {
+  try {
+    const result = await runDailyPurchaseDigest();
+    if (result && result.sent) console.log(`[daily-purchase-digest] sent to ${result.recipients.length} recipient(s)`);
+  } catch (e) {
+    console.error('[daily-purchase-digest] run failed:', e.message);
+  }
+}
+setTimeout(runDailyPurchaseDigestSafely, 45000);
+setInterval(runDailyPurchaseDigestSafely, 5 * 60 * 1000);
 setTimeout(runWeeklyApprovalDigestSafely, 30000); // after the RFQ inbound-mail scan's own boot delay
 setInterval(runWeeklyApprovalDigestSafely, 60 * 60 * 1000);
 
