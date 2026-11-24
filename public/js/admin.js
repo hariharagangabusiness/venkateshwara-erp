@@ -1333,7 +1333,7 @@ window.saveMatrixChain = async (chainId) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest, dailyPurchaseDigest] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
     api('/settings/purchase').catch(() => null),
@@ -1341,6 +1341,7 @@ PAGES['company-settings'] = async (el) => {
     api('/settings/sidebar-group-order').catch(() => ({ order: [] })),
     api('/admin/email-templates').catch(() => []),
     api('/settings/weekly-digest').catch(() => null),
+    api('/settings/daily-purchase-digest').catch(() => null),
   ]);
   // Every group label the Admin might want to position: the 11 static NAV
   // groups, plus every real department name (covers both the per-login
@@ -1535,6 +1536,23 @@ PAGES['company-settings'] = async (el) => {
       <div id="wd-err" class="msg err" style="display:none;margin-top:8px;"></div>
       ${weeklyDigest.last_sent_at ? `<p class="muted" style="margin-top:6px;">Last sent ${new Date(weeklyDigest.last_sent_at).toLocaleString()}.</p>` : `<p class="muted" style="margin-top:6px;">Not sent yet.</p>`}
     `) : ''}
+    ${dailyPurchaseDigest ? collapsiblePanel('daily-purchase-digest', 'Daily Purchase Digest', `
+      <p class="muted">A daily email with the Purchase Velocity snapshot (PR → PO, PO → Approval, PO → GRN, Open POs and PRs), a call-out of every open PO and PR older than 5 days, and an Excel attachment listing all open PO lines and PR items. Sent once a day at the time below (IST); a restart never re-sends it.</p>
+      <div class="form-grid">
+        <div><label><input type="checkbox" id="dpd-enabled" ${dailyPurchaseDigest.enabled ? 'checked' : ''}> Enabled</label></div>
+        <div><label>Send time (IST, 24h)</label><input type="time" id="dpd-time" value="${esc(dailyPurchaseDigest.send_time)}"></div>
+        <div><label><input type="checkbox" id="dpd-hod" ${dailyPurchaseDigest.include_hod_management ? 'checked' : ''}> Also send to Purchase HOD(s) and Management</label></div>
+      </div>
+      <div style="margin-top:4px;"><label class="muted" style="display:block;margin-bottom:3px;">Extra recipients (comma-separated emails)</label>
+        <textarea id="dpd-recipients" rows="2" style="width:100%;" placeholder="name@company.com, other@company.com">${esc(dailyPurchaseDigest.recipients)}</textarea></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn" id="dpd-save-btn" onclick="saveDailyPurchaseDigest()">Save Daily Purchase Digest</button>
+        <button class="btn outline" id="dpd-send-btn" onclick="sendDailyPurchaseDigestNow()">Send Daily Purchase Report Now</button>
+      </div>
+      <div id="dpd-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div id="dpd-ok" class="msg ok" style="display:none;margin-top:8px;"></div>
+      ${dailyPurchaseDigest.last_sent_at ? `<p class="muted" style="margin-top:6px;">Last scheduled send ${esc(dailyPurchaseDigest.last_sent_at)}.</p>` : `<p class="muted" style="margin-top:6px;">No scheduled send yet.</p>`}
+    `) : ''}
     ${collapsiblePanel('sidebar-group-order', 'Sidebar Group Order', `
       <p class="muted">Sets one sidebar group order that applies to every user, replacing the default alphabetical order. Includes every department-specific "Job Cards" group (a department's own tab, and the Admin/Project Manager per-department tabs) alongside the regular menu groups, so those can be positioned too instead of always sitting wherever they land by default.</p>
       <div class="muted" style="margin-bottom:8px;">Drag a group by its ⠿ handle to rearrange, then Save Order.
@@ -1603,6 +1621,34 @@ window.saveWeeklyDigestSettings = async () => {
     })});
     confirmSavedThenClose('wd-save-btn', 'company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// Daily Purchase Digest settings (see lib/purchaseDailyDigest.js)
+const dpdBody = () => ({
+  enabled: document.getElementById('dpd-enabled').checked,
+  send_time: val('dpd-time'),
+  include_hod_management: document.getElementById('dpd-hod').checked,
+  recipients: val('dpd-recipients'),
+});
+window.saveDailyPurchaseDigest = async () => {
+  const errEl = document.getElementById('dpd-err');
+  errEl.style.display = 'none';
+  try {
+    await api('/settings/daily-purchase-digest', { method: 'PUT', body: JSON.stringify(dpdBody()) });
+    confirmSavedThenClose('dpd-save-btn', 'company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// Saves what's on screen first, so the test send uses the recipients just typed, then sends immediately.
+window.sendDailyPurchaseDigestNow = async () => {
+  const errEl = document.getElementById('dpd-err'), okEl = document.getElementById('dpd-ok'), btn = document.getElementById('dpd-send-btn');
+  errEl.style.display = 'none'; okEl.style.display = 'none';
+  btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending...';
+  try {
+    await api('/settings/daily-purchase-digest', { method: 'PUT', body: JSON.stringify(dpdBody()) });
+    const r = await api('/settings/daily-purchase-digest/send', { method: 'POST' });
+    okEl.textContent = `Sent to ${r.recipients.length} recipient(s): ${r.recipients.join(', ')}. ${r.open_pos} open PO(s) (${r.over_5_pos} older than 5 days), ${r.open_prs} open PR(s) (${r.over_5_prs} older than 5 days).`;
+    okEl.style.display = 'block';
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = label; }
 };
 window.saveSidebarGroupOrder = async () => {
   const order = Array.from(document.querySelectorAll('#sidebar-order-list .reorder-panel')).map(w => w.dataset.key);
