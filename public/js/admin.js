@@ -15,8 +15,8 @@ let CLAUSE_LIBRARY_TAB = 'term';
 function renderOfferOptionRows(rows, isAdmin) {
   return `<table><thead><tr><th>Value</th><th>Sort</th><th>Active</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
     ${rows.map(o => `<tr>
-      <td>${isAdmin ? `<input type="text" value="${esc(o.value)}" onblur="editOfferOption(${o.id}, 'value', this.value)" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(o.value)}</td>
-      <td>${isAdmin ? `<input type="number" value="${o.sort_order}" onblur="editOfferOption(${o.id}, 'sort_order', this.value)" style="width:80px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : o.sort_order}</td>
+      <td>${isAdmin ? `<input type="text" value="${esc(o.value)}" onchange="editOfferOption(${o.id}, 'value', this.value)" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(o.value)}</td>
+      <td>${isAdmin ? `<input type="number" value="${o.sort_order}" onchange="editOfferOption(${o.id}, 'sort_order', this.value)" style="width:80px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : o.sort_order}</td>
       <td>${o.active ? 'Yes' : 'No'}</td>
       ${isAdmin ? `<td><button class="btn small outline" onclick="editOfferOption(${o.id}, 'active', ${o.active ? 0 : 1})">${o.active ? 'Deactivate' : 'Activate'}</button></td>` : ''}
     </tr>`).join('') || `<tr><td colspan="${isAdmin ? 4 : 3}" class="empty">No options yet.</td></tr>`}
@@ -25,30 +25,30 @@ function renderOfferOptionRows(rows, isAdmin) {
 function renderSectionTitleRows(rows, isAdmin) {
   return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
     ${rows.map(s => `<tr>
-      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onblur="editSectionTitle(${s.id}, 'title', this.value)" style="width:100%;min-width:160px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
-      <td style="max-width:220px;">${isAdmin ? `<textarea onblur="editSectionTitle(${s.id}, 'description', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
-      <td style="max-width:220px;">${isAdmin ? `<textarea onblur="editSectionTitle(${s.id}, 'summary', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onchange="editSectionTitle(${s.id}, 'title', this.value, this)" style="width:100%;min-width:160px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
+      <td style="max-width:220px;">${isAdmin ? `<textarea onchange="editSectionTitle(${s.id}, 'description', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
+      <td style="max-width:220px;">${isAdmin ? `<textarea onchange="editSectionTitle(${s.id}, 'summary', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
       <td>
         ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
         ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSectionTitleImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
       </td>
-      ${isAdmin ? `<td><button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>` : ''}
+      ${isAdmin ? `<td><button class="btn small outline" onclick="moveLibraryEntry('section-titles', ${s.id}, 'move-to-spares')">Move to Spares</button> <button class="btn small red" onclick="deleteSectionTitle(${s.id})">Delete</button></td>` : ''}
     </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
   </tbody></table>`;
 }
 function renderSparesLibraryRows(rows, isAdmin) {
   return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Rate</th><th>Unit</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
     ${rows.map(s => `<tr>
-      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onblur="editSparesLibraryEntry(${s.id}, 'title', this.value)" style="width:100%;min-width:140px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
-      <td style="max-width:200px;">${isAdmin ? `<textarea onblur="editSparesLibraryEntry(${s.id}, 'description', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
-      <td style="max-width:200px;">${isAdmin ? `<textarea onblur="editSparesLibraryEntry(${s.id}, 'summary', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
-      <td>${isAdmin ? `<input type="number" value="${s.rate||0}" onblur="editSparesLibraryEntry(${s.id}, 'rate', this.value)" style="width:90px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : ('₹' + fmt(s.rate||0))}</td>
-      <td>${isAdmin ? `<input type="text" value="${esc(s.unit||'Nos')}" onblur="editSparesLibraryEntry(${s.id}, 'unit', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.unit||'Nos')}</td>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onchange="editSparesLibraryEntry(${s.id}, 'title', this.value, this)" style="width:100%;min-width:140px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
+      <td style="max-width:200px;">${isAdmin ? `<textarea onchange="editSparesLibraryEntry(${s.id}, 'description', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
+      <td style="max-width:200px;">${isAdmin ? `<textarea onchange="editSparesLibraryEntry(${s.id}, 'summary', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
+      <td>${isAdmin ? `<input type="number" value="${s.rate||0}" onchange="editSparesLibraryEntry(${s.id}, 'rate', this.value, this)" style="width:90px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : ('₹' + fmt(s.rate||0))}</td>
+      <td>${isAdmin ? `<input type="text" value="${esc(s.unit||'Nos')}" onchange="editSparesLibraryEntry(${s.id}, 'unit', this.value, this)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.unit||'Nos')}</td>
       <td>
         ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
         ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSparesLibraryImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
       </td>
-      ${isAdmin ? `<td><button class="btn small red" onclick="deleteSparesLibraryEntry(${s.id})">Delete</button></td>` : ''}
+      ${isAdmin ? `<td><button class="btn small outline" onclick="moveLibraryEntry('spares-library', ${s.id}, 'move-to-machine')">Move to Machine</button> <button class="btn small red" onclick="deleteSparesLibraryEntry(${s.id})">Delete</button></td>` : ''}
     </tr>`).join('') || `<tr><td colspan="${isAdmin ? 7 : 6}" class="empty">No spares in the library yet.</td></tr>`}
   </tbody></table>`;
 }
@@ -107,9 +107,9 @@ PAGES['offer-options'] = async (el) => {
     </div>
     ${isAdmin && suggestions.length ? `<div class="panel"><h3>Pending Library Entries for Review (${suggestions.length})</h3>
       <p class="muted">Typed directly on an offer instead of picked from the library - Approve to add it to the Machine Library (or Spares Library, for a Spares-format offer's entry) below for everyone to reuse, or Reject to discard it. The offer item itself already saved either way.</p>
-      ${tableHTML(['Library', 'Title', 'Description', 'Summary', 'Picture', 'Offer', 'Suggested By', ''], suggestions, s => `
+      ${tableHTML(['Add to', 'Title', 'Description', 'Summary', 'Picture', 'Offer', 'Suggested By', ''], suggestions, s => `
         <tr>
-          <td>${s.library_type === 'Spares' ? 'Spares' : 'Machine'}</td>
+          <td><select id="sug-lib-${s.id}" title="Which library to add this to"><option value="Machine" ${s.library_type !== 'Spares' ? 'selected' : ''}>Machine Library</option><option value="Spares" ${s.library_type === 'Spares' ? 'selected' : ''}>Spares Library</option></select></td>
           <td>${esc(s.title)}</td>
           <td style="white-space:pre-wrap;max-width:200px;">${esc(s.description)||'-'}</td>
           <td style="white-space:pre-wrap;max-width:200px;">${esc(s.summary)||'-'}</td>
@@ -172,9 +172,9 @@ PAGES['offer-options'] = async (el) => {
       <div class="tabs">${CLAUSE_CATEGORIES.map(([id, label]) => `<div class="tab ${CLAUSE_LIBRARY_TAB === id ? 'active' : ''}" onclick="switchClauseLibraryTab('${id}')">${label}</div>`).join('')}</div>
       <table style="margin-top:14px;"><thead><tr><th>Label</th><th>Clause Text</th><th>Sort</th><th>Active</th><th></th></tr></thead><tbody>
         ${clauses.filter(c => c.category === CLAUSE_LIBRARY_TAB).map(c => `<tr>
-          <td><input type="text" value="${esc(c.label)}" onblur="editClause(${c.id}, 'label', this.value)" style="width:100%;min-width:120px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-          <td style="max-width:320px;"><textarea onblur="editClause(${c.id}, 'body', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(c.body)}</textarea></td>
-          <td><input type="number" value="${c.sort_order}" onblur="editClause(${c.id}, 'sort_order', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+          <td><input type="text" value="${esc(c.label)}" onchange="editClause(${c.id}, 'label', this.value)" style="width:100%;min-width:120px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+          <td style="max-width:320px;"><textarea onchange="editClause(${c.id}, 'body', this.value)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(c.body)}</textarea></td>
+          <td><input type="number" value="${c.sort_order}" onchange="editClause(${c.id}, 'sort_order', this.value)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
           <td>${c.active ? 'Yes' : 'No'}</td>
           <td>${actionButtonsCell(`<button class="btn small outline" onclick="editClause(${c.id}, 'active', ${c.active ? 0 : 1})">${c.active ? 'Deactivate' : 'Activate'}</button>
               <button class="btn small red" onclick="deleteClause(${c.id})">Delete</button>`)}</td>
@@ -262,13 +262,22 @@ window.deleteSectionTitle = async (id) => {
   try { await api('/offers/section-titles/' + id, { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
-window.editSectionTitle = async (id, field, value) => {
+// Saves on change only (never on a bare click/blur) and stays on the page - a brief green outline confirms it.
+// A failed save alerts and reloads so the field shows the stored value again.
+function flashSaved(el) { if (!el) return; el.style.outline = '2px solid #1a7f37'; setTimeout(() => { el.style.outline = ''; }, 900); }
+window.editSectionTitle = async (id, field, value, el) => {
   try {
     const fd = new FormData();
     fd.append(field, value);
     await apiUpload('/offers/section-titles/' + id, fd, 'PUT');
-    navigate('offer-options');
+    flashSaved(el);
   } catch (e) { alert(e.message); navigate('offer-options'); }
+};
+window.moveLibraryEntry = async (kind, id, action) => {
+  const toSpares = action === 'move-to-spares';
+  if (!confirm(toSpares ? 'Move this entry to the Spares Library? Its rate starts blank and unit at Nos - edit them there afterwards.' : 'Move this entry to the Machine Library? Its rate and unit will be dropped.')) return;
+  try { await api('/offers/' + kind + '/' + id + '/' + action, { method: 'POST' }); navigate('offer-options'); }
+  catch (e) { alert(e.message); }
 };
 window.replaceSectionTitleImage = async (id, fileInput) => {
   if (!fileInput.files[0]) return;
@@ -280,7 +289,7 @@ window.replaceSectionTitleImage = async (id, fileInput) => {
   } catch (e) { alert(e.message); }
 };
 window.approveSectionTitleSuggestion = async (id) => {
-  try { await api('/offers/section-title-suggestions/' + id + '/approve', { method: 'POST' }); navigate('offer-options'); }
+  try { await api('/offers/section-title-suggestions/' + id + '/approve', { method: 'POST', body: JSON.stringify({ library_type: val('sug-lib-' + id) }) }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
 window.rejectSectionTitleSuggestion = async (id) => {
@@ -309,12 +318,12 @@ window.deleteSparesLibraryEntry = async (id) => {
   try { await api('/offers/spares-library/' + id, { method: 'DELETE' }); navigate('offer-options'); }
   catch (e) { alert(e.message); }
 };
-window.editSparesLibraryEntry = async (id, field, value) => {
+window.editSparesLibraryEntry = async (id, field, value, el) => {
   try {
     const fd = new FormData();
     fd.append(field, value);
     await apiUpload('/offers/spares-library/' + id, fd, 'PUT');
-    navigate('offer-options');
+    flashSaved(el);
   } catch (e) { alert(e.message); navigate('offer-options'); }
 };
 window.replaceSparesLibraryImage = async (id, fileInput) => {

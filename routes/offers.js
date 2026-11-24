@@ -198,6 +198,30 @@ router.delete('/section-titles/:id', requireRole('Admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Move an entry between the Machine and Spares libraries (Admin) ----
+// Copies title/description/summary/picture into the other library, then removes the original (the picture
+// file is kept - the new row points at it). Offer lines keep their own copy of the text; only their link back
+// to the library row is cleared so no FK dangles. A title that already exists in the target blocks the move.
+function moveLibraryEntry(req, res, from, to) {
+  const row = db.prepare(`SELECT * FROM ${from} WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (db.prepare(`SELECT id FROM ${to} WHERE LOWER(title) = LOWER(?)`).get(row.title)) {
+    return res.status(400).json({ error: `"${row.title}" already exists in the ${to === 'spares_library' ? 'Spares' : 'Machine'} Library - rename or delete one of them first.` });
+  }
+  const tx = db.transaction(() => {
+    const info = to === 'spares_library'
+      ? db.prepare('INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by) VALUES (?,?,?,?,?,?,?)').run(row.title, row.description, row.summary, row.image_path, null, 'Nos', req.user.id)
+      : db.prepare('INSERT INTO section_title_library (title, description, summary, image_path, created_by) VALUES (?,?,?,?,?)').run(row.title, row.description, row.summary, row.image_path, req.user.id);
+    if (from === 'spares_library') db.prepare('UPDATE offer_items SET spares_library_id = NULL WHERE spares_library_id = ?').run(row.id);
+    else db.prepare('UPDATE offer_equipment_references SET section_title_library_id = NULL WHERE section_title_library_id = ?').run(row.id);
+    db.prepare(`DELETE FROM ${from} WHERE id = ?`).run(row.id);
+    return info.lastInsertRowid;
+  });
+  res.json({ ok: true, id: tx() });
+}
+router.post('/section-titles/:id/move-to-spares', requireRole('Admin'), (req, res) => moveLibraryEntry(req, res, 'section_title_library', 'spares_library'));
+router.post('/spares-library/:id/move-to-machine', requireRole('Admin'), (req, res) => moveLibraryEntry(req, res, 'spares_library', 'section_title_library'));
+
 // ---- Section Title suggestions review queue (see maybeSuggestNewSectionTitle) ----
 router.get('/section-title-suggestions', requireRole('Admin'), (req, res) => {
   res.json(db.prepare(`
@@ -213,9 +237,11 @@ router.post('/section-title-suggestions/:id/approve', requireRole('Admin'), (req
   const suggestion = db.prepare(`SELECT * FROM section_title_suggestions WHERE id = ?`).get(req.params.id);
   if (!suggestion) return res.status(404).json({ error: 'Not found' });
   if (suggestion.status !== 'Pending') return res.status(400).json({ error: 'This suggestion has already been reviewed.' });
-  const libraryTable = suggestion.library_type === 'Spares' ? 'spares_library' : 'section_title_library';
+  // Admin can override which library the entry lands in (body.library_type), defaulting to where it was suggested
+  const targetType = ['Machine', 'Spares'].includes(req.body && req.body.library_type) ? req.body.library_type : suggestion.library_type;
+  const libraryTable = targetType === 'Spares' ? 'spares_library' : 'section_title_library';
   try {
-    if (suggestion.library_type === 'Spares') {
+    if (targetType === 'Spares') {
       db.prepare(`INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by) VALUES (?,?,?,?,?,?,?)`)
         .run(suggestion.title, suggestion.description, suggestion.summary, suggestion.image_path, suggestion.rate, suggestion.unit || 'Nos', req.user.id);
     } else {
