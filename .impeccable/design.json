@@ -1,0 +1,405 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-24T15:48:17.683Z",
+  "title": "Design System: Venkateshwara Engineers ERP",
+  "extensions": {
+    "colorMeta": {
+      "ledger-navy": {
+        "role": "primary",
+        "displayName": "Ledger Navy",
+        "canonical": "oklch(34.6% 0.074 256)",
+        "tonalRamp": [
+          "#07162a",
+          "#1c314c",
+          "#334d71",
+          "#4e6c95",
+          "#6e8cb6",
+          "#93aed2",
+          "#b9d0ef",
+          "#e1f4ff"
+        ]
+      },
+      "ledger-navy-light": {
+        "role": "primary",
+        "displayName": "Ledger Navy Light",
+        "canonical": "oklch(43.5% 0.091 255)",
+        "tonalRamp": [
+          "#03162e",
+          "#163052",
+          "#2b4d79",
+          "#456c9e",
+          "#658dc0",
+          "#8caedb",
+          "#b4d1f7",
+          "#ddf4ff"
+        ]
+      },
+      "ledger-amber": {
+        "role": "secondary",
+        "displayName": "Ledger Amber",
+        "canonical": "oklch(66.6% 0.131 67)",
+        "tonalRamp": [
+          "#2c0a00",
+          "#502100",
+          "#763b00",
+          "#9b5800",
+          "#be7920",
+          "#da9e5d",
+          "#f6c38f",
+          "#ffeac1"
+        ]
+      },
+      "tick-green": {
+        "role": "tertiary",
+        "displayName": "Tick Green",
+        "canonical": "oklch(55.3% 0.107 158)",
+        "tonalRamp": [
+          "#001e0a",
+          "#003c1f",
+          "#005c37",
+          "#257d52",
+          "#4c9e72",
+          "#7abd96",
+          "#a7ddbc",
+          "#d3fee4"
+        ]
+      },
+      "stamp-red": {
+        "role": "tertiary",
+        "displayName": "Stamp Red",
+        "canonical": "oklch(54.4% 0.186 26)",
+        "tonalRamp": [
+          "#3b0000",
+          "#650000",
+          "#930010",
+          "#bf292a",
+          "#e4524c",
+          "#fe8177",
+          "#ffada3",
+          "#ffd9d0"
+        ]
+      },
+      "caution-amber": {
+        "role": "tertiary",
+        "displayName": "Caution Amber",
+        "canonical": "oklch(62.6% 0.125 70)",
+        "tonalRamp": [
+          "#2a0c00",
+          "#4d2400",
+          "#723e00",
+          "#975b00",
+          "#b97c26",
+          "#d5a060",
+          "#f2c591",
+          "#ffebc2"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "oklch(97.2% 0.003 248)",
+        "tonalRamp": [
+          "#151617",
+          "#2f3031",
+          "#4b4c4e",
+          "#696b6c",
+          "#898b8c",
+          "#aaacad",
+          "#cdced0",
+          "#f1f2f3"
+        ]
+      },
+      "sheet": {
+        "role": "neutral",
+        "displayName": "Sheet",
+        "canonical": "oklch(100.0% 0.000 90)",
+        "tonalRamp": [
+          "#161616",
+          "#303030",
+          "#4c4c4c",
+          "#6a6a6a",
+          "#8a8a8a",
+          "#acacac",
+          "#cecece",
+          "#f2f2f2"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "canonical": "oklch(91.3% 0.009 243)",
+        "tonalRamp": [
+          "#141618",
+          "#2d3033",
+          "#484d51",
+          "#666b70",
+          "#868b90",
+          "#a8acb0",
+          "#cbcfd2",
+          "#eff2f5"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(24.3% 0.025 264)",
+        "tonalRamp": [
+          "#13161d",
+          "#2b303a",
+          "#464c59",
+          "#636b79",
+          "#838b9a",
+          "#a5acb9",
+          "#c9ceda",
+          "#edf2fb"
+        ]
+      },
+      "pencil": {
+        "role": "neutral",
+        "displayName": "Pencil",
+        "canonical": "oklch(56.2% 0.028 258)",
+        "tonalRamp": [
+          "#11161e",
+          "#29303b",
+          "#444d5b",
+          "#616b7b",
+          "#808b9c",
+          "#a3adbb",
+          "#c7cfdb",
+          "#ecf2fc"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Stat-card figures only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Login title."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Page title in the top bar."
+      },
+      "subtitle": {
+        "displayName": "Subtitle",
+        "purpose": "Panel headings and card titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Table cells, form text, buttons, nav items: the app default."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Table column headers and form labels."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Badges, small buttons, hints and metadata."
+      },
+      "group-heading": {
+        "displayName": "Group heading",
+        "purpose": "Sidebar group names, uppercase."
+      }
+    },
+    "shadows": [
+      {
+        "name": "card-hover",
+        "value": "0 3px 12px rgba(0,0,0,.10)",
+        "purpose": "Clickable stat card on hover (with translateY(-1px))."
+      },
+      {
+        "name": "modal",
+        "value": "0 8px 30px rgba(0,0,0,.25)",
+        "purpose": "Popup edit dialogs."
+      },
+      {
+        "name": "drawer",
+        "value": "2px 0 12px rgba(0,0,0,.25)",
+        "purpose": "Mobile sidebar drawer."
+      },
+      {
+        "name": "login-box",
+        "value": "0 10px 40px rgba(0,0,0,.25)",
+        "purpose": "Sign-in card."
+      }
+    ],
+    "motion": [
+      {
+        "name": "card-lift",
+        "value": ".15s (box-shadow, transform, border-color)",
+        "purpose": "Stat card hover."
+      },
+      {
+        "name": "chevron-rotate",
+        "value": ".15s ease",
+        "purpose": "Collapse/expand chevrons."
+      },
+      {
+        "name": "drawer-slide",
+        "value": ".2s ease",
+        "purpose": "Mobile sidebar open/close."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "768px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default action: solid navy, 6px corners, 13px / 600.",
+      "html": "<button class=\"ds-btn-primary\">Save</button>",
+      "css": ".ds-btn-primary { font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: var(--primary, #1e3a5f); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;  } .ds-btn-primary:hover { background: var(--primary-light, #2c5282); } .ds-btn-primary:focus-visible { outline: 2px solid #1e3a5f; outline-offset: 2px; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Secondary action: white with a navy border and navy text.",
+      "html": "<button class=\"ds-btn-outline\">Details</button>",
+      "css": ".ds-btn-outline { font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: #fff; color: var(--primary, #1e3a5f); border: 1px solid var(--primary, #1e3a5f); border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; } .ds-btn-outline:hover { background: #f4f6f8; } .ds-btn-outline:focus-visible { outline: 2px solid #1e3a5f; outline-offset: 2px; }"
+    },
+    {
+      "name": "Approve Button",
+      "kind": "button",
+      "refersTo": "button-success",
+      "description": "Positive decision (approve / confirm): Tick Green, darkens on hover.",
+      "html": "<button class=\"ds-btn-green\">Approve</button>",
+      "css": ".ds-btn-green { font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: var(--green, #2f855a); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;  } .ds-btn-green:hover { background: #276749; } .ds-btn-green:focus-visible { outline: 2px solid #1e3a5f; outline-offset: 2px; }"
+    },
+    {
+      "name": "Reject Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive or rejecting action: Stamp Red, darkens on hover.",
+      "html": "<button class=\"ds-btn-red\">Reject</button>",
+      "css": ".ds-btn-red { font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: var(--red, #c53030); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;  } .ds-btn-red:hover { background: #9b2c2c; } .ds-btn-red:focus-visible { outline: 2px solid #1e3a5f; outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Form field: white, 1px Rule border, 5px radius, label above in 12px Pencil.",
+      "html": "<label class=\"ds-field\"><span>Vendor name</span><input class=\"ds-input\" type=\"text\" value=\"Sri Lakshmi Traders\"></label>",
+      "css": ".ds-field { display: block; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; } .ds-field span { display: block; font-size: 12px; line-height: 1.25; color: #6b7686; margin-bottom: 3px; } .ds-input { width: 100%; padding: 7px 9px; border: 1px solid #dde3e8; border-radius: 5px; font-size: 13px; font-family: inherit; color: #1a202c; background: #fff; box-sizing: border-box; } .ds-input:focus-visible { outline: 2px solid #1e3a5f; outline-offset: -1px; }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Navy sidebar entry; active item gets a wash and the 3px amber left bar.",
+      "html": "<div class=\"ds-nav\"><a class=\"ds-nav-item\">Purchase Orders</a><a class=\"ds-nav-item active\">Purchase Requests <span class=\"ds-nav-badge\">4</span></a></div>",
+      "css": ".ds-nav { background: #1e3a5f; width: 230px; padding: 8px 0; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; } .ds-nav-item { display: block; padding: 9px 16px; font-size: 13px; line-height: 1.25; color: #e2e8f0; border-left: 3px solid transparent; cursor: pointer; } .ds-nav-item:hover { background: rgba(255,255,255,.08); } .ds-nav-item.active { background: rgba(255,255,255,.14); border-left-color: #c9822a; font-weight: 600; } .ds-nav-badge { display: inline-block; min-width: 16px; padding: 1px 6px; border-radius: 9px; background: #c9822a; color: #fff; font-size: 10px; font-weight: 700; line-height: 1.5; text-align: center; }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Pale tint with deep text; the app's only way to show state.",
+      "html": "<span class=\"ds-badge ds-b-pending\">PendingApproval</span> <span class=\"ds-badge ds-b-ok\">Approved</span> <span class=\"ds-badge ds-b-bad\">Rejected</span> <span class=\"ds-badge ds-b-info\">InProgress</span> <span class=\"ds-badge ds-b-off\">Closed</span>",
+      "css": ".ds-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size: 11px; line-height: 1.5; font-weight: 600; } .ds-b-pending { background: #fef3cd; color: #b7791f; } .ds-b-ok { background: #dcf3e6; color: #2f855a; } .ds-b-bad { background: #fde2e2; color: #c53030; } .ds-b-info { background: #dbeafe; color: #1d4ed8; } .ds-b-off { background: #eee; color: #666; }"
+    },
+    {
+      "name": "Stat Card",
+      "kind": "card",
+      "refersTo": "stat-card",
+      "description": "Clickable dashboard figure; the only element that lifts on hover.",
+      "html": "<div class=\"ds-stat\"><div class=\"ds-stat-num\">27</div><div class=\"ds-stat-label\">Open Purchase Orders</div></div>",
+      "css": ".ds-stat { width: 200px; background: #fff; border: 1px solid #dde3e8; border-radius: 8px; padding: 16px; cursor: pointer; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; transition: box-shadow .15s, transform .15s, border-color .15s; } .ds-stat:hover { box-shadow: 0 3px 12px rgba(0,0,0,.10); transform: translateY(-1px); border-color: #1e3a5f; } .ds-stat-num { font-size: 26px; font-weight: 700; color: #1e3a5f; line-height: 1.25; } .ds-stat-label { font-size: 12px; color: #6b7686; margin-top: 2px; }"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "The standard container: white sheet, hairline border, navy heading over a rule.",
+      "html": "<div class=\"ds-panel\"><h3>Supplier details</h3><p>Flat surface, 1px border, 8px radius.</p></div>",
+      "css": ".ds-panel { background: #fff; border: 1px solid #dde3e8; border-radius: 8px; padding: 18px; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size: 13px; line-height: 1.5; color: #1a202c; } .ds-panel h3 { margin: 0 0 14px; font-size: 14px; line-height: 1.25; font-weight: 600; color: #1e3a5f; border-bottom: 1px solid #dde3e8; padding-bottom: 8px; } .ds-panel p { margin: 0; }"
+    },
+    {
+      "name": "Data Table",
+      "kind": "custom",
+      "refersTo": "table-head",
+      "description": "Dense list: Head Wash header in 12px Pencil, 8px / 10px cells, hairline row rules.",
+      "html": "<table class=\"ds-table\"><thead><tr><th>PO No</th><th>Vendor</th><th>Status</th></tr></thead><tbody><tr><td>PO-2026-0412</td><td>Sri Lakshmi Traders</td><td><span class=\"ds-t-badge\">Approved</span></td></tr><tr><td>PO-2026-0413</td><td>Anand Industrial Supplies</td><td><span class=\"ds-t-badge\">Approved</span></td></tr></tbody></table>",
+      "css": ".ds-table { width: 100%; border-collapse: collapse; font-family: Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size: 13px; line-height: 1.5; color: #1a202c; } .ds-table th { text-align: left; background: #f7f9fb; padding: 8px 10px; font-size: 12px; font-weight: 600; color: #6b7686; border-bottom: 1px solid #dde3e8; white-space: nowrap; } .ds-table td { padding: 8px 10px; border-bottom: 1px solid #edf1f4; } .ds-table tr:hover td { background: #fafbfc; } .ds-t-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: #dcf3e6; color: #2f855a; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Shop-Floor Ledger",
+    "overview": "This is a working ledger, not a showcase. It is built for people who enter, check and approve numbers all day: purchase orders, sales orders, GRNs, invoices, service reports. Everything on screen is ink on cool paper. A fixed navy spine (the sidebar) holds navigation; the work happens on flat white sheets separated by hairline rules; one amber mark says \"this is where you are\" or \"this needs you\".\n\nThe density is deliberate. Type sits at 13px, table rows are 8px tall on each side, and a screen routinely carries a list, its filters and its row actions at once. Hierarchy comes from weight, a single navy accent for headings, and muted grey for secondary text, not from size jumps or decoration. Status is read from small tinted badges, the way a stamp on a paper form is read.\n\nIt is not a glossy consumer SaaS product: no big gradients (the login screen is the single exception), no oversized hero cards, no decorative illustration, no soft airy whitespace spent on content that should be scannable. Brand lives in the precision of the details: consistent radii, one type scale, aligned columns.",
+    "keyCharacteristics": [
+      "Flat surfaces separated by 1px hairlines; shadows only on hover and on overlays.",
+      "One navy for structure and primary actions, one amber for the single \"look here\" mark.",
+      "One Inter type scale (11 / 12 / 13 / 14 / 17 / 20px) shared by every screen.",
+      "Status expressed as pale tint plus deep ink, never as a saturated fill.",
+      "Tables and line-item grids with declared column tracks so columns line up row to row.",
+      "Collapsed by default for grouped or repeating lists; edits happen in popups."
+    ],
+    "rules": [
+      {
+        "name": "The One Amber Rule",
+        "body": "Ledger Amber marks the current location and the unread count, and appears on nothing else. If a second thing on a screen is amber-filled, one of them is wrong.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tint-Not-Fill Rule",
+        "body": "Status is a pale tint with deep text. A saturated fill is reserved for buttons, which are actions, not states.",
+        "section": "colors"
+      },
+      {
+        "name": "The Single Source Rule",
+        "body": "Colours come from the `:root` custom properties in `public/index.html`. A new hard-coded hex needs a reason; the existing inline status tints are the exception, not the pattern.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Scale Rule",
+        "body": "Font sizes come from `--fs-xs/sm/base/md/lg/xl`. A new magic pixel size means the scale is missing a step; add the step rather than the exception.",
+        "section": "typography"
+      },
+      {
+        "name": "The Bold-For-Rank Rule",
+        "body": "Rank is expressed by weight (400 / 600 / 700) and Ledger Navy, not by jumping sizes. Nothing in the app UI is larger than 20px except the stat figure.",
+        "section": "typography"
+      },
+      {
+        "name": "The Declared-Tracks Rule",
+        "body": "If a column holds a live control, its width is declared once in a grid template and shared by header and rows. Never size one cell's input by hand.",
+        "section": "layout"
+      },
+      {
+        "name": "The Page-Never-Scrolls-Sideways Rule",
+        "body": "On phones the table scrolls, the page does not.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "A panel, table or form never has a resting shadow. If it needs separating, give it a border.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** take every colour, size and radius from the `:root` tokens and the type scale in `public/index.html`.",
+      "**Do** separate surfaces with a 1px Rule border, and keep resting surfaces flat.",
+      "**Do** show status as a pale tint with deep text (`.badge.<Status>`).",
+      "**Do** put multi-button table cells in `.row-actions` and live-input tables in a declared grid so columns align.",
+      "**Do** collapse grouped, repeating or secondary content by default behind an explicit expand control.",
+      "**Do** verify padding and tap targets at 768px and below; the app is used on phones."
+    ],
+    "donts": [
+      "**Don't** add a decorative gradient, hero card, illustration or large soft shadow to a working screen. The login backdrop is the only gradient.",
+      "**Don't** use Ledger Amber for anything except the active-nav marker and count badge.",
+      "**Don't** introduce a new font size or hand-picked pixel width for one cell; extend the scale or the grid template instead.",
+      "**Don't** use a saturated fill to show status; fills are for buttons.",
+      "**Don't** let the page scroll sideways on a phone; scroll the table.",
+      "**Don't** treat the vendor quotation portal (`public/vendor.html`) as part of this system: it is a separate, external-facing page with its own lighter slate and green scheme (#1e293b / #16a34a, system-ui at 15px), and is not documented here."
+    ]
+  }
+}
