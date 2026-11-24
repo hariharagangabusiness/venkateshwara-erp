@@ -1,0 +1,44 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "files": [
+          "lib/offerPdf.js"
+        ],
+        "createdAt": "2026-11-24T15:49:46.269Z",
+        "reason": "PDF document template, not app UI: Offer PDF header/footer deliberately reproduces a physical letterhead (see pdfBranding.js comment). Triaged by assistant, not user-confirmed."
+      },
+      {
+        "rule": "design-system-font",
+        "value": "times new roman",
+        "files": [
+          "lib/offerPdf.js"
+        ],
+        "createdAt": "2026-11-24T15:49:46.422Z",
+        "reason": "PDF document template, not app UI: Offer PDF serif header/footer deliberately reproduces a physical letterhead (see pdfBranding.js comment). DESIGN.md covers the web app only. Triaged by assistant, not user-confirmed."
+      },
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "files": [
+          "lib/pdfBranding.js"
+        ],
+        "createdAt": "2026-11-24T15:49:46.553Z",
+        "reason": "PDF watermark text is a print-document style, not app UI; DESIGN.md covers the web app only. Triaged by assistant, not user-confirmed."
+      },
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "files": [
+          "lib/annexurePdf.js"
+        ],
+        "createdAt": "2026-11-24T15:49:46.675Z",
+        "reason": "Annexure PDF uses one explicit Arial family on purpose so it matches the Word export (lib/annexureDocx.js), per the 2026-11-21 uniform-font change. Triaged by assistant, not user-confirmed."
+      }
+    ]
+  }
+}
