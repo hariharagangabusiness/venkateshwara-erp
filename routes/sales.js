@@ -65,7 +65,7 @@ function ensureProjectForOrder(salesOrder, userId) {
 function loadAnnexureData(salesOrder) {
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(salesOrder.client_id);
   const offer = db.prepare('SELECT * FROM offers WHERE sales_order_id = ?').get(salesOrder.id);
-  let items = [], techSpecs = [], boughtOut = [];
+  let items = [], techSpecs = [], boughtOut = [], annexures = [];
   const soItems = db.prepare(`
     SELECT soi.*, i.item_code as master_item_code
     FROM sales_order_items soi LEFT JOIN items i ON i.id = soi.item_id
@@ -74,6 +74,10 @@ function loadAnnexureData(salesOrder) {
   if (offer) {
     techSpecs = db.prepare('SELECT * FROM offer_tech_specs WHERE offer_id = ? ORDER BY id').all(offer.id);
     boughtOut = db.prepare('SELECT * FROM offer_bought_out_items WHERE offer_id = ? ORDER BY id').all(offer.id);
+    // The offer's pasted/uploaded Annexure grid (offer_annexures) is read through the live offer link rather than
+    // copied onto the order: the confirmed offer's child rows are locked, so it can't drift, and orders confirmed
+    // before this was added pick it up with no backfill. Printed without Rate/Amount (see the annexure generators).
+    annexures = db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(offer.id);
     const offerItems = db.prepare('SELECT * FROM offer_items WHERE offer_id = ? ORDER BY id').all(offer.id);
     if (soItems.length) {
       const offerItemsById = new Map(offerItems.map(it => [it.id, it]));
@@ -114,7 +118,7 @@ function loadAnnexureData(salesOrder) {
   // Free-text notes printed on the document itself - see annexure_reviews.notes.
   const reviewRow = db.prepare('SELECT notes FROM annexure_reviews WHERE sales_order_id = ?').get(salesOrder.id);
   const notes = reviewRow ? reviewRow.notes : null;
-  return { salesOrder, client, offer, items, techSpecs, boughtOut, gaDrawing, notes, company: getCompanySettings() };
+  return { salesOrder, client, offer, items, techSpecs, boughtOut, annexures, gaDrawing, notes, company: getCompanySettings() };
 }
 
 async function ensureAnnexureForOrder(salesOrder) {
