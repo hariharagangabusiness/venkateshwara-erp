@@ -1239,6 +1239,7 @@ router.get('/:id/annexure/preview-pdf', offerPerm(), async (req, res) => {
       items: full.items,
       techSpecs: full.techSpecs,
       boughtOut: full.boughtOut,
+      annexures: full.annexures,
       gaDrawing: gaDrawingAtt || null,
       notes: null,
       company: getCompanySettings(),
@@ -1414,7 +1415,7 @@ router.post('/:id/confirm', requirePermission('sales_order.manage'), async (req,
     const salesOrder = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(result.salesOrderId);
     const annex = await generateAnnexureDocx({
       salesOrder, client: full.client, offer: full.offer,
-      items: full.items, techSpecs: full.techSpecs, boughtOut: full.boughtOut,
+      items: full.items, techSpecs: full.techSpecs, boughtOut: full.boughtOut, annexures: full.annexures,
       company: getCompanySettings(),
     });
     db.prepare('UPDATE sales_orders SET annexure_path = ? WHERE id = ?').run(annex.relativePath, result.salesOrderId);
