@@ -9,13 +9,12 @@ const { createJobCardsForProject } = require('../lib/pipeline');
 const { localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
-const { getCompanySettings } = require('../lib/settings');
+const { getCompanySettings, getWorkflowChannel } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
 const { sendMail } = require('../lib/mailer');
-const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { formatDate } = require('../lib/dateFormat');
 const router = express.Router();
@@ -121,6 +120,10 @@ function loadAnnexureData(salesOrder) {
   return { salesOrder, client, offer, items, techSpecs, boughtOut, annexures, gaDrawing, notes, company: getCompanySettings() };
 }
 
+// Order-history trail (GET /orders/:id/history): best-effort, never blocks the action it records.
+function logSalesOrderEvent(userId, action, orderId, details) {
+  try { db.prepare('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)').run(userId, action, 'sales_order', Number(orderId), details); } catch (e) { /* ignore */ }
+}
 async function ensureAnnexureForOrder(salesOrder) {
   const data = loadAnnexureData(salesOrder);
   const annex = await generateAnnexureDocx(data);
@@ -504,6 +507,7 @@ router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
   // (customer name, subject) - same "don't leave it silently stale" guard
   // every other order-header-changing route already applies.
   await regenerateAnnexureIfUnlocked(order.id);
+  logSalesOrderEvent(req.user.id, 'order_edited', req.params.id, 'Order header edited by Admin.');
   res.json({ ok: true });
 });
 
@@ -541,6 +545,7 @@ router.post('/orders/:id/items', requirePermission('sales_order.manage'), async 
   // afterward silently left it stale with no prompt to regenerate (the
   // exact same class of gap the 2026-10-10 PO No/Date fix closed).
   await regenerateAnnexureIfUnlocked(order.id);
+  logSalesOrderEvent(req.user.id, 'item_added', req.params.id, 'Order line added.');
   res.json({ id: info.lastInsertRowid });
 });
 router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), async (req, res) => {
@@ -562,6 +567,7 @@ router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'),
   );
   recomputeOrderValue(item.sales_order_id);
   await regenerateAnnexureIfUnlocked(item.sales_order_id);
+  logSalesOrderEvent(req.user.id, 'item_edited', req.params.id, 'Order line edited.');
   res.json({ ok: true });
 });
 router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage'), async (req, res) => {
@@ -573,6 +579,7 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
   db.prepare('DELETE FROM sales_order_items WHERE id = ?').run(item.id);
   recomputeOrderValue(item.sales_order_id);
   await regenerateAnnexureIfUnlocked(item.sales_order_id);
+  logSalesOrderEvent(req.user.id, 'item_deleted', req.params.id, 'Order line deleted.');
   res.json({ ok: true });
 });
 
@@ -918,6 +925,7 @@ router.put('/orders/:id/po', requirePermission('sales_order.manage'), async (req
     order.id);
   const result = recomputePoTermsStatus(db, order.id);
   await regenerateAnnexureIfUnlocked(order.id);
+  logSalesOrderEvent(req.user.id, 'po_updated', req.params.id, 'Customer PO details updated.');
   res.json({ ok: true, ...result });
 });
 
@@ -1039,7 +1047,7 @@ router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'
       to: recipients[0].email.trim(), cc: recipients.slice(1).map(r => r.email.trim()),
       subject: tpl.subject, text: tpl.body, skipDefaultCc: true,
       attachments: [{ filename, path: result.outPath }],
-      ...getDepartmentEmailIdentity('Sales'),
+      channel: getWorkflowChannel('so_annexure_hods'),
     });
     if (!mail.sent) return res.status(502).json({ error: mail.reason || 'Email could not be sent.' });
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
@@ -1051,6 +1059,46 @@ router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'
   } finally {
     if (tmpDir) fs.rm(tmpDir, { recursive: true, force: true }, () => {});
   }
+});
+
+// Chronological timeline for one Sales Order: its own creation, the linked offer, audit_log events (edits, annexure
+// emails/regeneration, PO terms), the review workflows, and linked proformas / dispatches / rejections / returns.
+const HISTORY_ACTION_LABELS = {
+  email_annexure_to_hods: 'Annexure emailed to HODs', annexure_regenerated: 'Annexure regenerated', order_edited: 'Order edited',
+  item_added: 'Line added', item_edited: 'Line edited', item_deleted: 'Line deleted', po_updated: 'Customer PO updated',
+  po_terms_accepted: 'PO terms accepted', po_terms_mismatch_acknowledged: 'PO terms mismatch acknowledged',
+};
+router.get('/orders/:id/history', (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const ev = [];
+  const add = (when, event, by, details) => { if (when) ev.push({ when, event, by: by || null, details: details || '' }); };
+  const creator = order.created_by ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(order.created_by) : null;
+  const offer = db.prepare('SELECT offer_no, version FROM offers WHERE sales_order_id = ?').get(order.id);
+  add(order.order_date, 'Order created', creator && creator.full_name, offer ? 'Confirmed from offer ' + offer.offer_no + (offer.version > 1 ? ' (v' + offer.version + ')' : '') : 'Created directly (no linked offer).');
+  db.prepare(`SELECT al.action, al.details, al.created_at, u.full_name FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+    WHERE al.entity_type = 'sales_order' AND al.entity_id = ?`).all(order.id)
+    .forEach(a => add(a.created_at, HISTORY_ACTION_LABELS[a.action] || a.action, a.full_name,
+      a.action === 'email_annexure_to_hods' ? 'Sent to: ' + a.details : a.details));
+  const by = (id) => (id ? (db.prepare('SELECT full_name FROM users WHERE id = ?').get(id) || {}).full_name : null);
+  for (const [tbl, label] of [['annexure_reviews', 'Annexure review'], ['order_confirmations', 'Order confirmation']]) {
+    const r = db.prepare('SELECT * FROM ' + tbl + ' WHERE sales_order_id = ?').get(order.id);
+    if (!r) continue;
+    add(r.submitted_at, label + ' submitted', by(r.submitted_by));
+    add(r.approved_at, label + ' approved', by(r.approved_by));
+    add(r.unlocked_at, label + ' unlocked', by(r.unlocked_by));
+    if (r.rejection_reason) add(r.updated_at, label + ' rejected', null, r.rejection_reason);
+  }
+  const linked = [
+    ['proforma_invoices', 'proforma_no', 'proforma_date', 'Proforma invoice'], ['fg_dispatches', 'dispatch_no', 'created_at', 'FG dispatch'],
+    ['sale_rejection_mrns', 'mrn_no', 'created_at', 'Sale rejection MRN'], ['sales_returns', 'return_no', 'created_at', 'Sales return'],
+  ];
+  for (const [tbl, noCol, dateCol, label] of linked) {
+    db.prepare('SELECT ' + noCol + ' as no, ' + dateCol + ' as at, status, created_by FROM ' + tbl + ' WHERE sales_order_id = ?').all(order.id)
+      .forEach(r => add(r.at, label + ' created', by(r.created_by), r.no + ' - ' + (r.status || '')));
+  }
+  ev.sort((a, b) => String(a.when).localeCompare(String(b.when)));
+  res.json(ev);
 });
 
 // Backfill / regenerate: for orders created before this feature existed, or
@@ -1068,6 +1116,7 @@ router.post('/orders/:id/regenerate-annexure', requirePermission('sales_order.ma
   try {
     ensureProjectForOrder(salesOrder, req.user.id);
     const annex = await ensureAnnexureForOrder(salesOrder);
+    logSalesOrderEvent(req.user.id, 'annexure_regenerated', salesOrder.id, 'Annexure regenerated from live order/offer data.');
     res.json({ ok: true, annexureFile: annex.fileName });
   } catch (e) {
     console.error('Annexure regeneration failed:', e);

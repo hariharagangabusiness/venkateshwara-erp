@@ -4,6 +4,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
+const { getWorkflowChannel } = require('../lib/settings');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
 const { localDateStr } = require('../lib/dateUtil');
@@ -702,7 +703,7 @@ async function notifyApproversPending(approval) {
       summary: info.summary ? ' (' + info.summary + ')' : '',
     });
     const emails = approvers.map(u => u.email);
-    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true, channel: 'escalations' });
+    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
   } catch (e) { /* best-effort - never let a notification failure affect the approval itself */ }
 }
 
