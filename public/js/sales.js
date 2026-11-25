@@ -2704,23 +2704,23 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
     ${flag ? `<label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border-radius:6px;font-weight:600;">
       <input id="${flag.id}" type="checkbox" ${flag.checked ? 'checked' : ''}> Include ${esc(flag.label)} in generated PDF
     </label>` : ''}
-    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is excluded from the offer - check the box above and click Save to re-enable it.</div>` : ''}
+    ${disabled ? `<div style="background:#f5f5f5;border-radius:6px;padding:10px;margin-bottom:10px;font-style:italic;color:var(--muted);">This section is currently excluded from the generated PDF. You can still add and edit rows here - tick the box above and click Save to include it.</div>` : ''}
     <table><thead><tr><th>${keyLabel}</th><th>${valLabel}</th><th></th></tr></thead>
     <tbody id="kv-rows">${rows.map((r, i) => `
       <tr data-i="${i}">
-        <td><input class="kv-key" value="${esc(r[keyField])}" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-        <td><textarea class="kv-val" rows="2" ${disabled ? 'disabled' : ''} style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;white-space:pre-wrap;resize:vertical;">${esc(r[valField])}</textarea></td>
-        <td>${disabled ? '' : `<button class="btn small red" onclick="this.closest('tr').remove()">Remove</button>`}</td>
+        <td><input class="kv-key" value="${esc(r[keyField])}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
+        <td><textarea class="kv-val" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;white-space:pre-wrap;resize:vertical;">${esc(r[valField])}</textarea></td>
+        <td><button class="btn small red" onclick="this.closest('tr').remove()">Remove</button></td>
       </tr>`).join('')}</tbody></table>
-    ${disabled ? '' : hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    ${hasLibrary ? `<div style="margin:8px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
       <select id="kv-lib-pick" style="border:1px solid var(--border);border-radius:4px;padding:5px;">
         <option value="">${library.length ? 'Pick a clause from the library...' : 'No library clauses defined yet'}</option>
         ${library.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('')}
       </select>
       <button class="btn small outline" onclick="addKvRowFromLibrary()">+ Add From Library</button>
     </div>` : '' }
-    ${disabled ? '' : !strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
-    ${(flag || !disabled) ? `<button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}'${flag ? `, '${flag.field}', '${flag.id}'` : ''})">Save</button>` : ''}
+    ${!strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
+    <button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}'${flag ? `, '${flag.field}', '${flag.id}'` : ''})">Save</button>
   `;
   if (hasLibrary) el.dataset.library = JSON.stringify(library);
 }
@@ -2761,6 +2761,7 @@ window.saveKvTab = async (endpoint, keyField, valField, flagField, flagCheckboxI
       if (cb) body[flagField] = cb.checked ? 1 : 0;
     }
     const r = await api(`/offers/${CURRENT_OFFER_ID}/${endpoint}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (flagCheckboxId) delete OFFER_FLAG_OVERRIDES[flagCheckboxId]; // saved: the server value is authoritative again, not a stale pending override
     await afterOfferMutation(r, 'Saved');
   } catch (e) { alert(e.message); }
 };
