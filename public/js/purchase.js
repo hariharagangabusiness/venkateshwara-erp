@@ -1103,10 +1103,12 @@ function renderSinglePORow(o) {
     ${canAddPOLine(o) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${o.id})">+ Add Line Item</button>` : ''}
     ${canEditPO(o) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${o.id})">Edit</button>` : ''}
     ${!['Received','Cancelled','Closed'].includes(o.status) ? `<button class="btn small red" type="button" onclick="cancelPO(${o.id})">Cancel</button>` : ''}
+    ${ME.role === 'Admin' && ['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small red" type="button" onclick="revokePOApproval(${o.id}, '${esc(o.po_no)}')">Reject / Revoke</button>` : ''}
     ${['Open','PartiallyReceived'].includes(o.status) ? `<button class="btn small outline" type="button" onclick="closeShortShip(${o.id})">Short Ship</button>` : ''}
     ${o.status === 'Closed' && ME.role === 'Admin' ? `<button class="btn small outline" type="button" onclick="reopenClosedPO(${o.id})">Reopen</button>` : ''}
     ${canDeletePO(o) ? `<button class="btn small red" type="button" onclick="deletePOLine(${o.id})">Delete</button>` : ''}
     <button class="btn small outline" type="button" onclick="togglePOHistory(${o.id})">History</button>`)}</td></tr>
+    ${o.status === 'Rejected' && o.rejection_reason ? `<tr><td></td><td colspan="10" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${o.rejected_by_name ? ' by ' + esc(o.rejected_by_name) : ''}${o.rejected_at ? ' on ' + esc(String(o.rejected_at).slice(0, 16)) : ''}: ${esc(o.rejection_reason)}</span></td></tr>` : ''}
     <tr id="po-att-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${o.id}"></div></td></tr>
     <tr id="po-terms-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${o.id}"></div></td></tr>
     <tr id="po-addline-row-${o.id}" style="display:none;"><td colspan="11"><div id="po-addline-body-${o.id}"></div></td></tr>
@@ -1169,8 +1171,10 @@ function renderMultiLinePOGroup(lines) {
       ${canEditPO(first) ? `<button class="btn small outline" type="button" onclick="togglePOEdit(${first.id})">Edit</button>` : ''}
       ${canAddPOLine(first) ? `<button class="btn small outline" type="button" onclick="togglePOAddLine(${first.id})">+ Add Line Item</button>` : ''}
       ${anyCancellable ? `<button class="btn small red" type="button" onclick="cancelWholePO('${esc(first.po_no)}')">Cancel Whole PO</button>` : ''}
+      ${ME.role === 'Admin' && lines.some(l => ['Open','PartiallyReceived'].includes(l.status)) ? `<button class="btn small red" type="button" onclick="revokePOApproval(${first.id}, '${esc(first.po_no)}')">Reject / Revoke</button>` : ''}
       ${allDeletable ? `<button class="btn small red" type="button" onclick="deleteWholePO('${esc(first.po_no)}')">Delete Whole PO</button>` : ''}
       <button class="btn small outline" type="button" onclick="togglePOHistory(${first.id})">History</button>`)}</td></tr>
+    ${lines.some(l => l.status === 'Rejected') && first.rejection_reason ? `<tr><td></td><td colspan="10" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${first.rejected_by_name ? ' by ' + esc(first.rejected_by_name) : ''}${first.rejected_at ? ' on ' + esc(String(first.rejected_at).slice(0, 16)) : ''}: ${esc(first.rejection_reason)}</span></td></tr>` : ''}
     <tr id="po-att-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-attachments-${first.id}"></div></td></tr>
     <tr id="po-terms-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-terms-body-${first.id}"></div></td></tr>
     <tr id="po-addline-row-${first.id}" style="display:none;"><td colspan="11"><div id="po-addline-body-${first.id}"></div></td></tr>
@@ -1265,6 +1269,13 @@ window.savePOEdit = async (id) => {
     })});
     confirmSavedThenClose(`po-edit-save-${id}`, 'purchase-orders');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// Admin only: reject an already-approved PO (server refuses once stock is received or billed).
+window.revokePOApproval = (id, poNo) => {
+  openRejectReasonModal('Reject approved PO ' + poNo, true, async (reason) => {
+    await api(`/purchase/orders/${id}/revoke-approval`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-orders');
+  });
 };
 window.cancelPO = async (id) => {
   const reason = prompt('Reason for cancelling this order (optional):');
