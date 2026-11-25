@@ -257,14 +257,15 @@ async function refreshNotificationBell() {
   const el = document.getElementById('bell-count');
   if (el) { el.textContent = n; el.style.display = n ? '' : 'none'; }
 }
-const NOTIFICATION_LINKS = { PR_REJECTED: 'purchase-requests' };
+const NOTIFICATION_LINKS = { PR_REJECTED: 'purchase-requests', PO_REVOKED: 'purchase-orders' };
+const NOTIFICATION_LINK_LABELS = { 'purchase-requests': 'Purchase Requests', 'purchase-orders': 'Purchase Orders' };
 function notificationListHTML() {
   if (!NOTIFICATIONS.length) return '<div class="empty">No notifications.</div>';
   return `<div style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;">${NOTIFICATIONS.map(n => `
     <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;${n.is_read ? 'opacity:.65;' : 'border-left:3px solid var(--red);'}">
       <div style="${n.is_read ? '' : 'font-weight:600;'}word-break:break-word;">${esc(n.message)}</div>
       <div class="muted" style="font-size:12px;margin-top:4px;">${esc((n.created_at || '').slice(0, 16))}
-        ${NOTIFICATION_LINKS[n.source_type] ? ` &middot; <a href="#" onclick="openNotification(${n.id});return false;">Open ${NOTIFICATION_LINKS[n.source_type] === 'purchase-requests' ? 'Purchase Requests' : ''}</a>` : ''}
+        ${NOTIFICATION_LINKS[n.source_type] ? ` &middot; <a href="#" onclick="openNotification(${n.id});return false;">Open ${NOTIFICATION_LINK_LABELS[NOTIFICATION_LINKS[n.source_type]]}</a>` : ''}
         ${n.is_read ? '' : ` &middot; <a href="#" onclick="markNotificationRead(${n.id});return false;">Mark read</a>`}</div>
     </div>`).join('')}</div>`;
 }

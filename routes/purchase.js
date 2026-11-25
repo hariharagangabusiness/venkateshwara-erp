@@ -11,7 +11,8 @@ const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/d
 const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
-const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
+const { getCompanySettings, getPurchaseSettings, getWorkflowChannel } = require('../lib/settings');
+const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const { poReceivedQty } = require('../lib/purchaseOrders');
@@ -1033,7 +1034,10 @@ router.get('/orders', (req, res) => {
       sa.label as company_ship_address_label, sa.address_type as company_ship_address_type,
       sa.line1 as company_ship_address_line1, sa.line2 as company_ship_address_line2, sa.city as company_ship_address_city,
       sa.state as company_ship_address_state, sa.pincode as company_ship_address_pincode, sa.gstin as company_ship_address_gstin,
-      COALESCE((SELECT SUM(sm.quantity) FROM stock_movements sm WHERE sm.movement_type = 'IN' AND sm.reference = 'PO#' || po.id), 0) as received_qty
+      COALESCE((SELECT SUM(sm.quantity) FROM stock_movements sm WHERE sm.movement_type = 'IN' AND sm.reference = 'PO#' || po.id), 0) as received_qty,
+      COALESCE((SELECT aa.comment FROM approval_actions aa WHERE aa.approval_id = po.approval_id AND aa.action = 'Rejected' ORDER BY aa.acted_at DESC, aa.id DESC LIMIT 1), (SELECT al.details FROM audit_log al WHERE al.action = 'po_approval_revoked' AND al.entity_type = 'purchase_order' AND al.entity_id IN (SELECT id FROM purchase_orders WHERE po_no = po.po_no) ORDER BY al.id DESC LIMIT 1)) as rejection_reason,
+      COALESCE((SELECT ru.full_name FROM approval_actions aa LEFT JOIN users ru ON ru.id = aa.actor_user_id WHERE aa.approval_id = po.approval_id AND aa.action = 'Rejected' ORDER BY aa.acted_at DESC, aa.id DESC LIMIT 1), (SELECT u2.full_name FROM audit_log al LEFT JOIN users u2 ON u2.id = al.user_id WHERE al.action = 'po_approval_revoked' AND al.entity_type = 'purchase_order' AND al.entity_id IN (SELECT id FROM purchase_orders WHERE po_no = po.po_no) ORDER BY al.id DESC LIMIT 1)) as rejected_by_name,
+      COALESCE((SELECT aa.acted_at FROM approval_actions aa WHERE aa.approval_id = po.approval_id AND aa.action = 'Rejected' ORDER BY aa.acted_at DESC, aa.id DESC LIMIT 1), (SELECT al.created_at FROM audit_log al WHERE al.action = 'po_approval_revoked' AND al.entity_type = 'purchase_order' AND al.entity_id IN (SELECT id FROM purchase_orders WHERE po_no = po.po_no) ORDER BY al.id DESC LIMIT 1)) as rejected_at
     FROM purchase_orders po
     JOIN vendors v ON v.id = po.vendor_id LEFT JOIN items i ON i.id = po.item_id
     LEFT JOIN company_addresses ca ON ca.id = po.company_address_id
@@ -1434,6 +1438,53 @@ router.post('/orders/:id/cancel', requirePermission('purchase_order.manage'), (r
   });
   tx();
   poAuditLog(req.user.id, 'po_cancel', existing.id, reason);
+  res.json({ ok: true });
+});
+
+// Admin "Reject / Revoke Approval" on an already-approved, live PO (the approval engine can only reject while a PO is
+// still pending). Acts on the whole po_no group's live lines: they go to Rejected with the reason recorded as a
+// Rejected approval action (so it shows like any rejection), after which the normal edit-and-resubmit flow applies.
+// Refused once anything has been received or billed against those lines - a physical receipt is never reversed here.
+router.post('/orders/:id/revoke-approval', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A rejection reason is required.' });
+  const live = db.prepare(`SELECT * FROM purchase_orders WHERE po_no = ? AND status IN ('Open', 'PartiallyReceived')`).all(existing.po_no);
+  if (!live.length) return res.status(400).json({ error: 'Only an approved, live order (Open / Partially Received) can have its approval revoked.' });
+  const received = live.filter(l => poReceivedQty(l.id) > 0);
+  if (received.length) return res.status(400).json({ error: 'Stock has already been received against this order, so its approval can no longer be revoked. Use Short Ship or Cancel instead.' });
+  const billed = db.prepare(`
+    SELECT COUNT(*) as n FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+    WHERE pii.purchase_order_line_id IN (${live.map(() => '?').join(',')}) AND pi.status NOT IN ('Cancelled', 'Rejected')`).get(...live.map(l => l.id)).n;
+  if (billed) return res.status(400).json({ error: 'A Purchase Invoice has already been booked against this order, so its approval can no longer be revoked.' });
+  const approvalId = live[0].approval_id;
+  const tx = db.transaction(() => {
+    const upd = db.prepare(`UPDATE purchase_orders SET status = 'Rejected' WHERE id = ?`);
+    live.forEach(l => upd.run(l.id));
+    const ap = approvalId ? db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId) : null;
+    if (ap) {
+      db.prepare(`INSERT INTO approval_actions (approval_id, step_order, actor_user_id, action, comment) VALUES (?,?,?,?,?)`)
+        .run(ap.id, ap.current_step || 0, req.user.id, 'Rejected', reason);
+      db.prepare(`UPDATE approvals SET status = 'Rejected' WHERE id = ?`).run(ap.id);
+    }
+  });
+  tx();
+  poAuditLog(req.user.id, 'po_approval_revoked', existing.id, reason);
+  // Tell whoever raised the PO (in-app + email); never affects the revoke itself.
+  try {
+    const creator = db.prepare('SELECT id, full_name, email FROM users WHERE id = ?').get(live[0].created_by);
+    if (creator) {
+      db.prepare('INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)')
+        .run(creator.id, 'PO_REVOKED', live[0].id, `Purchase Order ${existing.po_no} was rejected (approval revoked) by ${req.user.full_name}. Reason: ${reason}`);
+      if (creator.email) {
+        const { subject, body } = renderTemplate(getEmailTemplate('approval_outcome_rejected'), {
+          requester_name: creator.full_name, entity_label: 'Purchase Order', ref: existing.po_no, summary: '', actor_name: req.user.full_name, reason: 'Reason: ' + reason,
+        });
+        sendMail({ to: creator.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') }).catch(() => {});
+      }
+    }
+  } catch (e) { console.error('[po-revoke-notify] failed:', e.message); }
   res.json({ ok: true });
 });
 
