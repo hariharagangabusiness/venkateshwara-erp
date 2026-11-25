@@ -689,12 +689,21 @@ function orderRowHTML(o) {
     <button class="btn small outline" type="button" onclick="toggleSOItems(${o.id})">Items</button>
     <button class="btn small outline" type="button" onclick="openOrderConfirmationModal(${o.id})">Confirmation &amp; Annexure</button>
     <button class="btn small outline" type="button" onclick="emailAnnexureToHODs(${o.id}, this)">Email Annexure to HODs</button>
+    <button class="btn small outline" type="button" onclick="openSalesOrderHistory(${o.id}, '${esc(o.order_no)}')">History</button>
     ${ME.role === 'Admin' && o.status === 'Confirmed' ? `<button class="btn small red" type="button" onclick="deleteOrderRow(${o.id})">Delete</button>` : ''}
     `)}</td></tr>
     <tr id="so-terms-row-${o.id}" style="display:none;"><td colspan="9">${soTermsForm(o)}</td></tr>
     <tr id="so-po-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-po-body-${o.id}"></div></td></tr>
     <tr id="so-items-row-${o.id}" style="display:none;"><td colspan="9"><div id="so-items-body-${o.id}"></div></td></tr>`;
 }
+window.openSalesOrderHistory = async (id, orderNo) => {
+  const log = await api(`/sales/orders/${id}/history`).catch(() => []);
+  // Event first, so the key column is on screen even when a phone has to scroll the rest sideways.
+  openAppModal('History - ' + orderNo, log.length
+    ? '<div style="overflow-x:auto;">' + tableHTML(['Event', 'When', 'By', 'Details'], log, l => `
+        <tr><td>${esc(l.event)}</td><td style="white-space:nowrap;">${new Date(String(l.when).replace(' ', 'T')).toLocaleString()}</td><td>${esc(l.by) || '-'}</td><td>${esc(l.details) || '-'}</td></tr>`) + '</div>'
+    : '<p class="muted">No history recorded for this order yet.</p>');
+};
 window.toggleSOItems = async (id) => {
   const row = document.getElementById(`so-items-row-${id}`);
   const showing = row.style.display !== 'none';

@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, getEmailChannels, setEmailChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, EMAIL_WORKFLOWS, getEmailChannels, setEmailChannels, addEmailChannel, deleteEmailChannel, getEmailWorkflowChannels, setEmailWorkflowChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -116,7 +116,8 @@ router.get('/email-channels', requireRole('Admin'), (req, res) => res.json(maskC
 router.put('/email-channels', requireRole('Admin'), (req, res) => {
   const body = (req.body && req.body.channels) || {};
   const patch = {};
-  for (const k of EMAIL_CHANNEL_KEYS) {
+  const known = getEmailChannels();
+  for (const k of Object.keys(known)) {
     const c = body[k];
     if (!c) continue;
     const from_address = String(c.from_address || '').trim();
@@ -128,9 +129,46 @@ router.put('/email-channels', requireRole('Admin'), (req, res) => {
   setEmailChannels(patch);
   res.json(maskChannels(getEmailChannels()));
 });
+// Admin-created channel. Key is a lowercase slug and must be new; the 5 built-ins can't be re-created or deleted.
+router.post('/email-channels', requireRole('Admin'), (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim();
+  const key = String(b.key || label).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const from_address = String(b.from_address || '').trim();
+  if (!key) return res.status(400).json({ error: 'Enter a channel name.' });
+  if (getEmailChannels()[key]) return res.status(400).json({ error: 'A channel with that name already exists.' });
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(from_address)) return res.status(400).json({ error: 'Enter a valid From address.' });
+  const smtp_user = String(b.smtp_user || '').trim();
+  addEmailChannel(key, { label: label || key, from_address, from_name: String(b.from_name || '').trim(), smtp_user, smtp_pass: smtp_user ? String(b.smtp_pass || '') : '' });
+  res.json(maskChannels(getEmailChannels()));
+});
+router.delete('/email-channels/:key', requireRole('Admin'), (req, res) => {
+  const ch = getEmailChannels()[req.params.key];
+  if (!ch) return res.status(404).json({ error: 'Unknown channel.' });
+  if (EMAIL_CHANNEL_KEYS.includes(req.params.key)) return res.status(400).json({ error: 'Built-in channels cannot be deleted.' });
+  const inUse = Object.entries(getEmailWorkflowChannels()).filter(([, c]) => c === req.params.key).map(([w]) => EMAIL_WORKFLOWS[w].label);
+  if (inUse.length) return res.status(400).json({ error: 'Reassign these workflows to another channel first: ' + inUse.join(', ') + '.' });
+  deleteEmailChannel(req.params.key);
+  res.json(maskChannels(getEmailChannels()));
+});
+// Which channel each automated-email workflow sends through (+ the editable email templates it uses, for the Edit Email Content link).
+router.get('/email-workflows', requireRole('Admin'), (req, res) => {
+  const assigned = getEmailWorkflowChannels();
+  res.json(Object.entries(EMAIL_WORKFLOWS).map(([key, w]) => ({ key, label: w.label, channel: assigned[key], templates: w.templates })));
+});
+router.put('/email-workflows', requireRole('Admin'), (req, res) => {
+  const map = (req.body && req.body.workflows) || {};
+  const chans = getEmailChannels();
+  for (const [w, c] of Object.entries(map)) {
+    if (!EMAIL_WORKFLOWS[w]) return res.status(400).json({ error: 'Unknown workflow ' + w + '.' });
+    if (!chans[c]) return res.status(400).json({ error: 'Unknown channel ' + c + '.' });
+  }
+  setEmailWorkflowChannels(map);
+  res.json({ ok: true });
+});
 // One-off test through a single channel - never falls back to the global sender, so a rejected alias shows its real error.
 router.post('/email-channels/:key/test', requireRole('Admin'), async (req, res) => {
-  if (!EMAIL_CHANNEL_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown channel.' });
+  if (!getEmailChannels()[req.params.key]) return res.status(404).json({ error: 'Unknown channel.' });
   const to = String((req.body && req.body.to) || '').trim();
   if (!to) return res.status(400).json({ error: 'Enter an email address to send the test to.' });
   const result = await sendMail({

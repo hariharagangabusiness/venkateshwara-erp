@@ -1344,7 +1344,7 @@ window.saveMatrixChain = async (chainId) => {
 
 // ===================== Round 5: Company Settings =====================
 PAGES['company-settings'] = async (el) => {
-  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest, dailyPurchaseDigest, emailChannels] = await Promise.all([
+  const [company, email, inboundMail, purchaseInboundMail, purchaseSettings, departments, sidebarOrderResp, emailTemplates, weeklyDigest, dailyPurchaseDigest, emailChannels, emailWorkflows] = await Promise.all([
     api('/settings/company'), api('/settings/email').catch(() => null),
     api('/settings/inbound-mail').catch(() => null), api('/settings/purchase-inbound-mail').catch(() => null),
     api('/settings/purchase').catch(() => null),
@@ -1354,6 +1354,7 @@ PAGES['company-settings'] = async (el) => {
     api('/settings/weekly-digest').catch(() => null),
     api('/settings/daily-purchase-digest').catch(() => null),
     api('/settings/email-channels').catch(() => null),
+    api('/settings/email-workflows').catch(() => []),
   ]);
   // Every group label the Admin might want to position: the 11 static NAV
   // groups, plus every real department name (covers both the per-login
@@ -1432,7 +1433,7 @@ PAGES['company-settings'] = async (el) => {
         <p class="muted">Automated system emails each go out from their own sender address instead of the shared one above. Host, port and TLS come from the SMTP Settings above. If the mail server only lets a mailbox send as itself, enter that mailbox's own SMTP username and password here; leave them blank to authenticate with the global account and send <i>as</i> this address (the mail server must allow that alias). If the server rejects a channel's sender, the email is retried once from the normal sender so it isn't lost.</p>
         ${Object.keys(emailChannels).map(k => { const c = emailChannels[k]; return `
           <div class="panel-sub">
-            <h4 style="margin:0 0 8px;">${esc(c.label)}</h4>
+            <h4 style="margin:0 0 8px;">${esc(c.label)}${c.custom ? ` <button class="btn small red" type="button" style="margin-left:8px;" onclick="deleteEmailChannel('${k}')">Delete</button>` : ''}</h4>
             <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));">
               <div><label>From Email</label><input id="ec-${k}-addr" value="${esc(c.from_address)}"></div>
               <div><label>From Display Name</label><input id="ec-${k}-name" value="${esc(c.from_name)}"></div>
@@ -1447,6 +1448,29 @@ PAGES['company-settings'] = async (el) => {
           </div>`; }).join('')}
         <button class="btn" id="ec-save-btn" onclick="saveEmailChannels()" style="margin-top:6px;">Save Outbound Channels</button>
         <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
+        <div style="margin-top:14px;">
+          <button class="btn small outline" type="button" onclick="document.getElementById('ecn-form').style.display = document.getElementById('ecn-form').style.display === 'none' ? '' : 'none'">+ Add Outbound Channel</button>
+          <div id="ecn-form" class="panel-sub" style="display:none;margin-top:8px;">
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));">
+              <div><label>Channel Name</label><input id="ecn-label" placeholder="e.g. Service Reports"></div>
+              <div><label>From Email</label><input id="ecn-addr" placeholder="name@venkateshwaraengineers.com"></div>
+              <div><label>From Display Name</label><input id="ecn-name"></div>
+              <div><label>Channel SMTP Username (optional)</label><input id="ecn-user" autocomplete="off"></div>
+              <div><label>Channel SMTP Password (optional)</label><input id="ecn-pass" type="password" autocomplete="new-password"></div>
+            </div>
+            <button class="btn small" type="button" onclick="addEmailChannel()">Create Channel</button>
+            <span class="muted"> Save it, then use its own Send Test Email.</span>
+            <div id="ecn-err" class="msg err" style="display:none;margin-top:8px;"></div>
+          </div>
+        </div>
+        <h4 style="margin:16px 0 6px;">Which channel each automated email uses</h4>
+        <table><thead><tr><th>Automated email / report</th><th>Sends through</th><th></th></tr></thead><tbody>
+          ${emailWorkflows.map(w => `<tr><td>${esc(w.label)}</td>
+            <td><select id="ew-${w.key}">${Object.keys(emailChannels).map(k => `<option value="${k}" ${k === w.channel ? 'selected' : ''}>${esc(emailChannels[k].label)} &lt;${esc(emailChannels[k].from_address)}&gt;</option>`).join('')}</select></td>
+            <td>${w.templates.map(t => `<a href="#" onclick="editEmailContent('${t}');return false;" style="margin-right:10px;white-space:nowrap;">Edit Email Content${w.templates.length > 1 ? ' (' + esc((emailTemplates.find(x => x.key === t) || {}).label || t) + ')' : ''}</a>`).join('')}</td></tr>`).join('')}
+        </tbody></table>
+        <button class="btn small" id="ew-save-btn" type="button" onclick="saveEmailWorkflows()" style="margin-top:8px;">Save Assignments</button>
+        <div id="ew-err" class="msg err" style="display:none;margin-top:8px;"></div>
       `) : ''}
       ${inboundMail ? collapsibleSubsection('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
         <p class="muted">Reads a dedicated mailbox over IMAP. A genuinely new request automatically creates a Service Request and routes it to the Service HOD/Supervisor for approval (My Approvals) - a follow-up in an existing conversation is appended to that request instead of creating a new one, and a message that can't be processed automatically is quarantined for manual review. See the Service Requests page's Incoming Requests panel for the acknowledgement-email template and the review queue.</p>
@@ -1819,6 +1843,36 @@ window.saveEmailChannels = async () => {
     await api('/settings/email-channels', { method: 'PUT', body: JSON.stringify(ecBody()) });
     confirmSavedThenClose('ec-save-btn', 'company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.addEmailChannel = async () => {
+  const errEl = document.getElementById('ecn-err'); errEl.style.display = 'none';
+  try {
+    await api('/settings/email-channels', { method: 'POST', body: JSON.stringify({ label: val('ecn-label'), from_address: val('ecn-addr'), from_name: val('ecn-name'), smtp_user: val('ecn-user'), smtp_pass: val('ecn-pass') }) });
+    navigate('company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteEmailChannel = async (k) => {
+  if (!confirm('Delete this outbound channel?')) return;
+  try { await api('/settings/email-channels/' + k, { method: 'DELETE' }); navigate('company-settings'); }
+  catch (e) { alert(e.message); }
+};
+window.saveEmailWorkflows = async () => {
+  const errEl = document.getElementById('ew-err'); errEl.style.display = 'none';
+  const workflows = {};
+  document.querySelectorAll('select[id^="ew-"]').forEach(s => { workflows[s.id.slice(3)] = s.value; });
+  try {
+    await api('/settings/email-workflows', { method: 'PUT', body: JSON.stringify({ workflows }) });
+    confirmSavedThenClose('ew-save-btn', 'company-settings');
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// Jump to the Email Template Customizer with this template selected.
+window.editEmailContent = (key) => {
+  const panel = document.getElementById('cp-email-template-customizer');
+  if (panel && panel.classList.contains('collapsed')) toggleCollapsiblePanel('email-template-customizer');
+  const sel = document.getElementById('etc-key');
+  if (!sel) return;
+  sel.value = key; etcTemplateChanged();
+  sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
 window.sendChannelTest = async (k) => {
   const resultEl = document.getElementById(`ec-${k}-result`);
