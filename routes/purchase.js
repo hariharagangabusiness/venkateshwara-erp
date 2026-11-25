@@ -61,6 +61,9 @@ router.get('/requests', (req, res) => {
       (SELECT ru.full_name FROM approval_actions aa LEFT JOIN users ru ON ru.id = aa.actor_user_id
         WHERE aa.approval_id = pr.approval_id AND aa.action = 'Rejected'
         ORDER BY aa.acted_at DESC LIMIT 1) as rejected_by_name,
+      (SELECT aa.acted_at FROM approval_actions aa
+        WHERE aa.approval_id = pr.approval_id AND aa.action = 'Rejected'
+        ORDER BY aa.acted_at DESC LIMIT 1) as rejected_at,
       (SELECT aa.comment FROM approval_actions aa
         WHERE aa.approval_id = pr.approval_id AND aa.action = 'InfoRequested'
         ORDER BY aa.acted_at DESC LIMIT 1) as info_requested_note,

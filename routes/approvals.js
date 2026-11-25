@@ -7,7 +7,8 @@ const { sendMail } = require('../lib/mailer');
 const { getWorkflowChannel } = require('../lib/settings');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
-const { localDateStr } = require('../lib/dateUtil');
+const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
+const { formatDate } = require('../lib/dateFormat');
 const { poReceivedQty } = require('../lib/purchaseOrders');
 const router = express.Router();
 router.use(authRequired);
@@ -647,8 +648,36 @@ const ENTITY_LABELS = {
 // generic across every entity_type this approval engine handles, not just
 // Purchase Requests, since approvals.requested_by already exists precisely
 // for this on every row regardless of entity type.
-async function notifyRequesterOfOutcome(approval, result, comment, actorName) {
+// Purchase Request rejection: tell the person who RAISED the PR (raised_by - an Admin/Management submitter may differ
+// from it), with the reason, as an in-app notification (always) and an email (skipped quietly if no address / no SMTP).
+async function notifyPurchaseRequestRejected(approval, comment, actor) {
+  const pr = db.prepare(`
+    SELECT pr.id, pr.pr_no, pr.created_at, pr.raised_by, u.full_name, u.email, d.name as department
+    FROM purchase_requests pr LEFT JOIN users u ON u.id = COALESCE(pr.raised_by, ?) LEFT JOIN departments d ON d.id = u.department_id
+    WHERE pr.id = ?`).get(approval.requested_by, approval.entity_id);
+  if (!pr) return;
+  const targetId = pr.raised_by || approval.requested_by;
+  const reason = String(comment || '').trim();
+  const prNo = pr.pr_no || ('#' + pr.id);
+  if (targetId) {
+    db.prepare('INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)')
+      .run(targetId, 'PR_REJECTED', pr.id, `Purchase Request ${prNo} was rejected by ${actor.full_name}. Reason: ${reason}`);
+  }
+  if (!pr.email) return;
+  const items = db.prepare(`SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id`).all(pr.id).map(r => r.name || 'Item');
+  const { subject, body } = renderTemplate(getEmailTemplate('purchase_request_rejected'), {
+    requester_name: pr.full_name, pr_no: prNo, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: pr.department || '-',
+    items: items.length ? items.join(', ') : '-', actor_name: actor.full_name, actor_role: actor.role_name || '-', rejected_at: localDateTimeStr(), reason,
+  });
+  await sendMail({ to: pr.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
+}
+
+async function notifyRequesterOfOutcome(approval, result, comment, actorName, actor) {
   if (result !== 'Approved' && result !== 'Rejected') return;
+  if (result === 'Rejected' && approval.entity_type === 'purchase_request' && actor) {
+    try { await notifyPurchaseRequestRejected(approval, comment, actor); } catch (e) { console.error('[pr-reject-notify] failed:', e.message); }
+    return;
+  }
   try {
     const requester = approval.requested_by ? db.prepare('SELECT full_name, email FROM users WHERE id = ?').get(approval.requested_by) : null;
     if (!requester || !requester.email) return;
@@ -669,7 +698,7 @@ async function notifyRequesterOfOutcome(approval, result, comment, actorName) {
     // either - same as the "awaiting your approval" notification. The CC
     // list now lives only on the weekly department digest
     // (lib/weeklyApprovalDigest.js).
-    await sendMail({ to: requester.email, subject, text: body, skipDefaultCc: true });
+    await sendMail({ to: requester.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
   } catch (e) { /* best-effort - never let a notification failure affect the approval action itself */ }
 }
 
@@ -719,7 +748,7 @@ router.post('/:id/act', (req, res) => {
     syncEntityStatus(approval.entity_type, approval.entity_id, result);
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:' + action, approval.entity_type, approval.entity_id, comment || null);
-    notifyRequesterOfOutcome(approval, result, comment, req.user.full_name).catch(() => {});
+    notifyRequesterOfOutcome(approval, result, comment, req.user.full_name, req.user).catch(() => {});
     // result === 'Pending' here means it advanced to the NEXT step (not the
     // one `req.user` just acted on) - that next approver hasn't been told
     // yet, so notify them the same way a brand-new chain's first step does.

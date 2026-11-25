@@ -420,19 +420,16 @@ function renderPRRows(rows) {
         ${['Approved', 'OrderPlaced'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>` : ''}
       `)}</td>
     </tr>
-    ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
+    ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}${r.rejected_at ? ' on ' + esc(String(r.rejected_at).slice(0, 16)) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
     <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>`);
 }
-window.adminRejectPR = async (id) => {
+window.adminRejectPR = (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
-  const reason = prompt('Reason for rejecting ' + (r ? r.pr_no : 'this request') + ' (required):');
-  if (reason === null) return;
-  if (!reason.trim()) return alert('A rejection reason is required.');
-  try {
-    await api(`/approvals/${r.approval_id}/act`, { method: 'POST', body: JSON.stringify({ action: 'Rejected', comment: reason.trim() }) });
+  openRejectReasonModal('Reject ' + (r ? r.pr_no : 'Purchase Request'), true, async (reason) => {
+    await api(`/approvals/${r.approval_id}/act`, { method: 'POST', body: JSON.stringify({ action: 'Rejected', comment: reason }) });
     navigate('purchase-requests');
-  } catch (e) { alert(e.message); }
+  });
 };
 window.provideInfoPR = async (id) => {
   const comment = prompt('Response to the reviewer (optional):');

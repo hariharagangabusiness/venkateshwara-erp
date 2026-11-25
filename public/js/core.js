@@ -247,6 +247,48 @@ window.submitChangePassword = async () => {
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
 
+// ===================== Notification bell =====================
+// Reads the signed-in user's rows from the notifications table (GET /bg/notifications; the route predates the bell and
+// also carries BG / delivery / To-Do alerts). Piggybacks on the To-Do badge refresh, so it updates on every navigate().
+let NOTIFICATIONS = [];
+async function refreshNotificationBell() {
+  try { NOTIFICATIONS = await api('/bg/notifications'); } catch (e) { return; }
+  const n = NOTIFICATIONS.filter(x => !x.is_read).length;
+  const el = document.getElementById('bell-count');
+  if (el) { el.textContent = n; el.style.display = n ? '' : 'none'; }
+}
+const NOTIFICATION_LINKS = { PR_REJECTED: 'purchase-requests' };
+function notificationListHTML() {
+  if (!NOTIFICATIONS.length) return '<div class="empty">No notifications.</div>';
+  return `<div style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;">${NOTIFICATIONS.map(n => `
+    <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;${n.is_read ? 'opacity:.65;' : 'border-left:3px solid var(--red);'}">
+      <div style="${n.is_read ? '' : 'font-weight:600;'}word-break:break-word;">${esc(n.message)}</div>
+      <div class="muted" style="font-size:12px;margin-top:4px;">${esc((n.created_at || '').slice(0, 16))}
+        ${NOTIFICATION_LINKS[n.source_type] ? ` &middot; <a href="#" onclick="openNotification(${n.id});return false;">Open ${NOTIFICATION_LINKS[n.source_type] === 'purchase-requests' ? 'Purchase Requests' : ''}</a>` : ''}
+        ${n.is_read ? '' : ` &middot; <a href="#" onclick="markNotificationRead(${n.id});return false;">Mark read</a>`}</div>
+    </div>`).join('')}</div>`;
+}
+window.openNotifications = async () => {
+  await refreshNotificationBell();
+  openMiniModal('Notifications', `<div style="margin-bottom:8px;"><button class="btn small outline" type="button" onclick="markAllNotificationsRead()">Mark all read</button></div><div id="notif-list">${notificationListHTML()}</div>`, true);
+};
+window.markNotificationRead = async (id) => {
+  try { await api('/bg/notifications/' + id + '/read', { method: 'POST' }); } catch (e) {}
+  await refreshNotificationBell();
+  const l = document.getElementById('notif-list'); if (l) l.innerHTML = notificationListHTML();
+};
+window.markAllNotificationsRead = async () => {
+  try { await api('/bg/notifications/read-all', { method: 'POST' }); } catch (e) {}
+  await refreshNotificationBell();
+  const l = document.getElementById('notif-list'); if (l) l.innerHTML = notificationListHTML();
+};
+window.openNotification = async (id) => {
+  const n = NOTIFICATIONS.find(x => x.id === id);
+  try { await api('/bg/notifications/' + id + '/read', { method: 'POST' }); } catch (e) {}
+  closeMiniModal();
+  if (n && NOTIFICATION_LINKS[n.source_type]) navigate(NOTIFICATION_LINKS[n.source_type]);
+};
+
 // ===================== To-Do sidebar badge =====================
 // A small count badge on the "To-Do List" nav item - the signed-in user's
 // own actionable (non-Completed) items, same scope as "My To-Do List"
@@ -257,6 +299,7 @@ window.submitChangePassword = async () => {
 // was deliberately out of scope for this round, just this one count.
 let TODO_PENDING_COUNT = 0;
 async function refreshTodoPendingCount() {
+  refreshNotificationBell();
   try { TODO_PENDING_COUNT = (await api('/todos/my-pending-count')).count; }
   catch (e) { return; }
   const navEl = document.getElementById('nav-todos');

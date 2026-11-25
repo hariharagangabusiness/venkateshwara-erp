@@ -44,6 +44,28 @@ window.openAppModal = (title, bodyHtml) => {
   </div>`;
   document.body.appendChild(backdrop);
 };
+// Rejection popup with a Reason textarea; Submit stays disabled while it is blank when `required`. `onSubmit(reason)`
+// may throw/reject - the message is shown in the popup and it stays open.
+window.openRejectReasonModal = (title, required, onSubmit) => {
+  window.__rejectSubmit = onSubmit;
+  openAppModal(esc(title), `
+    <label>Rejection Reason${required ? ' (required)' : ' (optional)'}</label>
+    <textarea id="reject-reason" rows="4" style="width:100%;" oninput="document.getElementById('reject-submit').disabled = ${required ? 'true' : 'false'} && !this.value.trim()"></textarea>
+    <div id="reject-err" class="msg err" style="display:none;margin-top:8px;"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn small red" id="reject-submit" type="button" ${required ? 'disabled' : ''} onclick="submitRejectReason(${required})">Reject</button>
+      <button class="btn small outline" type="button" onclick="closeAppModal()">Cancel</button>
+    </div>`);
+  setTimeout(() => { const t = document.getElementById('reject-reason'); if (t) t.focus(); }, 0);
+};
+window.submitRejectReason = async (required) => {
+  const reason = document.getElementById('reject-reason').value.trim();
+  const errEl = document.getElementById('reject-err');
+  if (required && !reason) { errEl.textContent = 'A rejection reason is required.'; errEl.style.display = 'block'; return; }
+  const btn = document.getElementById('reject-submit'); btn.disabled = true;
+  try { await window.__rejectSubmit(reason); closeAppModal(); }
+  catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; btn.disabled = false; }
+};
 window.closeAppModal = () => {
   const el = document.getElementById('app-modal-backdrop');
   if (el) el.remove();

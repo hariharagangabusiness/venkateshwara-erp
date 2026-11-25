@@ -26,7 +26,7 @@ function approvalActionCell(r) {
       <button class="btn small blue" onclick="actOnApprovalTodo(${r.id}, 'Completed')">Complete</button>`;
   }
   return `<button class="btn small green" onclick="actOnApproval(${r.id}, 'Approved')">Approve</button>
-    <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected')">Reject</button>
+    <button class="btn small red" onclick="actOnApproval(${r.id}, 'Rejected', '${r.entity_type}')">Reject</button>
     <button class="btn small outline" onclick="actOnApproval(${r.id}, 'InfoRequested')">Ask for More Info</button>`;
 }
 // One row's own <tr>s (the main row, its optional "previously rejected" note,
@@ -163,11 +163,15 @@ PAGES.approvals = async (el) => {
     ${pending.length === 0 ? '<div class="empty">Nothing waiting on you right now.</div>' : ''}
   </div>` + (pending.length ? `<div class="panel"><div style="overflow-x:auto;"><table><thead><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr></thead>${bodyHtml}</table></div></div>` : '');
 };
-window.actOnApproval = async (id, action) => {
+window.actOnApproval = async (id, action, entityType) => {
   let comment = null;
   if (action === 'Rejected') {
-    comment = prompt('Reason for rejection (required for Purchase Requests):');
-    if (comment === null) return;
+    const isPR = entityType === 'purchase_request';
+    openRejectReasonModal(isPR ? 'Reject Purchase Request' : 'Reject', isPR, async (reason) => {
+      await api(`/approvals/${id}/act`, { method: 'POST', body: JSON.stringify({ action, comment: reason || null }) });
+      navigate('approvals');
+    });
+    return;
   }
   else if (action === 'InfoRequested') {
     comment = prompt('What information do you need from the requester?');
