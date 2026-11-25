@@ -2426,6 +2426,7 @@ async function renderScopeTab(el, data) {
   window.__IS_SPARES_OFFER = isSparesFormat;
   // Admin-managed Unit list (Offer Field Options) - Spares lines only.
   const unitOpts = isSparesFormat ? await api('/offers/field-options/unit').catch(() => []) : [];
+  const machineTypeOpts = isSparesFormat ? await api('/offers/field-options/spares_machine_type').catch(() => []) : [];
   // Unit of Measurement + flat Discount Amount per line (2026-10-15) -
   // Spares-format offers only, matching the owner's locked scope (a full
   // machinery offer's Scope Of Supply stays exactly as it was). Spares mode
@@ -2440,13 +2441,14 @@ async function renderScopeTab(el, data) {
   const hasPicture = items.some(it => it.image_path);
   // Remarks: same column-level gating as Discount - shown only once some line has one.
   const hasRemarks = items.some(it => it.remarks && String(it.remarks).trim());
-  const colsBeforeTaxable = 5 + (hasDiscount ? 1 : 0);
+  const colsBeforeTaxable = 6 + (hasDiscount ? 1 : 0);
   const totalCols = colsBeforeTaxable + 1 + (hasRemarks ? 1 : 0) + (hasPicture ? 1 : 0) + 1;
   const listTable = isSpares ? `
-    <table><thead><tr><th>S.No</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th>${hasDiscount ? '<th>Discount (₹)</th>' : ''}<th>Taxable</th>${hasRemarks ? '<th>Remarks</th>' : ''}${hasPicture ? '<th>Picture</th>' : ''}<th></th></tr></thead>
+    <table><thead><tr><th>S.No</th><th>Machine Type</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th>${hasDiscount ? '<th>Discount (₹)</th>' : ''}<th>Taxable</th>${hasRemarks ? '<th>Remarks</th>' : ''}${hasPicture ? '<th>Picture</th>' : ''}<th></th></tr></thead>
     <tbody>${items.map((it, i) => `
       <tr>
         <td>${i + 1}</td>
+        <td>${esc(it.machine_type) || '-'}</td>
         <td style="white-space:pre-wrap;max-width:260px;">${esc(it.description)}</td>
         <td>${it.qty}</td><td>${esc(it.unit || 'Nos')}</td><td>₹${fmt(it.unit_price)}</td>${hasDiscount ? `<td>${it.discount_amount ? '₹' + fmt(it.discount_amount) : ''}</td>` : ''}<td>₹${fmt(it.total_price)}</td>
         ${hasRemarks ? `<td style="white-space:pre-wrap;max-width:160px;">${esc(it.remarks)}</td>` : ''}
@@ -2486,7 +2488,8 @@ async function renderScopeTab(el, data) {
       <div><label>Or type a new Section Title</label><input id="it-section" placeholder="e.g. Electronic Net Weighing And Bagging System"></div>
       <div><label>Qty</label><input id="it-qty" type="number" value="1"></div>
       <div><label>Unit Price (₹)</label><input id="it-price" type="number" value="0"></div>
-      ${isSpares ? `<div><label>Unit</label>${unitOpts.length ? offerUnitSelectHTML('it-unit', unitOpts, 'Nos') : unitPickerHTML('it-unit', 'Nos', null)}</div>
+      ${isSpares ? `<div><label>Machine Type</label>${offerFieldSelect('it-mtype', machineTypeOpts, '').replace('-- Select --', 'Select Machine Type...')}</div>
+      <div><label>Unit</label>${unitOpts.length ? offerUnitSelectHTML('it-unit', unitOpts, 'Nos') : unitPickerHTML('it-unit', 'Nos', null)}</div>
       <div><label>Discount Amount (₹)</label><input id="it-discount" type="number" value="0"></div>
       <div><label>Remarks <span class="muted">(printed only if filled)</span></label><input id="it-remarks" maxlength="300"></div>` : ''}
       <div><label>Picture (optional, overrides the library picture)</label><input id="it-image" type="file" accept="image/*"></div>
@@ -2563,6 +2566,7 @@ window.applySectionTitleTemplate = () => {
   document.getElementById('it-section').value = lib.title;
   document.getElementById('it-desc').value = lib.description || '';
   document.getElementById('it-summary').value = lib.summary || '';
+  setOfferMachineType(lib.machine_type);
   // Spares Library entries also carry a default rate/unit - pre-fill those
   // too (Machine Library entries have neither, so this is a no-op there).
   if (window.__IS_SPARES_OFFER) {
@@ -2580,6 +2584,13 @@ window.applySectionTitleTemplate = () => {
   }
   preview.innerHTML = lib.image_path ? `<img src="${esc(lib.image_path)}" style="max-height:80px;max-width:140px;"> <span class="muted">Library picture - will be used unless you upload your own above.</span>` : '';
 };
+// Keeps a retired/legacy value selectable (same rule as offerFieldSelect); blank library value leaves the pick alone.
+function setOfferMachineType(v) {
+  const sel = document.getElementById('it-mtype');
+  if (!sel || !v) return;
+  if (![...sel.options].some(o => o.value === v)) sel.add(new Option(v, v));
+  sel.value = v;
+}
 let EDITING_OFFER_ITEM_ID = null;
 window.editOfferItem = async (itemId) => {
   const data = await api('/offers/' + CURRENT_OFFER_ID);
@@ -2608,6 +2619,7 @@ window.editOfferItem = async (itemId) => {
     toggleUnitOther('it-unit');
     if (!isPreset) document.getElementById('it-unit-other').value = it.unit || '';
   }
+  if (document.getElementById('it-mtype')) { document.getElementById('it-mtype').value = ''; setOfferMachineType(it.machine_type); }
   const discountEl = document.getElementById('it-discount');
   if (discountEl) discountEl.value = it.discount_amount || 0;
   const remarksEl = document.getElementById('it-remarks');
@@ -2633,6 +2645,7 @@ window.addOfferItem = async () => {
     fd.append('qty', val('it-qty'));
     fd.append('unit_price', val('it-price'));
     if (document.getElementById('it-unit')) fd.append('unit', unitPickerValue('it-unit'));
+    if (document.getElementById('it-mtype')) fd.append('machine_type', val('it-mtype'));
     if (document.getElementById('it-discount')) fd.append('discount_amount', val('it-discount'));
     if (document.getElementById('it-remarks')) fd.append('remarks', val('it-remarks'));
     fd.append('revision_reason', reason || '');

@@ -1870,6 +1870,9 @@ const MIGRATIONS = [
   // zero) - see computeProformaCharges() in routes/finance.js.
   `ALTER TABLE proforma_invoices ADD COLUMN insurance_percent REAL DEFAULT 0`,
   `ALTER TABLE proforma_invoices ADD COLUMN insurance_amount REAL DEFAULT 0`,
+  // Spares offer Machine Type (Admin-managed list: offer_field_options 'spares_machine_type')
+  `ALTER TABLE offer_items ADD COLUMN machine_type TEXT`,
+  `ALTER TABLE spares_library ADD COLUMN machine_type TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {
@@ -2211,6 +2214,10 @@ for (const col of ['application', 'type_of_system', 'material_of_construction'])
 // the same three presets the Purchase Order unit picker offers.
 for (const [i, u] of ['Nos', 'KGS', 'Meters'].entries()) {
   try { raw.prepare(`INSERT OR IGNORE INTO offer_field_options (field_name, value, sort_order) VALUES ('unit', ?, ?)`).run(u, i); } catch (e) {}
+}
+
+for (const [i, v] of ['Conveyor Spares', 'Bagging Machine Spares', 'Stitching Machine Spares'].entries()) {
+  try { raw.prepare(`INSERT OR IGNORE INTO offer_field_options (field_name, value, sort_order) VALUES ('spares_machine_type', ?, ?)`).run(v, i); } catch (e) {}
 }
 
 // Round 24: every pre-existing single-item purchase_requests row becomes its
