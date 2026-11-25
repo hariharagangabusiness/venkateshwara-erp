@@ -1138,11 +1138,96 @@ window.saveSiteVisit = async (id) => {
 };
 
 // ===================== Engineer Daily Work Log (replaces "DAILY WORK" Excel) =====================
+// Desktop: month grid (engineer x day) with a sticky engineer column. Phone (<768px): a one-day card view - pick a day,
+// one stacked card per engineer. Same cells in both (every cell is always in the DOM), so the single bulk Save still
+// writes the whole month. All styling is scoped under .dwl-page.
 let DWL_MONTH = null;
+let DWL_DAY = null;
 const DWL_STATUSES = ['', 'Pending', 'InProgress', 'Completed', 'OnHold'];
+const DWL_LABELS = { Pending: 'Pending', InProgress: 'In Progress', Completed: 'Completed', OnHold: 'On Hold' };
+const DWL_CSS = `<style>
+.dwl-page{background:#f5f5f7;border-radius:12px;padding:16px;font-variant-numeric:tabular-nums;}
+.dwl-page .dwl-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px;}
+.dwl-page .dwl-title{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em;color:var(--text);}
+.dwl-page .dwl-caption{margin:6px 0 0;font-size:13px;line-height:1.5;color:var(--muted);max-width:760px;}
+.dwl-page .dwl-controls{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-top:16px;}
+.dwl-page .dwl-field{display:flex;flex-direction:column;}
+.dwl-page .dwl-field label,.dwl-page .dwl-lbl{display:block;font-size:12px;font-weight:500;color:var(--muted);margin:0 0 6px;}
+.dwl-page input,.dwl-page select{box-sizing:border-box;min-height:40px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px;font-family:inherit;background:#fff;color:var(--text);transition:border-color 150ms ease,box-shadow 150ms ease;}
+.dwl-page input:focus,.dwl-page select:focus{outline:none;border-color:var(--primary-light);box-shadow:0 0 0 3px rgba(44,82,130,.18);}
+.dwl-page .dwl-btn{min-height:40px;border-radius:8px;padding:8px 18px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;transition:background 150ms ease,transform 150ms ease,border-color 150ms ease;}
+.dwl-page .dwl-btn.primary{background:var(--primary);color:#fff;border:1px solid var(--primary);}
+.dwl-page .dwl-btn.primary:hover{background:var(--primary-light);}
+.dwl-page .dwl-btn.secondary{background:#fff;color:var(--primary);border:1px solid var(--border);}
+.dwl-page .dwl-btn.secondary:hover{border-color:var(--primary-light);background:#f5f8fb;}
+.dwl-page .dwl-btn:active{transform:scale(.98);}
+.dwl-page .dwl-btn:disabled{opacity:.6;cursor:default;}
+.dwl-page .dwl-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:10px;}
+.dwl-page .dwl-table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;}
+.dwl-page .dwl-table th{position:sticky;top:0;background:#f7f9fb;font-size:12px;font-weight:600;color:var(--muted);text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);min-width:156px;}
+.dwl-page .dwl-table th small{display:block;font-weight:500;font-size:11px;opacity:.8;}
+.dwl-page .dwl-table td{padding:8px;border-bottom:1px solid #edf1f4;vertical-align:top;}
+.dwl-page .dwl-table tr:last-child td{border-bottom:none;}
+.dwl-page .dwl-table th:first-child,.dwl-page .dwl-table td:first-child{position:sticky;left:0;z-index:2;background:#fff;min-width:150px;border-right:1px solid var(--border);font-weight:600;font-size:14px;}
+.dwl-page .dwl-table th:first-child{background:#f7f9fb;z-index:3;}
+.dwl-page .dwl-table .dwl-today{background:#f1f6fc;}
+.dwl-page .dwl-table th.dwl-today{color:var(--primary);}
+.dwl-page .dwl-daycell input,.dwl-page .dwl-daycell select{width:100%;}
+.dwl-page .dwl-lbl,.dwl-page .dwl-datecap{display:none;}
+.dwl-page .dwl-statusrow{margin-top:4px;}
+.dwl-page .dwl-pill-slot{display:block;margin-top:4px;min-height:20px;}
+.dwl-page .dwl-pill{display:inline-block;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600;line-height:1.6;white-space:nowrap;}
+.dwl-page .dwl-st-Pending{background:#fef3cd;color:#8a5a00;}
+.dwl-page .dwl-st-InProgress{background:#dbeafe;color:#1d4ed8;}
+.dwl-page .dwl-st-Completed{background:#dcf3e6;color:#276749;}
+.dwl-page .dwl-st-OnHold{background:#eeeeee;color:#555;}
+.dwl-page .dwl-empty{text-align:center;padding:40px 16px;color:var(--muted);}
+.dwl-page .dwl-empty b{display:block;font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px;}
+.dwl-page .dwl-skel{height:14px;border-radius:7px;background:#e9edf1;margin:12px 0;animation:dwlpulse 1.2s ease-in-out infinite;}
+@keyframes dwlpulse{50%{opacity:.5;}}
+.dwl-page .dwl-actions{display:flex;flex-wrap:wrap;gap:12px;align-items:center;}
+.dwl-page .dwl-err{display:none;margin:12px 0 0;}
+@media (max-width:767px){
+  .dwl-page{padding:12px;}
+  .dwl-page .dwl-card{padding:16px;}
+  .dwl-page .dwl-scroll{overflow:visible;border:none;border-radius:0;}
+  .dwl-page .dwl-table,.dwl-page .dwl-table tbody,.dwl-page .dwl-table tr,.dwl-page .dwl-table td{display:block;width:auto;min-width:0;}
+  .dwl-page .dwl-table thead{display:none;}
+  .dwl-page .dwl-table tr{border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px;background:#fff;}
+  .dwl-page .dwl-table td{border:none;padding:0;}
+  .dwl-page .dwl-table td:first-child{position:static;border:none;font-size:17px;font-weight:600;letter-spacing:-.01em;margin-bottom:10px;min-width:0;}
+  .dwl-page .dwl-table td.dwl-daycell{display:none;}
+  .dwl-page .dwl-table td.dwl-daycell.dwl-sel{display:block;background:none;}
+  .dwl-page .dwl-datecap{display:block;font-size:13px;color:var(--muted);margin-bottom:10px;}
+  .dwl-page .dwl-lbl{display:block;}
+  .dwl-page input,.dwl-page select,.dwl-page .dwl-btn{min-height:44px;width:100%;}
+  .dwl-page .dwl-field{width:100%;}
+  .dwl-page .dwl-statusrow{margin-top:0;}
+  .dwl-page .dwl-actions .dwl-btn{width:100%;}
+}
+</style>`;
+const dwlPillHTML = (st) => st ? `<span class="dwl-pill dwl-st-${esc(st)}">${esc(DWL_LABELS[st] || st)}</span>` : '';
+window.dwlStatusChanged = (sel) => {
+  const slot = sel.closest('.dwl-daycell').querySelector('.dwl-pill-slot');
+  if (slot) slot.innerHTML = dwlPillHTML(sel.value);
+};
+// Day card view (phone) + column highlight/scroll (desktop).
+window.dwlSetDay = (date) => {
+  if (!date || date.slice(0, 7) !== DWL_MONTH) return;
+  DWL_DAY = date;
+  document.querySelectorAll('.dwl-page .dwl-daycell').forEach(c => c.classList.toggle('dwl-sel', c.dataset.date === date));
+  const th = document.querySelector(`.dwl-page th[data-date="${date}"]`);
+  if (th && th.offsetParent) { const box = th.closest('.dwl-scroll'); if (box) box.scrollLeft = Math.max(0, th.offsetLeft - 200); }
+};
+window.dwlGoToday = () => {
+  if (thisMonth() !== DWL_MONTH) { DWL_MONTH = thisMonth(); DWL_DAY = today(); navigate('daily-work-log'); return; }
+  const inp = document.getElementById('dwl-day'); if (inp) inp.value = today();
+  dwlSetDay(today());
+};
 PAGES['daily-work-log'] = async (el) => {
   const month = DWL_MONTH || thisMonth();
   DWL_MONTH = month;
+  el.innerHTML = `${DWL_CSS}<div class="dwl-page"><div class="dwl-card"><div class="dwl-skel" style="width:40%"></div><div class="dwl-skel"></div><div class="dwl-skel" style="width:70%"></div></div></div>`;
   const [engineers, logs] = await Promise.all([api('/site-visits/engineers'), api('/site-visits/daily-log?month=' + month)]);
   const [y, m] = month.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -1150,32 +1235,51 @@ PAGES['daily-work-log'] = async (el) => {
   logs.forEach(l => { byKey[l.employee_id + '|' + l.log_date] = l; });
   const dayCols = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const dateFor = (d) => `${month}-${String(d).padStart(2, '0')}`;
-  el.innerHTML = `
-    <div class="panel"><div class="form-grid"><div><label>Month</label>
-      <input type="month" value="${month}" onchange="DWL_MONTH=this.value;navigate('daily-work-log')"></div></div>
-      <p class="muted">One cell per engineer per day - type the job/site they worked on, or a shorthand like "OD" (outdoor duty), "A" (absent), "1/2" (half day), same as the old sheet. Optionally set a Status when you're actively assigning that day's task rather than just recording what happened - leave it blank for a plain note, same as before.</p>
-    </div>
-    <div class="panel">
-      <div style="overflow-x:auto;">
-        <table class="et-grid"><thead><tr><th style="min-width:140px;">Engineer</th>
-          ${dayCols.map(d => `<th style="min-width:120px;">${d}</th>`).join('')}</tr></thead>
+  const todayStr = today();
+  if (!DWL_DAY || DWL_DAY.slice(0, 7) !== month) DWL_DAY = todayStr.slice(0, 7) === month ? todayStr : dateFor(1);
+  const wd = (d) => new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'short' });
+  const cap = (d) => new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
+  const cls = (d) => (dateFor(d) === todayStr ? ' dwl-today' : '') + (dateFor(d) === DWL_DAY ? ' dwl-sel' : '');
+  const grid = engineers.length ? `
+      <div class="dwl-scroll">
+        <table class="dwl-table"><thead><tr><th>Engineer</th>
+          ${dayCols.map(d => `<th data-date="${dateFor(d)}" class="${dateFor(d) === todayStr ? 'dwl-today' : ''}">${d}<small>${wd(d)}</small></th>`).join('')}</tr></thead>
         <tbody>
           ${engineers.map(e => `<tr><td>${esc(e.full_name)}</td>
-            ${dayCols.map(d => { const cell = byKey[e.id + '|' + dateFor(d)] || {}; return `<td>
-              <input class="dwl-cell" data-emp="${e.id}" data-date="${dateFor(d)}" value="${esc(cell.note || '')}" style="width:110px;">
-              <select class="dwl-status" data-emp="${e.id}" data-date="${dateFor(d)}" style="width:110px;margin-top:3px;" title="${cell.assigned_by_name ? 'Assigned by ' + esc(cell.assigned_by_name) : ''}">
-                ${DWL_STATUSES.map(s => `<option value="${s}" ${cell.status === s ? 'selected' : ''}>${s || '(no status)'}</option>`).join('')}
-              </select>
+            ${dayCols.map(d => { const cell = byKey[e.id + '|' + dateFor(d)] || {}; return `<td class="dwl-daycell${cls(d)}" data-date="${dateFor(d)}">
+              <div class="dwl-datecap">${esc(cap(d))}</div>
+              <label class="dwl-lbl">Work summary</label>
+              <input class="dwl-cell" data-emp="${e.id}" data-date="${dateFor(d)}" value="${esc(cell.note || '')}" aria-label="Work summary for ${esc(e.full_name)}, day ${d}">
+              <div class="dwl-statusrow"><label class="dwl-lbl">Status</label>
+                <select class="dwl-status" data-emp="${e.id}" data-date="${dateFor(d)}" onchange="dwlStatusChanged(this)" aria-label="Status for ${esc(e.full_name)}, day ${d}" title="${cell.assigned_by_name ? 'Assigned by ' + esc(cell.assigned_by_name) : ''}">
+                  ${DWL_STATUSES.map(s => `<option value="${s}" ${cell.status === s ? 'selected' : ''}>${s ? esc(DWL_LABELS[s] || s) : '(no status)'}</option>`).join('')}
+                </select>
+                <span class="dwl-pill-slot">${dwlPillHTML(cell.status)}</span></div>
             </td>`; }).join('')}
           </tr>`).join('')}
         </tbody></table>
+      </div>` : `<div class="dwl-empty"><b>No engineers to log yet</b>Engineers appear here once they are set up in Employees.</div>`;
+  el.innerHTML = `${DWL_CSS}<div class="dwl-page">
+    <div class="dwl-card">
+      <h3 class="dwl-title">Engineer Daily Work Log</h3>
+      <p class="dwl-caption">One cell per engineer per day - type the job/site they worked on, or a shorthand like "OD" (outdoor duty), "A" (absent), "1/2" (half day), same as the old sheet. Optionally set a Status when you're actively assigning that day's task rather than just recording what happened - leave it blank for a plain note.</p>
+      <div class="dwl-controls">
+        <div class="dwl-field"><label for="dwl-month">Month</label>
+          <input id="dwl-month" type="month" value="${month}" onchange="DWL_MONTH=this.value;DWL_DAY=null;navigate('daily-work-log')"></div>
+        <div class="dwl-field"><label for="dwl-day">Day</label>
+          <input id="dwl-day" type="date" value="${DWL_DAY}" min="${dateFor(1)}" max="${dateFor(daysInMonth)}" onchange="dwlSetDay(this.value)"></div>
+        <button class="dwl-btn secondary" type="button" onclick="dwlGoToday()">Today</button>
       </div>
     </div>
-    <button class="btn" onclick="saveDailyWorkLog()">Save</button>
-    <div id="dwl-err" class="msg err" style="display:none;margin-top:10px;"></div>`;
+    <div class="dwl-card">${grid}</div>
+    ${engineers.length ? `<div class="dwl-actions"><button class="dwl-btn primary" id="dwl-save-btn" type="button" onclick="saveDailyWorkLog()">Save</button></div>` : ''}
+    <div id="dwl-err" class="msg err dwl-err"></div>
+  </div>`;
+  setTimeout(() => dwlSetDay(DWL_DAY), 0);
 };
 window.saveDailyWorkLog = async () => {
   const errEl = document.getElementById('dwl-err');
+  errEl.style.display = 'none';
   try {
     const byKey = {};
     document.querySelectorAll('.dwl-cell').forEach(c => {
@@ -1187,6 +1291,6 @@ window.saveDailyWorkLog = async () => {
     });
     const entries = Object.values(byKey);
     await api('/site-visits/daily-log/bulk', { method: 'POST', body: JSON.stringify({ entries }) });
-    navigate('daily-work-log');
+    confirmSavedThenClose('dwl-save-btn', 'daily-work-log');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
