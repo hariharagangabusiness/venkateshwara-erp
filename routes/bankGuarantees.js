@@ -7,7 +7,8 @@ const { db } = require('../db');
 const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { sendMail } = require('../lib/mailer');
-const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
+const { getWorkflowChannel } = require('../lib/settings');
+const { LIVE_BG_SQL } = require('../lib/bgStatus');
 const { resolveUploadPath } = require('../lib/paths');
 const router = express.Router();
 router.use(authRequired);
@@ -85,7 +86,7 @@ router.get('/', canView, (req, res) => {
   const params = [];
   if (bg_type) { q += ' AND bg.bg_type = ?'; params.push(bg_type); }
   if (status) { q += ' AND bg.status = ?'; params.push(status); }
-  else if (all !== '1') { q += ` AND bg.status IN ('Active','PendingRelease')`; }
+  else if (all !== '1') { q += ` AND bg.status IN ${LIVE_BG_SQL}`; }
   q += ' ORDER BY bg.validity_expiry ASC';
   const rows = db.prepare(q).all(...params);
   // Attach a human label for the linked order (SO/PO no + party) without a
@@ -101,11 +102,13 @@ router.get('/', canView, (req, res) => {
 router.get('/summary', canView, (req, res) => {
   const today = localDateStr();
   const in30 = localDateStr(new Date(Date.now() + 30 * 86400000));
-  const totals = db.prepare(`SELECT COUNT(*) as live_count, COALESCE(SUM(value),0) as live_value FROM bank_guarantees WHERE status IN ('Active','PendingRelease')`).get();
-  const expiring = db.prepare(`SELECT COUNT(*) as c FROM bank_guarantees WHERE status IN ('Active','PendingRelease') AND validity_expiry <= ? AND validity_expiry >= ?`).get(in30, today);
-  const pendingReminders = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log WHERE status = 'PendingReview'`).get();
+  const totals = db.prepare(`SELECT COUNT(*) as live_count, COALESCE(SUM(value),0) as live_value FROM bank_guarantees WHERE status IN ${LIVE_BG_SQL}`).get();
+  const expiring = db.prepare(`SELECT COUNT(*) as c FROM bank_guarantees WHERE status IN ${LIVE_BG_SQL} AND validity_expiry <= ? AND validity_expiry >= ?`).get(in30, today);
+  const overdue = db.prepare(`SELECT COUNT(*) as c FROM bank_guarantees WHERE status IN ${LIVE_BG_SQL} AND (validity_expiry < ? OR (claim_expiry IS NOT NULL AND claim_expiry != '' AND claim_expiry < ?))`).get(today, today);
+  // Same rows the Pending Reminders panel lists (PendingReview + Verified, live BGs only).
+  const pendingReminders = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log rl JOIN bank_guarantees bg ON bg.id = rl.bg_id WHERE rl.status IN ('PendingReview','Verified') AND bg.status IN ${LIVE_BG_SQL}`).get();
   // MGMT dashboard additions - claim-expiry compliance (see lib/bgReminderScan.js).
-  const claimAlerts = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log WHERE trigger_reason = 'ClaimExpiryApproaching' AND status IN ('PendingReview','Verified')`).get();
+  const claimAlerts = db.prepare(`SELECT COUNT(*) as c FROM bg_reminder_log rl JOIN bank_guarantees bg ON bg.id = rl.bg_id WHERE rl.trigger_reason = 'ClaimExpiryApproaching' AND rl.status IN ('PendingReview','Verified') AND bg.status IN ${LIVE_BG_SQL}`).get();
   const financeTodos = db.prepare(`
     SELECT t.id, t.brief_description, t.target_date, t.status, u.full_name as assigned_to_name
     FROM todos t LEFT JOIN users u ON u.id = t.assigned_to
@@ -118,7 +121,7 @@ router.get('/summary', canView, (req, res) => {
   `).get();
   const complianceRate = compliance.total ? Math.round((compliance.on_time / compliance.total) * 100) : null;
   res.json({
-    live_count: totals.live_count, live_value: totals.live_value, expiring_30d: expiring.c, pending_reminders: pendingReminders.c,
+    live_count: totals.live_count, live_value: totals.live_value, expiring_30d: expiring.c, overdue_count: overdue.c, pending_reminders: pendingReminders.c,
     claim_expiry_alerts: claimAlerts.c, finance_todos: financeTodos, claim_compliance_rate: complianceRate,
   });
 });
@@ -129,6 +132,8 @@ router.post('/', canManage, (req, res) => {
   if (!order_type || !['SO', 'PO'].includes(order_type)) return res.status(400).json({ error: 'order_type must be SO or PO' });
   if (!order_id) return res.status(400).json({ error: 'order_id is required' });
   if (!validity_expiry) return res.status(400).json({ error: 'validity_expiry is required' });
+  const dateErr = checkBGDates({ issue_date, validity_expiry, claim_expiry }, value);
+  if (dateErr) return res.status(400).json({ error: dateErr });
   const ctx = resolveOrderContext(order_type, order_id);
   if (!ctx) return res.status(400).json({ error: 'That order no longer exists.' });
   const info = db.prepare(`
@@ -149,9 +154,13 @@ router.patch('/:id', canManage, (req, res) => {
   if (!bg) return res.status(404).json({ error: 'Not found' });
   const { status } = req.body;
   if (status === undefined) return res.json({ ok: true });
+  if (!['Active', 'PendingRelease', 'Released'].includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+  if (bg.status === 'Released' && status !== 'Released') return res.status(400).json({ error: 'A released Bank Guarantee is closed and cannot be reopened.' });
   if (status === 'Released') {
     db.prepare(`UPDATE bank_guarantees SET status = ?, released_at = ?, released_by = ? WHERE id = ?`)
       .run(status, localDateTimeStr(), req.user.id, req.params.id);
+    // A released BG has nothing left to remind about; leaving these open kept it in Pending Reminders and the tile count.
+    db.prepare(`UPDATE bg_reminder_log SET status = 'Dismissed', reviewed_by = ?, reviewed_at = ? WHERE bg_id = ? AND status IN ('PendingReview','Verified')`).run(req.user.id, localDateTimeStr(), req.params.id);
   } else {
     db.prepare(`UPDATE bank_guarantees SET status = ? WHERE id = ?`).run(status, req.params.id);
   }
@@ -165,6 +174,16 @@ router.patch('/:id', canManage, (req, res) => {
 // it, so the live record (and its role in the claim/reminder compliance
 // workflow) can't change out from under an in-flight reminder or email.
 // Same convention as Item Master's edit/delete gate (routes/masters.js).
+// Dates must be real YYYY-MM-DD, value not negative, and the BG cannot expire before it was issued.
+function checkBGDates(f, value) {
+  const ok = d => /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d).getTime());
+  for (const [k, label] of [['issue_date', 'Issue date'], ['validity_expiry', 'Validity expiry'], ['claim_expiry', 'Claim expiry']]) {
+    if (f[k] && !ok(f[k])) return label + ' is not a valid date.';
+  }
+  if (f.issue_date && f.validity_expiry && f.validity_expiry < f.issue_date) return 'Validity expiry cannot be before the issue date.';
+  if (value !== undefined && value !== null && value !== '' && !(Number(value) >= 0)) return 'Value cannot be negative.';
+  return null;
+}
 const BG_EDIT_FIELDS = ['bg_no', 'issuing_bank', 'value', 'issue_date', 'validity_expiry', 'claim_expiry', 'milestone_link'];
 
 // A BG that already has real activity against it - a reminder ever raised,
@@ -212,6 +231,12 @@ router.put('/:id', canManage, (req, res) => {
   BG_EDIT_FIELDS.forEach(c => { if (req.body[c] !== undefined) fields[c] = req.body[c] || null; });
   if ('validity_expiry' in fields && !fields.validity_expiry) return res.status(400).json({ error: 'validity_expiry is required' });
   if ('value' in fields) fields.value = Number(fields.value) || 0;
+  const dateErr = checkBGDates({
+    issue_date: 'issue_date' in fields ? fields.issue_date : existing.issue_date,
+    validity_expiry: 'validity_expiry' in fields ? fields.validity_expiry : existing.validity_expiry,
+    claim_expiry: 'claim_expiry' in fields ? fields.claim_expiry : existing.claim_expiry,
+  }, 'value' in fields ? fields.value : undefined);
+  if (dateErr) return res.status(400).json({ error: dateErr });
   if (req.user.role_name === 'Admin') {
     applyBGEdit(existing.id, fields);
     return res.json({ ok: true, applied: true });
@@ -317,13 +342,15 @@ router.patch('/milestones/:id', canManage, (req, res) => {
 router.get('/reminders', canView, (req, res) => {
   const { status } = req.query;
   let q = `
-    SELECT rl.*, bg.bg_no, bg.bg_type, bg.value, bg.validity_expiry, bg.order_type, bg.order_id, bg.beneficiary
-    FROM bg_reminder_log rl JOIN bank_guarantees bg ON bg.id = rl.bg_id WHERE 1=1
+    SELECT rl.*, bg.bg_no, bg.bg_type, bg.value, bg.validity_expiry, bg.claim_expiry, bg.issue_date, bg.issuing_bank, bg.order_type, bg.order_id, bg.beneficiary
+    FROM bg_reminder_log rl JOIN bank_guarantees bg ON bg.id = rl.bg_id WHERE bg.status IN ${LIVE_BG_SQL}
   `;
   const params = [];
   if (status) { q += ' AND rl.status = ?'; params.push(status); }
   q += ' ORDER BY rl.triggered_at DESC';
-  res.json(db.prepare(q).all(...params));
+  const rows = db.prepare(q).all(...params);
+  rows.forEach(r => { const ctx = resolveOrderContext(r.order_type, r.order_id); r.order_label = ctx ? ctx.partyName : null; });
+  res.json(rows);
 });
 
 // Step 1: internal verification by a finance team member.
@@ -350,7 +377,7 @@ router.post('/reminders/:id/send-email', canManage, async (req, res) => {
     to: toAddress,
     subject: `Bank Guarantee ${bg.bg_no || '#' + bg.id} — Follow-up`,
     text: `Dear ${ctx.partyName},\n\nThis is a follow-up regarding the ${bg.bg_type} Bank Guarantee ${bg.bg_no || '#' + bg.id} (value Rs. ${bg.value}), valid up to ${bg.validity_expiry}.\n\n${bg.milestone_link ? 'Release condition on file: ' + bg.milestone_link + '.\n\n' : ''}Please arrange for its release/return at your earliest convenience, or let us know if an extension is required.\n\nRegards,\nVenkateshwara Engineers - Accounts`,
-    ...getDepartmentEmailIdentity('Accounts / HR'),
+    channel: getWorkflowChannel('bg_customer_followup'),
   });
   if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });
   db.prepare(`UPDATE bg_reminder_log SET status = 'EmailSent', email_sent_to = ?, email_sent_at = ? WHERE id = ?`)
@@ -381,9 +408,10 @@ router.post('/notifications/:id/read', authRequired, (req, res) => {
 
 // Manual trigger for the scan job (also run on a timer from server.js) -
 // lets Finance force a re-scan instead of waiting for the next 6-hour tick.
-router.post('/scan', canManage, (req, res) => {
+router.post('/scan', canManage, async (req, res) => {
   const { runScan } = require('../lib/bgReminderScan');
-  const result = runScan();
+  const { emailPromise, ...result } = runScan();
+  result.email = await emailPromise;
   res.json(result);
 });
 

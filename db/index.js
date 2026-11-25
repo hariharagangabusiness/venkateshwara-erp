@@ -1873,6 +1873,8 @@ const MIGRATIONS = [
   // Spares offer Machine Type (Admin-managed list: offer_field_options 'spares_machine_type')
   `ALTER TABLE offer_items ADD COLUMN machine_type TEXT`,
   `ALTER TABLE spares_library ADD COLUMN machine_type TEXT`,
+  // BG reminder scan email: stamped once the internal Finance email covering this reminder was sent
+  `ALTER TABLE bg_reminder_log ADD COLUMN notified_at TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

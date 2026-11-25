@@ -341,12 +341,14 @@ PAGES['bg-dashboard'] = async (el) => {
   ]);
   const verified = await api('/bg/reminders?status=Verified');
   window.__BG_ORDERS = orders;
+  window.__BG_REM = [...reminders, ...verified];
   BG_CURRENT_FILTER = '';
   el.innerHTML = `
     <div class="cards">
       <div class="card"><div class="num">${summary.live_count}</div><div class="label">Live Bank Guarantees</div></div>
       <div class="card"><div class="num">₹${fmt(summary.live_value)}</div><div class="label">Total Live Value</div></div>
       <div class="card"><div class="num">${summary.expiring_30d}</div><div class="label">Expiring in 30 Days</div></div>
+      <div class="card"><div class="num">${summary.overdue_count}</div><div class="label">Expired / Overdue</div></div>
       <div class="card"><div class="num">${summary.pending_reminders}</div><div class="label">Pending Reminders</div></div>
       <div class="card"><div class="num">${summary.claim_expiry_alerts}</div><div class="label">Claim Expiry Alerts (7-day)</div></div>
       <div class="card"><div class="num">${summary.claim_compliance_rate === null ? '-' : summary.claim_compliance_rate + '%'}</div><div class="label">Claim Task On-Time Rate</div></div>
@@ -361,14 +363,8 @@ PAGES['bg-dashboard'] = async (el) => {
 
     ${(reminders.length || verified.length) ? `
     ${collapsiblePanel('bg-pending-reminders', 'Pending Reminders', `
-      ${tableHTML(['BG No', 'Type', 'Value', 'Expiry', 'Reason', 'Step', 'Action'], [...reminders, ...verified], r => `
-        <tr><td>${esc(r.bg_no || '#'+r.bg_id)}</td><td>${esc(r.bg_type)}</td><td>₹${fmt(r.value)}</td><td>${esc(r.validity_expiry)}</td><td>${esc(r.trigger_reason)}</td>
-        <td>${badge(r.status)}</td>
-        <td>${actionButtonsCell(`
-          ${r.status === 'PendingReview' ? `<button class="btn small" onclick="verifyBGReminder(${r.id})">Verify</button>` : ''}
-          ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
-          <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
-        `)}</td></tr>`)}
+      <div style="margin-bottom:8px;"><button class="btn small outline" type="button" onclick="openBGRemColumnPicker()">Customize Columns</button></div>
+      <div id="bg-rem-wrap">${bgReminderTableHTML()}</div>
     `)}` : ''}
 
     ${pendingChanges.length ? `<div class="panel"><h3>Pending BG Changes (${pendingChanges.length})</h3>
@@ -431,7 +427,35 @@ const BG_COLUMN_REGISTRY = [
   { key: 'project', label: 'Project', default: false, render: bg => esc(bg.project_code || '-') },
   { key: 'milestone_link', label: 'Release Condition', default: false, render: bg => esc(bg.milestone_link || '-') },
   { key: 'status', label: 'Status', default: true, render: bg => badge(bg.status) },
+  { key: 'days_left', label: 'Days Left', default: false, render: bg => { const d = bgDaysLeft(bg.validity_expiry); return d === null ? '-' : (d < 0 ? `<span class="badge Rejected">${-d}d overdue</span>` : d + 'd'); } },
 ];
+// Sort value + type per column (the dates are stored YYYY-MM-DD, so text order is chronological order).
+const BG_SORT = {
+  bg_no: [bg => bg.bg_no || '#' + bg.id], bg_type: [bg => bg.bg_type], order: [bg => (bg.order_type || '') + ' ' + (bg.order_label || '')],
+  beneficiary: [bg => bg.beneficiary || bg.order_label || ''], issuing_bank: [bg => bg.issuing_bank || ''], value: [bg => Number(bg.value) || 0, 'number'],
+  issue_date: [bg => bg.issue_date || ''], validity_expiry: [bg => bg.validity_expiry || ''], claim_expiry: [bg => bg.claim_expiry || ''],
+  project: [bg => bg.project_code || ''], milestone_link: [bg => bg.milestone_link || ''], status: [bg => bg.status || ''],
+  days_left: [bg => { const d = bgDaysLeft(bg.validity_expiry); return d === null ? 1e9 : d; }, 'number'],
+};
+BG_COLUMN_REGISTRY.forEach(c => { c.sort = BG_SORT[c.key][0]; c.type = BG_SORT[c.key][1] || 'text'; });
+function bgDaysLeft(d) { return d ? Math.round((new Date(d) - new Date(today())) / 86400000) : null; }
+
+// Pending Reminders table: its own columns + preference key, independent of the main list.
+const BG_REASON_LABEL = { ExpiryApproaching: 'Validity expiring', ClaimExpiryApproaching: 'Claim deadline approaching', ProjectCompleted: 'Project completed' };
+const BG_REM_COLUMN_REGISTRY = [
+  { key: 'bg_no', label: 'BG No', default: true, render: r => esc(r.bg_no || '#' + r.bg_id), sort: r => r.bg_no || '#' + r.bg_id },
+  { key: 'bg_type', label: 'Type', default: true, render: r => esc(r.bg_type), sort: r => r.bg_type || '' },
+  { key: 'beneficiary', label: 'Customer / Vendor Name', default: false, render: r => esc(r.beneficiary || r.order_label || '-'), sort: r => r.beneficiary || r.order_label || '' },
+  { key: 'order', label: 'Order', default: false, render: r => `[${esc(r.order_type)}] ${esc(r.order_label || '')}`, sort: r => (r.order_type || '') + ' ' + (r.order_label || '') },
+  { key: 'issuing_bank', label: 'Issuing Bank', default: false, render: r => esc(r.issuing_bank || '-'), sort: r => r.issuing_bank || '' },
+  { key: 'value', label: 'Value', default: true, render: r => '₹' + fmt(r.value), sort: r => Number(r.value) || 0, type: 'number' },
+  { key: 'validity_expiry', label: 'Expiry', default: true, render: r => esc(r.validity_expiry), sort: r => r.validity_expiry || '' },
+  { key: 'claim_expiry', label: 'Claim Expiry', default: false, render: r => esc(r.claim_expiry || '-'), sort: r => r.claim_expiry || '' },
+  { key: 'reason', label: 'Reason', default: true, render: r => esc(BG_REASON_LABEL[r.trigger_reason] || r.trigger_reason), sort: r => BG_REASON_LABEL[r.trigger_reason] || r.trigger_reason || '' },
+  { key: 'triggered_at', label: 'Raised On', default: false, render: r => esc((r.triggered_at || '').slice(0, 10)), sort: r => r.triggered_at || '' },
+  { key: 'status', label: 'Step', default: true, render: r => badge(r.status), sort: r => r.status || '' },
+];
+const BG_REM_COLUMNS_STORAGE_KEY = 'erp_bg_reminder_columns';
 const BG_COLUMNS_STORAGE_KEY = 'erp_bg_dashboard_columns';
 // Client-side only (per-browser, via localStorage) - same convention as the
 // dashboard's pinned-metrics picker (loadDashboardMetricKeys above): a
@@ -447,13 +471,21 @@ function loadBGColumnKeys() {
 function saveBGColumnKeys(keys) {
   try { localStorage.setItem(BG_COLUMNS_STORAGE_KEY, JSON.stringify(keys)); } catch (e) {}
 }
+// Shared by both BG tables: visible columns (registry order, so a re-checked box returns to its slot), each sortable
+// with a type-aware key; sort state lives in SORT_STATE[sortKey] so it survives filter/column re-renders.
+function bgGridHTML(sortKey, registry, storageKey, rows, tailHeaders, rowRenderer, onSort) {
+  let keys = null;
+  try { keys = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) {}
+  keys = Array.isArray(keys) && keys.length ? keys.filter(k => registry.some(c => c.key === k)) : registry.filter(c => c.default).map(c => c.key);
+  if (!keys.length) keys = registry.filter(c => c.default).map(c => c.key);
+  const cols = registry.filter(c => keys.includes(c.key));
+  const columns = [...cols.map(c => ({ label: c.label, field: 's_' + c.key, type: c.type || 'text' })), ...tailHeaders.map(h => ({ label: h }))];
+  const data = rows.map(r => { const o = Object.assign({}, r); cols.forEach(c => { o['s_' + c.key] = c.sort(r); }); return o; });
+  return sortableTableHTML(sortKey, columns, data, r => rowRenderer(r, cols, columns.length), onSort);
+}
 function bgTableHTML(bgs) {
-  const activeKeys = loadBGColumnKeys();
-  // Registry order, not selection order, so re-checking a box always puts
-  // the column back where it was rather than at the end.
-  const cols = BG_COLUMN_REGISTRY.filter(c => activeKeys.includes(c.key));
-  const headers = [...cols.map(c => c.label), 'Documents', 'Action'];
-  return tableHTML(headers, bgs, bg => `
+  const headers = ['Documents', 'Action'];
+  return bgGridHTML('bg-list', BG_COLUMN_REGISTRY, BG_COLUMNS_STORAGE_KEY, bgs, headers, (bg, cols, ncols) => `
     <tr>${cols.map(c => `<td>${c.render(bg)}</td>`).join('')}
     <td><button class="btn small outline" type="button" onclick="toggleBGAttachments(${bg.id})">Scanned Copy</button></td>
     <td>${actionButtonsCell(`
@@ -461,8 +493,49 @@ function bgTableHTML(bgs) {
       ${bg.status !== 'Released' ? `<button class="btn small outline" onclick="openEditBG(${bg.id})">Edit</button>` : ''}
       <button class="btn small outline" onclick="deleteBG(${bg.id})">Delete</button>
     `)}</td></tr>
-    <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="${headers.length}"><div id="bg-attachments-${bg.id}"></div></td></tr>`);
+    <tr id="bg-att-row-${bg.id}" style="display:none;"><td colspan="${ncols}"><div id="bg-attachments-${bg.id}"></div></td></tr>`,
+  html => { document.getElementById('bg-table-wrap').innerHTML = html; });
 }
+function bgReminderTableHTML() {
+  return bgGridHTML('bg-reminders', BG_REM_COLUMN_REGISTRY, BG_REM_COLUMNS_STORAGE_KEY, window.__BG_REM || [], ['Action'], (r, cols) => `
+    <tr>${cols.map(c => `<td>${c.render(r)}</td>`).join('')}
+    <td>${actionButtonsCell(`
+      ${r.status === 'PendingReview' ? `<button class="btn small" onclick="verifyBGReminder(${r.id})">Verify</button>` : ''}
+      ${r.status === 'Verified' ? `<button class="btn small green" onclick="sendBGReminderEmail(${r.id})">Send Reminder Email</button>` : ''}
+      <button class="btn small outline" onclick="dismissBGReminder(${r.id})">Dismiss</button>
+    `)}</td></tr>`,
+  html => { document.getElementById('bg-rem-wrap').innerHTML = html; });
+}
+function loadBGRemColumnKeys() {
+  try { const s = JSON.parse(localStorage.getItem(BG_REM_COLUMNS_STORAGE_KEY) || 'null'); if (Array.isArray(s) && s.length) return s.filter(k => BG_REM_COLUMN_REGISTRY.some(c => c.key === k)); } catch (e) {}
+  return BG_REM_COLUMN_REGISTRY.filter(c => c.default).map(c => c.key);
+}
+window.openBGRemColumnPicker = () => {
+  const activeKeys = loadBGRemColumnKeys();
+  openMiniModal('Customize Pending Reminders Columns', `
+    <p class="muted">Choose which columns show in the Pending Reminders table. Your choice is remembered on this browser and is separate from the main Bank Guarantee list.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${BG_REM_COLUMN_REGISTRY.map(c => `<label style="margin:0;font-weight:normal;">
+        <input type="checkbox" value="${c.key}" ${activeKeys.includes(c.key) ? 'checked' : ''} onchange="toggleBGRemColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('')}
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+      <button class="btn small outline" type="button" onclick="resetBGRemColumns()">Reset to Default</button>
+    </div>`);
+};
+window.toggleBGRemColumn = (key, checked) => {
+  const keys = loadBGRemColumnKeys();
+  if (checked && !keys.includes(key)) keys.push(key);
+  if (!checked) { const i = keys.indexOf(key); if (i !== -1) keys.splice(i, 1); }
+  if (!keys.length) { alert('At least one column must stay visible.'); openBGRemColumnPicker(); return; }
+  try { localStorage.setItem(BG_REM_COLUMNS_STORAGE_KEY, JSON.stringify(keys)); } catch (e) {}
+  document.getElementById('bg-rem-wrap').innerHTML = bgReminderTableHTML();
+};
+window.resetBGRemColumns = () => {
+  try { localStorage.removeItem(BG_REM_COLUMNS_STORAGE_KEY); } catch (e) {}
+  closeMiniModal();
+  document.getElementById('bg-rem-wrap').innerHTML = bgReminderTableHTML();
+};
 window.openBGColumnPicker = () => {
   const activeKeys = loadBGColumnKeys();
   const body = `
