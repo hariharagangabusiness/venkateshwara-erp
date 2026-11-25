@@ -2178,6 +2178,8 @@ function renderStockPoLines() {
     const billText = stockPoAddressText(first, 'company_address');
     const shipText = stockPoAddressText(first, 'company_ship_address');
     linesEl.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;"><b>${esc(group.po_no)}</b> <span class="muted">${esc(group.vendor_name || '')}</span>
+        <button class="btn small outline" type="button" onclick="downloadPoPdf(${first.id}, '${esc(group.po_no)}')">View PO PDF</button></div>
       ${(billText || shipText) ? `
       <div class="panel" style="margin:10px 0;">
         <h4>Bill-To / Ship-To</h4>

@@ -108,7 +108,7 @@ function maybeSuggestNewSectionTitle({ offerId, itemId, title, description, summ
 // master template control, not a Sales function, per Round 40's RBAC
 // tightening) - Sales still reads the active list via offerPerm() below to
 // pick a value when building an offer.
-const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction', 'unit'];
+const OFFER_OPTION_FIELDS = ['application', 'type_of_system', 'material_of_construction', 'unit', 'spares_machine_type'];
 
 router.get('/field-options/:field', offerPerm(), (req, res) => {
   if (!OFFER_OPTION_FIELDS.includes(req.params.field)) return res.status(404).json({ error: 'Unknown field' });
@@ -122,7 +122,7 @@ router.get('/field-options', requireRole('Admin'), (req, res) => {
 });
 router.post('/field-options', requireRole('Admin'), (req, res) => {
   const { field_name, value, sort_order } = req.body;
-  if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, material_of_construction, or unit' });
+  if (!OFFER_OPTION_FIELDS.includes(field_name)) return res.status(400).json({ error: 'field_name must be application, type_of_system, material_of_construction, unit, or spares_machine_type' });
   if (!String(value || '').trim()) return res.status(400).json({ error: 'Enter a value.' });
   try {
     const info = db.prepare(`INSERT INTO offer_field_options (field_name, value, sort_order) VALUES (?,?,?)`)
@@ -277,12 +277,12 @@ router.get('/spares-library', offerPerm(), (req, res) => {
   res.json(db.prepare('SELECT * FROM spares_library ORDER BY title').all());
 });
 router.post('/spares-library', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { title, description, summary, rate, unit } = req.body;
+  const { title, description, summary, rate, unit, machine_type } = req.body;
   if (!String(title || '').trim()) return res.status(400).json({ error: 'Enter a title.' });
   const imagePath = req.file ? '/uploads/offers/' + req.file.filename : null;
   try {
-    const info = db.prepare(`INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by) VALUES (?,?,?,?,?,?,?)`)
-      .run(title.trim(), description || null, summary || null, imagePath, Number(rate) || null, unit || 'Nos', req.user.id);
+    const info = db.prepare(`INSERT INTO spares_library (title, description, summary, image_path, rate, unit, created_by, machine_type) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(title.trim(), description || null, summary || null, imagePath, Number(rate) || null, unit || 'Nos', req.user.id, String(machine_type || '').trim() || null);
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
     res.status(400).json({ error: 'That spare already exists in the library.' });
@@ -291,20 +291,21 @@ router.post('/spares-library', requireRole('Admin'), upload.single('image'), com
 router.put('/spares-library/:id', requireRole('Admin'), upload.single('image'), compressUploadedImage, (req, res) => {
   const existing = db.prepare('SELECT * FROM spares_library WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const { title, description, summary, rate, unit } = req.body;
+  const { title, description, summary, rate, unit, machine_type } = req.body;
   let imagePath = existing.image_path;
   if (req.file) {
     imagePath = '/uploads/offers/' + req.file.filename;
     if (existing.image_path) fs.unlink(resolveUploadPath(existing.image_path), () => {});
   }
   try {
-    db.prepare(`UPDATE spares_library SET title=?, description=?, summary=?, image_path=?, rate=?, unit=? WHERE id=?`).run(
+    db.prepare(`UPDATE spares_library SET title=?, description=?, summary=?, image_path=?, rate=?, unit=?, machine_type=? WHERE id=?`).run(
       title !== undefined ? title.trim() : existing.title,
       description !== undefined ? description : existing.description,
       summary !== undefined ? summary : existing.summary,
       imagePath,
       rate !== undefined ? (Number(rate) || null) : existing.rate,
       unit !== undefined ? unit : existing.unit,
+      machine_type !== undefined ? (String(machine_type).trim() || null) : existing.machine_type,
       existing.id
     );
     res.json({ ok: true, image_path: imagePath });
@@ -335,18 +336,18 @@ router.post('/spares-library/bulk-upload', requireRole('Admin'), uploadMemory.si
   let headerRow = grid[0].map(c => String(c).trim().toLowerCase());
   const hasHeader = headerRow.some(h => h === 'title');
   const map = hasHeader
-    ? { title: headerRow.indexOf('title'), description: headerRow.indexOf('description'), summary: headerRow.indexOf('summary'), rate: headerRow.indexOf('rate'), unit: headerRow.indexOf('unit') }
-    : { title: 0, description: 1, summary: 2, rate: 3, unit: 4 };
+    ? { title: headerRow.indexOf('title'), description: headerRow.indexOf('description'), summary: headerRow.indexOf('summary'), rate: headerRow.indexOf('rate'), unit: headerRow.indexOf('unit'), machine_type: headerRow.indexOf('machine type') }
+    : { title: 0, description: 1, summary: 2, rate: 3, unit: 4, machine_type: 5 };
   const dataRows = hasHeader ? grid.slice(1) : grid;
   const at = (row, i) => (i !== undefined && i >= 0 && i < row.length ? row[i] : '');
-  const stmt = db.prepare(`INSERT INTO spares_library (title, description, summary, rate, unit, created_by) VALUES (?,?,?,?,?,?)`);
+  const stmt = db.prepare(`INSERT INTO spares_library (title, description, summary, rate, unit, created_by, machine_type) VALUES (?,?,?,?,?,?,?)`);
   let inserted = 0, skipped = 0;
   for (const r of dataRows) {
     const title = String(at(r, map.title) || '').trim();
     if (!title) { skipped++; continue; }
     try {
       stmt.run(title, String(at(r, map.description) || '').trim() || null, String(at(r, map.summary) || '').trim() || null,
-        Number(at(r, map.rate)) || null, String(at(r, map.unit) || '').trim() || 'Nos', req.user.id);
+        Number(at(r, map.rate)) || null, String(at(r, map.unit) || '').trim() || 'Nos', req.user.id, String(at(r, map.machine_type) || '').trim() || null);
       inserted++;
     } catch (e) { skipped++; }
   }
@@ -756,11 +757,11 @@ function cloneOfferContent(source, opts) {
     const newId = Number(info.lastInsertRowid);
 
     const itemStmt = db.prepare(`
-      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id, machine_type)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     items.forEach(it => {
-      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order, it.spares_library_id || null);
+      itemStmt.run(newId, it.item_code, it.section_title, it.description, it.summary, duplicateOfferImage(it.image_path), it.qty, it.unit_price, it.unit || 'Nos', it.discount_amount || 0, it.remarks || null, it.total_price, it.sort_order, it.spares_library_id || null, it.machine_type || null);
     });
     const annStmt = db.prepare(`INSERT INTO offer_annexures (offer_id, item_code, hsn_code, description, qty, unit, rate, amount, remarks, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)`);
     db.prepare('SELECT * FROM offer_annexures WHERE offer_id = ? ORDER BY sort_order, id').all(source.id)
@@ -869,7 +870,7 @@ router.put('/:id', offerPerm(), (req, res) => {
 // ===================== Scope of Supply items (machinery, qty, price, picture) =====================
 
 router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id, machine_type } = req.body;
   const version = ensureEditableVersion(req.params.id, req.user.id, revision_reason, req.user.role_name === 'Admin');
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   // Unit + flat Discount Amount (2026-10-15, Spares-format offers only on
@@ -892,9 +893,9 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
     if (lib) imagePath = copyLibraryImage(lib.image_path);
   }
   const info = db.prepare(`
-    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0, spares_library_id || null);
+    INSERT INTO offer_items (offer_id, item_code, section_title, description, summary, image_path, qty, unit_price, unit, discount_amount, remarks, total_price, sort_order, spares_library_id, machine_type)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(version.id, item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || 0, spares_library_id || null, String(machine_type || '').trim() || null);
   if (!section_title_id && !spares_library_id) {
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({
@@ -907,7 +908,7 @@ router.post('/:id/items', offerPerm(), upload.single('image'), compressUploadedI
 });
 
 router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUploadedImage, (req, res) => {
-  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id } = req.body;
+  const { item_code, section_title, description, summary, qty, unit_price, unit, discount_amount, remarks, sort_order, revision_reason, section_title_id, spares_library_id, machine_type } = req.body;
   const q = Number(qty || 1), rate = Number(unit_price || 0);
   const discount = Math.max(0, Number(discount_amount || 0));
   const taxable = Math.max(0, q * rate - discount);
@@ -939,9 +940,9 @@ router.put('/:id/items/:itemId', offerPerm(), upload.single('image'), compressUp
     }
   }
   db.prepare(`
-    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?, spares_library_id=?
+    UPDATE offer_items SET item_code=?, section_title=?, description=?, summary=?, image_path=?, qty=?, unit_price=?, unit=?, discount_amount=?, remarks=?, total_price=?, sort_order=?, spares_library_id=?, machine_type=?
     WHERE id=?
-  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, spares_library_id || null, targetItemId);
+  `).run(item_code, section_title, description, summary || null, imagePath, q, rate, unit || 'Nos', discount, String(remarks || '').trim() || null, taxable, sort_order || existing.sort_order, spares_library_id || null, String(machine_type || '').trim() || null, targetItemId);
   if (!section_title_id && !spares_library_id) {
     const offerRow = db.prepare('SELECT offer_format FROM offers WHERE id = ?').get(version.id);
     maybeSuggestNewSectionTitle({

@@ -2,7 +2,7 @@
 // Full Data Export, Backups, Org Hierarchy, Data Import.
 
 // ---- Offer Field Options (Application / Type of System / Material of Construction) ----
-const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction'], ['unit', 'Unit']];
+const OFFER_OPTION_FIELDS = [['application', 'Application'], ['type_of_system', 'Type Of System'], ['material_of_construction', 'Material Of Construction'], ['unit', 'Unit'], ['spares_machine_type', 'Machine Type (Spares)']];
 let OFFER_OPTIONS_TAB = 'application';
 // ---- Offer Clause Library categories - ids must match routes/offers.js's CLAUSE_CATEGORIES ----
 const CLAUSE_CATEGORIES = [['term', 'Terms & Conditions'], ['inclusion', 'Inclusions'], ['exclusion', 'Exclusions'], ['utilities', 'Utilities Requirement'], ['instrument_air', 'Instrument Air Supply']];
@@ -36,20 +36,27 @@ function renderSectionTitleRows(rows, isAdmin) {
     </tr>`).join('') || `<tr><td colspan="${isAdmin ? 5 : 4}" class="empty">No section titles yet.</td></tr>`}
   </tbody></table>`;
 }
+// Options come from the Admin-managed 'spares_machine_type' list; a retired value stays selectable.
+function sparesMachineTypeSelect(attrs, current, id) {
+  const vals = (window.__MT_OPTS || []).map(o => o.value);
+  if (current && !vals.includes(current)) vals.unshift(current);
+  return `<select ${id ? `id="${id}"` : ''} ${attrs || ''} style="max-width:170px;"><option value="">-- None --</option>${vals.map(v => `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+}
 function renderSparesLibraryRows(rows, isAdmin) {
-  return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Rate</th><th>Unit</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
+  return `<table><thead><tr><th>Title</th><th>Description</th><th>Summary</th><th>Rate</th><th>Unit</th><th>Machine Type</th><th>Picture</th>${isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
     ${rows.map(s => `<tr>
       <td>${isAdmin ? `<input type="text" value="${esc(s.title)}" onchange="editSparesLibraryEntry(${s.id}, 'title', this.value, this)" style="width:100%;min-width:140px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.title)}</td>
       <td style="max-width:200px;">${isAdmin ? `<textarea onchange="editSparesLibraryEntry(${s.id}, 'description', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.description)}</textarea>` : (esc(s.description)||'-')}</td>
       <td style="max-width:200px;">${isAdmin ? `<textarea onchange="editSparesLibraryEntry(${s.id}, 'summary', this.value, this)" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:5px;font-family:inherit;">${esc(s.summary)}</textarea>` : (esc(s.summary)||'-')}</td>
       <td>${isAdmin ? `<input type="number" value="${s.rate||0}" onchange="editSparesLibraryEntry(${s.id}, 'rate', this.value, this)" style="width:90px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : ('₹' + fmt(s.rate||0))}</td>
       <td>${isAdmin ? `<input type="text" value="${esc(s.unit||'Nos')}" onchange="editSparesLibraryEntry(${s.id}, 'unit', this.value, this)" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;">` : esc(s.unit||'Nos')}</td>
+      <td>${isAdmin ? sparesMachineTypeSelect(`onchange="editSparesLibraryEntry(${s.id}, 'machine_type', this.value, this)"`, s.machine_type) : esc(s.machine_type || '-')}</td>
       <td>
         ${s.image_path ? `<img src="${esc(s.image_path)}" style="max-width:50px;max-height:50px;display:block;margin-bottom:4px;">` : ''}
         ${isAdmin ? `<input type="file" accept="image/*" onchange="replaceSparesLibraryImage(${s.id}, this)" style="font-size:11px;width:110px;">` : (s.image_path ? '' : '-')}
       </td>
       ${isAdmin ? `<td><button class="btn small outline" onclick="moveLibraryEntry('spares-library', ${s.id}, 'move-to-machine')">Move to Machine</button> <button class="btn small red" onclick="deleteSparesLibraryEntry(${s.id})">Delete</button></td>` : ''}
-    </tr>`).join('') || `<tr><td colspan="${isAdmin ? 7 : 6}" class="empty">No spares in the library yet.</td></tr>`}
+    </tr>`).join('') || `<tr><td colspan="${isAdmin ? 8 : 7}" class="empty">No spares in the library yet.</td></tr>`}
   </tbody></table>`;
 }
 PAGES['offer-options'] = async (el) => {
@@ -61,7 +68,7 @@ PAGES['offer-options'] = async (el) => {
   // everyone else reads just the active options for the open tab - the
   // same endpoint the offer builder itself uses to populate its dropdowns.
   const isAdmin = ME.role === 'Admin';
-  const [rows, sectionTitles, sparesLibrary, pdfTemplate, governance, clauses, suggestions, offerTemplates] = await Promise.all([
+  const [rows, sectionTitles, sparesLibrary, pdfTemplate, governance, clauses, suggestions, offerTemplates, mtOpts] = await Promise.all([
     isAdmin ? api('/offers/field-options').then(all => all.filter(o => o.field_name === OFFER_OPTIONS_TAB)) : api('/offers/field-options/' + OFFER_OPTIONS_TAB),
     api('/offers/section-titles'),
     api('/offers/spares-library'),
@@ -70,7 +77,9 @@ PAGES['offer-options'] = async (el) => {
     isAdmin ? api('/offers/clause-library') : Promise.resolve([]), // Admin-only bulk (incl. inactive) view
     isAdmin ? api('/offers/section-title-suggestions') : Promise.resolve([]), // Admin-only review queue
     api('/offers/templates'), // everyone with offer access browses; only Admin gets Edit/Delete/New below
+    api('/offers/field-options/spares_machine_type').catch(() => []),
   ]);
+  window.__MT_OPTS = mtOpts;
   el.innerHTML = `
     <div class="panel">
       ${collapsiblePanel('offer-templates', `Offer Templates (${offerTemplates.length})`, `
@@ -152,6 +161,7 @@ PAGES['offer-options'] = async (el) => {
           <div><label>Title</label><input id="spl-title" placeholder="e.g. Ball Bearing 6205"></div>
           <div><label>Rate (₹)</label><input id="spl-rate" type="number" value="0"></div>
           <div><label>Unit</label><input id="spl-unit" value="Nos"></div>
+          <div><label>Machine Type</label>${sparesMachineTypeSelect('', '', 'spl-mtype')}</div>
           <div><label>Picture (optional)</label><input id="spl-image" type="file" accept="image/*"></div>
         </div>
         <label>Description</label>
@@ -161,7 +171,7 @@ PAGES['offer-options'] = async (el) => {
         <div style="margin-top:8px;"><button class="btn" onclick="addSparesLibraryEntry()">Add to Library</button></div>
         <div id="spl-err" class="msg err" style="display:none;margin-top:10px;"></div>
         <h4 style="margin-top:18px;">Bulk Upload via Excel</h4>
-        <p class="muted">Columns: Title / Description / Summary / Rate / Unit (header row optional - with no header, read in that column order). A title that already exists in the library is skipped, not overwritten.</p>
+        <p class="muted">Columns: Title / Description / Summary / Rate / Unit / Machine Type (header row optional - with no header, read in that column order). A title that already exists in the library is skipped, not overwritten.</p>
         <input id="spl-bulk-file" type="file" accept=".xlsx,.xls,.csv">
         <button class="btn outline" onclick="uploadSparesLibraryBulk()">Upload</button>
         <div id="spl-bulk-msg" class="msg" style="display:none;margin-top:10px;"></div>` : ''}
@@ -307,6 +317,7 @@ window.addSparesLibraryEntry = async () => {
     fd.append('summary', val('spl-summary'));
     fd.append('rate', val('spl-rate'));
     fd.append('unit', val('spl-unit'));
+    fd.append('machine_type', val('spl-mtype'));
     const fileInput = document.getElementById('spl-image');
     if (fileInput.files[0]) fd.append('image', fileInput.files[0]);
     await apiUpload('/offers/spares-library', fd, 'POST');
