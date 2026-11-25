@@ -401,8 +401,13 @@ router.get('/notifications', authRequired, (req, res) => {
   `).all(req.user.id);
   res.json(rows);
 });
+// Own (or broadcast) notifications only - mark-read used to accept any id from any user.
+router.post('/notifications/read-all', authRequired, (req, res) => {
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE (user_id IS NULL OR user_id = ?) AND is_read = 0').run(req.user.id);
+  res.json({ ok: true });
+});
 router.post('/notifications/:id/read', authRequired, (req, res) => {
-  db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').run(req.params.id);
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)').run(req.params.id, req.user.id);
   res.json({ ok: true });
 });
 

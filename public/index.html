@@ -352,7 +352,7 @@
     .topbar{padding:10px 14px;}
     .topbar h2{font-size:15px;}
     .userinfo{gap:8px;font-size:11px;}
-    .userinfo span:first-child{display:none;} /* hide name/role text on very small screens, keep logout reachable */
+    .userinfo > span{display:none;} /* hide name/role text on very small screens, keep logout reachable */
 
     /* Fluid grids: auto-fill already wraps responsively, just tighten the
        minimum column so 1-2 columns fit a phone instead of overflowing. */
@@ -474,6 +474,7 @@
         <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebarDrawer()" aria-label="Toggle navigation"><span></span></button>
         <h2 id="page-title" style="flex:1">Dashboard</h2>
         <div class="userinfo">
+          <button class="logout-btn" id="bell-btn" onclick="openNotifications()" aria-label="Notifications" title="Notifications">&#128276;<span class="nav-badge" id="bell-count" style="display:none;"></span></button>
           <span><b id="user-name"></b> &middot; <span id="user-role"></span></span>
           <button class="logout-btn" onclick="openChangePasswordModal()">Change Password</button>
           <button class="logout-btn" onclick="doLogout()">Log out</button>
