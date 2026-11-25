@@ -666,12 +666,12 @@ router.post('/', offerPerm(), (req, res) => {
     const info = db.prepare(`
       INSERT INTO offers (offer_no, client_id, lead_id, contact_person, contact_phone, contact_email, subject,
         application, type_of_system, material_of_construction, drawing_no,
-        inclusions, exclusions, utilities_requirement, instrument_air_supply, is_template, offer_format, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        inclusions, exclusions, utilities_requirement, instrument_air_supply, is_template, offer_format, created_by, show_bought_out)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(offerNo, is_template ? null : client_id, is_template ? null : (lead_id || null), contact_person, contact_phone, contact_email, subject,
       application, type_of_system, material_of_construction, drawing_no,
       defaults.INCLUSIONS, defaults.EXCLUSIONS, defaults.UTILITIES_REQUIREMENT, defaults.INSTRUMENT_AIR_SUPPLY, is_template ? 1 : 0,
-      offer_format === 'Spares' ? 'Spares' : 'Standard', req.user.id);
+      offer_format === 'Spares' ? 'Spares' : 'Standard', req.user.id, offer_format === 'Spares' ? 0 : 1); // a spares quote starts with bought-out makes unticked, as the Offer Format dropdown does
     const offerId = info.lastInsertRowid;
 
     const specStmt = db.prepare(`INSERT INTO offer_tech_specs (offer_id, spec_key, spec_value, sort_order) VALUES (?,?,?,?)`);
