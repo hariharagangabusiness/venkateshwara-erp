@@ -525,7 +525,8 @@ window.changeDeptCapacityMonth = (delta) => {
   month += delta;
   if (month < 0) { month = 11; year--; } else if (month > 11) { month = 0; year++; }
   DC_MONTH = { year, month };
-  renderDeptCapacity(document.getElementById('content'));
+  // Re-render into the page's scope wrapper (modpolish.js) when there is one, so the styling survives a month change.
+  renderDeptCapacity(document.querySelector('#content > .hig-mod-scope') || document.getElementById('content'));
 };
 
 // ---- My Job Cards (department / HOD workbench) ----
@@ -628,7 +629,7 @@ function renderJobCardSection(key, title, rows, cardRow) {
   const closedCountId = 'jc-closed-count-' + key;
   const activeRows = rows.filter(r => r.status !== 'Completed');
   const closedRows = rows.filter(r => r.status === 'Completed');
-  const renderRows = (rs) => rs.length ? tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], groupJobCardRows(rs), cardRow) : '<p class="muted">No job cards in this section.</p>';
+  const renderRows = (rs) => rs.length ? '<div class="hig-rowcards">' + tableHTML(['Project', 'Customer', 'Item', 'Target Completion', 'Status', 'Assigned', 'Action'], groupJobCardRows(rs), cardRow) + '</div>' : '<p class="muted">No job cards in this section.</p>';
   return collapsiblePanel('dept-job-cards-' + key, `<span id="${countId}">${esc(title)} (${activeRows.length})</span>`, `
     ${renderListSearch('jc-' + key, activeRows, ['project_code', 'project_title', 'client_name', 'title', 'assigned_to_name', 'status'], (filtered) => {
       document.getElementById(tableWrapId).innerHTML = renderRows(filtered);
@@ -887,7 +888,7 @@ window.openRequestMaterialModal = async (jobCardId) => {
     <div id="rm-lines"></div>
     <button class="btn small outline" type="button" onclick="addRMLine()">+ Add Line Item</button>
     <div id="rm-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    <button class="btn" style="margin-top:10px;" onclick="submitRequestMaterial(${jobCardId})">Submit Request</button>
+    <div class="hig-savebar"><button class="btn" onclick="submitRequestMaterial(${jobCardId})">Submit Request</button></div>
   `);
   renderRMLines();
 };

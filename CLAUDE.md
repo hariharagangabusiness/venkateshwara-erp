@@ -1,6 +1,6 @@
 # Working with this repo
 
-Node/Express + `node:sqlite` ERP (Venkateshwara Engineers). Vanilla-JS SPA in `public/js/*.js` (12 classic scripts, see Frontend module map), routes in `routes/`, shared logic in `lib/`, schema in `db/schema.sql` + idempotent migrations/bootstraps in `db/index.js`. Feature history lives in git log and the graphify graph (`graphify-out/`), not here.
+Node/Express + `node:sqlite` ERP (Venkateshwara Engineers). Vanilla-JS SPA in `public/js/*.js` (13 classic scripts, see Frontend module map), routes in `routes/`, shared logic in `lib/`, schema in `db/schema.sql` + idempotent migrations/bootstraps in `db/index.js`. Feature history lives in git log and the graphify graph (`graphify-out/`), not here.
 
 ## Workflow rules (standing, from the repo owner)
 - **Provide your understanding first and wait for confirmation** before building anything non-trivial. Applies to every ask of that size, standing, not only when the owner repeats the phrase (restated 2026-10-08).
@@ -48,7 +48,7 @@ Node/Express + `node:sqlite` ERP (Venkateshwara Engineers). Vanilla-JS SPA in `p
 - **Locks**: offer-immutability triggers (`trg_offers_locked_*`) must be dropped/recreated around any `offers` table rebuild. Review-style records (`annexure_reviews`, `order_confirmations`) use `lib/reviewWorkflow.js`; Admin `unlock` is the only way out of Approved.
 
 ## Frontend module map (`public/js/`)
-Twelve plain classic scripts, no bundler, all `defer`, executed in this order (see the script tags in `public/index.html`). Top-level `let/const/function` names are shared across files, so code may call helpers from any file **at run time** but must not touch another file's top-level names at load time unless that file loads earlier.
+Thirteen plain classic scripts, no bundler, all `defer`, executed in this order (see the script tags in `public/index.html`). Top-level `let/const/function` names are shared across files, so code may call helpers from any file **at run time** but must not touch another file's top-level names at load time unless that file loads earlier.
 
 1. `core.js` - state (`TOKEN`, `ME`, `PERMS`), `api()`, auth/login, permission helpers, `boot()`, `NAV`, sidebar, `navigate()`, and `const PAGES = {}` (must exist before any page file).
 2. `ui.js` - `esc`, `tableHTML`/`gridLineTableHTML`/`sortableTableHTML`, pickers, `collapsiblePanel`, `openAppModal`, bulk-upload helpers, panel drag-reorder.
@@ -61,7 +61,8 @@ Twelve plain classic scripts, no bundler, all `defer`, executed in this order (s
 9. `hr.js` - Employees, Referral/Salary pages, Attendance, Leave, Advances, Payroll, Technician Tour Expenses (incl. the Finance-group review page), Leave Balances.
 10. `finance.js` - Expenses, BG, Foreign Payments, Ledger, FOC, Sales/Purchase Invoices, SOA, Operating Expenses, GST.
 11. `admin.js` - Offer Options/PDF Designer, Users, Access, Approval Matrix, Company Settings, Assets, Tickets, data tools.
-12. `app.js` - entrypoint only (boot on load); keep it LAST so every `PAGES` entry exists first.
+12. `modpolish.js` - Apple-HIG UI polish for Purchase / Store / Finance / Electrical & Service: wraps those `PAGES` entries (and popups opened from them) in `.hig-mod-scope`, owns all of that CSS, stamps `data-label`s so mobile line grids become cards. Add a new page of those four modules to `HIG_PAGES` there. Loads after every page file.
+13. `app.js` - entrypoint only (boot on load); keep it LAST so every `PAGES` entry exists first.
 
 Page placement follows the file, not always the NAV group (e.g. `sales-returns` lives in `sales.js`, `overdue-items` in `purchase.js`). NAV groups: Settings (was Admin), plus an "Unused" group for leads/pipeline/followups/sales-analytics/sales-targets.
 
