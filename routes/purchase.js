@@ -16,6 +16,8 @@ const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const { poReceivedQty } = require('../lib/purchaseOrders');
+const { LIVE_PO_COND, ORDERED_PO_COND, existsPo } = require('../lib/prLines');
+const { formatDate } = require('../lib/dateFormat');
 const PptxGenJS = require('pptxgenjs');
 const path = require('path');
 const { makeUpload, uploadMemory } = require('../lib/upload');
@@ -47,10 +49,19 @@ router.get('/dashboard/vendor-analytics', requirePermission('purchase_order.mana
 router.get('/requests', (req, res) => {
   res.json(db.prepare(`
     SELECT pr.*, i.name as item_name, i.status as item_master_status, p.project_code, u.full_name as raised_by_name, d.name as department_name,
-      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as line_count,
-      (SELECT COALESCE(SUM(pri.estimated_value), 0) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id) as items_total_value,
-      (SELECT GROUP_CONCAT(COALESCE(i2.name, pri.item_text), ', ') FROM purchase_request_items pri LEFT JOIN items i2 ON i2.id = pri.item_id WHERE pri.purchase_request_id = pr.id) as item_summary,
-      (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND i3.status = 'Pending') as pending_item_count,
+      -- Cancelled lines drop out of the counts/summary/total, except on a wholly Cancelled PR (shows what it was).
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND (pri.cancelled_at IS NULL OR pr.status = 'Cancelled')) as line_count,
+      (SELECT COALESCE(SUM(pri.estimated_value), 0) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND (pri.cancelled_at IS NULL OR pr.status = 'Cancelled')) as items_total_value,
+      (SELECT GROUP_CONCAT(COALESCE(i2.name, pri.item_text), ', ') FROM purchase_request_items pri LEFT JOIN items i2 ON i2.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND (pri.cancelled_at IS NULL OR pr.status = 'Cancelled')) as item_summary,
+      (SELECT COUNT(*) FROM purchase_request_items pri JOIN items i3 ON i3.id = pri.item_id WHERE pri.purchase_request_id = pr.id AND pri.cancelled_at IS NULL AND i3.status = 'Pending') as pending_item_count,
+      -- Drives the Archive split: a PR is complete once every ACTIVE line has a submitted PO.
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND pri.cancelled_at IS NULL) as active_line_count,
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND pri.cancelled_at IS NULL AND ${existsPo(ORDERED_PO_COND)}) as ordered_line_count,
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND pri.cancelled_at IS NULL AND NOT ${existsPo(LIVE_PO_COND)}) as unpo_line_count,
+      (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.purchase_request_id = pr.id AND pri.cancelled_at IS NOT NULL) as cancelled_line_count,
+      (SELECT al.details FROM audit_log al WHERE al.entity_type = 'purchase_request' AND al.entity_id = pr.id AND al.action IN ('pr_cancel', 'pr_cancel_admin') ORDER BY al.id DESC LIMIT 1) as cancel_reason,
+      (SELECT cu.full_name FROM audit_log al LEFT JOIN users cu ON cu.id = al.user_id WHERE al.entity_type = 'purchase_request' AND al.entity_id = pr.id AND al.action IN ('pr_cancel', 'pr_cancel_admin') ORDER BY al.id DESC LIMIT 1) as cancelled_by_name,
+      (SELECT al.created_at FROM audit_log al WHERE al.entity_type = 'purchase_request' AND al.entity_id = pr.id AND al.action IN ('pr_cancel', 'pr_cancel_admin') ORDER BY al.id DESC LIMIT 1) as cancelled_at,
       -- Scoped to pr.approval_id (the PR's CURRENT approval cycle), not just
       -- entity_type/entity_id - a resubmit starts a brand-new approvals row
       -- (see POST /requests/:id/resubmit), so matching on entity alone would
@@ -94,11 +105,17 @@ router.get('/requests/my-pending-count', (req, res) => {
 
 // Line items for a single PR - drives the Edit panel and the "From PR" line
 // picker on Purchase Order creation.
+// Active (non-cancelled) lines only by default, so the edit panel, RFQ/quote panels, "Repeat" and the PO "From PR"
+// picker never see a cancelled line; ?all=1 also returns cancelled ones (with who/when/why) for the Lines view.
 router.get('/requests/:id/items', (req, res) => {
   res.json(db.prepare(`
-    SELECT pri.*, i.name as item_name, i.status as item_master_status, COALESCE(pri.unit, i.unit) as item_unit
-    FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
-    WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
+    SELECT pri.*, i.name as item_name, i.status as item_master_status, COALESCE(pri.unit, i.unit) as item_unit,
+      cu.full_name as cancelled_by_name,
+      ${existsPo(LIVE_PO_COND)} as has_po,
+      ${existsPo(ORDERED_PO_COND)} as ordered,
+      (SELECT GROUP_CONCAT(DISTINCT po.po_no || ' (' || po.status || ')') FROM purchase_orders po WHERE ${LIVE_PO_COND}) as live_pos
+    FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id LEFT JOIN users cu ON cu.id = pri.cancelled_by
+    WHERE pri.purchase_request_id = ? ${req.query.all === '1' ? '' : 'AND pri.cancelled_at IS NULL'} ORDER BY pri.sort_order, pri.id
   `).all(req.params.id));
 });
 
@@ -387,7 +404,7 @@ router.post('/requests/:id/quotes', requirePermission('purchase_request.create',
   // that accepts a purchase_request_item_id from the client.
   let itemId = null;
   if (purchase_request_item_id) {
-    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ?').get(purchase_request_item_id, pr.id);
+    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ? AND cancelled_at IS NULL').get(purchase_request_item_id, pr.id);
     if (!line) return res.status(400).json({ error: 'That line item does not belong to this Purchase Request.' });
     itemId = line.id;
   }
@@ -462,7 +479,7 @@ async function dispatchRfqEmails(rfqId, vendors, extraEmails, subject, body, bas
   const itemRows = itemIds.length ? db.prepare(`
     SELECT COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(pri.unit, i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
-    WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
+    WHERE pri.cancelled_at IS NULL AND pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...itemIds) : [];
   const itemsTableText = itemRows.map((r, n) =>
     `${n + 1}. ${r.name || '-'}${r.details ? ` (${r.details})` : ''} - ${r.quantity} ${r.unit}`).join('\n');
@@ -546,7 +563,7 @@ router.post('/requests/:id/rfq', requirePermission('purchase_request.create', 'p
   }
   if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
   if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
-  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(pr.id).map(r => r.id);
+  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL`).all(pr.id).map(r => r.id);
   const badItems = item_ids.filter(id => !lines.includes(Number(id)));
   if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
   const vendorIds = Array.isArray(vendor_ids) ? vendor_ids.map(Number) : [];
@@ -601,7 +618,7 @@ router.put('/rfqs/:id', requirePermission('purchase_request.create', 'purchase_o
   if (!Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ error: 'Select at least one line item to request quotes for.' });
   if (!String(subject || '').trim()) return res.status(400).json({ error: 'Subject is required.' });
   if (!String(body || '').trim()) return res.status(400).json({ error: 'Email body is required.' });
-  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ?`).all(rfq.purchase_request_id).map(r => r.id);
+  const lines = db.prepare(`SELECT id FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL`).all(rfq.purchase_request_id).map(r => r.id);
   const badItems = item_ids.filter(id => !lines.includes(Number(id)));
   if (badItems.length) return res.status(400).json({ error: `Line item(s) ${badItems.join(', ')} do not belong to this Purchase Request.` });
   const vendorIds = Array.isArray(vendor_ids) ? vendor_ids.map(Number) : [];
@@ -677,7 +694,7 @@ router.get('/rfqs/:id/comparison', requirePermission('purchase_request.create', 
   const items = itemIds.length ? db.prepare(`
     SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.details, pri.quantity, COALESCE(pri.unit, i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
-    WHERE pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
+    WHERE pri.cancelled_at IS NULL AND pri.id IN (${itemIds.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...itemIds) : [];
   const vendors = db.prepare(`
     SELECT rv.vendor_id, v.name, vr.id as response_id, vr.remarks, vr.submitted_at
@@ -769,7 +786,7 @@ router.post('/rfq-inbox/:id/confirm', requirePermission('purchase_request.create
   const { notes, purchase_request_item_id, payment_terms, delivery_commit_date, quoted_qty } = req.body;
   let itemId = null;
   if (purchase_request_item_id) {
-    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ?').get(purchase_request_item_id, rfq.purchase_request_id);
+    const line = db.prepare('SELECT id FROM purchase_request_items WHERE id = ? AND purchase_request_id = ? AND cancelled_at IS NULL').get(purchase_request_item_id, rfq.purchase_request_id);
     if (!line) return res.status(400).json({ error: "That line item does not belong to this RFQ's Purchase Request." });
     itemId = line.id;
   }
@@ -826,7 +843,7 @@ router.post('/requests/:id/submit-for-approval', requirePermission('purchase_req
   if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can submit this.' });
 
   if (pr.status === 'Draft') {
-    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
+    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL').get(pr.id).t;
     const threshold = getPurchaseSettings().quote_threshold;
     if (totalValue >= threshold) {
       db.prepare(`UPDATE purchase_requests SET status = 'PendingQuotes', quotes_required = 1, estimated_value = ? WHERE id = ?`).run(totalValue, pr.id);
@@ -840,7 +857,7 @@ router.post('/requests/:id/submit-for-approval', requirePermission('purchase_req
   if (pr.status === 'PendingQuotes') {
     const quoteCount = db.prepare('SELECT COUNT(*) as c FROM purchase_request_quotes WHERE purchase_request_id = ?').get(pr.id).c;
     if (quoteCount < 2) return res.status(400).json({ error: `At least 2 vendor quotes are required before submitting for approval - only ${quoteCount} on file.` });
-    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(pr.id).t;
+    const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL').get(pr.id).t;
     const approvalId = approvals.startApproval('PurchaseRequest', 'purchase_request', pr.id, totalValue, req.user.id);
     db.prepare(`UPDATE purchase_requests SET approval_id = ?, status = 'Pending' WHERE id = ?`).run(approvalId, pr.id);
     return res.json({ ok: true, quotes_required: false });
@@ -897,7 +914,7 @@ router.put('/requests/:id', requirePermission('purchase_request.create', 'job_ca
   }
   const tx = db.transaction(() => {
     if (resolved) {
-      db.prepare('DELETE FROM purchase_request_items WHERE purchase_request_id = ?').run(existing.id);
+      db.prepare('DELETE FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL').run(existing.id);
       const insertLine = db.prepare(`
         INSERT INTO purchase_request_items (purchase_request_id, item_id, item_text, quantity, estimated_value, details, sort_order, unit)
         VALUES (?,?,?,?,?,?,?,?)
@@ -934,7 +951,7 @@ router.post('/requests/:id/resubmit', requirePermission('purchase_request.create
   const isPrivileged = req.user.role_name === 'Admin' || req.user.role_name === 'Management';
   if (!isOwner && !isPrivileged) return res.status(403).json({ error: 'Only the requester or Admin/Management can resubmit this.' });
   if (existing.status !== 'Rejected') return res.status(400).json({ error: 'Only a rejected request can be resubmitted.' });
-  const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ?').get(existing.id).t;
+  const totalValue = db.prepare('SELECT COALESCE(SUM(estimated_value), 0) as t FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL').get(existing.id).t;
   const threshold = getPurchaseSettings().quote_threshold;
   const quotesRequired = totalValue >= threshold;
   if (quotesRequired) {
@@ -976,6 +993,94 @@ router.post('/requests/:id/cancel', requirePermission('purchase_request.create',
   tx();
   db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
     .run(req.user.id, 'pr_cancel', 'purchase_request', existing.id, reason);
+  res.json({ ok: true });
+});
+
+// ---- Admin-only cancellation of an APPROVED PR / of one line of a multi-line PR (soft: rows are kept for the audit trail) ----
+// Blocked while any PO that is not Cancelled (Draft / Rejected included) still points at the PR / line, so an
+// in-progress PO is never orphaned; the requestor is told in-app and by email (approval_alerts channel).
+function prRequestorFor(pr) {
+  let uid = pr.raised_by;
+  if (!uid && pr.approval_id) { const ap = db.prepare('SELECT requested_by FROM approvals WHERE id = ?').get(pr.approval_id); uid = ap && ap.requested_by; }
+  return uid ? db.prepare('SELECT u.id, u.full_name, u.email, d.name as department FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?').get(uid) : null;
+}
+function notifyPrRequestor(pr, sourceType, message, templateKey, vars) {
+  try {
+    const who = prRequestorFor(pr);
+    if (!who) return;
+    db.prepare('INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)').run(who.id, sourceType, pr.id, message);
+    if (!who.email) return;
+    const { subject, body } = renderTemplate(getEmailTemplate(templateKey), Object.assign({
+      requester_name: who.full_name, pr_no: pr.pr_no, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: who.department || '-',
+    }, vars));
+    sendMail({ to: who.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') }).catch(() => {});
+  } catch (e) { console.error('[pr-cancel-notify] failed:', e.message); }
+}
+const prLineName = (l) => l.item_name || l.item_text || 'Item';
+router.post('/requests/:id/cancel-admin', requireRole('Admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required.' });
+  if (existing.status !== 'Approved') {
+    return res.status(400).json({ error: existing.status === 'OrderPlaced'
+      ? 'A purchase order has been placed against this request - cancel or revoke the PO first.'
+      : 'Only an Approved request can be cancelled here (use Withdraw for a request still in review).' });
+  }
+  const livePos = db.prepare(`SELECT DISTINCT po_no, status FROM purchase_orders WHERE purchase_request_id = ? AND status != 'Cancelled'`).all(existing.id);
+  if (livePos.length) {
+    return res.status(400).json({ error: `Purchase order(s) ${livePos.map(p => `${p.po_no} (${p.status})`).join(', ')} are still live against this request - cancel or revoke the PO first.` });
+  }
+  const names = db.prepare(`SELECT pri.item_text, i.name as item_name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? AND pri.cancelled_at IS NULL ORDER BY pri.sort_order, pri.id`).all(existing.id).map(prLineName);
+  const now = localDateTimeStr();
+  db.transaction(() => {
+    db.prepare(`UPDATE purchase_requests SET status = 'Cancelled' WHERE id = ?`).run(existing.id);
+    db.prepare(`UPDATE purchase_request_items SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ? WHERE purchase_request_id = ? AND cancelled_at IS NULL`).run(now, req.user.id, reason, existing.id);
+  })();
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`).run(req.user.id, 'pr_cancel_admin', 'purchase_request', existing.id, reason);
+  notifyPrRequestor(existing, 'PR_CANCELLED', `Purchase Request ${existing.pr_no} was cancelled by ${req.user.full_name}. Reason: ${reason}`, 'purchase_request_cancelled', {
+    items: names.length ? names.join(', ') : '-', actor_name: req.user.full_name, actor_role: req.user.role_name || '-', cancelled_at: now, reason,
+  });
+  res.json({ ok: true });
+});
+router.post('/requests/:id/items/:itemId/cancel', requireRole('Admin'), (req, res) => {
+  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+  const line = pr && db.prepare(`SELECT pri.*, i.name as item_name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.id = ? AND pri.purchase_request_id = ?`).get(req.params.itemId, pr.id);
+  if (!line) return res.status(404).json({ error: 'Not found' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required.' });
+  if (line.cancelled_at) return res.status(400).json({ error: 'This line is already cancelled.' });
+  if (!['Pending', 'PendingQuotes', 'InfoRequested', 'Approved'].includes(pr.status)) {
+    return res.status(400).json({ error: `A line can only be cancelled while the request is Pending, Pending Quotes, Info Requested or Approved (this one is ${pr.status}).` });
+  }
+  const active = db.prepare('SELECT COUNT(*) as n FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL').get(pr.id).n;
+  if (active <= 1) {
+    return res.status(400).json({ error: pr.status === 'Approved'
+      ? 'This is the last active line of the request - use Cancel PR to cancel the whole request instead.'
+      : 'This is the last active line of the request - withdraw the whole request instead.' });
+  }
+  const livePos = db.prepare(`SELECT DISTINCT po.po_no, po.status FROM purchase_orders po, purchase_request_items pri WHERE pri.id = ? AND ${LIVE_PO_COND}`).all(line.id);
+  if (livePos.length) {
+    return res.status(400).json({ error: `Purchase order(s) ${livePos.map(p => `${p.po_no} (${p.status})`).join(', ')} are still live against this line - cancel or revoke the PO first.` });
+  }
+  const now = localDateTimeStr();
+  db.transaction(() => {
+    db.prepare('UPDATE purchase_request_items SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ? WHERE id = ?').run(now, req.user.id, reason, line.id);
+    // Keep the PR's own displayed total and its legacy first-line mirror fields in step with what is left.
+    const rest = db.prepare('SELECT item_id, item_text, quantity, estimated_value FROM purchase_request_items WHERE purchase_request_id = ? AND cancelled_at IS NULL ORDER BY sort_order, id').all(pr.id);
+    db.prepare('UPDATE purchase_requests SET estimated_value = ?, item_id = ?, item_text = ?, quantity = ? WHERE id = ?')
+      .run(rest.reduce((s, r) => s + (Number(r.estimated_value) || 0), 0), rest[0].item_id, rest[0].item_text, rest[0].quantity, pr.id);
+    // Every remaining line already has a submitted PO -> the request is complete (moves to Archive).
+    if (pr.status === 'Approved') {
+      const open = db.prepare(`SELECT COUNT(*) as n FROM purchase_request_items pri WHERE pri.purchase_request_id = ? AND pri.cancelled_at IS NULL AND NOT ${existsPo(ORDERED_PO_COND)}`).get(pr.id).n;
+      if (open === 0) db.prepare(`UPDATE purchase_requests SET status = 'OrderPlaced' WHERE id = ?`).run(pr.id);
+    }
+  })();
+  db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
+    .run(req.user.id, 'pr_line_cancel', 'purchase_request', pr.id, `${prLineName(line)} (Qty ${line.quantity}): ${reason}`);
+  notifyPrRequestor(pr, 'PR_LINE_CANCELLED', `A line of Purchase Request ${pr.pr_no} (${prLineName(line)}, Qty ${line.quantity}) was cancelled by ${req.user.full_name}. Reason: ${reason}`, 'purchase_request_line_cancelled', {
+    item: prLineName(line), quantity: line.quantity, actor_name: req.user.full_name, actor_role: req.user.role_name || '-', cancelled_at: now, reason,
+  });
   res.json({ ok: true });
 });
 
@@ -1107,6 +1212,10 @@ router.post('/orders', requirePermission('purchase_order.manage'), (req, res) =>
     }
     if (!l.quantity || Number(l.quantity) <= 0) return res.status(400).json({ error: `${prefix}enter a quantity greater than 0.` });
     if (!l.rate || Number(l.rate) <= 0) return res.status(400).json({ error: `${prefix}enter a rate greater than 0.` });
+    if (l.purchase_request_item_id) {
+      const prLine = db.prepare('SELECT cancelled_at FROM purchase_request_items WHERE id = ?').get(l.purchase_request_item_id);
+      if (prLine && prLine.cancelled_at) return res.status(400).json({ error: `${prefix}that Purchase Request line was cancelled - remove it from this order.` });
+    }
   }
   const poNo = 'PO-' + Date.now();
   // Deliberately NOT pre-filled from the Purchase Settings default here

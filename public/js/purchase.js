@@ -191,6 +191,26 @@ window.uploadVendorTemplate = () => uploadTemplateFile('/masters/vendors/bulk-up
 // ---- Purchase Requests ----
 const PR_STATUS_ORDER = ['Draft', 'PendingQuotes', 'Pending', 'InfoRequested', 'Approved', 'OrderPlaced', 'Received', 'Rejected', 'Cancelled'];
 const PR_STATUS_LABELS = { PendingQuotes: 'Pending Quotes', Pending: 'Pending Approval', InfoRequested: 'Info Requested', OrderPlaced: 'Order Placed' };
+// Status filter + sort shared by the active list and the Archive (each has its own pair of controls).
+function prApplyListControls(rows, statusId, sortId) {
+  const st = (document.getElementById(statusId) || {}).value || '';
+  const sort = (document.getElementById(sortId) || {}).value || 'newest';
+  rows = (st ? rows.filter(r => r.status === st) : rows).slice();
+  const num = r => String(r.created_at || '') + String(r.id).padStart(9, '0');
+  const cmp = {
+    newest: (a, b) => num(b).localeCompare(num(a)),
+    oldest: (a, b) => num(a).localeCompare(num(b)),
+    status: (a, b) => (PR_STATUS_ORDER.indexOf(a.status) - PR_STATUS_ORDER.indexOf(b.status)) || num(b).localeCompare(num(a)),
+    status_az: (a, b) => String(a.status).localeCompare(String(b.status)) || num(b).localeCompare(num(a)),
+    pr_no: (a, b) => String(a.pr_no).localeCompare(String(b.pr_no)),
+  }[sort];
+  return rows.sort(cmp);
+}
+window.refreshPRArchive = () => {
+  const box = document.getElementById('pr-archive-table-wrap');
+  const q = box && box.parentElement.querySelector('.list-search');
+  filterList('purchase-requests-archive', q ? q.value : '');
+};
 window.refreshPRList = () => {
   const box = document.getElementById('pr-table-wrap');
   const q = box && box.parentElement.querySelector('.list-search');
@@ -209,9 +229,14 @@ PAGES['purchase-requests'] = async (el) => {
     api('/settings/purchase-quote-threshold'),
     api('/purchase/rfq-inbox').catch(() => []),
     api('/offers/field-options/unit').catch(() => []),
-    fetchPanelOrder('purchase-requests', ['rfq-inbox', 'new-request', 'list']),
+    fetchPanelOrder('purchase-requests', ['rfq-inbox', 'new-request', 'list', 'archive']),
   ]);
   const threshold = thresholdSetting.quote_threshold;
+  // Archive split (mirrors the PO Archive): a PR is finished once it is Cancelled, or Approved/OrderPlaced with every ACTIVE
+  // (non-cancelled) line already covered by a submitted PO. Rejected PRs stay active - the requestor must see the reason and resubmit.
+  const prArchived = r => r.status === 'Cancelled' || (['Approved', 'OrderPlaced'].includes(r.status) && r.active_line_count > 0 && r.ordered_line_count >= r.active_line_count);
+  const activeReqs = reqs.filter(r => !prArchived(r));
+  const archivedReqs = reqs.filter(prArchived);
   window.__PR_THRESHOLD = threshold;
   window.__PR_ITEMS = items; window.__PR_PROJECTS = projects;
   window.__RFQ_INBOX = rfqInbox; window.__UNIT_OPTS = unitOpts;
@@ -246,22 +271,10 @@ PAGES['purchase-requests'] = async (el) => {
       This saves the request as a <b>Draft</b> below, not submitted yet — review or edit it there, then click <b>Submit for Approval</b> when it's ready. It then goes to the Purchase HOD/Supervisor first; above the configured threshold it also needs Management sign-off (see Admin → Approval Matrix).<br>
       Requests with a combined value of ₹${fmt(threshold)} or above will need at least 2 vendor quotes on file before they can be submitted for approval.</p>
     `),
-    'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${reqs.length})</span>`, `
+    'list': collapsiblePanel('purchase-requests-list', `<span id="pr-count">Purchase Requests (${activeReqs.length})</span>`, `
       <p class="muted">A new request starts as a <b>Draft</b> — click Edit to review/change the items, project, quantities or values, then <b>Submit for Approval</b> when ready. A Pending request can still be edited up to the point it's approved.</p>
-      ${renderListSearch('purchase-requests', reqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
-        // layered on top of the text search: status filter, then sort
-        const st = (document.getElementById('pr-status-filter') || {}).value || '';
-        const sort = (document.getElementById('pr-sort') || {}).value || 'newest';
-        rows = (st ? rows.filter(r => r.status === st) : rows).slice();
-        const num = r => String(r.created_at || '') + String(r.id).padStart(9, '0');
-        const cmp = {
-          newest: (a, b) => num(b).localeCompare(num(a)),
-          oldest: (a, b) => num(a).localeCompare(num(b)),
-          status: (a, b) => (PR_STATUS_ORDER.indexOf(a.status) - PR_STATUS_ORDER.indexOf(b.status)) || num(b).localeCompare(num(a)),
-          status_az: (a, b) => String(a.status).localeCompare(String(b.status)) || num(b).localeCompare(num(a)),
-          pr_no: (a, b) => String(a.pr_no).localeCompare(String(b.pr_no)),
-        }[sort];
-        rows.sort(cmp);
+      ${renderListSearch('purchase-requests', activeReqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
+        rows = prApplyListControls(rows, 'pr-status-filter', 'pr-sort');
         document.getElementById('pr-table-wrap').innerHTML = renderPRRows(rows);
         document.getElementById('pr-count').textContent = 'Purchase Requests (' + rows.length + ')';
       }, 'Search by PR no, item, project, status...')}
@@ -271,10 +284,25 @@ PAGES['purchase-requests'] = async (el) => {
           <option value="newest">Newest First</option><option value="oldest">Oldest First</option>
           <option value="status">Status (workflow order)</option><option value="status_az">Status A→Z</option><option value="pr_no">PR No</option></select></label>
       </div>
-      <div id="pr-table-wrap">${renderPRRows(reqs)}</div>
+      <div id="pr-table-wrap">${renderPRRows(activeReqs)}</div>
+    `),
+    'archive': collapsiblePanel('pr-archive', `<span id="pr-archive-count">Archive - Ordered / Cancelled (${archivedReqs.length})</span>`, `
+      <p class="muted">Finished requests: every active line already has a submitted Purchase Order, or the request was cancelled. Rejected requests stay in the main list so they can be resubmitted.</p>
+      ${renderListSearch('purchase-requests-archive', archivedReqs, ['pr_no', 'item_summary', 'project_code', 'status'], (rows) => {
+        rows = prApplyListControls(rows, 'pr-arch-status-filter', 'pr-arch-sort');
+        document.getElementById('pr-archive-table-wrap').innerHTML = renderPRRows(rows);
+        document.getElementById('pr-archive-count').textContent = 'Archive - Ordered / Cancelled (' + rows.length + ')';
+      }, 'Search by PR no, item, project, status...')}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="font-size:12px;">Status <select id="pr-arch-status-filter" onchange="refreshPRArchive()"><option value="">All</option>${['Approved', 'OrderPlaced', 'Cancelled'].map(x => `<option value="${x}">${esc(PR_STATUS_LABELS[x] || x)}</option>`).join('')}</select></label>
+        <label style="font-size:12px;">Sort by <select id="pr-arch-sort" onchange="refreshPRArchive()">
+          <option value="newest">Newest First</option><option value="oldest">Oldest First</option>
+          <option value="status">Status (workflow order)</option><option value="status_az">Status A→Z</option><option value="pr_no">PR No</option></select></label>
+      </div>
+      <div id="pr-archive-table-wrap">${renderPRRows(archivedReqs)}</div>
     `),
   };
-  const prLabels = { 'rfq-inbox': 'Vendor Quote Responses (Email)', 'new-request': 'New Purchase Request', 'list': 'Purchase Requests List' };
+  const prLabels = { 'rfq-inbox': 'Vendor Quote Responses (Email)', 'new-request': 'New Purchase Request', 'list': 'Purchase Requests List', 'archive': 'Archive' };
   el.innerHTML = reorderablePanelsHTML('purchase-requests', prPanels, prOrder, prLabels);
   if (items.length === 0) el.querySelector('.panel').insertAdjacentHTML('afterbegin', `<div class="msg err">No items defined yet — add items via Store page first.</div>`);
   renderPRLines();
@@ -414,15 +442,19 @@ function renderPRRows(rows) {
         ${r.status === 'Draft' ? `<button class="btn small" type="button" onclick="submitPRForApproval(${r.id})">Submit for Approval</button>` : ''}
         ${r.status === 'Rejected' ? `<button class="btn small outline" type="button" onclick="resubmitPR(${r.id})">Resubmit</button>` : ''}
         ${ME.role === 'Admin' && r.status === 'Pending' && r.approval_id ? `<button class="btn small red" type="button" onclick="adminRejectPR(${r.id})">Reject</button>` : ''}
+        ${ME.role === 'Admin' && r.status === 'Approved' ? `<button class="btn small red" type="button" onclick="adminCancelPR(${r.id})">Cancel PR</button>` : ''}
         ${r.status === 'InfoRequested' ? `<button class="btn small outline" type="button" onclick="provideInfoPR(${r.id})">Provide Info</button>` : ''}
         ${['Draft', 'Pending', 'PendingQuotes', 'InfoRequested', 'Rejected'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="cancelPR(${r.id}, ${r.status === 'Draft'})">${r.status === 'Draft' ? 'Delete' : 'Withdraw'}</button>` : ''}
+        ${(r.line_count || 1) > 1 || r.cancelled_line_count ? `<button class="btn small outline" type="button" onclick="togglePRLines(${r.id})">Lines${r.cancelled_line_count && r.status !== 'Cancelled' ? ' (' + r.cancelled_line_count + ' cancelled)' : ''}</button>` : ''}
         <button class="btn small outline" type="button" onclick="togglePRQuotes(${r.id})">Quotes / RFQ</button>
         ${['Approved', 'OrderPlaced'].includes(r.status) ? `<button class="btn small outline" type="button" onclick="repeatPR(${r.id})">Repeat</button>` : ''}
       `)}</td>
     </tr>
     ${r.status === 'Rejected' && r.rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Rejected${r.rejected_by_name ? ' by ' + esc(r.rejected_by_name) : ''}${r.rejected_at ? ' on ' + esc(String(r.rejected_at).slice(0, 16)) : ''}: ${esc(r.rejection_reason)}</span></td></tr>` : ''}
+    ${r.status === 'Cancelled' && r.cancelled_by_name ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Cancelled by ${esc(r.cancelled_by_name)}${r.cancelled_at ? ' on ' + esc(String(r.cancelled_at).slice(0, 16)) : ''}${r.cancel_reason ? ': ' + esc(r.cancel_reason) : ''}</span></td></tr>` : ''}
     ${r.status === 'InfoRequested' && r.info_requested_note ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">More info requested${r.info_requested_by_name ? ' by ' + esc(r.info_requested_by_name) : ''}: ${esc(r.info_requested_note)}</span></td></tr>` : ''}
-    <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>`);
+    <tr id="pr-quotes-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-quotes-${r.id}"></div></td></tr>
+    <tr id="pr-lines-row-${r.id}" style="display:none;"><td colspan="7"><div id="pr-lines-${r.id}"></div></td></tr>`);
 }
 window.adminRejectPR = (id) => {
   const r = (window.__PR_CACHE || []).find(x => x.id === id);
@@ -452,6 +484,45 @@ window.resubmitPR = async (id) => {
 // back to Approved there if its only PO is cancelled). A still-Draft PR was
 // never actually submitted, so the prompts read "Delete" rather than
 // "Withdraw" - same backend route either way (it just flips to Cancelled).
+// Admin-only soft cancel of an Approved PR (server also refuses while any non-cancelled PO still points at it).
+window.adminCancelPR = (id) => {
+  const r = (window.__PR_CACHE || []).find(x => x.id === id);
+  openRejectReasonModal('Cancel ' + (r ? r.pr_no : 'Purchase Request'), true, async (reason) => {
+    await api(`/purchase/requests/${id}/cancel-admin`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-requests');
+  }, { label: 'Cancellation Reason', button: 'Cancel PR' });
+};
+// Per-row Lines view (collapsed by default): every line incl. cancelled ones with their reason; Admin can cancel a line.
+window.togglePRLines = async (id) => {
+  const row = document.getElementById('pr-lines-row-' + id);
+  const showing = row.style.display !== 'none';
+  row.style.display = showing ? 'none' : '';
+  if (showing) return;
+  const box = document.getElementById('pr-lines-' + id);
+  const pr = (window.__PR_CACHE || []).find(r => r.id === id) || {};
+  box.innerHTML = '<div class="muted">Loading...</div>';
+  const lines = await api(`/purchase/requests/${id}/items?all=1`).catch(() => []);
+  const active = lines.filter(l => !l.cancelled_at);
+  const canCancel = ME.role === 'Admin' && ['Pending', 'PendingQuotes', 'InfoRequested', 'Approved'].includes(pr.status);
+  box.innerHTML = tableHTML(['#', 'Item', 'Qty', 'Est. Value', 'PO', 'Status', 'Action'], lines.map((l, i) => Object.assign({ n: i + 1 }, l)), l => `
+    <tr${l.cancelled_at ? ' style="opacity:.75;"' : ''}>
+      <td>${l.n}</td><td>${esc(l.item_name || l.item_text || 'Item')}${l.details ? `<br><span class="muted" style="font-size:12px;">${esc(l.details)}</span>` : ''}</td>
+      <td>${l.quantity}${l.item_unit ? ' ' + esc(l.item_unit) : ''}</td><td>₹${fmt(l.estimated_value)}</td>
+      <td>${esc(l.live_pos) || '-'}</td>
+      <td>${l.cancelled_at
+        ? `${badge('Cancelled')}<br><span class="muted" style="font-size:12px;">${l.cancelled_by_name ? 'by ' + esc(l.cancelled_by_name) + ' ' : ''}on ${esc(String(l.cancelled_at).slice(0, 16))}${l.cancel_reason ? ': ' + esc(l.cancel_reason) : ''}</span>`
+        : (l.ordered ? badge('Ordered') : (l.has_po ? badge('PO in progress') : badge('Awaiting PO')))}</td>
+      <td>${l.cancelled_at || !canCancel ? '' : (l.has_po ? '<span class="muted" style="font-size:12px;">PO live - cancel the PO first</span>'
+        : (active.length > 1 ? `<button class="btn small red" type="button" onclick="cancelPRLine(${id}, ${l.id}, '${esc(String(l.item_name || l.item_text || 'Item').replace(/'/g, ''))}')">Cancel Line</button>`
+          : `<span class="muted" style="font-size:12px;">Last line - ${pr.status === 'Approved' ? 'use Cancel PR' : 'withdraw the PR'}</span>`))}</td>
+    </tr>`);
+};
+window.cancelPRLine = (prId, lineId, name) => {
+  openRejectReasonModal('Cancel line - ' + name, true, async (reason) => {
+    await api(`/purchase/requests/${prId}/items/${lineId}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+    navigate('purchase-requests');
+  }, { label: 'Cancellation Reason', button: 'Cancel Line' });
+};
 window.cancelPR = async (id, isDraft) => {
   const reason = isDraft ? null : prompt('Reason for withdrawing this request (optional):');
   if (reason === null && !isDraft) return;
@@ -880,7 +951,8 @@ PAGES['purchase-orders'] = async (el) => {
   // Blacklisted ones stay visible/editable in Vendor Master (and on POs that
   // already reference them) but drop out of the picker.
   const vendors = vendorsRaw.filter(v => (v.status || 'Active') === 'Active');
-  const prs = prsRaw.filter(r => r.status === 'Approved');
+  // Approved PRs, plus OrderPlaced ones that still have a line with no PO at all (partial ordering of a multi-line PR).
+  const prs = prsRaw.filter(r => ['Approved', 'OrderPlaced'].includes(r.status) && r.unpo_line_count > 0);
   const paymentTermsOptions = (purchaseSettings || {}).payment_terms_options || [];
   // Archive split (2026-10-13) - see the 'archive' panel below for the full
   // reasoning. groupPORows() is the same consecutive-by-po_no grouping
@@ -1464,9 +1536,10 @@ window.fillPOFromPR = async () => {
   if (!id) { detail.style.display = 'none'; return; }
   const r = (window.__PO_PRS || []).find(x => x.id === id);
   if (!r) { detail.style.display = 'none'; return; }
-  const lines = await api('/purchase/requests/' + id + '/items').catch(() => []);
+  // Only active lines that have no PO yet - lines already covered by an earlier PO (or cancelled) are not loaded again.
+  const lines = (await api('/purchase/requests/' + id + '/items').catch(() => [])).filter(l => !l.has_po);
   detail.style.display = 'block';
-  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} loaded below (remove any already covered by an earlier PO). &nbsp;
+  detail.innerHTML = `<b>${esc(r.pr_no)}</b> — ${lines.length} line item${lines.length===1?'':'s'} without a PO yet loaded below. &nbsp;
     Project: <b>${esc(r.project_code)||'-'}</b>`;
   PO_LINES = lines.length ? lines.map(l => ({
     item_id: l.item_id || '', quantity: l.quantity, rate: 0, hsn_code: '', gst_rate: 18, unit: l.item_unit || 'Nos', discount_percent: 0, purchase_request_item_id: l.id, details: l.details || '',

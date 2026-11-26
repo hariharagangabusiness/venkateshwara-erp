@@ -1875,6 +1875,10 @@ const MIGRATIONS = [
   `ALTER TABLE spares_library ADD COLUMN machine_type TEXT`,
   // BG reminder scan email: stamped once the internal Finance email covering this reminder was sent
   `ALTER TABLE bg_reminder_log ADD COLUMN notified_at TEXT`,
+  // Admin cancel of a single PR line (the line stays visible with its reason; excluded from RFQ / quotes / PO pickers)
+  `ALTER TABLE purchase_request_items ADD COLUMN cancelled_at TEXT`,
+  `ALTER TABLE purchase_request_items ADD COLUMN cancelled_by INTEGER REFERENCES users(id)`,
+  `ALTER TABLE purchase_request_items ADD COLUMN cancel_reason TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

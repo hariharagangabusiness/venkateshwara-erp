@@ -56,7 +56,7 @@ function describeEntity(entityType, entityId) {
       if (!r) return {};
       const lines = db.prepare(`
         SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri
-        LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id
+        LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? AND pri.cancelled_at IS NULL ORDER BY pri.sort_order, pri.id
       `).all(entityId);
       const summary = lines.length > 1 ? `${lines[0].name || 'Item'} +${lines.length - 1} more` : ((lines[0] && lines[0].name) || 'Purchase request');
       // A PR under review right now can still carry a prior rejection from
@@ -664,7 +664,7 @@ async function notifyPurchaseRequestRejected(approval, comment, actor) {
       .run(targetId, 'PR_REJECTED', pr.id, `Purchase Request ${prNo} was rejected by ${actor.full_name}. Reason: ${reason}`);
   }
   if (!pr.email) return;
-  const items = db.prepare(`SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? ORDER BY pri.sort_order, pri.id`).all(pr.id).map(r => r.name || 'Item');
+  const items = db.prepare(`SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? AND pri.cancelled_at IS NULL ORDER BY pri.sort_order, pri.id`).all(pr.id).map(r => r.name || 'Item');
   const { subject, body } = renderTemplate(getEmailTemplate('purchase_request_rejected'), {
     requester_name: pr.full_name, pr_no: prNo, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: pr.department || '-',
     items: items.length ? items.join(', ') : '-', actor_name: actor.full_name, actor_role: actor.role_name || '-', rejected_at: localDateTimeStr(), reason,
