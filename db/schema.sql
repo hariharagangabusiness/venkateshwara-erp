@@ -340,7 +340,7 @@ CREATE TABLE IF NOT EXISTS sales_orders (
   order_date TEXT DEFAULT (datetime('now','localtime')),
   description TEXT,
   order_value REAL,
-  status TEXT DEFAULT 'Confirmed',    -- Confirmed, InProduction, Completed, Cancelled
+  status TEXT DEFAULT 'Confirmed',    -- Confirmed, InProduction, PartiallyDispatched, Dispatched, Invoiced, Completed, Cancelled
   created_by INTEGER REFERENCES users(id)
 );
 

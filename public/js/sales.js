@@ -1228,7 +1228,7 @@ window.addSOLine = () => { SO_LINES.push({ description: '', quantity: 1, unit: '
 // stays exactly as-is for everyone else; this is a second, Admin-only way
 // to reach those same fields plus the header ones. Uses the shared
 // bgTermsFormFields()/readBgTermsFields() helpers that panel already uses.
-const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancelled'];
+const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'PartiallyDispatched', 'Dispatched', 'Invoiced', 'Completed', 'Cancelled'];
 window.openEditSalesOrder = async (id) => {
   const o = (window.__SO_ORDERS_CACHE || []).find(x => x.id === id);
   if (!o) return alert('Could not find this order - try refreshing the page.');
