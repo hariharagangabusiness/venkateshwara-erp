@@ -62,7 +62,7 @@ PAGES.service = async (el) => {
         <div style="grid-column:1/-1;"><label>Issue Description</label><textarea id="sr-desc" rows="2"></textarea></div>
         <div><label>Spare Parts Needed</label><input id="sr-parts"></div>
       </div>
-      <button class="btn" onclick="addSR()">Log Request</button>
+      <div class="hig-savebar"><button class="btn" onclick="addSR()">Log Request</button></div>
     </div>
     ${(() => {
       // Closed/Rejected is the one bucket that only ever grows (completed
@@ -299,8 +299,10 @@ window.openConfirmIncoming = (id) => {
       <div style="grid-column:1/-1;"><label>Issue Description</label><textarea id="ic-desc-${id}" rows="2">${esc(item.subject || item.body_text)}</textarea></div>
       <div><label>Spare Parts Needed</label><input id="ic-parts-${id}"></div>
     </div>
-    <button class="btn small" onclick="saveConfirmIncoming(${id})">Save as Service Request</button>
-    <button class="btn small outline" type="button" onclick="document.getElementById('incoming-confirm-${id}').innerHTML=''">Cancel</button>
+    <div class="hig-savebar">
+      <button class="btn small" onclick="saveConfirmIncoming(${id})">Save as Service Request</button>
+      <button class="btn small outline" type="button" onclick="document.getElementById('incoming-confirm-${id}').innerHTML=''">Cancel</button>
+    </div>
     <div id="ic-err-${id}" class="msg err" style="display:none;margin-top:6px;"></div>`;
 };
 window.saveConfirmIncoming = async (id) => {
@@ -357,7 +359,7 @@ window.openScheduleSR = async (id) => {
       <div><label>Assign Service Employee</label><select id="sr-sch-emp">${employees.map(e => `<option value="${e.id}">${esc(e.full_name)} (${esc(e.department_name)})</option>`).join('')}</select></div>
       <div><label>Scheduled Date</label><input id="sr-sch-date" type="date" value="${today()}"></div>
     </div>
-    <button class="btn" onclick="saveScheduleSR(${id})">Save Schedule</button>
+    <div class="hig-savebar"><button class="btn" onclick="saveScheduleSR(${id})">Save Schedule</button></div>
     <div id="sr-sch-err" class="msg err" style="display:none;margin-top:10px;"></div>`);
 };
 window.saveScheduleSR = async (id) => {
@@ -394,7 +396,7 @@ window.openEditSR = (id) => {
       <div style="grid-column:1/-1;"><label>Issue Description</label><textarea id="sr-edit-desc" rows="2" style="width:100%;">${esc(r.issue_description)}</textarea></div>
       <div><label>Spare Parts Needed</label><input id="sr-edit-parts" value="${esc(r.spare_parts_needed)}"></div>
     </div>
-    <button class="btn" onclick="saveEditSR(${id})">Save Changes</button>
+    <div class="hig-savebar"><button class="btn" onclick="saveEditSR(${id})">Save Changes</button></div>
     <div id="sr-edit-err" class="msg err" style="display:none;margin-top:10px;"></div>`);
 };
 window.saveEditSR = async (id) => {
@@ -565,11 +567,13 @@ window.openServiceReport = async (srId) => {
         ${window.__SVC_CENTERS.map(c => `<option value="${c.id}" ${report&&report.spares&&report.spares[0]&&report.spares[0].service_center_id===c.id?'selected':''}>${esc(c.name)} (${esc(c.city)||'-'})</option>`).join('')}
       </select></div>
     </div>
-    <div id="svc-spares-lines"></div>
+    <div id="svc-spares-lines" class="hig-entry"></div>
     ${editable ? `<button class="btn small outline" type="button" onclick="addSvcSpareLine()">+ Add Spare Line</button>` : ''}
     ${editable ? `
-      <button class="btn outline" onclick="saveServiceReport(${srId}, false)">Save Draft</button>
-      <button class="btn green" onclick="saveServiceReport(${srId}, true)">Submit</button>
+      <div class="hig-savebar">
+        <button class="btn outline" onclick="saveServiceReport(${srId}, false)">Save Draft</button>
+        <button class="btn green" onclick="saveServiceReport(${srId}, true)">Submit</button>
+      </div>
     ` : `<p class="muted">This report is ${esc(report.status)} and can no longer be edited.</p>`}
     ${report ? `<button class="btn outline" onclick="downloadSvcReportPdf(${srId})">Download PDF</button>` : ''}
     <div id="svc-err" class="msg err" style="display:none;margin-top:10px;"></div>`;
@@ -857,8 +861,10 @@ PAGES['service-centers'] = async (el) => {
         <div><label>Status</label><select id="sc-status"><option>Active</option><option>Inactive</option></select></div>
         <div style="grid-column:1/-1;"><label>Address</label><textarea id="sc-address" rows="2"></textarea></div>
       </div>
-      <button class="btn" onclick="saveServiceCenter()">${EDITING_SC_ID ? 'Save Changes' : 'Add Service Center'}</button>
-      ${EDITING_SC_ID ? `<button class="btn outline" onclick="EDITING_SC_ID=null;navigate('service-centers')">Cancel</button>` : ''}
+      <div class="hig-savebar">
+        <button class="btn" onclick="saveServiceCenter()">${EDITING_SC_ID ? 'Save Changes' : 'Add Service Center'}</button>
+        ${EDITING_SC_ID ? `<button class="btn outline" onclick="EDITING_SC_ID=null;navigate('service-centers')">Cancel</button>` : ''}
+      </div>
     </div>`,
     'list': collapsiblePanel('service-centers-list', `Service Centers (${centers.length})`, `
       ${tableHTML(['Name', 'City', 'Contact', 'Phone', 'Status', ''], centers, c => `
@@ -913,9 +919,9 @@ PAGES['sc-transfers'] = async (el) => {
         <div><label>Service Center</label><select id="sct-center">${window.__SCT_CENTERS.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.city)||'-'})</option>`).join('') || '<option value="">- No active service centers -</option>'}</select></div>
         <div><label>Notes</label><input id="sct-notes"></div>
       </div>
-      <div id="sct-lines"></div>
+      <div id="sct-lines" class="hig-entry"></div>
       <button class="btn small outline" type="button" onclick="addSCTLine()">+ Add Line Item</button>
-      <div style="margin-top:12px;"><button class="btn green" onclick="saveSCTransfer()">Dispatch Transfer</button></div>
+      <div class="hig-savebar"><button class="btn green" onclick="saveSCTransfer()">Dispatch Transfer</button></div>
       <div id="sct-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>`,
     'list': collapsiblePanel('transfers-list', `Transfers (${transfers.length})`, `
@@ -1114,8 +1120,10 @@ PAGES['site-visits'] = async (el) => {
           </select>
         </div>
       </div>
-      <button class="btn" onclick="saveSiteVisit(${ed?ed.id:'null'})">${ed?'Save Changes':'Add Visit'}</button>
-      ${ed ? `<button class="btn outline" onclick="EDITING_VISIT_ID=null;navigate('site-visits')">Cancel</button>` : ''}
+      <div class="hig-savebar">
+        <button class="btn" onclick="saveSiteVisit(${ed?ed.id:'null'})">${ed?'Save Changes':'Add Visit'}</button>
+        ${ed ? `<button class="btn outline" onclick="EDITING_VISIT_ID=null;navigate('site-visits')">Cancel</button>` : ''}
+      </div>
       <div id="sv-err" class="msg err" style="display:none;margin-top:10px;"></div>
     </div>
     ${SITE_VISIT_BUCKETS.map(([s, title, hint]) => bucketTable(s, title, hint)).join('')}`;

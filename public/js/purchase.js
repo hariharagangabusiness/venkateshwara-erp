@@ -47,7 +47,7 @@ PAGES.vendors = async (el) => {
         <div><label>Payment Terms</label><select id="v-terms"><option>Net 15</option><option>Net 30</option><option>Net 45</option><option>Net 60</option><option>Advance</option><option>Custom</option></select></div>
         <div><label>Payment Terms (Days)</label><input id="v-terms-days" type="number" value="30"></div>
       </div>
-      <button class="btn" onclick="addVendor()" style="margin-top:10px;">Add Vendor</button>
+      <div class="hig-savebar"><button class="btn" onclick="addVendor()">Add Vendor</button></div>
       <div id="v-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>`;
   vendorPanels['bulk-upload'] = `
@@ -144,7 +144,7 @@ window.openEditVendor = (id) => {
       <div><label>Payment Terms</label><input id="ve-terms" value="${esc(v.payment_terms)}"></div>
       <div><label>Payment Terms (Days)</label><input id="ve-terms-days" type="number" value="${v.payment_terms_days||0}"></div>
     </div>
-    <button class="btn" id="ve-edit-save-btn" onclick="saveEditVendor(${id})">Save Changes</button>
+    <div class="hig-savebar"><button class="btn" id="ve-edit-save-btn" onclick="saveEditVendor(${id})">Save Changes</button></div>
     <div id="ve-edit-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
 };
 window.saveEditVendor = async (id) => {
@@ -264,7 +264,7 @@ PAGES['purchase-requests'] = async (el) => {
       <div id="pr-lines"></div>
       <button class="btn small outline" type="button" onclick="addPRLine()">+ Add Line Item</button>
       <div id="pr-vendor-suggestions" class="panel" style="display:none;"></div>
-      <button class="btn" onclick="addPR()">Save as Draft</button>
+      <div class="hig-savebar"><button class="btn" onclick="addPR()">Save as Draft</button></div>
       <div id="pr-err" class="msg err" style="display:none;"></div>
       <p class="muted">Picking from the master is optional — type a new item name if it isn't there yet. It goes to Store & Inventory → Item Master as <b>Pending</b> for review, and becomes a permanent master item once Store approves it (usually while receiving the goods).<br>
       Project is optional too — leave it as "General / Not Project-Specific" for stock replenishment, consumables, or any other purchase that isn't tied to a particular project.<br>
@@ -662,8 +662,10 @@ async function renderPRQuotesPanel(prId) {
         <div style="grid-column:1/-1;"><label>Subject</label><input id="rfq-subject-${prId}"></div>
         <div style="grid-column:1/-1;"><label>Body (use {{vendor_name}} to personalize per vendor)</label><textarea id="rfq-body-${prId}" rows="10"></textarea></div>
       </div>
-      <button class="btn small outline" type="button" onclick="sendRFQ(${prId}, true)" ${!lines.length ? 'disabled' : ''}>Save as Draft</button>
-      <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!lines.length ? 'disabled' : ''}>Send RFQ</button>
+      <div class="hig-savebar">
+        <button class="btn small outline" type="button" onclick="sendRFQ(${prId}, true)" ${!lines.length ? 'disabled' : ''}>Save as Draft</button>
+        <button class="btn" type="button" onclick="sendRFQ(${prId})" ${!lines.length ? 'disabled' : ''}>Send RFQ</button>
+      </div>
       <div id="rfq-send-result-${prId}"></div>
       <div id="rfq-history-${prId}"></div>
     </div>`}`;
@@ -862,7 +864,7 @@ window.openEditPR = async (id) => {
     ${EDIT_PR_ITEMS_LOCKED ? `<p class="muted">This request has already been approved - line items are locked. Only the project assignment above can still be changed.</p>` : ''}
     <div id="pre-lines"></div>
     ${EDIT_PR_ITEMS_LOCKED ? '' : `<button class="btn small outline" type="button" onclick="addEditPRLine()">+ Add Line Item</button>`}
-    <div style="margin-top:12px;">
+    <div class="hig-savebar">
       <button class="btn" id="pre-save-btn-${id}" onclick="saveEditPR(${id})">Save Changes</button>
     </div>
     <div id="pre-err" class="msg err" style="display:none;margin-top:10px;"></div>
@@ -1009,7 +1011,7 @@ PAGES['purchase-orders'] = async (el) => {
         <div><label>Bill-To Address</label><select id="po-bill-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Billing').map(a => `<option value="${a.id}">${esc(a.label) || 'Billing'}</option>`).join('')}</select></div>
         <div><label>Ship-To Address</label><select id="po-ship-address"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}">${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
       </div>
-      <button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Save as Draft</button>
+      <div class="hig-savebar"><button class="btn" onclick="addPO()" ${!vendors.length ? 'disabled' : ''}>Save as Draft</button></div>
       <p class="muted">Saves this as a Draft below - nothing is submitted for approval yet. Review it (Download PDF/Word for a preview, or Edit to change anything), then click Submit for Approval when it's ready.</p>
     `),
     'bulk-import': collapsiblePanel('new-po-bulk-import', 'Bulk Import Open POs', `
@@ -1312,7 +1314,7 @@ function poEditForm(o) {
     <div><label>Ship-To Address</label><select id="po-edit-ship-address-${o.id}"><option value="">- None -</option>${companyAddresses.filter(a => a.address_type === 'Shipping').map(a => `<option value="${a.id}" ${a.id===o.company_ship_address_id?'selected':''}>${esc(a.label) || 'Shipping'}</option>`).join('')}</select></div>
   </div>
   <div><label>Terms</label><textarea id="po-edit-terms-${o.id}" rows="2" style="width:100%;">${esc(o.terms||'')}</textarea></div>
-  <button class="btn small" id="po-edit-save-${o.id}" type="button" onclick="savePOEdit(${o.id})">Save Changes</button>
+  <div class="hig-savebar"><button class="btn small" id="po-edit-save-${o.id}" type="button" onclick="savePOEdit(${o.id})">Save Changes</button></div>
   <div id="po-edit-err-${o.id}" class="msg err" style="display:none;margin-top:8px;"></div>`;
 }
 // Edit PO (2026-10-13: converted from an inline table row to the generic
@@ -1926,7 +1928,7 @@ async function renderItemMasterSheet(el) {
         <div><label>Rack / Location</label><input id="it-loc"></div>
         <div><label>Reorder Level</label><input id="it-reorder" type="number" value="0"></div>
       </div>
-      <button class="btn" onclick="addItem()">Add Item</button>
+      <div class="hig-savebar"><button class="btn" onclick="addItem()">Add Item</button></div>
       <div class="muted" style="margin-top:8px;">Item Code and barcode (EAN-13, internal-use 20-prefix range) are both generated automatically for every item.</div>
     </div>`,
     'pending-review': pendingItems.length ? collapsiblePanel('pending-item-review', `Pending Item Master Review (${pendingItems.length})`, `
@@ -2003,7 +2005,7 @@ window.openEditItem = (id) => {
       <div><label>Rack / Location</label><input id="ie-loc" value="${esc(i.location)}"></div>
       <div><label>Reorder Level</label><input id="ie-reorder" type="number" value="${i.reorder_level||0}"></div>
     </div>
-    <button class="btn" id="ie-save-btn" onclick="saveEditItem(${id})">Save Changes</button>
+    <div class="hig-savebar"><button class="btn" id="ie-save-btn" onclick="saveEditItem(${id})">Save Changes</button></div>
     <div class="muted" style="margin-top:8px;">${ME.role === 'Admin' ? 'As Admin, this applies immediately.' : "This won't take effect until an Admin approves it - see Pending Item Changes above."}</div>
     <div id="ie-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
 };
@@ -2299,7 +2301,7 @@ function renderStockPoLines() {
               <button class="btn small outline" type="button" id="ss-btn-${l.id}" ${remaining > 0 ? 'disabled' : ''} onclick="closeShortShipReceiveLine(${l.id})">Short Ship</button>
             `)}</div>`;
         })}
-      <button class="btn green" style="width:100%;padding:14px;font-size:16px;margin-top:12px;" onclick="receiveBatch()">Process Consolidated Batch Receipt</button>
+      <div class="hig-savebar"><button class="btn green" style="width:100%;padding:14px;font-size:16px;" onclick="receiveBatch()">Process Consolidated Batch Receipt</button></div>
     `;
   } else {
     const items = window.__STOCK_ITEMS || [];
@@ -2436,7 +2438,7 @@ function renderIssueTab(el) {
     `) : ''}
     <div id="issue-lines" style="margin-top:10px;"></div>
     <button class="btn small outline" type="button" onclick="addIssueLine()" style="margin-top:6px;">+ Add Line Item</button><br>
-    <button class="btn red" onclick="storeIssue()" ${!items.length ? 'disabled' : ''} style="margin-top:10px;">Issue to Production (OUT)</button>
+    <div class="hig-savebar"><button class="btn red" onclick="storeIssue()" ${!items.length ? 'disabled' : ''}>Issue to Production (OUT)</button></div>
   `;
   renderIssueLines();
 }
@@ -2505,7 +2507,7 @@ window.openEditGrn = (grnId) => {
         <div><label>PO Rate</label><input id="geg-porate" type="number" step="any" value="${g.po_rate != null ? g.po_rate : ''}"></div>
       </div>
     </div>
-    <button class="btn" id="geg-save-btn-${grnId}" onclick="saveEditGrn(${grnId})" style="margin-top:10px;">Save & Resubmit for Approval</button>
+    <div class="hig-savebar"><button class="btn" id="geg-save-btn-${grnId}" onclick="saveEditGrn(${grnId})">Save & Resubmit for Approval</button></div>
   `);
 };
 window.saveEditGrn = async (grnId) => {
@@ -2650,9 +2652,9 @@ function renderChallanForm() {
       <div><label>Reason for Transport</label><input id="ch-reason" value="Stock Transfer (Own Use - Not For Sale)"></div>
     </div>
     <h4 style="margin:14px 0 8px;">Material Being Transported</h4>
-    <div id="ch-items"></div>
+    <div id="ch-items" class="hig-entry"></div>
     <button class="btn small outline" type="button" onclick="addChallanItemRow()">+ Add Line Item</button>
-    <div style="margin-top:12px;"><button class="btn" onclick="saveChallan()">Save Challan</button></div>
+    <div class="hig-savebar"><button class="btn" onclick="saveChallan()">Save Challan</button></div>
   `;
   renderChallanItemRows();
 }
@@ -2720,9 +2722,9 @@ window.openRecordReceiptModal = async (id) => {
   }).join('');
   openAppModal('Record Receipt — ' + c.challan_no, `
     <p class="muted">Enter how much of each line is actually being received back this time - defaults to the full outstanding amount, but can be reduced for a genuine short/partial receipt. Received figures accumulate across however many times this is done.</p>
-    <table><thead><tr><th>Description</th><th>Sent</th><th>Already Received</th><th>Outstanding</th><th>Receive Now</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="hig-entry"><table><thead><tr><th>Description</th><th>Sent</th><th>Already Received</th><th>Outstanding</th><th>Receive Now</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div style="margin-top:10px;"><label>Notes (optional)</label><textarea id="rr-notes" rows="2" style="width:100%;"></textarea></div>
-    <div style="margin-top:12px;"><button class="btn" id="rr-save-btn-${id}" onclick="saveRecordReceipt(${id})">Record Receipt</button></div>
+    <div class="hig-savebar"><button class="btn" id="rr-save-btn-${id}" onclick="saveRecordReceipt(${id})">Record Receipt</button></div>
   `);
   window.__RR_ITEM_IDS = items.map(it => it.id);
 };
@@ -2837,9 +2839,9 @@ window.editChallan = async (id) => {
       <div><label>Reason for Transport</label><input id="ech-reason" value="${esc(c.reason)||''}"></div>
     </div>
     <h4 style="margin:14px 0 8px;">Material Being Transported</h4>
-    <div id="ech-items"></div>
+    <div id="ech-items" class="hig-entry"></div>
     <button class="btn small outline" type="button" onclick="addEditChallanItemRow()">+ Add Line Item</button>
-    <div style="margin-top:12px;"><button class="btn" id="ech-save-btn-${id}" onclick="saveEditChallan(${id})">Save Changes</button></div>
+    <div class="hig-savebar"><button class="btn" id="ech-save-btn-${id}" onclick="saveEditChallan(${id})">Save Changes</button></div>
   `);
   renderEditChallanItemRows();
 };

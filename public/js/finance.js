@@ -24,7 +24,7 @@ PAGES.expenses = async (el) => {
         <div><label>Description</label><input id="ex-desc"></div>
         <div><label>Bill / Receipt Attachment</label><input id="ex-file" type="file"></div>
       </div>
-      <button class="btn" onclick="addExpense()">Submit Voucher</button>
+      <div class="hig-savebar"><button class="btn" onclick="addExpense()">Submit Voucher</button></div>
       ${isAdmin ? `<button class="btn small outline" type="button" onclick="openExCategoryManager()">Manage Categories</button>` : ''}
       <div class="muted">Approval chain: Management, then Accounts (both required, any amount). <a href="#" onclick="navigate('expenses-mine');return false;">My Expense Vouchers</a> shows your own submissions' stage-by-stage status.</div>
     </div>
@@ -385,7 +385,7 @@ PAGES['bg-dashboard'] = async (el) => {
         <div><label>Scanned Copy (optional)</label><input id="bg-scan-file" type="file" accept="image/*,.pdf"></div>
       </div>
       <div><label>Release Condition / Milestone Link</label><textarea id="bg-milestone" rows="2" placeholder="e.g. release on final acceptance / installation completion"></textarea></div>
-      <button class="btn" onclick="addBG()">Add Bank Guarantee</button>
+      <div class="hig-savebar"><button class="btn" onclick="addBG()">Add Bank Guarantee</button></div>
     </div>
 
     ${collapsiblePanel('bg-list', `List of Bank Guarantees (${bgs.length})`, `
@@ -636,7 +636,7 @@ window.openEditBG = (id) => {
     </div>
     <label>Release Condition / Milestone Link</label>
     <textarea id="ebg-milestone" rows="2" style="width:100%;">${esc(bg.milestone_link)}</textarea>
-    <div style="margin-top:10px;">
+    <div class="hig-savebar">
       <button class="btn" type="button" onclick="saveEditBG(${id})">Save Changes</button>
       <button class="btn outline" type="button" onclick="closeMiniModal()">Cancel</button>
     </div>
@@ -834,12 +834,12 @@ PAGES['foreign-payments'] = async (el) => {
     <div class="panel"><h3>New Foreign Payment Request</h3>
       <div id="fp-fields-wrap">${fpFieldsHTML('fp-new', {}, vendors)}</div>
       <h4>Invoice Lines</h4>
-      <div id="fp-new-lines-wrap">${fpLinesHTML('fp-new', window.FP_LINES)}</div>
+      <div id="fp-new-lines-wrap" class="hig-entry">${fpLinesHTML('fp-new', window.FP_LINES)}</div>
       <button class="btn small outline" type="button" onclick="addFpLine('fp-new')">+ Add Invoice Line</button>
-      <div>
+      <div class="hig-savebar">
         <button class="btn" type="button" onclick="createForeignPayment()">Save as Draft</button>
-        <div id="fp-new-err" class="msg err" style="display:none;"></div>
       </div>
+      <div id="fp-new-err" class="msg err" style="display:none;"></div>
     </div>
     ${collapsiblePanel('foreign-payments-list', `<span id="fp-count">Foreign Payment Requests (${requests.length})</span>`, `
       ${renderListSearch('foreign-payments', requests, ['request_no', 'vendor_name', 'beneficiary_name', 'currency', 'status'], (rows) => {
@@ -903,11 +903,11 @@ window.openForeignPaymentDetail = async (id) => {
       </div>` : ''}
     <div id="fp-detail-fields-wrap">${fpFieldsHTML(`fp-edit-${r.id}`, r, vendors)}</div>
     <h4>Invoice Lines</h4>
-    <div id="fp-edit-${r.id}-lines-wrap">${fpLinesHTML(`fp-edit-${r.id}`, window.FP_EDIT_LINES)}</div>
+    <div id="fp-edit-${r.id}-lines-wrap" class="hig-entry">${fpLinesHTML(`fp-edit-${r.id}`, window.FP_EDIT_LINES)}</div>
     ${editable ? `<button class="btn small outline" type="button" onclick="addFpLine('fp-edit-${r.id}')">+ Add Invoice Line</button>` : ''}
     <div id="fp-detail-attachments-${r.id}"></div>
     <div class="form-grid">
-      ${editable ? `<div><button class="btn green" type="button" onclick="saveForeignPaymentEdit(${r.id})">Save Changes</button></div>` : ''}
+      ${editable ? `<div class="hig-savebar" style="grid-column:1/-1;"><button class="btn green" type="button" onclick="saveForeignPaymentEdit(${r.id})">Save Changes</button></div>` : ''}
       <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;">${actionButtons.join('')}</div>
     </div>
     <div id="fp-detail-err-${r.id}" class="msg err" style="display:none;"></div>`;
@@ -962,7 +962,7 @@ window.openMarkForeignPaymentPaid = (id) => {
       <div><label>Actual Exchange Rate</label><input type="number" id="fp-pay-rate-${id}"></div>
       <div><label>Bill of Entry Due Date (optional, defaults to 90 days out)</label><input type="date" id="fp-pay-boe-${id}"></div>
     </div>
-    <button class="btn green" type="button" onclick="markForeignPaymentPaid(${id})">Confirm Payment Made</button>
+    <div class="hig-savebar"><button class="btn green" type="button" onclick="markForeignPaymentPaid(${id})">Confirm Payment Made</button></div>
     <div id="fp-pay-err-${id}" class="msg err" style="display:none;"></div>`;
   openMiniModal('Mark Payment Made', body);
 };
@@ -1146,7 +1146,7 @@ PAGES.foc = async (el) => {
       <div class="form-grid">
         <div><label>Reason</label><input id="foc-reason" placeholder="Why this needs to go out free of cost"></div>
       </div>
-      <button class="btn" onclick="addFOC()">Submit Request</button>
+      <div class="hig-savebar"><button class="btn" onclick="addFOC()">Submit Request</button></div>
       <div class="muted">Approval: Management/Admin, for the whole request (all items) at once. Attach supporting documents per item after submitting.</div>
     </div>` : ''}
     ${collapsiblePanel('foc-requests-list', `FOC Requests (${groups.length})`, `
@@ -1286,7 +1286,7 @@ PAGES['sales-invoices'] = async (el) => {
         <div><label>Address</label><input id="inv-buyer-address"></div>
         <div><label>Phone Number</label><input id="inv-buyer-phone"></div>
       </div>
-      <button class="btn" onclick="generateInvoice()">Generate Invoice</button>
+      <div class="hig-savebar"><button class="btn" onclick="generateInvoice()">Generate Invoice</button></div>
       <div id="inv-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
     ${collapsiblePanel('sales-invoices-list', `Invoices (${invoices.length})`, `
@@ -1320,7 +1320,7 @@ PAGES['sales-invoices'] = async (el) => {
         <div><label>Advance Received (₹)</label><input id="pf-advance" type="number" placeholder="Deducted from the total payable"></div>
       </div>
       <p class="muted" style="margin-top:4px;">Ship To and Payment Terms are picked up automatically from the client's Shipping address and the order's own Payment Terms (Sales Orders → Commercial Terms) and printed on the document.</p>
-      <button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button>
+      <div class="hig-savebar"><button class="btn" onclick="generateProforma()">Generate Proforma Invoice</button></div>
       <div id="pf-err" class="msg err" style="display:none;margin-top:8px;"></div>
     </div>
     ${collapsiblePanel('proforma-invoices-list', `Proforma Invoices (${proformas.length})`, `
@@ -1482,7 +1482,7 @@ window.openEditProforma = async (id) => {
       ${proformaChargeFieldHTML('pfe-ins', 'Insurance', pf.insurance_percent, pf.insurance_amount)}
       <div><label>Advance Received (₹)</label><input id="pfe-advance" type="number" value="${pf.advance_received || ''}"></div>
     </div>
-    <button class="btn" id="pfe-save-btn-${pf.id}" onclick="saveEditProforma(${pf.id})">Save Changes</button>
+    <div class="hig-savebar"><button class="btn" id="pfe-save-btn-${pf.id}" onclick="saveEditProforma(${pf.id})">Save Changes</button></div>
     <div id="pfe-err" class="msg err" style="display:none;margin-top:8px;"></div>
   `);
   renderPFELines();
@@ -1694,8 +1694,8 @@ PAGES['purchase-invoices'] = async (el) => {
         <div><label>Vendor's Invoice Date</label><input id="pi-vendor-inv-date" type="date"></div>
         <div><label>TDS Rate (%) <span class="muted">(if applicable)</span></label><input id="pi-tds-rate" type="number" step="0.01" value="0"></div>
       </div>
-      <div id="pi-lines-box"></div>
-      <button class="btn" onclick="bookPurchaseInvoice()">Book Invoice</button>
+      <div id="pi-lines-box" class="hig-entry"></div>
+      <div class="hig-savebar"><button class="btn" onclick="bookPurchaseInvoice()">Book Invoice</button></div>
       <div id="pi-err" class="msg err" style="display:none;"></div>
     </div>
     ${collapsiblePanel('ready-to-bill', `Ready to Bill - Reconciled GRNs (${readyToBill.length})`, `
@@ -1793,7 +1793,7 @@ window.openCreditNoteForm = (invoiceId) => {
       <div><label>GST Rate (%)</label><input id="cn-modal-gst" type="number" value="18"></div>
       <div><label>Reason</label><input id="cn-modal-reason" placeholder="e.g. rate correction, short supply"></div>
     </div>
-    <button class="btn small" type="button" onclick="submitCreditNote(${invoiceId})">Save Credit Note</button>
+    <div class="hig-savebar"><button class="btn small" type="button" onclick="submitCreditNote(${invoiceId})">Save Credit Note</button></div>
     <div id="cn-modal-err" class="msg err" style="display:none;"></div>`;
   openMiniModal('Vendor Credit Note', body);
 };
@@ -1937,7 +1937,7 @@ PAGES['operating-expenses'] = async (el) => {
         <div><label>Paid Via</label><select id="oe-paid-via"><option>Bank</option><option>Cash</option></select></div>
       </div>
       <div><label>Description</label><input id="oe-desc"></div>
-      <button class="btn" onclick="addOperatingExpense()">Add Expense</button>
+      <div class="hig-savebar"><button class="btn" onclick="addOperatingExpense()">Add Expense</button></div>
       ${isAdmin ? `<button class="btn small outline" type="button" onclick="openOeCategoryManager()">Manage Categories</button>` : ''}
       <div id="oe-err" class="msg err" style="display:none;"></div>
     </div>
