@@ -1434,12 +1434,13 @@ PAGES['company-settings'] = async (el) => {
         ${Object.keys(emailChannels).map(k => { const c = emailChannels[k]; return `
           <div class="panel-sub">
             <h4 style="margin:0 0 8px;">${esc(c.label)}${c.custom ? ` <button class="btn small red" type="button" style="margin-left:8px;" onclick="deleteEmailChannel('${k}')">Delete</button>` : ''}</h4>
-            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));">
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));">
               <div><label>From Email</label><input id="ec-${k}-addr" value="${esc(c.from_address)}"></div>
               <div><label>From Display Name</label><input id="ec-${k}-name" value="${esc(c.from_name)}"></div>
               <div><label>Channel SMTP Username (optional)</label><input id="ec-${k}-user" value="${esc(c.smtp_user)}" autocomplete="off"></div>
               <div><label>Channel SMTP Password (optional)</label><input id="ec-${k}-pass" type="password" value="${esc(c.smtp_pass)}" autocomplete="new-password"></div>
             </div>
+            ${ecxEditorHTML(k, c, emailWorkflows)}
             <div class="form-grid">
               <div><label>Send Test Email To</label><input id="ec-${k}-to" placeholder="you@example.com"></div>
               <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendChannelTest('${k}')">Send Test Email</button></div>
@@ -1451,7 +1452,7 @@ PAGES['company-settings'] = async (el) => {
         <div style="margin-top:14px;">
           <button class="btn small outline" type="button" onclick="document.getElementById('ecn-form').style.display = document.getElementById('ecn-form').style.display === 'none' ? '' : 'none'">+ Add Outbound Channel</button>
           <div id="ecn-form" class="panel-sub" style="display:none;margin-top:8px;">
-            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));">
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));">
               <div><label>Channel Name</label><input id="ecn-label" placeholder="e.g. Service Reports"></div>
               <div><label>From Email</label><input id="ecn-addr" placeholder="name@venkateshwaraengineers.com"></div>
               <div><label>From Display Name</label><input id="ecn-name"></div>
@@ -1599,7 +1600,7 @@ PAGES['company-settings'] = async (el) => {
         <div><label>Send time (IST, 24h)</label><input type="time" id="dpd-time" value="${esc(dailyPurchaseDigest.send_time)}"></div>
         <div><label><input type="checkbox" id="dpd-hod" ${dailyPurchaseDigest.include_hod_management ? 'checked' : ''}> Also send to Purchase HOD(s) and Management</label></div>
       </div>
-      <div style="margin-top:4px;"><label class="muted" style="display:block;margin-bottom:3px;">Extra recipients (comma-separated emails)</label>
+      <div style="margin-top:4px;"><label class="muted" style="display:block;margin-bottom:3px;">Extra recipients (comma-separated emails; shared with the Daily Reports outbound channel)</label>
         <textarea id="dpd-recipients" rows="2" style="width:100%;" placeholder="name@company.com, other@company.com">${esc(dailyPurchaseDigest.recipients)}</textarea></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
         <button class="btn" id="dpd-save-btn" onclick="saveDailyPurchaseDigest()">Save Daily Purchase Digest</button>
@@ -1828,12 +1829,75 @@ window.saveEmailSettings = async () => {
     navigate('company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
 };
+// Extra Recipients editor on each System Outbound Channel card (chips + "also send to default recipients" checkbox).
+// Saved with the rest of the channel; applied by lib/mailer.js sendMail({ workflow }).
+window.__ECX = {};
+const ECX_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+function ecxChipsHTML(k) {
+  return (window.__ECX[k] || []).map((e, i) => `<span style="display:inline-flex;align-items:center;gap:4px;max-width:100%;background:#eef2f7;border:1px solid var(--border);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;margin:0 6px 6px 0;word-break:break-all;">${esc(e)}<button type="button" aria-label="Remove ${esc(e)}" onclick="ecxRemove('${k}',${i})" style="background:none;border:none;cursor:pointer;font-size:16px;line-height:1;min-width:26px;min-height:26px;color:var(--muted);">&times;</button></span>`).join('');
+}
+function ecxEditorHTML(k, c, workflows) {
+  window.__ECX[k] = [...(c.extra_recipients || [])];
+  const mine = (workflows || []).filter(w => w.channel === k);
+  const usable = mine.filter(w => w.applies_extras), blocked = mine.filter(w => !w.applies_extras);
+  const names = (arr) => arr.map(w => esc(w.label)).join('; ');
+  if (mine.length && !usable.length) {
+    return `<div style="margin:10px 0;"><label>Extra Recipients</label><p class="muted" style="margin:0;">Not available on this channel: ${names(blocked)} carries login details or goes to clients/vendors, so extra recipients are never added to it.</p></div>`;
+  }
+  return `<div style="margin:10px 0;min-width:0;">
+    <label for="ecx-${k}-in">Extra Recipients</label>
+    <div id="ecx-${k}-chips">${ecxChipsHTML(k)}</div>
+    <input id="ecx-${k}-in" placeholder="Type an email, press Enter or comma" autocomplete="off" style="width:100%;max-width:420px;box-sizing:border-box;"
+      onkeydown="if(event.key==='Enter'||event.key===','){event.preventDefault();ecxAdd('${k}');}" onpaste="setTimeout(()=>ecxAdd('${k}'),0)" onblur="ecxAdd('${k}')">
+    <div id="ecx-${k}-err" class="msg err" style="display:none;margin-top:6px;"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:10px 0 0;">
+      <input type="checkbox" id="ecx-${k}-def" ${c.include_default_recipients !== false ? 'checked' : ''} onchange="ecxWarn('${k}')" style="width:auto;margin:0;flex:none;">
+      <span>Also send to default workflow recipients (HODs / Approvers / Requestor)</span></label>
+    <div id="ecx-${k}-warn" class="msg err" style="display:none;margin-top:6px;"></div>
+    <p class="muted" style="margin:6px 0 0;">${usable.length ? 'Applies to: ' + names(usable) + '. Extras are added in Cc.' : 'Not used by any workflow yet.'}${blocked.length ? ' Never added to: ' + names(blocked) + '.' : ''}</p>
+  </div>`;
+}
+window.ecxWarn = (k) => {
+  const w = document.getElementById(`ecx-${k}-warn`), cb = document.getElementById(`ecx-${k}-def`);
+  if (!w || !cb) return;
+  if (cb.checked) { w.style.display = 'none'; return; }
+  w.textContent = (window.__ECX[k] || []).length
+    ? 'Switched off: only the extra recipients above will receive these emails - the normal recipients (HODs, approvers, requestors) will NOT.'
+    : 'Switched off with no extra recipients: nobody will receive these emails.';
+  w.style.display = 'block';
+};
+window.ecxAdd = (k) => {
+  const inp = document.getElementById(`ecx-${k}-in`), err = document.getElementById(`ecx-${k}-err`);
+  if (!inp) return;
+  const list = window.__ECX[k] || (window.__ECX[k] = []);
+  const bad = [];
+  inp.value.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean).forEach(e => {
+    if (!ECX_RE.test(e)) { bad.push(e); return; }
+    if (!list.some(x => x.toLowerCase() === e.toLowerCase())) list.push(e);
+  });
+  inp.value = bad.join(', ');
+  if (err) { err.textContent = bad.length ? 'Not a valid email address: ' + bad.join(', ') : ''; err.style.display = bad.length ? 'block' : 'none'; }
+  document.getElementById(`ecx-${k}-chips`).innerHTML = ecxChipsHTML(k);
+  ecxWarn(k);
+};
+window.ecxRemove = (k, i) => {
+  (window.__ECX[k] || []).splice(i, 1);
+  document.getElementById(`ecx-${k}-chips`).innerHTML = ecxChipsHTML(k);
+  ecxWarn(k);
+};
 // System Outbound Channels (see lib/mailer.js sendMail({ channel })): save all four, or save then test one.
 const ecBody = () => {
   const channels = {};
   document.querySelectorAll('[id^="ec-"][id$="-addr"]').forEach(el => {
     const k = el.id.slice(3, -5);
     channels[k] = { from_address: val(`ec-${k}-addr`), from_name: val(`ec-${k}-name`), smtp_user: val(`ec-${k}-user`), smtp_pass: val(`ec-${k}-pass`) };
+    if (document.getElementById(`ecx-${k}-in`)) {
+      ecxAdd(k);
+      const left = val(`ecx-${k}-in`).trim();
+      if (left) throw new Error('Not a valid email address: ' + left);
+      channels[k].extra_recipients = window.__ECX[k];
+      channels[k].include_default_recipients = document.getElementById(`ecx-${k}-def`).checked;
+    }
   });
   return { channels };
 };

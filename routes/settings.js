@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
-const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, EMAIL_WORKFLOWS, getEmailChannels, setEmailChannels, addEmailChannel, deleteEmailChannel, getEmailWorkflowChannels, setEmailWorkflowChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
+const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, EMAIL_WORKFLOWS, getEmailChannels, setEmailChannels, addEmailChannel, deleteEmailChannel, parseEmailList, workflowAllowsExtras, getEmailWorkflowChannels, setEmailWorkflowChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
@@ -125,6 +125,12 @@ router.put('/email-channels', requireRole('Admin'), (req, res) => {
     patch[k] = { from_address, from_name: String(c.from_name || '').trim(), smtp_user: String(c.smtp_user || '').trim() };
     if (c.smtp_pass !== '••••••••') patch[k].smtp_pass = String(c.smtp_pass || '');
     if (!patch[k].smtp_user) patch[k].smtp_pass = ''; // a password without a username can't be used
+    if (c.extra_recipients !== undefined) {
+      const p = parseEmailList(c.extra_recipients);
+      if (p.invalid.length) return res.status(400).json({ error: `Not a valid email address (${known[k].label} extra recipients): ${p.invalid.join(', ')}` });
+      patch[k].extra_recipients = p.valid;
+    }
+    if (c.include_default_recipients !== undefined) patch[k].include_default_recipients = !!c.include_default_recipients;
   }
   setEmailChannels(patch);
   res.json(maskChannels(getEmailChannels()));
@@ -139,7 +145,9 @@ router.post('/email-channels', requireRole('Admin'), (req, res) => {
   if (getEmailChannels()[key]) return res.status(400).json({ error: 'A channel with that name already exists.' });
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(from_address)) return res.status(400).json({ error: 'Enter a valid From address.' });
   const smtp_user = String(b.smtp_user || '').trim();
-  addEmailChannel(key, { label: label || key, from_address, from_name: String(b.from_name || '').trim(), smtp_user, smtp_pass: smtp_user ? String(b.smtp_pass || '') : '' });
+  const extras = parseEmailList(b.extra_recipients);
+  if (extras.invalid.length) return res.status(400).json({ error: 'Not a valid email address (extra recipients): ' + extras.invalid.join(', ') });
+  addEmailChannel(key, { label: label || key, from_address, from_name: String(b.from_name || '').trim(), smtp_user, smtp_pass: smtp_user ? String(b.smtp_pass || '') : '', extra_recipients: extras.valid, include_default_recipients: b.include_default_recipients !== false });
   res.json(maskChannels(getEmailChannels()));
 });
 router.delete('/email-channels/:key', requireRole('Admin'), (req, res) => {
@@ -154,7 +162,7 @@ router.delete('/email-channels/:key', requireRole('Admin'), (req, res) => {
 // Which channel each automated-email workflow sends through (+ the editable email templates it uses, for the Edit Email Content link).
 router.get('/email-workflows', requireRole('Admin'), (req, res) => {
   const assigned = getEmailWorkflowChannels();
-  res.json(Object.entries(EMAIL_WORKFLOWS).map(([key, w]) => ({ key, label: w.label, channel: assigned[key], templates: w.templates })));
+  res.json(Object.entries(EMAIL_WORKFLOWS).map(([key, w]) => ({ key, label: w.label, channel: assigned[key], templates: w.templates, applies_extras: workflowAllowsExtras(key) })));
 });
 router.put('/email-workflows', requireRole('Admin'), (req, res) => {
   const map = (req.body && req.body.workflows) || {};
