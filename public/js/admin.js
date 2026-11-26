@@ -225,7 +225,7 @@ PAGES['offer-options'] = async (el) => {
         Require Sales to pick Terms/Inclusions/Exclusions from the clause library below rather than typing their own</label>
       <label style="display:block;margin-bottom:8px;"><input type="checkbox" id="gov-restrict-creator" ${governance.restrict_offers_to_creator ? 'checked' : ''}>
         Restrict who can see an Offer - a Sales person sees only their own; a department HOD/supervisor also sees their own department's (Admin/Management always see everything)</label>
-      <div style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
+      <div class="stg-savebar" style="margin-top:8px;"><button class="btn" onclick="saveOfferGovernance()">Save Governance Settings</button></div>
       <div id="gov-err" class="msg err" style="display:none;margin-top:10px;"></div>
     `) : ''}
     `;
@@ -755,7 +755,7 @@ PAGES.users = async (el) => {
         <div><label>Password</label><input id="us-pass" type="text" placeholder="Leave blank to auto-generate + email"></div>
         <div><label>Role</label><select id="us-role" onchange="checkUserDeptWarning()">${roles.map(r => `<option value="${r.id}" data-name="${esc(r.name)}">${esc(r.name)}</option>`).join('')}</select></div>
         <div><label>Department</label><select id="us-dept" onchange="checkUserDeptWarning()"><option value="">-</option>${depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
-        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="us-supervisor" type="checkbox"> Supervisor / HOD (can act on every card in this role's queue, allocate work, and see the full department report)</label></div>
+        <div><label><input id="us-supervisor" type="checkbox"> Supervisor / HOD (can act on every card in this role's queue, allocate work, and see the full department report)</label></div>
         <div><label>Employee (links this login to their HR/payroll record)</label>
           <select id="us-employee">
             <option value="">- No linked employee -</option>
@@ -764,7 +764,7 @@ PAGES.users = async (el) => {
         </div>
       </div>
       <div id="us-dept-warning" class="msg err" style="display:none;margin-top:8px;"></div>
-      <button class="btn" onclick="addUser()">Create User</button>
+      <div class="stg-savebar"><button class="btn" onclick="addUser()">Create User</button></div>
     </div>
     ${collapsiblePanel('users-list', `Users (${users.length})`, `
       ${tableHTML(['Username', 'Name', 'Email', 'Role', 'Department', 'Supervisor', 'Linked Employee', 'Status', 'Action'], users, u => `
@@ -827,18 +827,18 @@ window.openEditUser = (id) => {
   if (!u) return;
   const roles = window.__USER_ROLES || [];
   const depts = window.__USER_DEPTS || [];
-  openAppModal('Edit User — ' + esc(u.username), `
+  openAppModal('Edit User — ' + esc(u.username), `<div class="stg-modal">
     <div class="form-grid">
       <div><label>Full Name</label><input id="ue-name" value="${esc(u.full_name)}"></div>
       <div><label>Email</label><input id="ue-email" type="email" value="${esc(u.email)}"></div>
       <div><label>Role</label><select id="ue-role" onchange="checkUserDeptWarning('ue')">${roles.map(r => `<option value="${r.id}" data-name="${esc(r.name)}" ${r.id===u.role_id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></div>
       <div><label>Department</label><select id="ue-dept" onchange="checkUserDeptWarning('ue')"><option value="">-</option>${depts.map(d => `<option value="${d.id}" ${d.id===u.department_id?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
-      <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="ue-supervisor" type="checkbox" ${u.is_supervisor?'checked':''}> Supervisor / HOD</label></div>
+      <div><label><input id="ue-supervisor" type="checkbox" ${u.is_supervisor?'checked':''}> Supervisor / HOD</label></div>
       <div><label>Reset Password (optional)</label><input id="ue-pass" type="text" placeholder="Leave blank to keep current password"></div>
     </div>
     <div id="ue-dept-warning" class="msg err" style="display:none;margin-top:8px;"></div>
     <button class="btn" id="ue-save-btn" onclick="saveEditUser(${id})">Save Changes</button>
-    <div id="ue-err" class="msg err" style="display:none;margin-top:8px;"></div>`);
+    <div id="ue-err" class="msg err" style="display:none;margin-top:8px;"></div></div>`);
   checkUserDeptWarning('ue');
 };
 window.saveEditUser = async (id) => {
@@ -984,7 +984,7 @@ PAGES.access = async (el) => {
           </div>`;
         }).join('')}
       </div>
-      <div class="access-role-actions" style="margin-top:10px;">
+      <div class="access-role-actions stg-savebar" style="margin-top:10px;">
         <button class="btn small" onclick="saveAccess(${r.id})">Save Access for ${esc(r.name)}</button>
         ${r.configured ? `<button class="btn small outline" onclick="resetAccess(${r.id})">Reset to Unrestricted</button>` : ''}
       </div>
@@ -1050,7 +1050,7 @@ async function renderRolePermissionsPanel() {
           </div>`;
         }).join('')}
       </div>
-      <div class="access-role-actions" style="margin-top:10px;">
+      <div class="access-role-actions stg-savebar" style="margin-top:10px;">
         <button class="btn small" onclick="saveRolePermissions(${r.id})">Save Permissions for ${esc(r.name)}</button>
       </div>
     </div>`).join('');
@@ -1110,10 +1110,10 @@ window.loadUserAccess = async (userId) => {
           <b>${esc(g.group)}</b>
         </label> <span class="muted">(${checkedCount}/${groupIds.length})</span>
       `, `
-        ${g.items.map(it => `<label class="access-item" style="display:block;"><input type="checkbox" class="au-page" data-group="${esc(g.group)}" value="${it.id}" ${effective.has(it.id) ? 'checked' : ''}> ${esc(it.label)}</label>`).join('')}
+        ${g.items.map(it => `<label class="access-item"><input type="checkbox" class="au-page" data-group="${esc(g.group)}" value="${it.id}" ${effective.has(it.id) ? 'checked' : ''}> ${esc(it.label)}</label>`).join('')}
       `);
     }).join('')}
-    <div style="margin-top:10px;">
+    <div class="stg-savebar" style="margin-top:10px;">
       <button class="btn" onclick="saveUserAccess()">Save Access for ${esc(data.user.full_name)}</button>
       <button class="btn outline" onclick="resetUserAccess()">Reset to Role Default</button>
     </div>
@@ -1399,7 +1399,7 @@ PAGES['company-settings'] = async (el) => {
       ${company.logo_path ? `<img src="${esc(company.logo_path)}" style="max-height:60px;display:block;margin-bottom:8px;">` : ''}
       <input type="file" id="cs-logo-file" accept="image/*">
       <button class="btn small outline" type="button" onclick="uploadCompanyLogo()">Upload Logo</button>
-      <div style="margin-top:12px;">
+      <div class="stg-savebar" style="margin-top:12px;">
         <button class="btn" onclick="saveCompanySettings()">Save Company Details</button>
       </div>
       <div id="cs-err" class="msg err" style="display:none;margin-top:8px;"></div>
@@ -1418,7 +1418,7 @@ PAGES['company-settings'] = async (el) => {
           <div><label>From Address</label><input id="es-from-addr" value="${esc(email.from_address)}"></div>
         </div>
         <div><label>Always CC (comma-separated)</label><input id="es-cc" style="width:100%;" value="${esc((email.cc_list||[]).join(', '))}"></div>
-        <button class="btn" onclick="saveEmailSettings()" style="margin-top:10px;">Save Email Settings</button>
+        <div class="stg-savebar"><button class="btn" onclick="saveEmailSettings()">Save Email Settings</button></div>
         <div id="es-err" class="msg err" style="display:none;margin-top:8px;"></div>
         <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
           <div class="form-grid">
@@ -1453,7 +1453,7 @@ PAGES['company-settings'] = async (el) => {
             </div>
             <div id="ect-${k}-result" class="msg" style="display:none;"></div>
           </div>`; }).join('')}
-        <button class="btn" id="ec-save-btn" onclick="saveEmailChannels()" style="margin-top:6px;">Save Outbound Channels</button>
+        <div class="stg-savebar"><button class="btn" id="ec-save-btn" onclick="saveEmailChannels()">Save Outbound Channels</button></div>
         <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
         <div style="margin-top:14px;">
           <button class="btn small outline" type="button" onclick="document.getElementById('ecn-form').style.display = document.getElementById('ecn-form').style.display === 'none' ? '' : 'none'">+ Add Outbound Channel</button>
@@ -1471,17 +1471,17 @@ PAGES['company-settings'] = async (el) => {
           </div>
         </div>
         <h4 style="margin:16px 0 6px;">Which channel each automated email uses</h4>
-        <div style="overflow-x:auto;"><table><thead><tr><th>Automated email / report</th><th>Sends through</th><th>Template</th></tr></thead><tbody>
-          ${emailWorkflows.map(w => `<tr><td>${esc(w.label)}</td>
-            <td><select id="ew-${w.key}">${Object.keys(emailChannels).map(k => `<option value="${k}" ${k === w.channel ? 'selected' : ''}>${esc(emailChannels[k].label)} &lt;${esc(emailChannels[k].from_address)}&gt;</option>`).join('')}</select></td>
-            <td>${w.templates.length ? w.templates.map(t => {
+        <div class="stg-wf" style="overflow-x:auto;"><table class="stg-wf-table"><thead><tr><th>Automated email / report</th><th>Sends through</th><th>Template</th></tr></thead><tbody>
+          ${emailWorkflows.map(w => `<tr><td data-label="Workflow">${esc(w.label)}</td>
+            <td data-label="Sends through"><select id="ew-${w.key}">${Object.keys(emailChannels).map(k => `<option value="${k}" ${k === w.channel ? 'selected' : ''}>${esc(emailChannels[k].label)} &lt;${esc(emailChannels[k].from_address)}&gt;</option>`).join('')}</select></td>
+            <td data-label="Template">${w.templates.length ? w.templates.map(t => {
               const lab = (emailTemplates.find(x => x.key === t) || {}).label || t;
               const cur = (w.template_assignments || {})[t] || '';
-              return `<div style="margin-bottom:8px;min-width:210px;"><div class="muted" style="font-size:12px;">${esc(lab)}</div>
-                <select class="ewt-sel" data-wf="${w.key}" data-tpl="${t}" style="max-width:260px;"><option value="">Default (built-in)</option>${emailTemplates.filter(x => x.is_custom).map(x => `<option value="${esc(x.key)}" ${x.key === cur ? 'selected' : ''}>${esc(x.label)} (Custom)</option>`).join('')}</select>
-                <a href="#" onclick="ewtEdit(this);return false;" style="white-space:nowrap;">Edit Template</a></div>`; }).join('') : '<span class="muted">Built into the report</span>'}</td></tr>`).join('')}
+              return `<div class="stg-wf-tpl"><div class="muted">${esc(lab)}</div>
+                <select class="ewt-sel" data-wf="${w.key}" data-tpl="${t}"><option value="">Default (built-in)</option>${emailTemplates.filter(x => x.is_custom).map(x => `<option value="${esc(x.key)}" ${x.key === cur ? 'selected' : ''}>${esc(x.label)} (Custom)</option>`).join('')}</select>
+                <a href="#" class="stg-link" onclick="ewtEdit(this);return false;">Edit Template</a></div>`; }).join('') : '<span class="muted">Built into the report</span>'}</td></tr>`).join('')}
         </tbody></table></div>
-        <button class="btn small" id="ew-save-btn" type="button" onclick="saveEmailWorkflows()" style="margin-top:8px;">Save Assignments</button>
+        <div class="stg-actions" style="margin-top:12px;"><button class="btn small" id="ew-save-btn" type="button" onclick="saveEmailWorkflows()">Save Assignments</button></div>
         <div id="ew-err" class="msg err" style="display:none;margin-top:8px;"></div>
       `) : ''}
       ${inboundMail ? collapsibleSubsection('inbound-mail-settings', 'Inbound Mail (Service Requests via Email)', `
@@ -1498,8 +1498,10 @@ PAGES['company-settings'] = async (el) => {
           <div><label>Scan Window (days)</label><input id="im-scan-window" type="number" value="${esc(inboundMail.scan_window_days)}"></div>
         </div>
         <p class="muted" style="font-size:12px;">Scan Window bounds how far back each poll looks for unread mail - turning this on for the first time (or after an extended outage) won't flood the approval queue with a mailbox's entire unread backlog.</p>
-        <button class="btn" onclick="saveInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
-        <button class="btn small outline" type="button" onclick="testInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+        <div class="stg-savebar">
+          <button class="btn" onclick="saveInboundMailSettings()">Save Inbound Mail Settings</button>
+          <button class="btn small outline" type="button" onclick="testInboundMailConnection()">Test Connection</button>
+        </div>
         <div id="im-err" class="msg err" style="display:none;margin-top:8px;"></div>
         <div id="im-test-result" class="msg" style="display:none;margin-top:8px;"></div>
       `) : ''}
@@ -1515,8 +1517,10 @@ PAGES['company-settings'] = async (el) => {
           <div><label>Folder</label><input id="pim-mailbox" value="${esc(purchaseInboundMail.mailbox)}"></div>
           <div><label>Poll Every (minutes)</label><input id="pim-poll" type="number" value="${esc(purchaseInboundMail.poll_minutes)}"></div>
         </div>
-        <button class="btn" onclick="savePurchaseInboundMailSettings()" style="margin-top:10px;">Save Inbound Mail Settings</button>
-        <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()" style="margin-top:10px;">Test Connection</button>
+        <div class="stg-savebar">
+          <button class="btn" onclick="savePurchaseInboundMailSettings()">Save Inbound Mail Settings</button>
+          <button class="btn small outline" type="button" onclick="testPurchaseInboundMailConnection()">Test Connection</button>
+        </div>
         <div id="pim-err" class="msg err" style="display:none;margin-top:8px;"></div>
         <div id="pim-test-result" class="msg" style="display:none;margin-top:8px;"></div>
       `) : ''}
@@ -1535,7 +1539,7 @@ PAGES['company-settings'] = async (el) => {
             <div><label>Mailbox Username</label><input id="dept-smtp-user-${d.id}" value="${esc(d.smtp_user)}"></div>
             <div><label>Mailbox Password</label><input id="dept-smtp-pass-${d.id}" type="password" value="${esc(d.smtp_pass)}"></div>
           </div>
-          <div style="margin-top:8px;">
+          <div class="stg-savebar" style="margin-top:8px;">
             <button class="btn small" type="button" onclick="saveDepartmentEmailIdentity(${d.id})">Save</button>
             <button class="btn small outline" type="button" onclick="testDepartmentEmail(${d.id}, '${esc(d.name).replace(/'/g, "\\'")}')">Send Test Email</button>
           </div>
@@ -1552,7 +1556,7 @@ PAGES['company-settings'] = async (el) => {
       <textarea id="ps-payment-terms" rows="6" style="width:100%;">${esc((purchaseSettings.payment_terms_options||[]).join('\n'))}</textarea>
       <div style="margin-top:10px;">
         <label><input type="checkbox" id="ps-allow-pending-email" ${purchaseSettings.allow_pending_po_email ? 'checked' : ''}>
-          Allow emailing/downloading a Purchase Order that's still pending approval <span class="muted">(shows a "Pending Approval" banner on the document - off by default, since a PO can't be sent to a vendor until Purchase HOD/Management sign off)</span></label>
+          <span>Allow emailing/downloading a Purchase Order that's still pending approval <span class="muted">(shows a "Pending Approval" banner on the document - off by default, since a PO can't be sent to a vendor until Purchase HOD/Management sign off)</span></span></label>
       </div>
       <h4 style="margin-top:18px;">PO Document Template</h4>
       <p class="muted">Controls every Purchase Order PDF/Word document generated from now on - not a per-order setting.</p>
@@ -1572,7 +1576,7 @@ PAGES['company-settings'] = async (el) => {
           ['terms', 'Terms & Conditions'], ['delivery_guidelines', 'Delivery Guidelines'],
         ].map(([key, label]) => `<div><label><input type="checkbox" class="ps-po-vis" data-key="${key}" ${(purchaseSettings.po_visible_fields||{})[key] !== false ? 'checked' : ''}> ${esc(label)}</label></div>`).join('')}
       </div>
-      <button class="btn" onclick="savePurchaseSettings()" style="margin-top:10px;">Save Purchase Settings</button>
+      <div class="stg-savebar"><button class="btn" onclick="savePurchaseSettings()">Save Purchase Settings</button></div>
       <div id="ps-err" class="msg err" style="display:none;margin-top:8px;"></div>
     `) : ''}
     ${collapsiblePanel('email-template-customizer', 'Email Template Customizer', `
@@ -1601,7 +1605,7 @@ PAGES['company-settings'] = async (el) => {
         <div><label>Amber bucket - up to this many days</label><input id="wd-bucket2" type="number" min="1" value="${esc(weeklyDigest.bucket2_max_days)}"></div>
         <div><label class="muted" style="display:block;margin-top:24px;">Beyond the amber cutoff is Red.</label></div>
       </div>
-      <button class="btn" id="wd-save-btn" onclick="saveWeeklyDigestSettings()" style="margin-top:10px;">Save Weekly Digest Settings</button>
+      <div class="stg-savebar"><button class="btn" id="wd-save-btn" onclick="saveWeeklyDigestSettings()">Save Weekly Digest Settings</button></div>
       <div id="wd-err" class="msg err" style="display:none;margin-top:8px;"></div>
       ${weeklyDigest.last_sent_at ? `<p class="muted" style="margin-top:6px;">Last sent ${new Date(weeklyDigest.last_sent_at).toLocaleString()}.</p>` : `<p class="muted" style="margin-top:6px;">Not sent yet.</p>`}
     `) : ''}
@@ -1614,7 +1618,7 @@ PAGES['company-settings'] = async (el) => {
       </div>
       <div style="margin-top:4px;"><label class="muted" style="display:block;margin-bottom:3px;">Extra recipients (comma-separated emails; shared with the Daily Reports outbound channel)</label>
         <textarea id="dpd-recipients" rows="2" style="width:100%;" placeholder="name@company.com, other@company.com">${esc(dailyPurchaseDigest.recipients)}</textarea></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <div class="stg-savebar" style="margin-top:10px;">
         <button class="btn" id="dpd-save-btn" onclick="saveDailyPurchaseDigest()">Save Daily Purchase Digest</button>
         <button class="btn outline" id="dpd-send-btn" onclick="sendDailyPurchaseDigestNow()">Send Daily Purchase Report Now</button>
       </div>
@@ -1624,8 +1628,9 @@ PAGES['company-settings'] = async (el) => {
     `) : ''}
     ${collapsiblePanel('sidebar-group-order', 'Sidebar Group Order', `
       <p class="muted">Sets one sidebar group order that applies to every user, replacing the default alphabetical order. Includes every department-specific "Job Cards" group (a department's own tab, and the Admin/Project Manager per-department tabs) alongside the regular menu groups, so those can be positioned too instead of always sitting wherever they land by default.</p>
-      <div class="muted" style="margin-bottom:8px;">Drag a group by its ⠿ handle to rearrange, then Save Order.
-        <button class="btn small outline" type="button" onclick="saveSidebarGroupOrder()" style="margin-left:8px;">Save Order</button>
+      <p class="muted">Drag a group by its ⠿ handle to rearrange, then Save Order.</p>
+      <div class="stg-actions" style="margin:0 0 10px;">
+        <button class="btn small outline" type="button" onclick="saveSidebarGroupOrder()">Save Order</button>
         <button class="btn small outline" type="button" onclick="resetSidebarGroupOrder()">Reset to Default</button>
       </div>
       <div id="sidebar-order-list">${sidebarGroupOrder.map(label => `
@@ -1652,7 +1657,7 @@ window.etcTemplateChanged = () => {
     <p><b>${tpl.is_custom ? 'Placeholders (hint)' : 'Variables available'}:</b> ${tpl.variables.map(v => `<code>{{${esc(v)}}}</code>`).join(', ')}</p>
     <div class="form-grid"><div><label>Subject</label><input id="etc-subject" value="${esc(tpl.subject)}"></div></div>
     <div class="form-grid"><div><label>Body</label><textarea id="etc-body-text" rows="8">${esc(tpl.body)}</textarea></div></div>
-    <div style="margin-top:10px;">
+    <div class="stg-savebar" style="margin-top:10px;">
       <button class="btn" id="etc-save-btn" onclick="saveEmailTemplate()">Save Template</button>
       ${tpl.is_custom ? `<button class="btn small red" type="button" onclick="deleteCustomEmailTemplate()">Delete Template</button>` : (tpl.is_customized ? `<button class="btn small outline" type="button" onclick="resetEmailTemplateField()">Reset to Default</button>` : '')}
     </div>
@@ -1787,7 +1792,7 @@ async function renderCompanyAddressesPanel() {
         <div><label>State</label>${statePickerHTML('coaddr-state', '')}</div>
         <div><label>State Code</label><input id="coaddr-state-code" placeholder="e.g. 06"></div>
         <div><label>Pincode</label><input id="coaddr-pincode"></div>
-        <div style="display:flex;align-items:center;gap:6px;padding-top:22px;"><label style="margin:0;"><input id="coaddr-default" type="checkbox"> Set as default for this type</label></div>
+        <div><label><input id="coaddr-default" type="checkbox"> Set as default for this type</label></div>
       </div>
       <button class="btn" onclick="addCompanyAddress()">Add Address</button>
       <div id="coaddr-err" class="msg err" style="display:none;margin-top:10px;"></div>
@@ -1846,7 +1851,7 @@ window.saveEmailSettings = async () => {
 window.__ECX = {};
 const ECX_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 function ecxChipsHTML(k) {
-  return (window.__ECX[k] || []).map((e, i) => `<span style="display:inline-flex;align-items:center;gap:4px;max-width:100%;background:#eef2f7;border:1px solid var(--border);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;margin:0 6px 6px 0;word-break:break-all;">${esc(e)}<button type="button" aria-label="Remove ${esc(e)}" onclick="ecxRemove('${k}',${i})" style="background:none;border:none;cursor:pointer;font-size:16px;line-height:1;min-width:26px;min-height:26px;color:var(--muted);">&times;</button></span>`).join('');
+  return (window.__ECX[k] || []).map((e, i) => `<span class="stg-chip" style="display:inline-flex;align-items:center;gap:4px;max-width:100%;background:#eef2f7;border:1px solid var(--border);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;margin:0 6px 6px 0;word-break:break-all;">${esc(e)}<button type="button" class="stg-chip-x" aria-label="Remove ${esc(e)}" onclick="ecxRemove('${k}',${i})" style="background:none;border:none;cursor:pointer;font-size:16px;line-height:1;min-width:28px;min-height:28px;color:var(--muted);">&times;</button></span>`).join('');
 }
 function ecxEditorHTML(k, c, workflows) {
   window.__ECX[k] = [...(c.extra_recipients || [])];
@@ -1963,7 +1968,7 @@ window.sendChannelTemplate = async (k) => {
   } catch (e) { resultEl.className = 'msg err'; resultEl.textContent = e.message; }
 };
 window.openAddEmailTemplate = () => {
-  openAppModal('Add Email Template', `
+  openAppModal('Add Email Template', `<div class="stg-modal">
     <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));">
       <div><label for="ntpl-name">Template Name</label><input id="ntpl-name" oninput="ntplNameChanged()" placeholder="e.g. Dispatch Notice"></div>
       <div><label for="ntpl-key">Template Key</label><input id="ntpl-key" oninput="this.dataset.touched='1'" placeholder="custom_dispatch_notice"></div>
@@ -1978,7 +1983,7 @@ window.openAddEmailTemplate = () => {
       <button class="btn" id="ntpl-save-btn" type="button" onclick="saveNewEmailTemplate()">Create Template</button>
     </div>
     <pre id="ntpl-preview" style="display:none;white-space:pre-wrap;word-break:break-word;background:#f7f9fb;border:1px solid var(--border);border-radius:6px;padding:10px;font-family:inherit;font-size:13px;margin:0 0 10px;"></pre>
-    <div id="ntpl-err" class="msg err" style="display:none;"></div>`);
+    <div id="ntpl-err" class="msg err" style="display:none;"></div></div>`);
 };
 window.ntplNameChanged = () => {
   const key = document.getElementById('ntpl-key');
@@ -2610,3 +2615,140 @@ window.uploadDataImportFile = async () => {
     </div>`;
   } catch (e) { resultEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
 };
+
+// ===================== Settings UI polish (Apple-HIG pass, 2026-11-26) =====================
+// Every Settings page is rendered into <div class="settings-page stg-<page-id>"> by the wrapper below, and every
+// rule in STG_CSS is prefixed .settings-page / .stg-*, so no other screen is touched. The two Settings popups
+// (Edit User, Add Email Template) wrap their body in .stg-modal and share the control rules via @S.
+// Sizing follows the HIG ask (12px cards, 8px controls, 40px / 44px-on-mobile hit areas); colours stay on the
+// DESIGN.md tokens. Small row buttons stay 32px on desktop (dense Users/Backups rows), 44px on mobile.
+const SETTINGS_PAGE_IDS = ['users', 'access', 'approval-matrix', 'company-settings', 'data-import', 'full-data-export', 'org-hierarchy', 'backups', 'offer-options', 'offer-pdf-designer'];
+const STG_CSS = `
+.settings-page{font-variant-numeric:tabular-nums;}
+/* ---- grouped inset cards ---- */
+.settings-page .panel{border-radius:12px;padding:20px;margin-bottom:16px;}
+.settings-page .panel > h3,.settings-page .panel > .panel-head{font-size:18px;font-weight:600;letter-spacing:-.012em;line-height:1.3;margin:0 0 16px;padding-bottom:12px;}
+.settings-page .panel.collapsible > .panel-head{min-height:28px;}
+.settings-page .panel.collapsible > .panel-head .chev{font-size:12px;}
+.settings-page .panel.collapsible.collapsed > .panel-head{padding-bottom:0;border-bottom-color:transparent;}
+.settings-page .panel .panel{padding:16px;}
+.settings-page .panel:has(> .panel.collapsible:only-child){padding:0;border:0;background:transparent;}
+.settings-page .panel-sub{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:12px;}
+.settings-page .panel-sub:first-child{border-top:1px solid var(--border);padding-top:16px;margin-top:0;}
+.settings-page .panel-sub > .panel-head{min-height:28px;margin-bottom:12px;}
+.settings-page .panel-sub.collapsed > .panel-head{margin-bottom:0;}
+.settings-page .panel-sub > .panel-head h4{font-size:15px;font-weight:600;letter-spacing:-.006em;margin:0;}
+.settings-page .panel-sub > .panel-head .chev{font-size:11px;}
+.settings-page .panel-sub .panel{border-radius:10px;}
+.settings-page .panel h4{font-size:15px;font-weight:600;letter-spacing:-.006em;margin:20px 0 8px;}
+.settings-page .panel h4:first-child{margin-top:0;}
+.settings-page .panel-sub > .panel-head h4{margin:0;}
+.settings-page .panel h5{font-size:13px;font-weight:600;color:var(--primary);margin:14px 0 6px;}
+.settings-page .muted{font-size:12px;line-height:1.5;}
+.settings-page p.muted{font-size:13px;line-height:1.55;margin:0 0 12px;}
+.settings-page .msg{border-radius:8px;padding:10px 12px;font-size:13px;}
+.settings-page code{overflow-wrap:anywhere;}
+/* ---- form controls (page + popups) ---- */
+@S label{font-size:12px;line-height:1.35;font-weight:500;color:var(--muted);}
+@S .form-grid label{margin-bottom:4px;}
+@S @I,@S select:not([multiple]):not([size]){box-sizing:border-box;min-height:40px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background-color:#fff;color:var(--text);font:inherit;font-size:13px;line-height:1.4;max-width:100%;transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease;}
+@S textarea{box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;color:var(--text);font:inherit;font-size:13px;line-height:1.5;max-width:100%;resize:vertical;transition:border-color .15s ease,box-shadow .15s ease;}
+@S select[multiple],@S select[size]{border:1px solid var(--border);border-radius:8px;padding:6px;font:inherit;font-size:13px;max-width:100%;}
+@S input[type=file]{max-width:100%;font-size:13px;}
+@S @I:disabled,@S select:disabled,@S textarea:disabled{background-color:var(--bg);color:var(--muted);cursor:not-allowed;}
+@S @I:focus-visible,@S select:focus-visible,@S textarea:focus-visible{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(30,58,95,.16);}
+.settings-page td @I,.settings-page td select:not([multiple]):not([size]){min-height:36px;padding:6px 10px;}
+@S .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:40px;padding:9px 18px;border-radius:8px;font-size:13px;line-height:1.3;transition:background-color .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease;}
+@S .btn.small{min-height:32px;padding:5px 12px;font-size:12px;}
+@S .btn:focus-visible,@S .tab:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(30,58,95,.28);}
+/* ---- checkboxes / radios: always inline with their label ---- */
+@S input[type=checkbox],@S input[type=radio]{box-sizing:border-box;width:18px;height:18px;min-height:0;margin:0 8px 0 0;padding:0;flex:none;accent-color:var(--primary);cursor:pointer;vertical-align:-3px;}
+@S label:has(> input[type=checkbox]),@S label:has(> input[type=radio]){display:inline-flex;align-items:center;gap:8px;max-width:100%;margin:0;font-size:13px;line-height:1.45;font-weight:400;color:var(--text);cursor:pointer;}
+@S label:has(> input[type=checkbox]) > input,@S label:has(> input[type=radio]) > input,@S label.access-item > input{margin:0;}
+@S .form-grid > div{display:flex;flex-direction:column;justify-content:flex-end;min-width:0;}
+@S .form-grid > div:has(> label > input[type=checkbox]){align-self:end;}
+@S .form-grid > div > label:has(> input[type=checkbox]){min-height:40px;}
+@S .access-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;line-height:1.45;color:var(--text);cursor:pointer;}
+@S .access-group-title label{color:var(--primary);font-weight:600;}
+/* ---- recipient chips ---- */
+.settings-page .stg-chip-x{border-radius:50%;transition:background-color .15s ease,color .15s ease;}
+.settings-page .stg-chip-x:hover{background:#dde5ee;color:var(--text);}
+/* ---- tabs: one scrolling row of pills, never wider than the page ---- */
+.settings-page .tabs{display:flex;gap:6px;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:8px;}
+.settings-page .tabs::-webkit-scrollbar{display:none;}
+.settings-page .tab{flex:none;display:inline-flex;align-items:center;min-height:38px;padding:8px 14px;white-space:nowrap;border:1px solid transparent;border-radius:8px;font-size:13px;transition:background-color .15s ease,color .15s ease,border-color .15s ease;}
+.settings-page .tab:hover{background:var(--bg);color:var(--text);}
+.settings-page .tab.active{background:color-mix(in srgb,var(--primary) 9%,#fff);border-color:color-mix(in srgb,var(--primary) 22%,#fff);}
+/* ---- save bars / action rows ---- */
+.settings-page .stg-actions,.settings-page .stg-savebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.settings-page .stg-savebar{margin-top:12px;}
+/* ---- workflow assignments ---- */
+.settings-page .stg-wf-tpl{margin-bottom:8px;min-width:210px;}
+.settings-page .stg-wf-tpl .muted{margin-bottom:3px;}
+.settings-page .stg-wf-tpl select{max-width:260px;}
+.settings-page .stg-wf-table select[id^="ew-"]{width:100%;max-width:380px;}
+.settings-page .stg-link{display:inline-flex;align-items:center;min-height:32px;margin-left:6px;white-space:nowrap;font-weight:600;color:var(--primary);text-decoration:none;}
+.settings-page .stg-link:hover{text-decoration:underline;}
+/* ---- PDF designer merge-field chips ---- */
+.settings-page .pdfd-token-btn{min-height:32px;padding:4px 10px;border-radius:8px;transition:background-color .15s ease;}
+/* ---- popups opened from Settings ---- */
+.app-modal-box:has(.stg-modal){border-radius:12px;padding:20px;}
+.app-modal-box:has(.stg-modal) h3{font-size:18px;font-weight:600;letter-spacing:-.012em;margin:0 0 14px;}
+.stg-modal pre{max-width:100%;overflow-x:auto;}
+.stg-modal code{overflow-wrap:anywhere;}
+@media (max-width:768px){
+  .settings-page .panel{padding:14px;margin-bottom:14px;}
+  .settings-page .panel .panel{padding:12px;}
+  .settings-page .panel:has(> .panel.collapsible:only-child){padding:0;}
+  .settings-page .panel.collapsible > .panel-head,.settings-page .panel-sub > .panel-head{min-height:44px;align-items:center;}
+  .settings-page .panel-sub{padding:14px;}
+  @S @I,@S select:not([multiple]):not([size]){min-height:44px;font-size:16px;}
+  .settings-page td @I,.settings-page td select:not([multiple]):not([size]){min-height:44px;padding:8px 10px;}
+  @S textarea{font-size:16px;}
+  @S .btn,@S .btn.small{min-height:44px;}
+  @S label:has(> input[type=checkbox]),@S label:has(> input[type=radio]),@S label.access-item,@S .form-grid > div > label:has(> input[type=checkbox]){min-height:44px;}
+  .settings-page .stg-chip-x{min-width:32px;min-height:32px;}
+  .settings-page .tab{min-height:44px;}
+  .settings-page .stg-link{min-height:44px;margin-left:0;}
+  .settings-page .pdfd-token-btn{min-height:44px;padding:8px 12px;}
+  .settings-page .pdfd-side{flex:1 1 100%;}
+  /* bottom:-14px = the mobile .content padding; Chrome pins a sticky bar to that padding's inner edge, so this puts it flush with the screen bottom */
+  .settings-page .stg-savebar{position:sticky;bottom:-14px;z-index:5;background:rgba(255,255,255,.94);-webkit-backdrop-filter:saturate(1.2) blur(8px);backdrop-filter:saturate(1.2) blur(8px);border-top:1px solid var(--border);margin-top:14px;padding:10px 0 calc(10px + env(safe-area-inset-bottom));}
+  .settings-page .panel-sub .stg-savebar{background:rgba(244,246,248,.94);}
+  /* Workflow table -> one card per workflow, no sideways scroll */
+  .settings-page .stg-wf{overflow:visible !important;}
+  .settings-page .stg-wf-table,.settings-page .stg-wf-table tbody,.settings-page .stg-wf-table tr,.settings-page .stg-wf-table td{display:block;white-space:normal;overflow:visible;}
+  .settings-page .stg-wf-table thead{display:none;}
+  .settings-page .stg-wf-table tr{background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;}
+  .settings-page .stg-wf-table tr:hover td{background:transparent;}
+  .settings-page .stg-wf-table td{border:0;padding:6px 0;}
+  .settings-page .stg-wf-table td::before{content:attr(data-label);display:block;margin-bottom:4px;font-size:12px;font-weight:600;color:var(--muted);}
+  .settings-page .stg-wf-table td:first-child{padding-top:0;font-size:14px;font-weight:600;color:var(--primary);}
+  .settings-page .stg-wf-table td:first-child::before{display:none;}
+  .settings-page .stg-wf-table select{width:100%;max-width:none;}
+  .settings-page .stg-wf-tpl{min-width:0;}
+  .settings-page .stg-wf-tpl select{max-width:none;}
+  .app-modal-box:has(.stg-modal){padding:16px;}
+}
+`.replace(/@S/g, ':is(.settings-page,.stg-modal)').replace(/@I/g, 'input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=hidden]):not([type=color])');
+function stgInstallCss() {
+  if (document.getElementById('stg-css')) return;
+  const st = document.createElement('style'); st.id = 'stg-css'; st.textContent = STG_CSS;
+  document.head.appendChild(st);
+}
+// Centre the active tab inside its scrolling row without scrolling the page itself.
+function stgRevealTab(t) { const bar = t.parentElement; if (bar) bar.scrollLeft = t.offsetLeft - (bar.clientWidth - t.offsetWidth) / 2; }
+SETTINGS_PAGE_IDS.forEach(id => {
+  const render = PAGES[id];
+  if (!render) return;
+  PAGES[id] = async (el) => {
+    stgInstallCss();
+    const wrap = document.createElement('div');
+    wrap.className = 'settings-page stg-' + id;
+    el.innerHTML = '';
+    el.appendChild(wrap);
+    wrap.addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (t) setTimeout(() => stgRevealTab(t), 0); });
+    await render(wrap);
+    wrap.querySelectorAll('.tabs .tab.active').forEach(stgRevealTab);
+  };
+});
