@@ -15,7 +15,7 @@ const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCo
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
 const { sendMail } = require('../lib/mailer');
-const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
+const { getWorkflowTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { formatDate } = require('../lib/dateFormat');
 const router = express.Router();
 router.use(authRequired);
@@ -1037,7 +1037,7 @@ router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'
     const result = await generateAnnexurePdf(data);
     tmpDir = result.tmpDir;
     const filename = buildDownloadFilename({ docType: 'Annexure', reference: order.order_no, partyName: data.client && data.client.name, date: order.order_date });
-    const tpl = renderTemplate(getEmailTemplate('so_annexure_hods'), {
+    const tpl = renderTemplate(getWorkflowTemplate('so_annexure_hods', 'so_annexure_hods'), {
       order_no: order.order_no, client_name: (data.client && data.client.name) || '-',
       order_date: order.order_date ? formatDate(order.order_date) : '-',
       delivery_date: order.promised_delivery_date ? formatDate(order.promised_delivery_date) : 'not set',

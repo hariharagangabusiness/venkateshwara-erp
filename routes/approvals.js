@@ -4,7 +4,7 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
-const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
+const { getWorkflowTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
 const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 const { formatDate } = require('../lib/dateFormat');
@@ -664,7 +664,7 @@ async function notifyPurchaseRequestRejected(approval, comment, actor) {
   }
   if (!pr.email) return;
   const items = db.prepare(`SELECT COALESCE(i.name, pri.item_text) as name FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id WHERE pri.purchase_request_id = ? AND pri.cancelled_at IS NULL ORDER BY pri.sort_order, pri.id`).all(pr.id).map(r => r.name || 'Item');
-  const { subject, body } = renderTemplate(getEmailTemplate('purchase_request_rejected'), {
+  const { subject, body } = renderTemplate(getWorkflowTemplate('approval_alerts', 'purchase_request_rejected'), {
     requester_name: pr.full_name, pr_no: prNo, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: pr.department || '-',
     items: items.length ? items.join(', ') : '-', actor_name: actor.full_name, actor_role: actor.role_name || '-', rejected_at: localDateTimeStr(), reason,
   });
@@ -684,7 +684,7 @@ async function notifyRequesterOfOutcome(approval, result, comment, actorName, ac
     const info = describeEntity(approval.entity_type, approval.entity_id);
     const ref = info.ref || ('#' + approval.entity_id);
     const tplKey = result === 'Approved' ? 'approval_outcome_approved' : 'approval_outcome_rejected';
-    const tpl = getEmailTemplate(tplKey);
+    const tpl = getWorkflowTemplate('approval_alerts', tplKey);
     const { subject, body } = renderTemplate(tpl, {
       requester_name: requester.full_name,
       entity_label: label,
@@ -722,7 +722,7 @@ async function notifyApproversPending(approval) {
     const label = ENTITY_LABELS[approval.entity_type] || approval.entity_type;
     const info = describeEntity(approval.entity_type, approval.entity_id);
     const ref = info.ref || ('#' + approval.entity_id);
-    const tpl = getEmailTemplate('action_pending');
+    const tpl = getWorkflowTemplate('approval_alerts', 'action_pending');
     const approverName = approvers.length === 1 ? approvers[0].full_name : 'Team';
     const { subject, body } = renderTemplate(tpl, {
       approver_name: approverName,
