@@ -257,7 +257,7 @@ async function refreshNotificationBell() {
   const el = document.getElementById('bell-count');
   if (el) { el.textContent = n; el.style.display = n ? '' : 'none'; }
 }
-const NOTIFICATION_LINKS = { PR_REJECTED: 'purchase-requests', PO_REVOKED: 'purchase-orders' };
+const NOTIFICATION_LINKS = { PR_REJECTED: 'purchase-requests', PR_CANCELLED: 'purchase-requests', PR_LINE_CANCELLED: 'purchase-requests', PO_REVOKED: 'purchase-orders' };
 const NOTIFICATION_LINK_LABELS = { 'purchase-requests': 'Purchase Requests', 'purchase-orders': 'Purchase Orders' };
 function notificationListHTML() {
   if (!NOTIFICATIONS.length) return '<div class="empty">No notifications.</div>';

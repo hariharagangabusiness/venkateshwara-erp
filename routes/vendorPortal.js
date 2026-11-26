@@ -61,7 +61,7 @@ function rfqLines(rfq) {
   return db.prepare(`
     SELECT pri.id, COALESCE(i.name, pri.item_text) as name, pri.item_text as spec, pri.quantity, COALESCE(pri.unit, i.unit, 'Nos') as unit
     FROM purchase_request_items pri LEFT JOIN items i ON i.id = pri.item_id
-    WHERE pri.id IN (${ids.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
+    WHERE pri.cancelled_at IS NULL AND pri.id IN (${ids.map(() => '?').join(',')}) ORDER BY pri.sort_order, pri.id
   `).all(...ids);
 }
 
