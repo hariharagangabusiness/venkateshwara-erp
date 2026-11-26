@@ -10,7 +10,7 @@ const { localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
-const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
+const { soLineDispatchableQty, dispatchItemRejectableQty, syncSalesOrderDispatchStatus, markFgDispatchApproved } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
@@ -411,7 +411,7 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
   res.json(result);
 });
 
-const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'Completed', 'Cancelled'];
+const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'PartiallyDispatched', 'Dispatched', 'Invoiced', 'Completed', 'Cancelled'];
 
 // Admin-only header edit (2026-11-12) - every other Sales Order action
 // (Items, Customer PO, Commercial Terms) was already open to anyone holding
@@ -500,7 +500,7 @@ router.put('/orders/:id', requireRole('Admin'), async (req, res) => {
   if (lineUpdates.length) {
     const upd = db.prepare('UPDATE sales_order_items SET description=?, hsn_code=?, quantity=?, unit=?, rate=?, value=?, gst_rate=? WHERE id=?');
     lineUpdates.forEach(u => upd.run(u.desc, u.hsn, u.qty, u.unit, u.rate, u.qty * u.rate, u.gst, u.item.id));
-    recomputeOrderValue(order.id);
+    recomputeOrderValue(order.id, req.user.id, status === undefined || status === order.status);
   }
   recomputePoTermsStatus(db, order.id);
   // Client/Description changes affect what the annexure's own header prints
@@ -520,9 +520,14 @@ router.get('/orders/:id/items', (req, res) => {
   const items = db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ? ORDER BY sort_order, id').all(req.params.id);
   res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })));
 });
-function recomputeOrderValue(salesOrderId) {
+// Every line add/edit/delete funnels through here, so it also re-derives the
+// dispatch status - raising a qty on a fully dispatched order must flip it back
+// to PartiallyDispatched. The Admin header edit passes syncStatus=false when
+// Admin explicitly picked a status, so that choice isn't undone.
+function recomputeOrderValue(salesOrderId, actorId, syncStatus = true) {
   const total = db.prepare('SELECT COALESCE(SUM(value), 0) as t FROM sales_order_items WHERE sales_order_id = ?').get(salesOrderId).t;
   db.prepare('UPDATE sales_orders SET order_value = ? WHERE id = ?').run(total, salesOrderId);
+  if (syncStatus) syncSalesOrderDispatchStatus(salesOrderId, actorId);
 }
 router.post('/orders/:id/items', requirePermission('sales_order.manage'), async (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
@@ -538,7 +543,7 @@ router.post('/orders/:id/items', requirePermission('sales_order.manage'), async 
     VALUES (?,?,?,?,?,?,?,?,?,?)
   `).run(order.id, item_id || null, String(description).trim(), hsn_code || null, Number(quantity), unit || 'Nos', Number(rate), value,
     gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : 18, maxSort + 1);
-  recomputeOrderValue(order.id);
+  recomputeOrderValue(order.id, req.user.id);
   // Scope Of Supply (for an offer-less order) is sourced live from these
   // rows - previously only the stored annexure .docx generated at order-
   // creation time ever reflected them, so adding/editing/removing a line
@@ -565,7 +570,7 @@ router.put('/orders/:id/items/:itemId', requirePermission('sales_order.manage'),
     newQty, unit !== undefined ? unit : item.unit, newRate, newQty * newRate,
     gst_rate !== undefined && gst_rate !== '' ? Number(gst_rate) : item.gst_rate, item.id
   );
-  recomputeOrderValue(item.sales_order_id);
+  recomputeOrderValue(item.sales_order_id, req.user.id);
   await regenerateAnnexureIfUnlocked(item.sales_order_id);
   logSalesOrderEvent(req.user.id, 'item_edited', req.params.id, 'Order line edited.');
   res.json({ ok: true });
@@ -577,7 +582,7 @@ router.delete('/orders/:id/items/:itemId', requirePermission('sales_order.manage
     return res.status(400).json({ error: 'This line already has a dispatch against it and cannot be removed.' });
   }
   db.prepare('DELETE FROM sales_order_items WHERE id = ?').run(item.id);
-  recomputeOrderValue(item.sales_order_id);
+  recomputeOrderValue(item.sales_order_id, req.user.id);
   await regenerateAnnexureIfUnlocked(item.sales_order_id);
   logSalesOrderEvent(req.user.id, 'item_deleted', req.params.id, 'Order line deleted.');
   res.json({ ok: true });
@@ -1067,6 +1072,7 @@ const HISTORY_ACTION_LABELS = {
   email_annexure_to_hods: 'Annexure emailed to HODs', annexure_regenerated: 'Annexure regenerated', order_edited: 'Order edited',
   item_added: 'Line added', item_edited: 'Line edited', item_deleted: 'Line deleted', po_updated: 'Customer PO updated',
   po_terms_accepted: 'PO terms accepted', po_terms_mismatch_acknowledged: 'PO terms mismatch acknowledged',
+  order_status_synced: 'Order status updated (FG dispatch approved)',
 };
 router.get('/orders/:id/history', (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
@@ -1222,7 +1228,12 @@ router.post('/dispatches', requirePermission('sales_order.manage'), (req, res) =
   const dispatchId = tx();
   const approvalId = approvals.startApproval('FgDispatch', 'fg_dispatch', dispatchId, totalAmount, req.user.id);
   db.prepare('UPDATE fg_dispatches SET approval_id = ? WHERE id = ?').run(approvalId, dispatchId);
-  res.json({ id: dispatchId, dispatch_no: dispatchNo, status: 'PendingApproval' });
+  // startApproval() auto-approves when no chain step qualifies (an Admin-raised
+  // threshold) and never calls the status hook - without this the dispatch
+  // would sit PendingApproval forever with an already-Approved approval.
+  const autoApproved = db.prepare('SELECT status FROM approvals WHERE id = ?').get(approvalId).status === 'Approved';
+  if (autoApproved) markFgDispatchApproved(dispatchId, req.user.id);
+  res.json({ id: dispatchId, dispatch_no: dispatchNo, status: autoApproved ? 'Dispatched' : 'PendingApproval' });
 });
 function dispatchBundle(id) {
   const dispatch = db.prepare(`

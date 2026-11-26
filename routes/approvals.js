@@ -5,7 +5,7 @@ const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
 const { getWorkflowTemplate, renderTemplate } = require('../lib/emailTemplates');
-const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
+const { markFgDispatchApproved } = require('../lib/soItems');
 const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 const { formatDate } = require('../lib/dateFormat');
 const { poReceivedQty } = require('../lib/purchaseOrders');
@@ -394,7 +394,7 @@ router.get('/:id/history', (req, res) => {
   res.json(actions);
 });
 
-function syncEntityStatus(entityType, entityId, result) {
+function syncEntityStatus(entityType, entityId, result, actorId) {
   // A multi-item PO is several purchase_orders rows sharing one po_no (see
   // POST /orders), but the approval is one per po_no group - its outcome
   // has to apply to every sibling row, not just the one entity_id the
@@ -484,29 +484,12 @@ function syncEntityStatus(entityType, entityId, result) {
     if (newStatus) db.prepare('UPDATE salary_hike_cycles SET status = ? WHERE id = ?').run(newStatus, entityId);
     return;
   }
-  // On final Approved (both Accounts and Management steps cleared), flips
-  // to 'Dispatched' and auto-completes the project's Packing/Shipping job
-  // card stages (if not already) - closes the loop between production and
-  // dispatch tracking without a second, parallel "mark as shipped" step.
-  // Deliberately raw UPDATEs here rather than calling the interactive
-  // PATCH /job-cards/:id route - that route's HOD/assignee permission
-  // checks are for a human acting on their own department's card, not a
-  // system-triggered completion once Sales/Accounts/Management have
-  // approved the goods actually leaving.
+  // On final Approved (both Accounts and Management steps cleared) the
+  // dispatch goes 'Dispatched', its Sales Order status follows and the
+  // Packing/Shipping job cards complete - see markFgDispatchApproved().
   if (entityType === 'fg_dispatch') {
     if (result === 'Approved') {
-      const dispatch = db.prepare('SELECT * FROM fg_dispatches WHERE id = ?').get(entityId);
-      db.prepare(`UPDATE fg_dispatches SET status = 'Dispatched' WHERE id = ?`).run(entityId);
-      if (dispatch && dispatch.project_id) {
-        ['Packing', 'Shipping'].forEach(stage => {
-          const jc = db.prepare(`SELECT * FROM job_cards WHERE project_id = ? AND stage = ? AND parent_job_card_id IS NULL`).get(dispatch.project_id, stage);
-          if (jc && jc.status !== 'Completed' && jc.status !== 'NotApplicable') {
-            db.prepare(`UPDATE job_cards SET status = 'Completed', completed_at = (datetime('now','localtime')) WHERE id = ?`).run(jc.id);
-            advanceProjectStatus(db, dispatch.project_id);
-            releaseDependents(db, jc.id);
-          }
-        });
-      }
+      markFgDispatchApproved(entityId, actorId);
       return;
     }
     const statusByResult = { Rejected: 'Rejected', InfoRequested: 'InfoRequested', Pending: 'PendingApproval' };
@@ -744,7 +727,7 @@ router.post('/:id/act', (req, res) => {
       return res.status(400).json({ error: 'A rejection reason is required.' });
     }
     const result = approvalsLib.act(req.params.id, req.user, action, comment);
-    syncEntityStatus(approval.entity_type, approval.entity_id, result);
+    syncEntityStatus(approval.entity_type, approval.entity_id, result, req.user.id);
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)
       .run(req.user.id, 'approval_action:' + action, approval.entity_type, approval.entity_id, comment || null);
     notifyRequesterOfOutcome(approval, result, comment, req.user.full_name, req.user).catch(() => {});
