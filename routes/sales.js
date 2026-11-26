@@ -9,7 +9,7 @@ const { createJobCardsForProject } = require('../lib/pipeline');
 const { localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
-const { getCompanySettings, getWorkflowChannel } = require('../lib/settings');
+const { getCompanySettings } = require('../lib/settings');
 const { soLineDispatchableQty, dispatchItemRejectableQty } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
@@ -1047,7 +1047,7 @@ router.post('/orders/:id/email-annexure', requirePermission('sales_order.manage'
       to: recipients[0].email.trim(), cc: recipients.slice(1).map(r => r.email.trim()),
       subject: tpl.subject, text: tpl.body, skipDefaultCc: true,
       attachments: [{ filename, path: result.outPath }],
-      channel: getWorkflowChannel('so_annexure_hods'),
+      workflow: 'so_annexure_hods',
     });
     if (!mail.sent) return res.status(502).json({ error: mail.reason || 'Email could not be sent.' });
     db.prepare(`INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)`)

@@ -4,7 +4,6 @@ const { authRequired, requirePermission } = require('../middleware/auth');
 const approvalsLib = require('../lib/approvals');
 const { departmentIdsUnderNode } = require('../lib/orgHierarchy');
 const { sendMail } = require('../lib/mailer');
-const { getWorkflowChannel } = require('../lib/settings');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { advanceProjectStatus, releaseDependents } = require('../lib/pipeline');
 const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
@@ -669,7 +668,7 @@ async function notifyPurchaseRequestRejected(approval, comment, actor) {
     requester_name: pr.full_name, pr_no: prNo, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: pr.department || '-',
     items: items.length ? items.join(', ') : '-', actor_name: actor.full_name, actor_role: actor.role_name || '-', rejected_at: localDateTimeStr(), reason,
   });
-  await sendMail({ to: pr.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
+  await sendMail({ to: pr.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' });
 }
 
 async function notifyRequesterOfOutcome(approval, result, comment, actorName, actor) {
@@ -698,7 +697,7 @@ async function notifyRequesterOfOutcome(approval, result, comment, actorName, ac
     // either - same as the "awaiting your approval" notification. The CC
     // list now lives only on the weekly department digest
     // (lib/weeklyApprovalDigest.js).
-    await sendMail({ to: requester.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
+    await sendMail({ to: requester.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' });
   } catch (e) { /* best-effort - never let a notification failure affect the approval action itself */ }
 }
 
@@ -732,7 +731,7 @@ async function notifyApproversPending(approval) {
       summary: info.summary ? ' (' + info.summary + ')' : '',
     });
     const emails = approvers.map(u => u.email);
-    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') });
+    await sendMail({ to: emails[0], cc: emails.slice(1), subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' });
   } catch (e) { /* best-effort - never let a notification failure affect the approval itself */ }
 }
 

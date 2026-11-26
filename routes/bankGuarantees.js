@@ -7,7 +7,6 @@ const { db } = require('../db');
 const { localDateStr, localDateTimeStr } = require('../lib/dateUtil');
 const { authRequired, requirePermission, requireRole } = require('../middleware/auth');
 const { sendMail } = require('../lib/mailer');
-const { getWorkflowChannel } = require('../lib/settings');
 const { LIVE_BG_SQL } = require('../lib/bgStatus');
 const { resolveUploadPath } = require('../lib/paths');
 const router = express.Router();
@@ -377,7 +376,7 @@ router.post('/reminders/:id/send-email', canManage, async (req, res) => {
     to: toAddress,
     subject: `Bank Guarantee ${bg.bg_no || '#' + bg.id} — Follow-up`,
     text: `Dear ${ctx.partyName},\n\nThis is a follow-up regarding the ${bg.bg_type} Bank Guarantee ${bg.bg_no || '#' + bg.id} (value Rs. ${bg.value}), valid up to ${bg.validity_expiry}.\n\n${bg.milestone_link ? 'Release condition on file: ' + bg.milestone_link + '.\n\n' : ''}Please arrange for its release/return at your earliest convenience, or let us know if an extension is required.\n\nRegards,\nVenkateshwara Engineers - Accounts`,
-    channel: getWorkflowChannel('bg_customer_followup'),
+    workflow: 'bg_customer_followup',
   });
   if (!result.sent) return res.json({ ok: false, sent: false, message: result.reason });
   db.prepare(`UPDATE bg_reminder_log SET status = 'EmailSent', email_sent_to = ?, email_sent_at = ? WHERE id = ?`)

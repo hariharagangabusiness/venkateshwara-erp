@@ -11,7 +11,7 @@ const { localDateStr, localDateTimeStr, localDateFromValue } = require('../lib/d
 const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
-const { getCompanySettings, getPurchaseSettings, getWorkflowChannel } = require('../lib/settings');
+const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
 const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
@@ -1013,7 +1013,7 @@ function notifyPrRequestor(pr, sourceType, message, templateKey, vars) {
     const { subject, body } = renderTemplate(getEmailTemplate(templateKey), Object.assign({
       requester_name: who.full_name, pr_no: pr.pr_no, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: who.department || '-',
     }, vars));
-    sendMail({ to: who.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') }).catch(() => {});
+    sendMail({ to: who.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' }).catch(() => {});
   } catch (e) { console.error('[pr-cancel-notify] failed:', e.message); }
 }
 const prLineName = (l) => l.item_name || l.item_text || 'Item';
@@ -1590,7 +1590,7 @@ router.post('/orders/:id/revoke-approval', requireRole('Admin'), (req, res) => {
         const { subject, body } = renderTemplate(getEmailTemplate('approval_outcome_rejected'), {
           requester_name: creator.full_name, entity_label: 'Purchase Order', ref: existing.po_no, summary: '', actor_name: req.user.full_name, reason: 'Reason: ' + reason,
         });
-        sendMail({ to: creator.email, subject, text: body, skipDefaultCc: true, channel: getWorkflowChannel('approval_alerts') }).catch(() => {});
+        sendMail({ to: creator.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' }).catch(() => {});
       }
     }
   } catch (e) { console.error('[po-revoke-notify] failed:', e.message); }
