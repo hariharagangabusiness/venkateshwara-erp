@@ -12,7 +12,7 @@ const { generatePoDocx } = require('../lib/poDocx');
 const { sendMail } = require('../lib/mailer');
 const { getDepartmentEmailIdentity } = require('../lib/departmentEmail');
 const { getCompanySettings, getPurchaseSettings } = require('../lib/settings');
-const { getEmailTemplate, renderTemplate } = require('../lib/emailTemplates');
+const { getWorkflowTemplate, renderTemplate } = require('../lib/emailTemplates');
 const { buildDownloadFilename, buildVersionStamp } = require('../lib/downloadFilename');
 const { runInboundRfqScan } = require('../lib/inboundRfqMail');
 const { poReceivedQty } = require('../lib/purchaseOrders');
@@ -1010,7 +1010,7 @@ function notifyPrRequestor(pr, sourceType, message, templateKey, vars) {
     if (!who) return;
     db.prepare('INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)').run(who.id, sourceType, pr.id, message);
     if (!who.email) return;
-    const { subject, body } = renderTemplate(getEmailTemplate(templateKey), Object.assign({
+    const { subject, body } = renderTemplate(getWorkflowTemplate('approval_alerts', templateKey), Object.assign({
       requester_name: who.full_name, pr_no: pr.pr_no, pr_date: formatDate(String(pr.created_at || '').slice(0, 10)), department: who.department || '-',
     }, vars));
     sendMail({ to: who.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' }).catch(() => {});
@@ -1587,7 +1587,7 @@ router.post('/orders/:id/revoke-approval', requireRole('Admin'), (req, res) => {
       db.prepare('INSERT INTO notifications (user_id, source_type, source_id, message) VALUES (?,?,?,?)')
         .run(creator.id, 'PO_REVOKED', live[0].id, `Purchase Order ${existing.po_no} was rejected (approval revoked) by ${req.user.full_name}. Reason: ${reason}`);
       if (creator.email) {
-        const { subject, body } = renderTemplate(getEmailTemplate('approval_outcome_rejected'), {
+        const { subject, body } = renderTemplate(getWorkflowTemplate('approval_alerts', 'approval_outcome_rejected'), {
           requester_name: creator.full_name, entity_label: 'Purchase Order', ref: existing.po_no, summary: '', actor_name: req.user.full_name, reason: 'Reason: ' + reason,
         });
         sendMail({ to: creator.email, subject, text: body, skipDefaultCc: true, workflow: 'approval_alerts' }).catch(() => {});

@@ -1879,6 +1879,11 @@ const MIGRATIONS = [
   `ALTER TABLE purchase_request_items ADD COLUMN cancelled_at TEXT`,
   `ALTER TABLE purchase_request_items ADD COLUMN cancelled_by INTEGER REFERENCES users(id)`,
   `ALTER TABLE purchase_request_items ADD COLUMN cancel_reason TEXT`,
+  // Admin-created custom email templates live in email_templates beside the built-in overrides
+  `ALTER TABLE email_templates ADD COLUMN is_custom INTEGER DEFAULT 0`,
+  `ALTER TABLE email_templates ADD COLUMN label TEXT`,
+  `ALTER TABLE email_templates ADD COLUMN description TEXT`,
+  `ALTER TABLE email_templates ADD COLUMN variables TEXT`,
 ];
 for (const stmt of MIGRATIONS) {
   try { raw.exec(stmt); } catch (e) {

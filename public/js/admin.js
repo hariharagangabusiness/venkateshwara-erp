@@ -1446,6 +1446,12 @@ PAGES['company-settings'] = async (el) => {
               <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendChannelTest('${k}')">Send Test Email</button></div>
             </div>
             <div id="ec-${k}-result" class="msg" style="display:none;"></div>
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));margin-top:8px;">
+              <div><label>Send Using Template</label><select id="ect-${k}-tpl">${ectOptionsHTML(emailTemplates)}</select></div>
+              <div><label>To</label><input id="ect-${k}-to" placeholder="you@example.com"></div>
+              <div style="align-self:end;"><button class="btn small outline" type="button" onclick="sendChannelTemplate('${k}')">Send Using Template</button></div>
+            </div>
+            <div id="ect-${k}-result" class="msg" style="display:none;"></div>
           </div>`; }).join('')}
         <button class="btn" id="ec-save-btn" onclick="saveEmailChannels()" style="margin-top:6px;">Save Outbound Channels</button>
         <div id="ec-err" class="msg err" style="display:none;margin-top:8px;"></div>
@@ -1465,11 +1471,16 @@ PAGES['company-settings'] = async (el) => {
           </div>
         </div>
         <h4 style="margin:16px 0 6px;">Which channel each automated email uses</h4>
-        <table><thead><tr><th>Automated email / report</th><th>Sends through</th><th></th></tr></thead><tbody>
+        <div style="overflow-x:auto;"><table><thead><tr><th>Automated email / report</th><th>Sends through</th><th>Template</th></tr></thead><tbody>
           ${emailWorkflows.map(w => `<tr><td>${esc(w.label)}</td>
             <td><select id="ew-${w.key}">${Object.keys(emailChannels).map(k => `<option value="${k}" ${k === w.channel ? 'selected' : ''}>${esc(emailChannels[k].label)} &lt;${esc(emailChannels[k].from_address)}&gt;</option>`).join('')}</select></td>
-            <td>${w.templates.map(t => `<a href="#" onclick="editEmailContent('${t}');return false;" style="margin-right:10px;white-space:nowrap;">Edit Email Content${w.templates.length > 1 ? ' (' + esc((emailTemplates.find(x => x.key === t) || {}).label || t) + ')' : ''}</a>`).join('')}</td></tr>`).join('')}
-        </tbody></table>
+            <td>${w.templates.length ? w.templates.map(t => {
+              const lab = (emailTemplates.find(x => x.key === t) || {}).label || t;
+              const cur = (w.template_assignments || {})[t] || '';
+              return `<div style="margin-bottom:8px;min-width:210px;"><div class="muted" style="font-size:12px;">${esc(lab)}</div>
+                <select class="ewt-sel" data-wf="${w.key}" data-tpl="${t}" style="max-width:260px;"><option value="">Default (built-in)</option>${emailTemplates.filter(x => x.is_custom).map(x => `<option value="${esc(x.key)}" ${x.key === cur ? 'selected' : ''}>${esc(x.label)} (Custom)</option>`).join('')}</select>
+                <a href="#" onclick="ewtEdit(this);return false;" style="white-space:nowrap;">Edit Template</a></div>`; }).join('') : '<span class="muted">Built into the report</span>'}</td></tr>`).join('')}
+        </tbody></table></div>
         <button class="btn small" id="ew-save-btn" type="button" onclick="saveEmailWorkflows()" style="margin-top:8px;">Save Assignments</button>
         <div id="ew-err" class="msg err" style="display:none;margin-top:8px;"></div>
       `) : ''}
@@ -1568,8 +1579,9 @@ PAGES['company-settings'] = async (el) => {
       <p class="muted">Pick a template to see and edit its current subject/body - a template left untouched keeps sending the same built-in text it always has. {{tokens}} are plain mail-merge placeholders filled in automatically when the email is sent; leave them exactly as shown to keep that behavior.</p>
       <div class="form-grid">
         <div><label>Template</label><select id="etc-key" onchange="etcTemplateChanged()">
-          ${emailTemplates.map(t => `<option value="${esc(t.key)}">${esc(t.label)}${t.is_customized ? ' (customized)' : ''}</option>`).join('')}
+          ${emailTemplates.map(t => `<option value="${esc(t.key)}">${esc(t.label)}${t.is_custom ? ' (Custom)' : (t.is_customized ? ' (customized)' : '')}</option>`).join('')}
         </select></div>
+        ${ME.role === 'Admin' ? `<div style="align-self:end;"><button class="btn small outline" type="button" onclick="openAddEmailTemplate()">+ Add Email Template</button></div>` : ''}
       </div>
       <div id="etc-body"></div>
     `)}
@@ -1636,16 +1648,16 @@ window.etcTemplateChanged = () => {
   const tpl = (window.__EMAIL_TEMPLATES || []).find(t => t.key === key);
   if (!tpl) { bodyEl.innerHTML = ''; return; }
   bodyEl.innerHTML = `
-    <p class="muted" style="margin-top:10px;">${esc(tpl.description)}</p>
-    <p><b>Variables available:</b> ${tpl.variables.map(v => `<code>{{${esc(v)}}}</code>`).join(', ')}</p>
+    <p class="muted" style="margin-top:10px;">${tpl.is_custom ? '<span class="badge Draft">Custom</span> ' : ''}${esc(tpl.description)}</p>
+    <p><b>${tpl.is_custom ? 'Placeholders (hint)' : 'Variables available'}:</b> ${tpl.variables.map(v => `<code>{{${esc(v)}}}</code>`).join(', ')}</p>
     <div class="form-grid"><div><label>Subject</label><input id="etc-subject" value="${esc(tpl.subject)}"></div></div>
     <div class="form-grid"><div><label>Body</label><textarea id="etc-body-text" rows="8">${esc(tpl.body)}</textarea></div></div>
     <div style="margin-top:10px;">
       <button class="btn" id="etc-save-btn" onclick="saveEmailTemplate()">Save Template</button>
-      ${tpl.is_customized ? `<button class="btn small outline" type="button" onclick="resetEmailTemplateField()">Reset to Default</button>` : ''}
+      ${tpl.is_custom ? `<button class="btn small red" type="button" onclick="deleteCustomEmailTemplate()">Delete Template</button>` : (tpl.is_customized ? `<button class="btn small outline" type="button" onclick="resetEmailTemplateField()">Reset to Default</button>` : '')}
     </div>
     <div id="etc-err" class="msg err" style="display:none;margin-top:8px;"></div>
-    ${tpl.is_customized ? `<p class="muted" style="margin-top:6px;">Last customized ${new Date(tpl.updated_at).toLocaleString()}.</p>` : ''}
+    ${tpl.is_customized || tpl.is_custom ? `<p class="muted" style="margin-top:6px;">Last ${tpl.is_custom ? 'edited' : 'customized'} ${new Date(tpl.updated_at).toLocaleString()}.</p>` : ''}
   `;
 };
 window.resetEmailTemplateField = async () => {
@@ -1925,9 +1937,79 @@ window.saveEmailWorkflows = async () => {
   const workflows = {};
   document.querySelectorAll('select[id^="ew-"]').forEach(s => { workflows[s.id.slice(3)] = s.value; });
   try {
-    await api('/settings/email-workflows', { method: 'PUT', body: JSON.stringify({ workflows }) });
+    const templates = {};
+    document.querySelectorAll('select.ewt-sel').forEach(sel => { templates[sel.dataset.wf + '|' + sel.dataset.tpl] = sel.value; });
+    await api('/settings/email-workflows', { method: 'PUT', body: JSON.stringify({ workflows, templates }) });
     confirmSavedThenClose('ew-save-btn', 'company-settings');
   } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+// ---- Custom email templates (Admin) + per-workflow template pick + "Send Using Template" on a channel ----
+function ectOptionsHTML(list) {
+  const opt = (t) => `<option value="${esc(t.key)}">${esc(t.label)}</option>`;
+  const custom = list.filter(t => t.is_custom), builtIn = list.filter(t => !t.is_custom);
+  return (custom.length ? `<optgroup label="Custom templates">${custom.map(opt).join('')}</optgroup>` : '') + `<optgroup label="Built-in templates">${builtIn.map(opt).join('')}</optgroup>`;
+}
+window.ewtEdit = (a) => { const sel = a.parentElement.querySelector('select'); editEmailContent(sel.value || sel.dataset.tpl); };
+window.sendChannelTemplate = async (k) => {
+  const resultEl = document.getElementById(`ect-${k}-result`);
+  const to = val(`ect-${k}-to`), template = val(`ect-${k}-tpl`);
+  if (!to) { alert('Enter an email address to send to.'); return; }
+  resultEl.className = 'msg'; resultEl.style.display = 'block'; resultEl.textContent = 'Sending...';
+  try {
+    await api('/settings/email-channels', { method: 'PUT', body: JSON.stringify(ecBody()) });
+    const r = await api(`/settings/email-channels/${k}/send-template`, { method: 'POST', body: JSON.stringify({ template, to }) });
+    resultEl.className = r.sent ? 'msg ok' : 'msg err';
+    resultEl.textContent = r.sent ? `Sent from ${r.from} to ${to} using this template (placeholders show as [name]; the channel's extra recipients are in Cc).` : (r.reason || 'Failed to send - check the channel settings.');
+  } catch (e) { resultEl.className = 'msg err'; resultEl.textContent = e.message; }
+};
+window.openAddEmailTemplate = () => {
+  openAppModal('Add Email Template', `
+    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));">
+      <div><label for="ntpl-name">Template Name</label><input id="ntpl-name" oninput="ntplNameChanged()" placeholder="e.g. Dispatch Notice"></div>
+      <div><label for="ntpl-key">Template Key</label><input id="ntpl-key" oninput="this.dataset.touched='1'" placeholder="custom_dispatch_notice"></div>
+    </div>
+    <div><label for="ntpl-desc">Description / Category</label><input id="ntpl-desc" placeholder="What this email is for"></div>
+    <div><label for="ntpl-vars">Placeholders (optional, comma-separated)</label><input id="ntpl-vars" placeholder="recipient_name, order_no"></div>
+    <div><label for="ntpl-subject">Subject</label><input id="ntpl-subject"></div>
+    <div><label for="ntpl-body">Body</label><textarea id="ntpl-body" rows="7" style="width:100%;"></textarea></div>
+    <p class="muted" style="font-size:12px;">Write <code>{{placeholder}}</code> where a value should be filled in. To use this template for an automated email (Company Settings &rarr; System Outbound Channels &rarr; Template), it may only use the placeholders that email provides - the assignment is refused otherwise.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
+      <button class="btn small outline" type="button" onclick="ntplPreview()">Preview</button>
+      <button class="btn" id="ntpl-save-btn" type="button" onclick="saveNewEmailTemplate()">Create Template</button>
+    </div>
+    <pre id="ntpl-preview" style="display:none;white-space:pre-wrap;word-break:break-word;background:#f7f9fb;border:1px solid var(--border);border-radius:6px;padding:10px;font-family:inherit;font-size:13px;margin:0 0 10px;"></pre>
+    <div id="ntpl-err" class="msg err" style="display:none;"></div>`);
+};
+window.ntplNameChanged = () => {
+  const key = document.getElementById('ntpl-key');
+  if (key && !key.dataset.touched) key.value = 'custom_' + val('ntpl-name').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+};
+window.ntplPreview = () => {
+  const fill = (t) => String(t || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) => '[' + k + ']');
+  const el = document.getElementById('ntpl-preview');
+  el.textContent = 'Subject: ' + fill(val('ntpl-subject')) + '\n\n' + fill(document.getElementById('ntpl-body').value);
+  el.style.display = 'block';
+};
+window.saveNewEmailTemplate = async () => {
+  const errEl = document.getElementById('ntpl-err'); errEl.style.display = 'none';
+  try {
+    const r = await api('/settings/email-templates', { method: 'POST', body: JSON.stringify({
+      name: val('ntpl-name'), key: val('ntpl-key'), description: val('ntpl-desc'), placeholders: val('ntpl-vars'),
+      subject: val('ntpl-subject'), body: document.getElementById('ntpl-body').value,
+    })});
+    closeAppModal();
+    await navigate('company-settings');
+    for (let i = 0; i < 20 && !document.querySelector(`#etc-key option[value="${r.key}"]`); i++) await new Promise(res => setTimeout(res, 250));
+    editEmailContent(r.key);
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+};
+window.deleteCustomEmailTemplate = async () => {
+  const key = val('etc-key');
+  if (!confirm('Delete this custom template? This cannot be undone.')) return;
+  try {
+    await api('/settings/email-templates/' + key, { method: 'DELETE' });
+    navigate('company-settings');
+  } catch (e) { alert(e.message); }
 };
 // Jump to the Email Template Customizer with this template selected.
 window.editEmailContent = (key) => {

@@ -6,6 +6,7 @@ const { db } = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { getCompanySettings, setCompanySettings, getEmailSettings, setEmailSettings, getInboundMailSettings, setInboundMailSettings, getPurchaseInboundMailSettings, setPurchaseInboundMailSettings, getPurchaseSettings, setPurchaseSettings, getSidebarGroupOrder, setSidebarGroupOrder, getWeeklyDigestSettings, setWeeklyDigestSettings, getDailyPurchaseDigestSettings, setDailyPurchaseDigestSettings, EMAIL_CHANNEL_KEYS, EMAIL_WORKFLOWS, getEmailChannels, setEmailChannels, addEmailChannel, deleteEmailChannel, parseEmailList, workflowAllowsExtras, getEmailWorkflowChannels, setEmailWorkflowChannels, getProjectPlanSparesMode, setProjectPlanSparesMode } = require('../lib/settings');
 const { sendMail } = require('../lib/mailer');
+const { getEmailTemplateCatalog, renderTemplate, templateTokens, createCustomTemplate, deleteCustomTemplate, getWorkflowTemplateAssignments, setWorkflowTemplateAssignments, validateTemplateAssignment } = require('../lib/emailTemplates');
 const { testConnection: testInboundMailConnection } = require('../lib/inboundMail');
 const { testConnection: testPurchaseInboundMailConnection } = require('../lib/inboundRfqMail');
 const { makeUpload } = require('../lib/upload');
@@ -159,10 +160,43 @@ router.delete('/email-channels/:key', requireRole('Admin'), (req, res) => {
   deleteEmailChannel(req.params.key);
   res.json(maskChannels(getEmailChannels()));
 });
+// ---- Custom email templates (Admin only). Built-in templates are only ever Reset (routes/admin.js), never deleted here. ----
+router.post('/email-templates', requireRole('Admin'), (req, res) => {
+  try {
+    const key = createCustomTemplate(req.body || {}, req.user.id);
+    res.json({ ok: true, key });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.delete('/email-templates/:key', requireRole('Admin'), (req, res) => {
+  try {
+    deleteCustomTemplate(req.params.key);
+    res.json({ ok: true });
+  } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+});
+// Manual dispatch of any template through one channel: that channel's From address (and own SMTP login), the typed To, the
+// channel's extra recipients in Cc. Placeholders are filled with "[name]" samples. Never falls back to the global sender.
+router.post('/email-channels/:key/send-template', requireRole('Admin'), async (req, res) => {
+  if (!getEmailChannels()[req.params.key]) return res.status(404).json({ error: 'Unknown channel.' });
+  const catalog = getEmailTemplateCatalog();
+  const tpl = catalog.find(t => t.key === String((req.body && req.body.template) || ''));
+  if (!tpl) return res.status(400).json({ error: 'Pick a template to send.' });
+  const to = parseEmailList((req.body && req.body.to) || '');
+  if (to.invalid.length) return res.status(400).json({ error: 'Not a valid email address: ' + to.invalid.join(', ') });
+  if (!to.valid.length) return res.status(400).json({ error: 'Enter an email address to send to.' });
+  const vars = {};
+  templateTokens(tpl).forEach(t => { vars[t] = '[' + t + ']'; });
+  const { subject, body } = renderTemplate(tpl, vars);
+  const result = await sendMail({ to: to.valid.join(', '), channel: req.params.key, noFallback: true, ccChannelExtras: true, skipDefaultCc: true, subject, text: body });
+  res.json(result);
+});
 // Which channel each automated-email workflow sends through (+ the editable email templates it uses, for the Edit Email Content link).
 router.get('/email-workflows', requireRole('Admin'), (req, res) => {
   const assigned = getEmailWorkflowChannels();
-  res.json(Object.entries(EMAIL_WORKFLOWS).map(([key, w]) => ({ key, label: w.label, channel: assigned[key], templates: w.templates, applies_extras: workflowAllowsExtras(key) })));
+  const tplAssign = getWorkflowTemplateAssignments();
+  res.json(Object.entries(EMAIL_WORKFLOWS).map(([key, w]) => ({
+    key, label: w.label, channel: assigned[key], templates: w.templates, applies_extras: workflowAllowsExtras(key),
+    template_assignments: Object.fromEntries(w.templates.map(t => [t, tplAssign[key + '|' + t] || ''])),
+  })));
 });
 router.put('/email-workflows', requireRole('Admin'), (req, res) => {
   const map = (req.body && req.body.workflows) || {};
@@ -171,6 +205,15 @@ router.put('/email-workflows', requireRole('Admin'), (req, res) => {
     if (!EMAIL_WORKFLOWS[w]) return res.status(400).json({ error: 'Unknown workflow ' + w + '.' });
     if (!chans[c]) return res.status(400).json({ error: 'Unknown channel ' + c + '.' });
   }
+  // Template assignments: { 'workflow|builtInTemplateKey': customKey | '' } - a custom template may only use placeholders that send site fills in.
+  const tplMap = (req.body && req.body.templates) || {};
+  for (const [pair, customKey] of Object.entries(tplMap)) {
+    if (!customKey) continue;
+    const [wf, tpl] = pair.split('|');
+    const err = validateTemplateAssignment(wf, tpl, customKey);
+    if (err) return res.status(400).json({ error: err });
+  }
+  setWorkflowTemplateAssignments(tplMap);
   setEmailWorkflowChannels(map);
   res.json({ ok: true });
 });
