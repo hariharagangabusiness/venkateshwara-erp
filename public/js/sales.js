@@ -802,10 +802,32 @@ window.removeSOItem = async (orderId, itemId) => {
 
 // ---- FG Packing & Dispatch ----
 let DISPATCH_LINES = [];
+// Amber "this order already has dispatches" banner under the New Dispatch form (2026-11-27). Display only: the over-shipment guard
+// is still soLineDispatchableQty() on the server, which is what the Dispatchable figures below the banner come from.
+const PRIOR_DISPATCH_LABEL = { Dispatched: 'Dispatched', PendingApproval: 'Pending Approval', InfoRequested: 'Info Requested' };
+async function renderPriorDispatches(soId) {
+  const box = document.getElementById('disp-prior');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!soId) return;
+  let list = [];
+  try { list = await api(`/sales/orders/${soId}/active-dispatches`); } catch (e) { return; }
+  if (val('disp-so') !== String(soId) || !list.length) return; // the user already picked another order
+  box.innerHTML = `<div class="disp-prior" role="status">
+    <div class="disp-prior-head">This order already has ${list.length} active dispatch${list.length > 1 ? 'es' : ''}</div>
+    ${list.map(d => `<div class="disp-prior-row">
+      <span class="disp-prior-no">${esc(d.dispatch_no)}</span><span>${fmtDMY(d.dispatch_date)}</span>
+      <span class="badge ${esc(d.status)}">${esc(PRIOR_DISPATCH_LABEL[d.status] || d.status)}</span>
+      <span class="disp-prior-lines">${d.lines.map(l => `${esc(l.description)} &times; ${fmt(l.quantity)}${l.unit ? ' ' + esc(l.unit) : ''}`).join('; ')} <b>(total ${fmt(d.total_qty)})</b></span>
+    </div>`).join('')}
+    <div class="disp-prior-note">The Dispatchable quantities below are already net of these dispatches, so this order cannot be over-shipped.</div>
+  </div>`;
+}
 window.loadDispatchableLines = async () => {
   const soId = val('disp-so');
   const el = document.getElementById('disp-lines');
   DISPATCH_LINES = [];
+  renderPriorDispatches(soId);
   if (!soId) { renderDispatchLines(); return; }
   if (el) el.innerHTML = '<p class="muted">Loading line items...</p>';
   try {
@@ -847,6 +869,7 @@ PAGES['fg-dispatches'] = async (el) => {
         <div><label>Transporter</label><input id="disp-transporter"></div>
         <div><label>E-Way Bill No</label><input id="disp-eway"></div>
       </div>
+      <div id="disp-prior"></div>
       <div id="disp-lines"><p class="muted">Pick a sales order with dispatchable lines.</p></div>
       <div class="hig-savebar"><button class="btn" onclick="submitDispatch()">Dispatch</button></div>
     </div>
@@ -868,6 +891,7 @@ function renderDispatchRows(dispatches) {
           <a class="btn small outline" href="/api/sales/dispatches/${d.id}/pdf" onclick="return downloadDispatchPdf(event, ${d.id})">Challan</a>
           <button class="btn small outline" type="button" onclick="toggleDispatchDetail(${d.id})">Details</button>
           ${['PendingApproval','InfoRequested'].includes(d.status) ? `<button class="btn small red" type="button" onclick="cancelDispatch(${d.id})">Cancel</button>` : ''}
+          ${ME.role === 'Admin' ? `<button class="btn small red" type="button" onclick="openDeleteDispatch(${d.id})">Delete</button>` : ''}
         `)}</td></tr>
         <tr id="disp-detail-row-${d.id}" style="display:none;"><td colspan="6"><div id="disp-detail-${d.id}"></div></td></tr>`)}`;
 }
@@ -999,6 +1023,36 @@ window.cancelDispatch = async (id) => {
   if (!confirm('Cancel this dispatch? This cannot be undone.')) return;
   try { await api(`/sales/dispatches/${id}/cancel`, { method: 'POST', body: '{}' }); navigate('fg-dispatches'); }
   catch (e) { alert(e.message); }
+};
+
+// Admin-only (the server enforces it): hard-delete a dispatch in ANY status. The modal shows what goes; a refusal from the server
+// (a Sale Rejection MRN / Sales Return / linked invoice still points at it) stays inside the modal.
+window.openDeleteDispatch = async (id) => {
+  let b;
+  try { b = await api(`/sales/dispatches/${id}`); } catch (e) { alert(e.message); return; }
+  const d = b.dispatch;
+  openAppModal('Delete Dispatch - ' + esc(d.dispatch_no), `
+    <p class="msg err" style="display:block;">This permanently removes the dispatch, its lines, its approval history and its uploaded-document records. It cannot be undone, and the number ${esc(d.dispatch_no)} is not reused.</p>
+    <div class="disp-del-facts">
+      <span class="muted">Dispatch</span><span>${esc(d.dispatch_no)}</span>
+      <span class="muted">Sales Order</span><span>${esc(d.order_no)}</span>
+      <span class="muted">Date</span><span>${fmtDMY(d.dispatch_date)}</span>
+      <span class="muted">Status</span><span>${badge(d.status)}</span>
+      <span class="muted">Vehicle / Transporter</span><span>${esc(d.vehicle_no) || '-'} / ${esc(d.transporter_name) || '-'}</span>
+      <span class="muted">Lines</span><span>${b.items.map(i => `${esc(i.description)} &times; ${fmt(i.quantity)}${i.unit ? ' ' + esc(i.unit) : ''}`).join('<br>') || '-'}</span>
+    </div>
+    <p class="muted">The order's status is recalculated from the dispatches that remain${d.status === 'Dispatched' ? ', and its Packing / Shipping job cards are reopened if no other approved dispatch covers the order' : ''}. The change is recorded in the order's History.</p>
+    <div id="dd-err" class="msg err" style="display:none;"></div>
+    <div class="hig-savebar">
+      <button class="btn red" id="dd-confirm" type="button" onclick="confirmDeleteDispatch(${id})">Delete Dispatch</button>
+      <button class="btn outline" type="button" onclick="closeAppModal()">Cancel</button>
+    </div>`);
+};
+window.confirmDeleteDispatch = async (id) => {
+  const err = document.getElementById('dd-err'), btn = document.getElementById('dd-confirm');
+  err.style.display = 'none'; btn.disabled = true;
+  try { await api(`/sales/dispatches/${id}`, { method: 'DELETE' }); closeAppModal(); navigate('fg-dispatches'); }
+  catch (e) { err.textContent = e.message; err.style.display = 'block'; btn.disabled = false; }
 };
 
 // ---- Sale Rejection MRN ----

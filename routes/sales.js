@@ -10,7 +10,7 @@ const { localDateTimeStr, localDateFromValue, localDateStr } = require('../lib/d
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
-const { soLineDispatchableQty, dispatchItemRejectableQty, syncSalesOrderDispatchStatus, markFgDispatchApproved } = require('../lib/soItems');
+const { soLineDispatchableQty, dispatchItemRejectableQty, syncSalesOrderDispatchStatus, markFgDispatchApproved, reopenDispatchJobCards } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
@@ -1072,7 +1072,7 @@ const HISTORY_ACTION_LABELS = {
   email_annexure_to_hods: 'Annexure emailed to HODs', annexure_regenerated: 'Annexure regenerated', order_edited: 'Order edited',
   item_added: 'Line added', item_edited: 'Line edited', item_deleted: 'Line deleted', po_updated: 'Customer PO updated',
   po_terms_accepted: 'PO terms accepted', po_terms_mismatch_acknowledged: 'PO terms mismatch acknowledged',
-  order_status_synced: 'Order status updated (FG dispatch approved)',
+  order_status_synced: 'Order status updated (FG dispatch approved)', dispatch_deleted: 'FG dispatch deleted',
 };
 router.get('/orders/:id/history', (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
@@ -1161,6 +1161,23 @@ router.get('/dispatches', requirePermission('report.view_all', 'sales_order.mana
 router.get('/orders/:id/dispatchable-lines', requirePermission('sales_order.manage'), (req, res) => {
   const items = db.prepare('SELECT * FROM sales_order_items WHERE sales_order_id = ? ORDER BY sort_order, id').all(req.params.id);
   res.json(items.map(it => ({ ...it, dispatchable_qty: soLineDispatchableQty(it) })));
+});
+// Dispatches that already claim quantity on this order (Dispatched / PendingApproval / InfoRequested - not Cancelled / Rejected),
+// with their lines: drives the New Dispatch form's "this order already has dispatches" banner. Read-only; the quantity guard
+// itself is still soLineDispatchableQty().
+router.get('/orders/:id/active-dispatches', requirePermission('sales_order.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT id, dispatch_no, dispatch_date, status FROM fg_dispatches
+    WHERE sales_order_id = ? AND status IN ('Dispatched', 'PendingApproval', 'InfoRequested') ORDER BY id
+  `).all(req.params.id);
+  const itemStmt = db.prepare(`
+    SELECT soi.description, soi.unit, fdi.quantity FROM fg_dispatch_items fdi JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+    WHERE fdi.dispatch_id = ? ORDER BY fdi.sort_order, fdi.id
+  `);
+  res.json(rows.map(d => {
+    const lines = itemStmt.all(d.id);
+    return { ...d, lines, total_qty: lines.reduce((a, l) => a + Number(l.quantity || 0), 0) };
+  }));
 });
 // A SO can have more than one live Pre-Dispatch proforma invoice in theory,
 // but in practice this just needs to know: is there one that's been raised
@@ -1264,6 +1281,61 @@ router.post('/dispatches/:id/cancel', requirePermission('sales_order.manage'), (
     db.prepare(`UPDATE approvals SET status = 'Cancelled' WHERE id = ? AND status IN ('Pending', 'InfoRequested')`).run(dispatch.approval_id);
   }
   res.json({ ok: true });
+});
+// Admin-only hard delete of an FG dispatch in ANY status (2026-11-27). Refused while anything downstream still points at it
+// (a Sale Rejection MRN or Sales Return of any status - their foreign keys would refuse anyway - or a live invoice linked on the
+// dispatch). One transaction removes the dispatch, its lines, its approval + actions and its document rows (files stay on disk,
+// same as the attachment delete); then the order's status is re-derived (a revert to Confirmed is allowed here and only here),
+// Packing / Shipping job cards the approval completed are reopened when nothing else covers them, and the history records it all.
+// The DISP number is never reused: the sequence counter is left alone, so the number stays a gap.
+router.delete('/dispatches/:id', requireRole('Admin'), (req, res) => {
+  const d = db.prepare(`
+    SELECT fd.*, so.order_no, so.status AS order_status FROM fg_dispatches fd JOIN sales_orders so ON so.id = fd.sales_order_id WHERE fd.id = ?
+  `).get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  const named = (rows, kind, no, extra) => rows.length
+    ? `Cannot delete ${d.dispatch_no}: ${kind} ${rows[0][no]} (${rows[0].status}) was raised against it${rows.length > 1 ? ` (+${rows.length - 1} more)` : ''}. ${extra}` : null;
+  const blocker =
+    named(db.prepare('SELECT mrn_no, status FROM sale_rejection_mrns WHERE fg_dispatch_id = ? ORDER BY id').all(d.id), 'Sale Rejection MRN', 'mrn_no', 'Remove or resolve that MRN first.')
+    || named(db.prepare('SELECT return_no, status FROM sales_returns WHERE fg_dispatch_id = ? ORDER BY id').all(d.id), 'Sales Return', 'return_no', 'Remove or resolve that return first.')
+    || (() => {
+      const inv = d.sales_invoice_id ? db.prepare('SELECT invoice_no, status FROM sales_invoices WHERE id = ?').get(d.sales_invoice_id) : null;
+      return inv && inv.status !== 'Cancelled' ? `Cannot delete ${d.dispatch_no}: Sales Invoice ${inv.invoice_no} (${inv.status}) is linked to it. Cancel that invoice first.` : null;
+    })();
+  if (blocker) return res.status(400).json({ error: blocker });
+  const lines = db.prepare(`
+    SELECT soi.description, soi.unit, fdi.quantity FROM fg_dispatch_items fdi JOIN sales_order_items soi ON soi.id = fdi.sales_order_item_id
+    WHERE fdi.dispatch_id = ? ORDER BY fdi.sort_order, fdi.id
+  `).all(d.id);
+  const lineSummary = lines.map(l => `${l.description} x ${l.quantity}${l.unit ? ' ' + l.unit : ''}`).join('; ') || 'no lines';
+  const result = db.transaction(() => {
+    const approvalIds = db.prepare(`SELECT id FROM approvals WHERE entity_type = 'fg_dispatch' AND entity_id = ?`).all(d.id).map(r => r.id);
+    if (d.approval_id && !approvalIds.includes(d.approval_id)) approvalIds.push(d.approval_id);
+    const approvedAt = d.status === 'Dispatched' && approvalIds.length
+      ? (db.prepare(`SELECT MAX(acted_at) AS t FROM approval_actions WHERE approval_id IN (${approvalIds.map(() => '?').join(',')}) AND action = 'Approved'`).get(...approvalIds).t
+        || db.prepare(`SELECT MIN(created_at) AS t FROM approvals WHERE id IN (${approvalIds.map(() => '?').join(',')})`).get(...approvalIds).t)
+      : null;
+    db.prepare('DELETE FROM fg_dispatch_items WHERE dispatch_id = ?').run(d.id);
+    db.prepare(`DELETE FROM attachments WHERE entity_type = 'fg_dispatch' AND entity_id = ?`).run(d.id);
+    db.prepare('DELETE FROM fg_dispatches WHERE id = ?').run(d.id);
+    approvalIds.forEach(id => {
+      db.prepare('DELETE FROM approval_actions WHERE approval_id = ?').run(id);
+      db.prepare('DELETE FROM approvals WHERE id = ?').run(id);
+    });
+    const jobCards = d.status === 'Dispatched' ? reopenDispatchJobCards(d, approvedAt, req.user.id) : { reopened: [], kept: [] };
+    syncSalesOrderDispatchStatus(d.sales_order_id, req.user.id, { allowRevert: true, silent: true });
+    const orderStatus = db.prepare('SELECT status FROM sales_orders WHERE id = ?').get(d.sales_order_id).status;
+    const details = `${d.dispatch_no} (was ${d.status}) deleted by ${req.user.full_name}. Lines: ${lineSummary}. `
+      + (orderStatus === d.order_status ? `Order status stays ${orderStatus}.` : `Order status ${d.order_status} -> ${orderStatus}.`)
+      + (jobCards.reopened.length ? ` Job cards reopened: ${jobCards.reopened.join(', ')}.` : '')
+      + (jobCards.kept.length ? ` Job cards left Completed (${jobCards.kept.map(k => `${k.stage}: ${k.reason}`).join('; ')}).` : '');
+    const audit = db.prepare('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)');
+    audit.run(req.user.id, 'dispatch_deleted', 'sales_order', d.sales_order_id, details);
+    audit.run(req.user.id, 'dispatch_deleted', 'fg_dispatch', d.id, `${d.order_no}: ${details}`);
+    return { orderStatus, jobCards };
+  })();
+  res.json({ ok: true, dispatch_no: d.dispatch_no, order_no: d.order_no, previous_status: d.status, previous_order_status: d.order_status,
+    order_status: result.orderStatus, job_cards_reopened: result.jobCards.reopened, job_cards_kept: result.jobCards.kept });
 });
 router.get('/dispatches/:id/pdf', async (req, res) => {
   const bundle = dispatchBundle(req.params.id);
