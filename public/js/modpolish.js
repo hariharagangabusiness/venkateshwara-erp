@@ -232,6 +232,15 @@ const HIG_SALES_CSS = `
 .mod-sales .hig-rowcards td .badge{white-space:normal;text-align:center;font-size:11.5px;padding:3px 8px;border-radius:12px;}
 .mod-sales td .row-actions{grid-template-columns:repeat(2,minmax(78px,1fr));min-width:176px;}
 .mod-sales td[onclick*="toggleCustomerGroupRollup"]{padding:11px 10px;}
+/* New Dispatch: amber banner listing the dispatches that already claim quantity on the picked order; Delete Dispatch facts */
+.mod-sales .disp-prior{background:#fff8e1;border:1px solid #f1d58a;border-left:4px solid var(--amber);border-radius:10px;padding:12px 14px;margin:4px 0 14px;font-size:13px;color:#5c4400;}
+.mod-sales .disp-prior-head{font-weight:600;margin-bottom:6px;}
+.mod-sales .disp-prior-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:7px 0;border-top:1px solid rgba(180,130,0,.22);}
+.mod-sales .disp-prior-no{font-weight:600;font-variant-numeric:tabular-nums;}
+.mod-sales .disp-prior-lines{flex:1 1 260px;min-width:0;overflow-wrap:anywhere;}
+.mod-sales .disp-prior-note{margin-top:8px;padding-top:8px;border-top:1px solid rgba(180,130,0,.22);font-size:12px;color:#7a5c00;}
+.mod-sales .disp-del-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;margin:12px 0;font-size:13px;}
+.mod-sales .disp-del-facts > span:nth-child(odd){font-size:12px;}
 /* entry tables (annexure rows, line fields) scroll inside their card on a desktop instead of widening the page */
 @media (min-width:769px){.mod-sales .hig-entry{overflow-x:auto;}}
 .mod-sales .hig-entry td[data-label="S.No"]:first-child{grid-column:auto;}

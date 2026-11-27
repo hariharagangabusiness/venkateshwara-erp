@@ -7,7 +7,7 @@ const { authRequired, requirePermission, hasPermission } = require('../middlewar
 const { getProjectPlanSparesMode } = require('../lib/settings');
 const {
   PIPELINE_STAGES, STAGE_LABELS: STAGE_LABELS_SERVER, createJobCardsForProject, combinedStagesForRole,
-  NOT_APPLICABLE, excludeJobCard, includeJobCard, advanceProjectStatus, releaseDependents,
+  NOT_APPLICABLE, excludeJobCard, includeJobCard, advanceProjectStatus, releaseDependents, recallBlocker,
   departmentCapacityByRange, planCapacityConflicts,
 } = require('../lib/pipeline');
 const { oversightRoleNames } = require('../lib/roleOversight');
@@ -1051,23 +1051,12 @@ router.post('/job-cards/:id/recall', requirePermission('job_card.recall'), (req,
   // assemblies) - a parent sitting InProgress with Completed children is a
   // completely normal state, the same one it was in right before it itself
   // completed.
-  if (jc.sequence != null && !jc.is_adhoc) {
-    const laterStarted = db.prepare(`
-      SELECT stage FROM job_cards
-      WHERE project_id = ? AND sequence > ? AND status NOT IN ('Pending', ?) AND is_adhoc = 0
-        AND parent_job_card_id IS ${jc.parent_job_card_id == null ? 'NULL' : '?'}
-      ORDER BY sequence LIMIT 1
-    `).get(...(jc.parent_job_card_id == null ? [jc.project_id, jc.sequence, NOT_APPLICABLE] : [jc.project_id, jc.sequence, NOT_APPLICABLE, jc.parent_job_card_id]));
-    if (laterStarted) {
-      return res.status(400).json({ error: `Cannot recall this stage - ${STAGE_LABELS_SERVER[laterStarted.stage] || laterStarted.stage} has already started working off it.` });
-    }
-  }
-  const routedStarted = db.prepare(`
-    SELECT jc2.stage FROM job_card_dependencies d JOIN job_cards jc2 ON jc2.id = d.job_card_id
-    WHERE d.depends_on_id = ? AND jc2.status != 'Pending' LIMIT 1
-  `).get(jc.id);
-  if (routedStarted) {
-    return res.status(400).json({ error: `Cannot recall this stage - ${STAGE_LABELS_SERVER[routedStarted.stage] || routedStarted.stage}, which this was routed to, has already started working off it.` });
+  const blocker = recallBlocker(db, jc);
+  if (blocker) {
+    const label = STAGE_LABELS_SERVER[blocker.stage] || blocker.stage;
+    return res.status(400).json({ error: blocker.kind === 'later'
+      ? `Cannot recall this stage - ${label} has already started working off it.`
+      : `Cannot recall this stage - ${label}, which this was routed to, has already started working off it.` });
   }
 
   const tx = db.transaction(() => {
