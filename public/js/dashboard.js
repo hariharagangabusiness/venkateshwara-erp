@@ -65,13 +65,13 @@ const DASHBOARD_METRIC_REGISTRY = [
     buildDetail: async () => { const reqs = (await api('/service')).filter(r => !['Resolved','Closed','Rejected'].includes(r.status)); return `<h3>Open Service Requests (${reqs.length})</h3>${tableHTML(['SR No','Customer','Status'], reqs, r => `<tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${badge(r.status)}</td></tr>`)}`; } },
   { key: 'hr_pending_leave', label: 'HR: Pending Leave Requests', department: 'HR/Payroll',
     fetchValue: async () => (await api('/hr/leave-requests')).filter(r => r.status === 'Pending').length,
-    buildDetail: async () => { const reqs = (await api('/hr/leave-requests')).filter(r => r.status === 'Pending'); return `<h3>Pending Leave Requests (${reqs.length})</h3>${tableHTML(['Employee','Leave Type','From','To'], reqs, r => `<tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${r.from_date}</td><td>${r.to_date}</td></tr>`)}`; } },
+    buildDetail: async () => { const reqs = (await api('/hr/leave-requests')).filter(r => r.status === 'Pending'); return `<h3>Pending Leave Requests (${reqs.length})</h3>${tableHTML(['Employee','Leave Type','From','To'], reqs, r => `<tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${fmtDMY(r.from_date)}</td><td>${fmtDMY(r.to_date)}</td></tr>`)}`; } },
   { key: 'finance_outflow_month', label: 'Finance: Total Outflow (This Month)', department: 'Finance',
     fetchValue: async () => { const s = await api('/finance/summary?month=' + thisMonth()); return '₹' + fmt(s.outflow); },
-    buildDetail: async () => { const month = thisMonth(); const { from, to } = monthRange(month); const s = await api('/finance/summary?month=' + month); const ledger = (await api(`/finance/ledger?from=${from}&to=${to}`)).filter(l => l.direction === 'Outflow'); return `<h3>Total Outflow (${esc(month)}): ₹${fmt(s.outflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
+    buildDetail: () => financeMonthDetail('Outflow') },
   { key: 'finance_inflow_month', label: 'Finance: Total Inflow (This Month)', department: 'Finance',
     fetchValue: async () => { const s = await api('/finance/summary?month=' + thisMonth()); return '₹' + fmt(s.inflow); },
-    buildDetail: async () => { const month = thisMonth(); const { from, to } = monthRange(month); const s = await api('/finance/summary?month=' + month); const ledger = (await api(`/finance/ledger?from=${from}&to=${to}`)).filter(l => l.direction === 'Inflow'); return `<h3>Total Inflow (${esc(month)}): ₹${fmt(s.inflow)}</h3>${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`; } },
+    buildDetail: () => financeMonthDetail('Inflow') },
   { key: 'design_alloc_start', label: 'Design: Avg Allocation-to-Start Time', department: 'Projects',
     fetchValue: async () => { const d = await api('/projects/time-motion-report?stage=Design'); return tmHrs(d.overall?.alloc_to_start.avg); },
     buildDetail: async () => { const d = await api('/projects/time-motion-report?stage=Design'); return `<h3>Design: Avg Allocation→Start: ${tmHrs(d.overall?.alloc_to_start.avg)}</h3>${tableHTML(['Card','Project','Assignee','Alloc→Start'], d.cards.filter(c=>c.alloc_to_start_hrs!==null), c => `<tr><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td><td>${tmHrs(c.alloc_to_start_hrs)}</td></tr>`)}`; } },
@@ -82,8 +82,8 @@ const DASHBOARD_METRIC_REGISTRY = [
     fetchValue: async () => { const d = await api('/projects/time-motion-report?stage=Manufacturing'); return tmHrs(d.overall?.start_to_complete.avg); },
     buildDetail: async () => { const d = await api('/projects/time-motion-report?stage=Manufacturing'); return `<h3>Manufacturing: Avg Start→Completion: ${tmHrs(d.overall?.start_to_complete.avg)}</h3>${tableHTML(['Card','Project','Assignee','Start→Complete'], d.cards.filter(c=>c.start_to_complete_hrs!==null), c => `<tr><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td><td>${tmHrs(c.start_to_complete_hrs)}</td></tr>`)}`; } },
   { key: 'projects_active', label: 'Projects: Active Projects', department: 'Projects',
-    fetchValue: async () => (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched).length,
-    buildDetail: async () => { const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched); return `<h3>Active Projects (${projects.length})</h3>${tableHTML(['Code','Title','Status'], projects, p => `<tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${badge(p.status)}</td></tr>`)}`; } },
+    fetchValue: async () => (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled).length,
+    buildDetail: async () => { const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled); return `<h3>Active Projects (${projects.length})</h3>${tableHTML(['Code','Title','Status'], projects, p => `<tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${badge(p.status)}</td></tr>`)}`; } },
   { key: 'tickets_open_mine', label: 'Tickets: My Open Tickets', department: 'Tickets',
     fetchValue: async () => { try { return (await api('/tickets/mine')).filter(t => !['Closed','Resolved'].includes(t.status)).length; } catch (e) { return '-'; } },
     buildDetail: async () => { const tk = (await api('/tickets/mine')).filter(t => !['Closed','Resolved'].includes(t.status)); return `<h3>My Open Tickets (${tk.length})</h3>${tableHTML(['Ticket No','Subject','Priority','Status'], tk, t => `<tr><td>${esc(t.ticket_no)}</td><td>${esc(t.subject)}</td><td>${esc(t.priority)}</td><td>${badge(t.status)}</td></tr>`)}`; } },
@@ -91,6 +91,42 @@ const DASHBOARD_METRIC_REGISTRY = [
   // etc.) once that module lands - skipped here as it's a separate concurrent task.
 ];
 function dashboardMetricRegistryByKey(key) { return DASHBOARD_METRIC_REGISTRY.find(m => m.key === key); }
+
+// What a role needs to OPEN each tile / metric: the permission its endpoint enforces (so the drill-down never 403s) and the
+// sidebar page it lives on (so the Dashboard shows what the sidebar shows). Admin passes has(); ALLOWED_PAGES null = unrestricted.
+const DASH_FIN_PERMS = ['report.view_all', 'expense_voucher.view_all'];
+const DASH_SALES_PERMS = ['lead.manage', 'sales_order.manage', 'report.view_all'];
+const DASH_METRIC_ACCESS = {
+  sales_win_rate: { perms: DASH_SALES_PERMS, page: 'sales-analytics' }, sales_cycle: { perms: DASH_SALES_PERMS, page: 'sales-analytics' },
+  purchase_pending_pr: { page: 'purchase-requests' }, store_low_stock: { page: 'store' }, service_open: { page: 'service' },
+  hr_pending_leave: { page: 'leave' },
+  finance_outflow_month: { perms: DASH_FIN_PERMS, page: 'finance-ledger' }, finance_inflow_month: { perms: DASH_FIN_PERMS, page: 'finance-ledger' },
+  design_alloc_start: { page: 'time-motion-report' }, electrical_alloc_start: { page: 'time-motion-report' }, manufacturing_start_complete: { page: 'time-motion-report' },
+  projects_active: { page: 'projects' }, tickets_open_mine: { page: 'tickets-mine' },
+};
+const DASH_TILE_ACCESS = {
+  employees: { page: 'employees' }, projects_active: { page: 'projects' }, open_leads: { page: 'leads' },
+  pending_expense_vouchers: { perms: ['expense_voucher.view_all'] }, pending_leave: { page: 'leave' },
+  pending_purchase_requests: { page: 'purchase-requests' }, low_stock_items: { page: 'store' }, open_service_requests: { page: 'service' },
+};
+const DASH_TILES = [['employees', 'Active Employees'], ['projects_active', 'Active Projects'], ['open_leads', 'Open Leads'],
+  ['pending_expense_vouchers', 'Pending Expense Vouchers'], ['pending_leave', 'Pending Leave Requests'],
+  ['pending_purchase_requests', 'Pending Purchase Requests'], ['low_stock_items', 'Low Stock Items'], ['open_service_requests', 'Open Service Requests']];
+const DASH_WINDOW_LABELS = { daily: 'Today', weekly: 'Last 7 days', monthly: 'Last 30 days' };
+function dashCanSee(a) {
+  if (!a) return true;
+  if (a.perms && !has(...a.perms)) return false;
+  if (a.page && ALLOWED_PAGES && !ALLOWED_PAGES.has(a.page)) return false;
+  return true;
+}
+// Outflow / Inflow drill-down for the pinned Finance metrics. The server filters by direction (a client-side filter over the
+// ledger's 500-row cap used to drop rows) and the totals / counts come from the month summary, so the list can say "Showing N of M".
+async function financeMonthDetail(direction) {
+  const month = thisMonth(); const { from, to } = monthRange(month);
+  const [s, ledger] = await Promise.all([api('/finance/summary?month=' + month), api(`/finance/ledger?from=${from}&to=${to}&direction=${direction}`)]);
+  const total = direction === 'Outflow' ? s.outflow : s.inflow, count = direction === 'Outflow' ? s.outflow_count : s.inflow_count;
+  return `<h3>Total ${direction} (${esc(month)}): ₹${fmt(total)}</h3>${truncNote(Math.min(ledger.length, 100), count)}${tableHTML(['Date','Type','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${fmtDMY(l.entry_date)}</td><td>${esc(l.type)}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`;
+}
 
 
 // ---- Dashboard charts (Chart.js, loaded on demand) ----
@@ -139,8 +175,9 @@ async function renderDashboardCharts(d, ws) {
     datasets: [{ data: Object.values(byMode), backgroundColor: CHART_COLORS }],
   });
   const c = d.counts;
-  const open = [['Projects', c.projects_active], ['Leads', c.open_leads], ['Expense Vouchers', c.pending_expense_vouchers],
-    ['Leave', c.pending_leave], ['Purchase Req.', c.pending_purchase_requests], ['Low Stock', c.low_stock_items], ['Service', c.open_service_requests]];
+  const open = [['Projects', 'projects_active'], ['Leads', 'open_leads'], ['Expense Vouchers', 'pending_expense_vouchers'],
+    ['Leave', 'pending_leave'], ['Purchase Req.', 'pending_purchase_requests'], ['Low Stock', 'low_stock_items'], ['Service', 'open_service_requests']]
+    .filter(([, key]) => c[key] != null && dashCanSee(DASH_TILE_ACCESS[key])).map(([label, key]) => [label, c[key]]);
   mk('chart-open-items', 'bar', {
     labels: open.map(o => o[0]),
     datasets: [{ data: open.map(o => o[1]), backgroundColor: CHART_COLORS[0] }],
@@ -156,6 +193,15 @@ PAGES.dashboard = async (el) => {
   const win = window.DASH_WINDOW || 'weekly';
   const [d, ws, projects] = await Promise.all([api('/dashboard/summary'), api('/dashboard/window-summary?window=' + win), api('/projects')]);
   const c = d.counts;
+  const canStock = dashCanSee({ page: 'stock-in-out' });
+  const canOpex = ws.opex != null && dashCanSee({ perms: DASH_FIN_PERMS, page: 'operating-expenses' });
+  const canExpenseVouchers = d.counts.pending_expense_vouchers != null && dashCanSee({ perms: ['expense_voucher.view_all'] });
+  const stockDrill = async (type) => {
+    const moves = await api(`/purchase/store/movements?type=${type}&from=${ws.since}&to=${ws.today}&limit=100`);
+    const n = type === 'IN' ? ws.stockInCount : ws.stockOutCount, units = type === 'IN' ? ws.stockIn : ws.stockOut;
+    return `<h3>Stock ${type === 'IN' ? 'In' : 'Out'} (${esc(ws.window_label)}) - ${n} movements, ${fmt(units)} units</h3>${truncNote(moves.length, n)}
+      ${tableHTML(['Date','Item','Qty','Ref'], moves, m => `<tr><td>${fmtDMY(m.moved_at, true)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
+  };
   window.__STAT_DETAIL_BUILDERS = {
     employees: async () => {
       const emps = (await api('/hr/employees')).filter(e => e.status === 'active');
@@ -172,14 +218,14 @@ PAGES.dashboard = async (el) => {
       // the same way routes/dashboard.js's own projects_active count already
       // is, so the drill-down list under the stat tile can't disagree with
       // the tile's own number.
-      const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched);
+      const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled);
       const byStatus = {};
       projects.forEach(p => { byStatus[p.status] = (byStatus[p.status]||0) + 1; });
       return `<h3>Active Projects (${projects.length})</h3>
         <p class="muted">Breakdown by stage</p>
         ${breakdownBars(byStatus)}
         ${tableHTML(['Code','Title','Client','PM','Status','Target Date'], projects, p => `
-          <tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${esc(p.pm_name)||'-'}</td><td>${badge(p.status)}</td><td>${p.target_date||'-'}</td></tr>`)}`;
+          <tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${esc(p.pm_name)||'-'}</td><td>${badge(p.status)}</td><td>${fmtDMY(p.target_date)}</td></tr>`)}`;
     },
     open_leads: async () => {
       const leads = (await api('/sales/leads')).filter(l => !['Won','Lost'].includes(l.stage));
@@ -211,7 +257,7 @@ PAGES.dashboard = async (el) => {
         <p class="muted">Breakdown by leave type</p>
         ${breakdownBars(byType)}
         ${tableHTML(['Employee','Leave Type','From','To','Days','Pending (days)'], reqs, r => `
-          <tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${r.from_date}</td><td>${r.to_date}</td><td>${r.days}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
+          <tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${fmtDMY(r.from_date)}</td><td>${fmtDMY(r.to_date)}</td><td>${r.days}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
     },
     pending_purchase_requests: async () => {
       const reqs = (await api('/purchase/requests')).filter(r => r.status === 'Pending');
@@ -245,36 +291,11 @@ PAGES.dashboard = async (el) => {
         ${tableHTML(['SR No','Customer','Issue','Assigned To','Status','Open (days)'], reqs, r => `
           <tr><td>${esc(r.sr_no)}</td><td>${esc(r.client_master_name)||esc(r.customer_name)||'-'}</td><td>${esc(r.issue_description)||'-'}</td><td>${esc(r.assigned_to_name)||'-'}</td><td>${badge(r.status)}</td><td>${daysSince(r.created_at)}</td></tr>`)}`;
     },
-    stock_in: async () => {
-      // Matches routes/dashboard.js's own window-summary `since` math exactly,
-      // so the header's "(window)" label, the ws.stockIn total it was already
-      // showing, and this row list all agree - the list previously showed
-      // every movement ever recorded regardless of the selected window.
-      const since = windowSinceDate(win);
-      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'IN' && m.moved_at >= since);
-      return `<h3>Stock In (${win}) - ${moves.length} movements, ${fmt(ws.stockIn)} units</h3>
-        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
-    },
-    stock_out: async () => {
-      const since = windowSinceDate(win);
-      const moves = (await api('/purchase/store/movements')).filter(m => m.movement_type === 'OUT' && m.moved_at >= since);
-      return `<h3>Stock Out (${win}) - ${moves.length} movements, ${fmt(ws.stockOut)} units</h3>
-        ${tableHTML(['Date','Item','Qty','Ref'], moves.slice(0,100), m => `<tr><td>${esc(m.moved_at)}</td><td>${esc(m.item_name)||m.item_id}</td><td>${fmt(m.quantity)}</td><td>${esc(m.po_no || m.project_code || m.reference)||'-'}</td></tr>`)}`;
-    },
-    opex: async () => {
-      // d.expenseByMode is a wholly different, all-time, unscoped metric
-      // (Expense Vouchers by payment mode - routes/dashboard.js's own
-      // GET /summary) - it doesn't total to ws.opex (routes/dashboard.js's
-      // window-scoped SUM of finance_ledger type='Expense' entries) and
-      // was never actually the breakdown of the figure shown above it.
-      // Query the same ledger rows ws.opex is itself computed from instead,
-      // so the header total and the list beneath it genuinely agree.
-      const since = windowSinceDate(win);
-      const ledger = await api(`/finance/ledger?type=Expense&from=${since}&to=${today()}`);
-      return `<h3>Operating Expenses (${win})</h3>
-        <p class="muted">Total: <b>₹${fmt(ws.opex)}</b></p>
-        ${tableHTML(['Date','Department','Amount'], ledger.slice(0,100), l => `<tr><td>${new Date(l.entry_date).toLocaleDateString()}</td><td>${esc(l.department_name)||'-'}</td><td>₹${fmt(l.amount)}</td></tr>`)}`;
-    },
+    stock_in: async () => stockDrill('IN'),
+    stock_out: async () => stockDrill('OUT'),
+    opex: async () => `<h3>Operating Expenses (${esc(ws.window_label)}) - ${ws.opexCount} entries</h3>
+      <p class="muted">Total: <b>₹${fmt(ws.opex)}</b></p>${truncNote(ws.opexRows.length, ws.opexCount)}
+      ${tableHTML(['Date','Category','Description','Paid Via','Amount'], ws.opexRows, r => `<tr><td>${fmtDMY(r.expense_date)}</td><td>${esc(r.category)||'-'}</td><td>${esc(r.description)||'-'}</td><td>${esc(r.paid_via)||'-'}</td><td>₹${fmt(r.amount)}</td></tr>`)}`,
   };
   // Each top-level widget below is independently draggable (Dashboard
   // layout customization) - grouped by what has to stay physically
@@ -283,14 +304,7 @@ PAGES.dashboard = async (el) => {
   const panels = {
     keyMetrics: `
       <div class="cards">
-        ${statCard('employees', c.employees, 'Active Employees')}
-        ${statCard('projects_active', c.projects_active, 'Active Projects')}
-        ${statCard('open_leads', c.open_leads, 'Open Leads')}
-        ${statCard('pending_expense_vouchers', c.pending_expense_vouchers, 'Pending Expense Vouchers')}
-        ${statCard('pending_leave', c.pending_leave, 'Pending Leave Requests')}
-        ${statCard('pending_purchase_requests', c.pending_purchase_requests, 'Pending Purchase Requests')}
-        ${statCard('low_stock_items', c.low_stock_items, 'Low Stock Items')}
-        ${statCard('open_service_requests', c.open_service_requests, 'Open Service Requests')}
+        ${DASH_TILES.filter(([key]) => c[key] != null && dashCanSee(DASH_TILE_ACCESS[key])).map(([key, label]) => statCard(key, c[key], label)).join('')}
       </div>
       <div id="stat-detail"></div>
       <div id="dash-vendor-analytics-widget"></div>
@@ -304,7 +318,7 @@ PAGES.dashboard = async (el) => {
           <div style="grid-column:1/-1;"><label>Metric</label>
             <select id="dash-metric-pick">
               <option value="">Select a metric...</option>
-              ${DASHBOARD_METRIC_REGISTRY.map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
+              ${DASHBOARD_METRIC_REGISTRY.filter(m => dashCanSee(DASH_METRIC_ACCESS[m.key])).map(m => `<option value="${esc(m.key)}">${esc(m.department)}: ${esc(m.label.replace(m.department + ': ', ''))}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -322,9 +336,9 @@ PAGES.dashboard = async (el) => {
       <div class="panel">
         <h3>Charts</h3>
         <div class="chart-grid">
-          <div class="chart-box"><h4>Expenses by Payment Mode</h4><div class="chart-wrap"><canvas id="chart-expense-mode"></canvas></div></div>
+          ${canExpenseVouchers ? '<div class="chart-box"><h4>Expenses by Payment Mode</h4><div class="chart-wrap"><canvas id="chart-expense-mode"></canvas></div></div>' : ''}
           <div class="chart-box"><h4>Open Work Items</h4><div class="chart-wrap"><canvas id="chart-open-items"></canvas></div></div>
-          <div class="chart-box"><h4>Stock Movement (${esc(win)})</h4><div class="chart-wrap"><canvas id="chart-stock"></canvas></div></div>
+          ${canStock ? `<div class="chart-box"><h4>Stock Movement (${esc(ws.window_label)})</h4><div class="chart-wrap"><canvas id="chart-stock"></canvas></div></div>` : ''}
         </div>
         <div id="chart-msg"></div>
       </div>
@@ -333,19 +347,21 @@ PAGES.dashboard = async (el) => {
       <div class="panel">
         <div class="toolbar"><h3 style="margin:0;">Inventory / Opex / Upcoming Schedules</h3>
           <select onchange="window.DASH_WINDOW=this.value;navigate('dashboard')">
-            ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${w[0].toUpperCase()+w.slice(1)}</option>`).join('')}
+            ${['daily','weekly','monthly'].map(w => `<option value="${w}" ${w===win?'selected':''}>${esc(DASH_WINDOW_LABELS[w])}</option>`).join('')}
           </select>
         </div>
+        <p class="muted">Stock and Operating Expenses: ${esc(ws.window_label)} (${ws.since === ws.today ? fmtDMY(ws.today) : fmtDMY(ws.since) + ' to ' + fmtDMY(ws.today)}). Upcoming items: ${ws.today === ws.until ? fmtDMY(ws.today) : fmtDMY(ws.today) + ' to ' + fmtDMY(ws.until)}.</p>
         <div class="cards">
-          ${statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win')}
-          ${statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win')}
-          ${statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win')}
+          ${canStock ? statCard('stock_in', fmt(ws.stockIn), 'Stock In (units)', 'stat-detail-win') + statCard('stock_out', fmt(ws.stockOut), 'Stock Out (units)', 'stat-detail-win') : ''}
+          ${canOpex ? statCard('opex', '₹' + fmt(ws.opex), 'Operating Expenses', 'stat-detail-win') : ''}
         </div>
         <div id="stat-detail-win"></div>
         <h4>Upcoming Job Cards</h4>
-        ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${j.planned_start||'-'}</td><td>${j.planned_end||'-'}</td></tr>`)}
+        ${tableHTML(['Project', 'Item', 'Planned Start', 'Planned End'], ws.upcomingJobCards, j => `<tr><td>${esc(j.project_code)}</td><td>${esc(j.title||STAGE_LABELS[j.stage]||j.stage)}</td><td>${fmtDMY(j.planned_start)}</td><td>${fmtDMY(j.planned_end)}</td></tr>`)}
+        ${truncNote(ws.upcomingJobCards.length, ws.upcomingJobCardsTotal)}
         <h4>Upcoming Service Requests</h4>
-        ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${s.scheduled_date}</td><td>${esc(s.issue_description)}</td></tr>`)}
+        ${tableHTML(['SR No', 'Scheduled', 'Issue'], ws.upcomingService, s => `<tr><td>${esc(s.sr_no)}</td><td>${fmtDMY(s.scheduled_date)}</td><td>${esc(s.issue_description)}</td></tr>`)}
+        ${truncNote(ws.upcomingService.length, ws.upcomingServiceTotal)}
       </div>
     `,
     projectDrilldown: `
@@ -358,6 +374,8 @@ PAGES.dashboard = async (el) => {
       </div>
     `,
   };
+  if (!canExpenseVouchers) delete panels.expensesByMode;
+  if (!dashCanSee({ page: 'projects' })) delete panels.projectDrilldown;
   const order = await fetchPanelOrder('dashboard', Object.keys(panels));
   el.innerHTML = reorderablePanelsHTML('dashboard', panels, order, DASHBOARD_WIDGET_LABELS);
   document.getElementById('dash-followups-widget').innerHTML = await dashboardFollowupsWidgetHTML();
@@ -396,7 +414,8 @@ async function renderDashboardCustomMetrics() {
   if (!wrap) return;
   const keys = loadDashboardMetricKeys();
   if (!keys.length) { wrap.innerHTML = ''; return; }
-  const metrics = keys.map(dashboardMetricRegistryByKey).filter(Boolean);
+  const metrics = keys.map(dashboardMetricRegistryByKey).filter(m => m && dashCanSee(DASH_METRIC_ACCESS[m.key]));
+  if (!metrics.length) { wrap.innerHTML = ''; return; }
   wrap.innerHTML = `<div class="panel"><h3>Your Pinned Metrics</h3><div class="cards" id="dash-custom-cards"></div><div id="stat-detail-custom"></div></div>`;
   const cardsEl = document.getElementById('dash-custom-cards');
   cardsEl.innerHTML = metrics.map(m => `<span class="muted">Loading ${esc(m.label)}...</span>`).join(' ');
@@ -504,12 +523,12 @@ async function loadTimeMotionReport() {
       ${tableHTML(['Stage','Card','Project','Assignee','Allocated','Started','Alloc→Start'],
         data.cards.filter(c => c.alloc_to_start_hrs !== null), c => `
         <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td>
-        <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${tmHrs(c.alloc_to_start_hrs)}</td></tr>`)}`,
+        <td>${fmtDMY(c.allocated_at, true)}</td><td>${fmtDMY(c.started_at, true)}</td><td>${tmHrs(c.alloc_to_start_hrs)}</td></tr>`)}`,
     tm_start_complete: async () => `<h3>Avg Start-to-Completion: ${tmHrs(data.overall?.start_to_complete.avg)}</h3>
       ${tableHTML(['Stage','Card','Project','Assignee','Started','Completed','Start→Complete'],
         data.cards.filter(c => c.start_to_complete_hrs !== null), c => `
         <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td>
-        <td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td><td>${tmHrs(c.start_to_complete_hrs)}</td></tr>`)}`,
+        <td>${fmtDMY(c.started_at, true)}</td><td>${fmtDMY(c.completed_at, true)}</td><td>${tmHrs(c.start_to_complete_hrs)}</td></tr>`)}`,
     tm_total: async () => `<h3>Avg Allocation-to-Completion: ${tmHrs(data.overall?.alloc_to_complete.avg)}</h3>
       ${tableHTML(['Stage','Card','Project','Assignee','Alloc→Complete'],
         data.cards.filter(c => c.alloc_to_complete_hrs !== null), c => `
@@ -536,12 +555,12 @@ async function loadTimeMotionReport() {
       ${renderListSearch('tm-cards', data.cards, ['stage', 'title', 'project_name', 'status', 'assignee_name'], (rows) => {
         document.getElementById('tm-cards-table').innerHTML = tableHTML(['Stage','Card','Project','Status','Assignee','Allocated','Started','Completed'], rows, c => `
           <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${badge(c.status)}</td><td>${esc(c.assignee_name)||'-'}</td>
-          <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td></tr>`);
+          <td>${fmtDMY(c.allocated_at, true)}</td><td>${fmtDMY(c.started_at, true)}</td><td>${fmtDMY(c.completed_at, true)}</td></tr>`);
         document.getElementById('tm-cards-count').textContent = 'Job Cards (' + rows.length + ')';
       }, 'Search by stage, card, project, status, assignee...')}
       <div id="tm-cards-table">${tableHTML(['Stage','Card','Project','Status','Assignee','Allocated','Started','Completed'], data.cards, c => `
         <tr><td>${esc(STAGE_LABELS[c.stage]||c.stage)}</td><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${badge(c.status)}</td><td>${esc(c.assignee_name)||'-'}</td>
-        <td>${c.allocated_at?new Date(c.allocated_at).toLocaleString():'-'}</td><td>${c.started_at?new Date(c.started_at).toLocaleString():'-'}</td><td>${c.completed_at?new Date(c.completed_at).toLocaleString():'-'}</td></tr>`)}</div>
+        <td>${fmtDMY(c.allocated_at, true)}</td><td>${fmtDMY(c.started_at, true)}</td><td>${fmtDMY(c.completed_at, true)}</td></tr>`)}</div>
     `)}`;
 }
 window.loadTimeMotionReport = loadTimeMotionReport;
@@ -827,7 +846,7 @@ async function renderTodoUpdates(id) {
     <div class="panel todo-updates-panel">
       ${updates.length ? updates.map(u => `
         <div class="todo-update-item">
-          <b>${esc(u.user_name) || 'System'}</b> <span class="muted">${new Date(u.created_at).toLocaleString()}</span>
+          <b>${esc(u.user_name) || 'System'}</b> <span class="muted">${fmtDMY(u.created_at, true)}</span>
           ${u.status_at_update ? badge(u.status_at_update) : ''}
           <div>${esc(u.note)}</div>
         </div>`).join('') : '<div class="muted">No updates logged yet.</div>'}

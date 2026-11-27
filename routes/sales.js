@@ -6,7 +6,7 @@ const { authRequired, requirePermission, requireRole } = require('../middleware/
 const { generateAnnexureDocx } = require('../lib/annexureDocx');
 const { generateAnnexurePdf, pickGaDrawing } = require('../lib/annexurePdf');
 const { createJobCardsForProject } = require('../lib/pipeline');
-const { localDateTimeStr, localDateFromValue } = require('../lib/dateUtil');
+const { localDateTimeStr, localDateFromValue, localDateStr } = require('../lib/dateUtil');
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
@@ -145,7 +145,7 @@ const LOST_REASONS = ['Price', 'Timeline', 'Competitor', 'No Budget', 'No Respon
 router.get('/leads', (req, res) => {
   res.json(db.prepare(`
     SELECT l.*, c.name as client_name, u.full_name as owner_name,
-      CAST(julianday('now') - julianday(COALESCE(l.stage_changed_at, l.created_at)) AS INTEGER) as days_in_stage
+      CAST(julianday('now', 'localtime') - julianday(COALESCE(l.stage_changed_at, l.created_at)) AS INTEGER) as days_in_stage
     FROM leads l
     LEFT JOIN clients c ON c.id = l.client_id LEFT JOIN users u ON u.id = l.owner_id
     ORDER BY l.id DESC
@@ -164,10 +164,10 @@ router.get('/leads/followups', (req, res) => {
     JOIN leads l ON l.id = a.lead_id
     LEFT JOIN clients c ON c.id = l.client_id
     LEFT JOIN users u ON u.id = l.owner_id
-    WHERE a.completed_at IS NULL AND a.due_date IS NOT NULL AND a.due_date <= date('now')
+    WHERE a.completed_at IS NULL AND a.due_date IS NOT NULL AND a.due_date <= ?
       ${seeAll ? '' : 'AND l.owner_id = ?'}
     ORDER BY a.due_date
-  `).all(...(seeAll ? [] : [req.user.id]));
+  `).all(localDateStr(), ...(seeAll ? [] : [req.user.id]));
   res.json(rows);
 });
 function hasPerm(user, code) {
@@ -304,7 +304,7 @@ router.get('/analytics', requirePermission('lead.manage', 'sales_order.manage', 
   const targetVsAchievement = targets.map(t => {
     const achieved = db.prepare(`
       SELECT COALESCE(SUM(order_value),0) as v FROM sales_orders
-      WHERE strftime('%Y-%m', order_date) = ? ${t.owner_id ? 'AND created_by = ?' : ''}
+      WHERE strftime('%Y-%m', order_date) = ? AND status != 'Cancelled' ${t.owner_id ? 'AND created_by = ?' : ''}
     `).get(...(t.owner_id ? [t.period, t.owner_id] : [t.period])).v;
     return { ...t, achieved_value: achieved, achievement_pct: t.target_value ? Math.round(1000 * achieved / t.target_value) / 10 : null };
   });
