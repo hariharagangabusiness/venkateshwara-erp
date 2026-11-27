@@ -1,13 +1,7 @@
 // sales.js - Clients, Leads, Orders, FG Dispatch, MRN, Sales Returns/Credit Notes, Offers, Spares comparison,
 // Sales Analytics/Targets.
 
-// DD/MM/YYYY for every date / timestamp this file prints. Stored values are 'YYYY-MM-DD[ HH:MM:SS]' with no zone marker, so they are parsed by
-// hand (never new Date(str)), and the old toLocaleDateString() printed US MM/DD/YYYY. Inputs and CSV exports keep the raw YYYY-MM-DD value.
-function fmtDMY(v, withTime) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(String(v == null ? '' : v));
-  if (!m) return v ? String(v) : '-';
-  return `${m[3]}/${m[2]}/${m[1]}` + (withTime && m[4] ? ` ${m[4]}:${m[5]}` : '');
-}
+// fmtDMY() (DD/MM/YYYY for every date / timestamp this file prints) lives in ui.js, shared with the Dashboard.
 // deliveryBadge() (ui.js, shared with Purchase) decides the colour and the "(overdue Nd)" text; only the date inside its label is reformatted.
 function soDeliveryBadge(d) { return d ? deliveryBadge(d).replace(esc(d), esc(fmtDMY(d))) : deliveryBadge(d); }
 

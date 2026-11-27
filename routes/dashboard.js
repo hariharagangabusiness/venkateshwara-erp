@@ -1,17 +1,26 @@
 const express = require('express');
 const { db } = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, hasPermission } = require('../middleware/auth');
 const { localDateStr } = require('../lib/dateUtil');
 const router = express.Router();
 router.use(authRequired);
 
+// Rows a drill-down list shows; the totals above it are always exact, and the response says how many rows exist.
+const DRILL_LIMIT = 100;
+// Expense figures are finance data: a role that cannot open the Expense Vouchers list gets null / [] (same keys, no value)
+// instead of a number whose drill-down would 403.
+const EXPENSE_VOUCHER_PERM = 'expense_voucher.view_all';
+const OPEX_PERMS = ['report.view_all', 'expense_voucher.view_all'];
+
 router.get('/summary', (req, res) => {
+  const canExpenseVouchers = hasPermission(req.user, EXPENSE_VOUCHER_PERM);
   const counts = {
     employees: db.prepare(`SELECT COUNT(*) c FROM employees WHERE status='active'`).get().c,
     // A project already fully Dispatched (not just PendingApproval, and not a
     // Cancelled/Rejected dispatch attempt) has physically shipped - it no
     // longer belongs in "Active Projects" even if some other department's
-    // job card hasn't yet been marked Completed.
+    // job card hasn't yet been marked Completed. A project whose Sales Order was
+    // Cancelled is not live work either (GET /projects flags it as order_cancelled).
     projects_active: db.prepare(`
       SELECT COUNT(*) c FROM projects p
       WHERE p.status != 'Completed'
@@ -19,9 +28,12 @@ router.get('/summary', (req, res) => {
           SELECT 1 FROM fg_dispatches fd
           WHERE fd.sales_order_id = p.sales_order_id AND fd.status = 'Dispatched'
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM sales_orders so WHERE so.id = p.sales_order_id AND so.status = 'Cancelled'
+        )
     `).get().c,
     open_leads: db.prepare(`SELECT COUNT(*) c FROM leads WHERE stage NOT IN ('Won','Lost')`).get().c,
-    pending_expense_vouchers: db.prepare(`SELECT COUNT(*) c FROM expense_vouchers WHERE status='Pending'`).get().c,
+    pending_expense_vouchers: canExpenseVouchers ? db.prepare(`SELECT COUNT(*) c FROM expense_vouchers WHERE status='Pending'`).get().c : null,
     pending_leave: db.prepare(`SELECT COUNT(*) c FROM leave_requests WHERE status='Pending'`).get().c,
     pending_purchase_requests: db.prepare(`SELECT COUNT(*) c FROM purchase_requests WHERE status='Pending'`).get().c,
     low_stock_items: db.prepare(`SELECT COUNT(*) c FROM items WHERE current_stock <= reorder_level`).get().c,
@@ -30,9 +42,9 @@ router.get('/summary', (req, res) => {
     // as "open" indefinitely.
     open_service_requests: db.prepare(`SELECT COUNT(*) c FROM service_requests WHERE status NOT IN ('Resolved','Closed','Rejected')`).get().c,
   };
-  const expenseByMode = db.prepare(`
+  const expenseByMode = canExpenseVouchers ? db.prepare(`
     SELECT payment_mode, accounted, SUM(amount) as total FROM expense_vouchers WHERE status != 'Rejected' GROUP BY payment_mode, accounted
-  `).all();
+  `).all() : [];
   res.json({ counts, expenseByMode });
 });
 
@@ -57,37 +69,61 @@ router.get('/project/:id/drilldown', (req, res) => {
 });
 
 // ===================== Round 3: window-based summary widgets =====================
-// Extends the existing /summary payload with an optional ?window=daily|weekly|monthly
-// aggregation for Inventory, Operating Expenses, and Upcoming Schedules.
+// ?window=daily|weekly|monthly -> exactly Today / the last 7 days / the last 30 days, calendar days in IST and inclusive of today
+// (the old since = now - N days made them 2 / 8 / 31 days). The response carries since/today so a drill-down can ask for the
+// very same range.
+const WINDOWS = { daily: { days: 1, label: 'Today' }, weekly: { days: 7, label: 'Last 7 days' }, monthly: { days: 30, label: 'Last 30 days' } };
 router.get('/window-summary', (req, res) => {
-  const win = req.query.window || 'weekly';
-  const days = win === 'daily' ? 1 : win === 'monthly' ? 30 : 7;
-  const since = localDateStr(new Date(Date.now() - days * 86400000));
-  const until = localDateStr(new Date(Date.now() + days * 86400000));
+  const win = WINDOWS[req.query.window] ? req.query.window : 'weekly';
+  const { days, label } = WINDOWS[win];
+  const todayStr = today();
+  const since = localDateStr(new Date(Date.now() - (days - 1) * 86400000));
+  const until = localDateStr(new Date(Date.now() + (days - 1) * 86400000));
 
-  const stockIn = db.prepare(`SELECT COALESCE(SUM(quantity),0) as total FROM stock_movements WHERE movement_type='IN' AND moved_at >= ?`).get(since).total;
-  const stockOut = db.prepare(`SELECT COALESCE(SUM(quantity),0) as total FROM stock_movements WHERE movement_type='OUT' AND moved_at >= ?`).get(since).total;
+  const stock = (type) => db.prepare(`
+    SELECT COALESCE(SUM(quantity),0) as total, COUNT(*) as n FROM stock_movements
+    WHERE movement_type = ? AND date(moved_at) BETWEEN ? AND ?
+  `).get(type, since, todayStr);
+  const stockIn = stock('IN'), stockOut = stock('OUT');
 
-  const opex = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM finance_ledger WHERE type='Expense' AND entry_date >= ?`).get(since).total;
+  // The Operating Expenses page's own table. (The ledger mirrors each row as type 'OperatingExpense'; the 'Expense' type this
+  // tile used to sum has not been written since vouchers were folded into Operating Expenses, so it always read 0.)
+  let opex = null, opexCount = null, opexRows = [];
+  if (hasPermission(req.user, ...OPEX_PERMS)) {
+    const r = db.prepare(`SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as n FROM operating_expenses WHERE substr(expense_date, 1, 10) BETWEEN ? AND ?`).get(since, todayStr);
+    opex = r.total; opexCount = r.n;
+    opexRows = db.prepare(`
+      SELECT id, expense_date, category, description, amount, paid_via FROM operating_expenses
+      WHERE substr(expense_date, 1, 10) BETWEEN ? AND ? ORDER BY expense_date DESC, id DESC LIMIT ${DRILL_LIMIT}
+    `).all(since, todayStr);
+  }
 
   // Both lists are genuinely "what's coming up / needs action" widgets, not
   // a full history - a job card already Completed, or a service request
   // already Resolved/Closed/Rejected, still carries whatever planned/
   // scheduled date it was ever given, so without excluding terminal
   // statuses a finished item kept reappearing here through its own old
-  // date, indistinguishable from something genuinely still pending.
+  // date, indistinguishable from something genuinely still pending. Job cards of a
+  // Cancelled Sales Order are not coming up either.
+  const jcWhere = `
+    FROM job_cards jc JOIN projects p ON p.id = jc.project_id LEFT JOIN sales_orders so ON so.id = p.sales_order_id
+    WHERE jc.status NOT IN ('NotApplicable', 'Completed') AND COALESCE(so.status, '') != 'Cancelled'
+      AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))`;
   const upcomingJobCards = db.prepare(`
-    SELECT jc.id, jc.stage, jc.title, jc.planned_start, jc.planned_end, p.project_code
-    FROM job_cards jc JOIN projects p ON p.id = jc.project_id
-    WHERE jc.status NOT IN ('NotApplicable', 'Completed') AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))
+    SELECT jc.id, jc.stage, jc.title, jc.planned_start, jc.planned_end, p.project_code ${jcWhere}
     ORDER BY jc.planned_start LIMIT 50
-  `).all(today(), until, today(), until);
-  const upcomingService = db.prepare(`
-    SELECT id, sr_no, scheduled_date, issue_description FROM service_requests
-    WHERE status NOT IN ('Resolved', 'Closed', 'Rejected') AND scheduled_date BETWEEN ? AND ? ORDER BY scheduled_date LIMIT 50
-  `).all(today(), until);
+  `).all(todayStr, until, todayStr, until);
+  const upcomingJobCardsTotal = db.prepare(`SELECT COUNT(*) as n ${jcWhere}`).get(todayStr, until, todayStr, until).n;
+  const svcWhere = `FROM service_requests WHERE status NOT IN ('Resolved', 'Closed', 'Rejected') AND scheduled_date BETWEEN ? AND ?`;
+  const upcomingService = db.prepare(`SELECT id, sr_no, scheduled_date, issue_description ${svcWhere} ORDER BY scheduled_date LIMIT 50`).all(todayStr, until);
+  const upcomingServiceTotal = db.prepare(`SELECT COUNT(*) as n ${svcWhere}`).get(todayStr, until).n;
 
-  res.json({ window: win, stockIn, stockOut, opex, upcomingJobCards, upcomingService });
+  res.json({
+    window: win, window_label: label, since, today: todayStr, until,
+    stockIn: stockIn.total, stockOut: stockOut.total, stockInCount: stockIn.n, stockOutCount: stockOut.n,
+    opex, opexCount, opexRows,
+    upcomingJobCards, upcomingJobCardsTotal, upcomingService, upcomingServiceTotal,
+  });
 });
 function today() { return localDateStr(); }
 

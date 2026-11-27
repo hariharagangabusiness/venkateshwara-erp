@@ -1155,7 +1155,7 @@ router.get('/orders', (req, res) => {
 // Rejected - mirrors canEditPO()'s own "still active" status set.
 router.get('/orders/my-pending-count', (req, res) => {
   const row = db.prepare(`
-    SELECT COUNT(*) as count FROM purchase_orders
+    SELECT COUNT(DISTINCT COALESCE(po_no, 'row-' || id)) as count FROM purchase_orders
     WHERE created_by = ? AND status NOT IN ('Open', 'PartiallyReceived', 'Received', 'Closed', 'Cancelled')
   `).get(req.user.id);
   res.json({ count: row.count });
@@ -2350,6 +2350,14 @@ router.post('/store/material-requests/:id/action', requirePermission('store.mana
 // project_id - no string-parsing needed there) so "Recent Movements" shows
 // something a user can actually search/recognize (2026-10-16).
 router.get('/store/movements', (req, res) => {
+  // Optional range / type filter (the Dashboard's Stock In/Out drill-down asks for exactly its window); with none of them the
+  // route behaves as before: latest 200.
+  const { from, to, type } = req.query;
+  const where = []; const params = [];
+  if (from) { where.push('date(sm.moved_at) >= ?'); params.push(from); }
+  if (to) { where.push('date(sm.moved_at) <= ?'); params.push(to); }
+  if (type === 'IN' || type === 'OUT') { where.push('sm.movement_type = ?'); params.push(type); }
+  const limit = where.length ? Math.min(Math.max(parseInt(req.query.limit, 10) || 200, 1), 1000) : 200;
   res.json(db.prepare(`
     SELECT sm.*, i.name as item_name, d.name as department_name, c.name as client_name,
       po.po_no, p.project_code
@@ -2359,8 +2367,9 @@ router.get('/store/movements', (req, res) => {
     LEFT JOIN clients c ON c.id = sm.client_id
     LEFT JOIN purchase_orders po ON ('PO#' || po.id) = sm.reference
     LEFT JOIN projects p ON p.id = sm.project_id
-    ORDER BY sm.id DESC LIMIT 200
-  `).all());
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY sm.id DESC LIMIT ${limit}
+  `).all(...params));
 });
 
 const STOCK_TEMPLATE_COLUMNS = ['item_code_or_barcode', 'movement_type', 'quantity', 'po_no', 'department', 'project', 'client', 'reference'];

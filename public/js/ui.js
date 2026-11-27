@@ -241,13 +241,22 @@ function localDateStr(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 function today() { return localDateStr(new Date()); }
-// Mirrors routes/dashboard.js's GET /window-summary own `since` day math
-// exactly (daily=1, monthly=30, else weekly=7) - used wherever a frontend
-// detail view needs to independently re-filter by the same Dashboard
-// window the backend already scoped its own totals by.
+// Mirrors routes/dashboard.js's GET /window-summary: daily = today, weekly = the last 7 calendar days, monthly = the last 30,
+// all inclusive of today (the response also carries since/today, which a drill-down should prefer).
 function windowSinceDate(win) {
   const days = win === 'daily' ? 1 : win === 'monthly' ? 30 : 7;
-  return localDateStr(new Date(Date.now() - days * 86400000));
+  return localDateStr(new Date(Date.now() - (days - 1) * 86400000));
+}
+// DD/MM/YYYY for a stored 'YYYY-MM-DD[ HH:MM[:SS]]' value (hand-parsed: stored strings carry no zone marker, and
+// toLocaleDateString() prints US MM/DD/YYYY). Falsy -> '-'; anything unrecognised is shown as it came.
+function fmtDMY(v, withTime) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(String(v == null ? '' : v));
+  if (!m) return v ? String(v) : '-';
+  return `${m[3]}/${m[2]}/${m[1]}` + (withTime && m[4] ? ` ${m[4]}:${m[5]}` : '');
+}
+// "Showing N of M" line for a list capped below its true size - never silently drop rows.
+function truncNote(shown, total) {
+  return Number(total) > Number(shown) ? `<p class="muted">Showing the latest ${shown} of ${total}.</p>` : '';
 }
 // Round 16: color-coded delivery-date badge for SO/PO lists - green if
 // comfortably ahead, amber inside the 7-day warning window (matches the

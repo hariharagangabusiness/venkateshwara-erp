@@ -502,7 +502,7 @@ router.get('/foc/:id/pdf', async (req, res) => {
 // (routes/service.js). Purchase orders don't yet have a "paid" event to
 // hook (they track quantity/status, not a payment date) - not covered.
 router.get('/ledger', requirePermission('report.view_all', 'expense_voucher.view_all'), (req, res) => {
-  const { from, to, type, department_id } = req.query;
+  const { from, to, type, department_id, direction } = req.query;
   let q = `
     SELECT l.*, d.name as department_name, u.full_name as created_by_name
     FROM finance_ledger l LEFT JOIN departments d ON d.id = l.department_id LEFT JOIN users u ON u.id = l.created_by
@@ -512,6 +512,7 @@ router.get('/ledger', requirePermission('report.view_all', 'expense_voucher.view
   if (from) { q += ' AND l.entry_date >= ?'; params.push(from); }
   if (to) { q += ' AND l.entry_date <= ?'; params.push(to + ' 23:59:59'); }
   if (type) { q += ' AND l.type = ?'; params.push(type); }
+  if (direction === 'Inflow' || direction === 'Outflow') { q += ' AND l.direction = ?'; params.push(direction); }
   if (department_id) { q += ' AND l.department_id = ?'; params.push(department_id); }
   q += ' ORDER BY l.id DESC LIMIT 500';
   res.json(db.prepare(q).all(...params));
@@ -530,7 +531,8 @@ router.get('/summary', requirePermission('report.view_all', 'expense_voucher.vie
     FROM finance_ledger l LEFT JOIN departments d ON d.id = l.department_id
     WHERE l.entry_date LIKE ? GROUP BY department
   `).all(month + '%');
-  res.json({ month, inflow, outflow, net: inflow - outflow, byType, byDepartment: byDeptRows, count: rows.length });
+  res.json({ month, inflow, outflow, net: inflow - outflow, byType, byDepartment: byDeptRows, count: rows.length,
+    inflow_count: rows.filter(r => r.direction === 'Inflow').length, outflow_count: rows.filter(r => r.direction === 'Outflow').length });
 });
 
 // ===================== Sales Invoices (Round 5) =====================
