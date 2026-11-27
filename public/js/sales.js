@@ -1,6 +1,16 @@
 // sales.js - Clients, Leads, Orders, FG Dispatch, MRN, Sales Returns/Credit Notes, Offers, Spares comparison,
 // Sales Analytics/Targets.
 
+// DD/MM/YYYY for every date / timestamp this file prints. Stored values are 'YYYY-MM-DD[ HH:MM:SS]' with no zone marker, so they are parsed by
+// hand (never new Date(str)), and the old toLocaleDateString() printed US MM/DD/YYYY. Inputs and CSV exports keep the raw YYYY-MM-DD value.
+function fmtDMY(v, withTime) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(String(v == null ? '' : v));
+  if (!m) return v ? String(v) : '-';
+  return `${m[3]}/${m[2]}/${m[1]}` + (withTime && m[4] ? ` ${m[4]}:${m[5]}` : '');
+}
+// deliveryBadge() (ui.js, shared with Purchase) decides the colour and the "(overdue Nd)" text; only the date inside its label is reformatted.
+function soDeliveryBadge(d) { return d ? deliveryBadge(d).replace(esc(d), esc(fmtDMY(d))) : deliveryBadge(d); }
+
 // ---- Clients ----
 function renderClientRows(rows) {
   return tableHTML(['Client ID', 'Name', 'Group', 'Contact', 'Phone', 'Email', 'Address', 'Source', ''], rows, c => `
@@ -28,7 +38,7 @@ PAGES.clients = async (el) => {
       </div>
       <label>Address</label>
       <textarea id="cl-address" rows="2"></textarea>
-      <button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button>
+      <div class="hig-savebar"><button class="btn" id="cl-save-btn" onclick="saveClient()">Add Client</button></div>
     </div>
     ${ME.role === 'Admin' ? collapsiblePanel('client-groups', 'Customer Groups', `
       <p class="muted">A Customer Group is a pure folder - a shared name tying several companies (each its own Client row, GSTIN, address) together, same as how a conglomerate's own filing already works. Nothing about an individual client's own details is shared or duplicated - assigning one to a group only changes how Offers/Sales Orders roll up in their lists and what shows as "sibling companies" on Customer 360.</p>
@@ -105,7 +115,7 @@ function clientEditFormHTML(c, keepOpenOnSave) {
     </div>
     <label>Address</label>
     <textarea id="cle-address" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(c.address)}</textarea>
-    <button class="btn" id="cle-save-btn" onclick="saveClientEdit(${c.id}, ${!!keepOpenOnSave})" style="margin-top:10px;">Save Changes</button>
+    <div class="hig-savebar"><button class="btn" id="cle-save-btn" onclick="saveClientEdit(${c.id}, ${!!keepOpenOnSave})">Save Changes</button></div>
     <div id="cle-err" class="msg err" style="display:none;margin-top:8px;"></div>
     <div id="cle-addr-panel" style="margin-top:14px;"></div>`;
 }
@@ -129,7 +139,7 @@ window.openMissingBillingModal = (c) => {
   openAppModal('Missing Billing Details — ' + esc(c.name), `
     <p class="msg err" style="display:block;">This order can't be confirmed yet - add a Billing address (Line 1, State, State Code) and/or GSTIN below, then retry.</p>
     ${clientEditFormHTML(c, true)}
-    <button class="btn" type="button" onclick="retryConfirmOfferFromModal()">Retry Confirm Order</button>
+    <div class="hig-savebar"><button class="btn" type="button" onclick="retryConfirmOfferFromModal()">Retry Confirm Order</button></div>
     <div id="cle-retry-err" class="msg err" style="display:none;"></div>`);
   renderClientAddressesPanel(c.id, 'cle-addr-panel');
 };
@@ -231,9 +241,11 @@ async function renderClientAddressesPanel(clientId, targetId) {
         <div><label>Pincode</label><input id="ca-pincode"></div>
         <div><label><input id="ca-default" type="checkbox"> Set as default for this type</label></div>
       </div>
+      <div class="hig-savebar">
       <button class="btn small outline" type="button" ${hasBilling ? '' : 'disabled title="Add a Billing address first."'} onclick="copyBillToShipTo('${targetId}')">Same as Bill-to</button>
       <button class="btn" id="ca-save-btn" type="button" onclick="addClientAddress(${clientId}, '${targetId}')">Add Address</button>
       <button class="btn small outline" id="ca-cancel-btn" type="button" style="display:none;" onclick="cancelClientAddressEdit(${clientId}, '${targetId}')">Cancel</button>
+      </div>
       <div id="ca-err" class="msg err" style="display:none;"></div>
     </div>`;
 }
@@ -323,7 +335,7 @@ function soaSectionHTML(clientId, ledger) {
   return `
     <h4>Statement of Account <span class="muted" style="font-weight:normal;">(closing balance: ₹${fmt(Math.abs(ledger.closingBalance))} ${ledger.closingBalance > 0 ? 'receivable' : ledger.closingBalance < 0 ? 'in credit' : ''})</span></h4>
     ${tableHTML(['Date', 'Type', 'Ref', 'Debit', 'Credit', 'Balance'], recent, r => `
-      <tr><td>${new Date(r.date).toLocaleDateString()}</td><td>${esc(r.type)}</td><td>${esc(r.ref)}</td>
+      <tr><td>${fmtDMY(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.ref)}</td>
       <td>${r.debit ? '₹' + fmt(r.debit) : '-'}</td><td>${r.credit ? '₹' + fmt(r.credit) : '-'}</td><td>₹${fmt(r.balance)}</td></tr>`)}
     <div style="margin:8px 0;"><a href="#" onclick="downloadSoaPdf(${clientId});return false;">Download Full Statement (PDF)</a></div>
     <div class="form-grid" style="margin-top:6px;">
@@ -365,7 +377,7 @@ window.openClient360 = async (clientId) => {
       <tr><td>${esc(o.offer_no)}</td><td>${esc(o.subject)}</td><td>${badge(o.status)}</td><td>v${o.version}</td></tr>`)}
     <h4>Sales Orders (${d.orders.length})</h4>
     ${tableHTML(['Order No', 'Value', 'Status', 'Date'], d.orders, o => `
-      <tr><td>${esc(o.order_no)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td></tr>`)}
+      <tr><td>${esc(o.order_no)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${fmtDMY(o.order_date)}</td></tr>`)}
     ${soaSectionHTML(clientId, ledger)}
   `;
   openMiniModal('Customer 360 — ' + c.name, body, true);
@@ -444,7 +456,7 @@ async function renderLeadsPage(el) {
         <div><label>Expected Value (₹)</label><input id="ld-value" type="number"></div>
         <div><label>Enquiry Details</label><textarea id="ld-details" rows="1"></textarea></div>
       </div>
-      <button class="btn" onclick="addLead()">Add Lead</button>
+      <div class="hig-savebar"><button class="btn" onclick="addLead()">Add Lead</button></div>
     </div>
     <div class="toolbar">
       <div class="tabs" style="margin:0;">
@@ -543,7 +555,7 @@ function promptLostReason() {
       <div style="margin-top:8px;"><label>Detail (required for "Other", optional otherwise)</label>
         <textarea id="lr-detail" rows="2" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
       </div>
-      <div style="margin-top:10px;">
+      <div class="hig-savebar">
         <button class="btn red" id="lr-confirm" type="button">Mark as Lost</button>
         <button class="btn outline" type="button" onclick="closeMiniModal()">Cancel</button>
       </div>`;
@@ -607,11 +619,11 @@ function renderActivityList(activities) {
   if (!activities.length) return '<div class="empty">No activity logged yet.</div>';
   return activities.map(a => `
     <div class="activity-item">
-      <div><b>${esc(a.activity_type)}</b> ${a.due_date ? `— due ${esc(a.due_date)}` : ''}
+      <div><b>${esc(a.activity_type)}</b> ${a.due_date ? `— due ${esc(fmtDMY(a.due_date))}` : ''}
         ${a.completed_at ? '<span class="badge Completed">Done</span>' : (a.due_date && a.due_date <= today() ? '<span class="badge red">Due</span>' : '')}
       </div>
       ${a.notes ? `<div class="muted">${esc(a.notes)}</div>` : ''}
-      <div class="muted">by ${esc(a.created_by_name) || '-'} on ${new Date(a.created_at).toLocaleString()}</div>
+      <div class="muted">by ${esc(a.created_by_name) || '-'} on ${fmtDMY(a.created_at, true)}</div>
       ${!a.completed_at ? `<button class="btn small outline" type="button" onclick="completeLeadActivity(${a.lead_id || 0}, ${a.id})">Mark Done</button>` : ''}
     </div>`).join('');
 }
@@ -641,7 +653,7 @@ function followupsTableHTML(items) {
   if (!items.length) return '<div class="empty">Nothing due. Nice work.</div>';
   return tableHTML(['Due Date', 'Client', 'Type', 'Notes', 'Owner', ''], items, a => `
     <tr class="${a.due_date < today() ? 'followup-overdue' : ''}">
-      <td>${esc(a.due_date)}</td><td><a href="#" onclick="openLeadDetail(${a.lead_id});return false;">${esc(a.client_name)}</a></td>
+      <td>${esc(fmtDMY(a.due_date))}</td><td><a href="#" onclick="openLeadDetail(${a.lead_id});return false;">${esc(a.client_name)}</a></td>
       <td>${esc(a.activity_type)}</td><td>${esc(a.notes) || '-'}</td><td>${esc(a.owner_name) || '-'}</td>
       <td><button class="btn small outline" onclick="completeLeadActivity(${a.lead_id}, ${a.id})">Mark Done</button></td></tr>`);
 }
@@ -678,8 +690,8 @@ function poTermsBadge(o) {
 // table (see customerGroupedHTML's own comment above for why that matters).
 const ORDER_LIST_COLUMNS = ['Order No', 'Client', 'Value', 'Status', 'Date', 'Promised Delivery', 'Customer PO', 'Annexure', ''];
 function orderRowHTML(o) {
-  return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${new Date(o.order_date).toLocaleDateString()}</td>
-    <td>${deliveryBadge(o.promised_delivery_date)}</td>
+  return `<tr><td>${esc(o.order_no)}</td><td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${fmtDMY(o.order_date)}</td>
+    <td>${soDeliveryBadge(o.promised_delivery_date)}</td>
     <td>${poTermsBadge(o)}</td>
     <td>${o.annexure_path ? `<a class="btn small outline" href="/api/sales/orders/${o.id}/annexure" onclick="return downloadAnnexure(event, ${o.id})">Annex- Word</a> <a class="btn small outline" href="#" onclick="return downloadAnnexure(event, ${o.id}, 'pdf')">Annex- PDF</a>` : `<a class="btn small outline" href="#" onclick="return generateAnnexure(event, ${o.id})">Generate</a>`}</td>
     <td>${actionButtonsCell(`
@@ -701,7 +713,7 @@ window.openSalesOrderHistory = async (id, orderNo) => {
   // Event first, so the key column is on screen even when a phone has to scroll the rest sideways.
   openAppModal('History - ' + orderNo, log.length
     ? '<div style="overflow-x:auto;">' + tableHTML(['Event', 'When', 'By', 'Details'], log, l => `
-        <tr><td>${esc(l.event)}</td><td style="white-space:nowrap;">${new Date(String(l.when).replace(' ', 'T')).toLocaleString()}</td><td>${esc(l.by) || '-'}</td><td>${esc(l.details) || '-'}</td></tr>`) + '</div>'
+        <tr><td>${esc(l.event)}</td><td style="white-space:nowrap;">${fmtDMY(l.when, true)}</td><td>${esc(l.by) || '-'}</td><td>${esc(l.details) || '-'}</td></tr>`) + '</div>'
     : '<p class="muted">No history recorded for this order yet.</p>');
 };
 window.toggleSOItems = async (id) => {
@@ -842,7 +854,7 @@ PAGES['fg-dispatches'] = async (el) => {
         <div><label>E-Way Bill No</label><input id="disp-eway"></div>
       </div>
       <div id="disp-lines"><p class="muted">Pick a sales order with dispatchable lines.</p></div>
-      <button class="btn" onclick="submitDispatch()">Dispatch</button>
+      <div class="hig-savebar"><button class="btn" onclick="submitDispatch()">Dispatch</button></div>
     </div>
     ${collapsiblePanel('dispatches-list', `Dispatches (${dispatches.length})`, `
       ${renderListSearch('fg-dispatches-list', dispatches, ['dispatch_no', 'order_no', 'client_name', 'status'], renderDispatchRows, 'Search by dispatch no, order, client, or status...')}
@@ -853,7 +865,7 @@ PAGES['fg-dispatches'] = async (el) => {
 function renderDispatchRows(dispatches) {
   document.getElementById('fg-dispatches-rows').innerHTML =
       `${tableHTML(['Dispatch No', 'Order', 'Client', 'Date', 'Status', ''], dispatches, d => `
-        <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${new Date(d.dispatch_date).toLocaleDateString()}</td><td>${badge(d.status)}</td>
+        <tr><td>${esc(d.dispatch_no)}</td><td>${esc(d.order_no)}</td><td>${esc(d.client_name)}</td><td>${fmtDMY(d.dispatch_date)}</td><td>${badge(d.status)}</td>
         <td>${actionButtonsCell(`
           ${!['Cancelled', 'Rejected'].includes(d.status) ? `<button class="btn small grey-outline" type="button" onclick="openRequestVehicle(${d.id}, '${esc(d.dispatch_no)}')">1. Request Vehicle</button>
           <button class="btn small" type="button" onclick="openUpdateDispatchInfo(${d.id}, '${esc(d.dispatch_no)}')">2. Update Dispatch Info</button>
@@ -945,7 +957,7 @@ window.openUpdateDispatchInfo = async (id, dispatchNo) => {
     openAppModal('Update Dispatch Info - ' + dispatchNo, `
       <p class="muted">Documents upload as soon as you pick them (a new file replaces the previous one for that slot). Use Save for the text fields.</p>
       ${DISPATCH_DOC_SLOTS.map(row).join('')}
-      <div style="margin-top:12px;"><button class="btn" id="udi-save" onclick="saveDispatchInfo(${id})">Save</button></div>`);
+      <div class="hig-savebar"><button class="btn" id="udi-save" onclick="saveDispatchInfo(${id})">Save</button></div>`);
   } catch (e) { alert(e.message); }
 };
 window.uploadDispatchDoc = async (id, tag, input) => {
@@ -976,7 +988,7 @@ window.saveDispatchInfo = async (id) => {
 window.openRequestVehicle = (id, dispatchNo) => {
   openAppModal('Request Vehicle - ' + dispatchNo, `
     <div class="form-grid"><div><label>Date of Pick-up to be Arranged</label><input id="rv-date" type="date"></div></div>
-    <div style="margin-top:12px;"><button class="btn" onclick="submitRequestVehicle(${id})">Generate Request</button></div>`);
+    <div class="hig-savebar"><button class="btn" onclick="submitRequestVehicle(${id})">Generate Request</button></div>`);
 };
 window.submitRequestVehicle = async (id) => {
   const pickupDate = val('rv-date');
@@ -1027,7 +1039,7 @@ PAGES['sale-rejection-mrns'] = async (el) => {
       </div>
       <div><label>Description / Notes</label><textarea id="mrn-desc" rows="2"></textarea></div>
       <div id="mrn-lines"><p class="muted">Pick a Dispatched shipment with rejectable lines.</p></div>
-      <button class="btn" onclick="submitMrn()">Raise MRN</button>
+      <div class="hig-savebar"><button class="btn" onclick="submitMrn()">Raise MRN</button></div>
     </div>
     ${collapsiblePanel('mrns-list', `Sale Rejection MRNs (${mrns.length})`, `
       ${tableHTML(['MRN No', 'Dispatch', 'Order', 'Client', 'Disposition', 'Status', 'Resolution', ''], mrns, m => `
@@ -1119,8 +1131,8 @@ PAGES['sales-returns'] = async (el) => {
       <div><label>Reason</label><input id="sr-reason" placeholder="Why these goods are coming back"></div>
       <h4>Returned Line Items</h4>
       <div id="sr-return-lines"></div>
-      <button class="btn small outline" type="button" onclick="addSalesReturnLine()">+ Add Line Item</button>
-      <button class="btn" style="margin-top:10px;" onclick="createSalesReturn()">Save Return</button>
+      <div class="hig-actions"><button class="btn small outline" type="button" onclick="addSalesReturnLine()">+ Add Line Item</button></div>
+      <div class="hig-savebar"><button class="btn" onclick="createSalesReturn()">Save Return</button></div>
       <div class="muted">Saved as Draft - freely editable until you submit for the Store HOD's approval, which is what actually credits stock for a Good-condition line.</div>
     </div>
     ${collapsiblePanel('sales-returns-list', `Sales Returns (${returns.length})`, `
@@ -1159,7 +1171,7 @@ window.toggleSalesReturnDetail = async (id) => {
       ${ret.reason ? `<p style="font-size:13px;"><b>Reason:</b> ${esc(ret.reason)}</p>` : ''}
       ${tableHTML(['Item', 'Qty', 'Unit', 'Condition', 'Return Status', ''], items, it => `<tr><td>${esc(it.item_text)}</td><td>${it.quantity}</td><td>${esc(it.unit)}</td><td>${badge(it.condition_status)}</td>
         <td>${it.condition_status === 'Good' ? '<span class="muted">Credited to stock</span>' :
-             it.sent_back_at ? `<span class="muted">↩ Sent Back · ${esc(new Date(it.sent_back_at).toLocaleDateString())}${it.sent_back_ref ? ' · ' + esc(it.sent_back_ref) : ''}</span>` :
+             it.sent_back_at ? `<span class="muted">↩ Sent Back · ${esc(fmtDMY(it.sent_back_at))}${it.sent_back_ref ? ' · ' + esc(it.sent_back_ref) : ''}</span>` :
              '<span class="muted">Awaiting disposition</span>'}</td>
         <td>${actionButtonsCell(
           ret.status === 'Approved' && ['Damaged', 'Repair'].includes(it.condition_status) && !it.sent_back_at
@@ -1248,7 +1260,7 @@ window.openEditSalesOrder = async (id) => {
         <input id="eso-value" type="number" value="${o.order_value ?? ''}" ${soItems.length ? 'readonly title="Computed from the line items below"' : ''}></div>
     </div>
     ${soItems.length ? `<h4 style="margin-top:14px;">Line Items (${soItems.length})</h4>
-    ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 80px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
+    ${gridLineTableHTML('minmax(180px,2fr) 90px 70px 100px 90px 70px 110px 100px', ['Description', 'Qty', 'Unit', 'Rate (₹)', 'HSN', 'GST %', 'Value (₹)', 'Dispatched'], soItems, (it, i) => {
         const disp = it.quantity - it.dispatchable_qty;
         return `<div><input id="eso-it-desc-${i}" value="${esc(it.description)}"></div>
           <div><input id="eso-it-qty-${i}" type="number" min="${disp || 0}" step="any" value="${it.quantity}" oninput="esoRecalc()"></div>
@@ -1269,7 +1281,7 @@ window.openEditSalesOrder = async (id) => {
     <div><label>Trigger Conditions</label><textarea id="eso-ld-notes" rows="2" style="width:100%;">${esc(o.ld_trigger_notes || '')}</textarea></div>
     ${bgTermsFormFields('eso', o)}
     <div><label>Payment Terms</label><textarea id="eso-payment-terms" rows="2" style="width:100%;">${esc(o.payment_terms || '')}</textarea></div>
-    <div style="margin-top:12px;"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
+    <div class="hig-savebar"><button class="btn" id="eso-save-btn-${id}" onclick="saveEditSalesOrder(${id})">Save Changes</button></div>
   `);
   if (soItems.length) document.querySelector('.app-modal-box').style.width = 'min(1000px,100%)'; // 8-column line grid needs more than the default 560px
   esoRecalc();
@@ -1358,7 +1370,7 @@ PAGES.orders = async (el) => {
         <div><label>Trigger Conditions</label><textarea id="so-ld-notes" rows="2" placeholder="e.g. 0.5% per week of delay, capped at 5% of order value"></textarea></div>
       </div>
       ${bgTermsFormFields('so')}
-      <button class="btn" onclick="addOrder()">Create Order</button>
+      <div class="hig-savebar"><button class="btn" onclick="addOrder()">Create Order</button></div>
     </div>
     <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
     ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
@@ -1431,7 +1443,7 @@ async function renderOrderConfirmationModal(orderId) {
     </div>
     <label>Special Instructions</label>
     <textarea id="oc-notes-${orderId}" rows="2" style="width:100%;" ${oc.locked ? 'disabled' : ''}>${esc(oc.special_instructions)}</textarea>
-    <div style="margin-top:6px;">
+    <div class="hig-actions" style="margin-top:6px;">
       ${!oc.locked ? `<button class="btn small" onclick="saveOrderConfirmation(${orderId})">Save</button>
       ${['Draft', 'Rejected'].includes(oc.status) ? `<button class="btn small outline" onclick="submitOrderConfirmation(${orderId})">Submit for Approval</button>` : ''}`
         : (oc.status === 'Approved' && ME.role === 'Admin' ? `<button class="btn small outline red" onclick="unlockOrderConfirmation(${orderId})">Unlock for Revision</button>` : '')}
@@ -1445,7 +1457,7 @@ async function renderOrderConfirmationModal(orderId) {
     <textarea id="ar-notes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.review_notes)}</textarea>
     <label style="margin-top:8px;display:block;">Annexure Notes <span class="muted">(printed on the Annexure document itself)</span></label>
     <textarea id="ar-docnotes-${orderId}" rows="2" style="width:100%;" ${ar.locked ? 'disabled' : ''}>${esc(ar.notes)}</textarea>
-    <div style="margin-top:6px;">
+    <div class="hig-actions" style="margin-top:6px;">
       ${!ar.locked ? `<button class="btn small" onclick="saveAnnexureNotes(${orderId})">Save Notes</button>
       <button class="btn small outline" onclick="regenerateAnnexureInModal(${orderId}, ${!!ar.annexure_is_manual})">Regenerate Annexure</button>
       <input type="file" id="ar-file-${orderId}" style="display:inline-block;width:auto;">
@@ -1850,7 +1862,7 @@ PAGES.offers = async (el) => {
         <div><label>Subject / Machine</label><input id="nf-subject" placeholder="e.g. Electronic Weighing and Bagging System"></div>
       </div>
       ${clients.length === 0 ? '<div class="msg err">Add a client first (Sales &amp; Marketing &rarr; Clients).</div>' : ''}
-      <button class="btn" onclick="createOffer()">Create Offer (opens builder with prefilled sheets)</button>
+      <div class="hig-savebar"><button class="btn" onclick="createOffer()">Create Offer (opens builder with prefilled sheets)</button></div>
     </div>
     <button class="btn small outline" onclick="reportOffers()">Generate Report (CSV)</button>
     ${collapsiblePanel('offers-list', `<span id="of-count">All Offers (${offers.length})</span>`, `
@@ -1873,8 +1885,10 @@ PAGES.offers = async (el) => {
         <div><label>Contact Phone</label><input id="ocp-phone"></div>
         <div><label>Contact Email</label><input id="ocp-email"></div>
       </div>
+      <div class="hig-savebar">
       <button class="btn" onclick="submitCopyOffer()">Create Copy</button>
       <button class="btn outline" type="button" onclick="document.getElementById('offer-copy-panel').style.display='none'">Cancel</button>
+      </div>
       <div id="ocp-err" class="msg err" style="display:none;"></div>
     </div>
     <div class="panel" id="offer-builder-panel" style="display:none;"></div>
@@ -1909,7 +1923,7 @@ const OFFER_LIST_COLUMNS = ['Offer No', 'Client', 'Enquiry/RFQ', 'Subject', 'Dat
 // column sortable except the trailing Action column (field: null there).
 const OFFER_SORT_OPTS = { containerId: 'of-table-wrap', sortKey: 'of-sort', fields: ['offer_no', 'client_name', 'lead_enquiry_details', 'subject', 'offer_date', 'status', null] };
 function offerRowHTML(o) {
-  return `<tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${new Date(o.offer_date).toLocaleDateString()}</td><td>${badge(o.status)}</td>
+  return `<tr><td>${esc(o.offer_no)}</td><td>${esc(o.client_name)}</td><td>${esc(o.lead_enquiry_details) || '-'}</td><td>${esc(o.subject)}</td><td>${fmtDMY(o.offer_date)}</td><td>${badge(o.status)}</td>
     <td>${actionButtonsCell(`
       <button class="btn small outline" onclick="openOfferBuilder(${o.id})">Open</button>
       <button class="btn small outline" onclick="openCopyOfferPanel(${o.id})">Copy to...</button>
@@ -2077,7 +2091,7 @@ async function renderOfferBuilder(panel) {
     ${versions.length > 1 ? `<div class="panel" style="background:#f6f7f9;">
       <b>Version History</b>
       ${tableHTML(['Version', 'Status', 'Date', 'Revision Reason', ''], versions, v => `
-        <tr${v.id === o.id ? ' style="font-weight:600;"' : ''}><td>v${v.version}</td><td>${badge(v.status)}</td><td>${new Date(v.offer_date).toLocaleDateString()}</td>
+        <tr${v.id === o.id ? ' style="font-weight:600;"' : ''}><td>v${v.version}</td><td>${badge(v.status)}</td><td>${fmtDMY(v.offer_date)}</td>
         <td class="muted">${esc(v.revision_reason) || '-'}</td>
         <td>${actionButtonsCell(`${v.id !== o.id ? `<button class="btn small outline" onclick="openOfferBuilder(${v.id})">View</button>` : '<span class="muted">Current</span>'}
           <a class="btn small outline" href="#" onclick="downloadOfferVersionPdf(${v.id});return false;">PDF</a>`)}</td></tr>`)}
@@ -2100,7 +2114,7 @@ async function renderOfferBuilder(panel) {
     </div>
     <div class="tabs">${tabs.map(([id, label]) => `<div class="tab ${CURRENT_OFFER_TAB === id ? 'active' : ''}" data-tab-id="${id}" onclick="switchOfferTab('${id}')">${label}</div>`).join('')}</div>
     <div id="offer-tab-content"></div>
-    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+    <div class="hig-actions" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
       <button class="btn" onclick="saveOfferHeader()">Save Header</button>
       ${!o.is_template && o.status === 'Draft' ? `<button class="btn outline" onclick="markOfferSent()">Mark as Sent</button>` : ''}
       <button class="btn outline" onclick="downloadOfferPdf()">Download PDF</button>
@@ -2280,7 +2294,7 @@ function renderOfferAnnexureTab(el, data) {
       <input id="an-upload-file" type="file" accept=".xlsx,.xls,.csv" onchange="uploadOfferAnnexure(this)">
     </div>
     <div id="an-rows" style="margin-top:10px;"></div>
-    <div style="margin-top:8px;">
+    <div class="hig-savebar">
       <button class="btn small outline" type="button" onclick="addOfferAnnexureRow()">+ Add Row</button>
       <button class="btn small outline" type="button" onclick="clearOfferAnnexure()">Clear All</button>
       <button class="btn" type="button" onclick="saveOfferAnnexure()">Save Annexure</button>
@@ -2508,7 +2522,7 @@ async function renderScopeTab(el, data) {
     <textarea id="it-desc" rows="3" style="width:90%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
     <label>Equipment Description Summary <span class="muted">(shown next to the picture on the PDF's Equipment Description page - optional)</span></label>
     <textarea id="it-summary" rows="3" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;"></textarea>
-    <div style="margin-top:8px;">
+    <div class="hig-savebar">
       <button class="btn" id="it-submit-btn" onclick="addOfferItem()">Add Line</button>
       <button class="btn outline" id="it-cancel-btn" onclick="cancelEditOfferItem()" style="display:none;">Cancel</button>
     </div>
@@ -2719,8 +2733,10 @@ function renderKvTab(el, rows, keyField, valField, endpoint, keyLabel, valLabel,
       </select>
       <button class="btn small outline" onclick="addKvRowFromLibrary()">+ Add From Library</button>
     </div>` : '' }
+    <div class="hig-savebar">
     ${!strict ? `<button class="btn small outline" onclick="addKvRow()">+ Add Row</button>` : ''}
     <button class="btn" onclick="saveKvTab('${endpoint}', '${keyField}', '${valField}'${flag ? `, '${flag.field}', '${flag.id}'` : ''})">Save</button>
+    </div>
   `;
   if (hasLibrary) el.dataset.library = JSON.stringify(library);
 }
@@ -2810,7 +2826,7 @@ function renderTextTab(el, offer, disabled) {
     <label style="margin-top:10px;display:block;">${label}</label>
     <textarea id="${textareaId}" rows="${rowsAttr[textareaId]}" ${disabled ? 'disabled' : ''} style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:13px;">${esc(offer[fieldMap[textareaId]])}</textarea>
     ${disabled ? '' : textLibraryPicker(textareaId, category)}
-  `).join('') + `<div style="margin-top:10px;"><button class="btn" onclick="saveTextTab()">Save</button></div>`;
+  `).join('') + `<div class="hig-savebar"><button class="btn" onclick="saveTextTab()">Save</button></div>`;
 }
 window.saveTextTab = async () => {
   try {
@@ -2883,9 +2899,9 @@ function renderSparesPerCustomerTable(rows) {
       <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
       <td>${sparesSourceBadge(r)}</td>
       <td>₹${fmt(r.last_quoted_rate)}</td>
-      <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_quoted_date ? fmtDMY(r.last_quoted_date) : '-'}</td>
       <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
-      <td>${r.last_ordered_date ? new Date(r.last_ordered_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_ordered_date ? fmtDMY(r.last_ordered_date) : '-'}</td>
       <td>${r.quote_count}</td>
       <td>${r.order_count}</td>
     </tr>`);
@@ -2898,9 +2914,9 @@ function renderSparesSearchTable(rows) {
       <td>${esc(r.spare)}${sparesApproxNote(r)}</td>
       <td>${sparesSourceBadge(r)}</td>
       <td>₹${fmt(r.last_quoted_rate)}</td>
-      <td>${r.last_quoted_date ? new Date(r.last_quoted_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_quoted_date ? fmtDMY(r.last_quoted_date) : '-'}</td>
       <td>${r.last_ordered_rate !== null ? '₹' + fmt(r.last_ordered_rate) : '-'}</td>
-      <td>${r.last_ordered_date ? new Date(r.last_ordered_date).toLocaleDateString() : '-'}</td>
+      <td>${r.last_ordered_date ? fmtDMY(r.last_ordered_date) : '-'}</td>
       <td>${r.quote_count}</td>
       <td>${r.order_count}</td>
     </tr>`);

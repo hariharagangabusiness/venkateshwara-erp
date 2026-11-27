@@ -1,9 +1,9 @@
-// ===================== Module UI polish (Apple-HIG pass, 2026-11-26) =====================
-// Purchase, Store, Finance and Electrical & Service screens. Loaded after every page file and before app.js, so
+// ===================== Module UI polish (Apple-HIG pass, 2026-11-26; Sales & Marketing added 2026-11-27) =====================
+// Purchase, Store, Finance, Electrical & Service and Sales & Marketing screens. Loaded after every page file and before app.js, so
 // every PAGES entry already exists when it is wrapped here. Each wrapped page renders into
-//   <div class="hig-mod-scope mod-<purchase|store|finance|electrical> hig-page-<id>">
-// and every CSS rule below starts with .hig-mod-scope (or .hig-entry / .hig-savebar, which only exist inside it), so
-// Settings, Sales, HR and every other screen are untouched. Popups opened while a module page is current get the same
+//   <div class="hig-mod-scope mod-<purchase|store|finance|electrical|sales> hig-page-<id>">
+// and every CSS rule below starts with .hig-mod-scope (or .hig-entry / .hig-savebar, which only exist inside it; the Sales-only
+// block starts with .mod-sales), so Settings, HR and every other screen are untouched. Popups opened while a module page is current get the same
 // class on their .app-modal-box. Nothing here touches the backend, core.js, ui.js or another module's page file.
 //
 // Sizing follows the HIG ask (12px cards, 8px controls, 40px / 44px-on-mobile hit areas); colours stay on the DESIGN.md
@@ -17,6 +17,10 @@ const HIG_PAGES = {
   // monthly-reconciliation is left out because it just renders service-recon, which is wrapped below.
   electrical: ['service', 'service-mine', 'service-recon', 'service-reports-dashboard', 'service-reopenings', 'sc-receive',
     'sc-reconciliation', 'site-visits', 'dept-capacity'],
+  // Sales & Marketing (2026-11-27). Left out on purpose: sales-analytics / sales-targets (parked chart pages) and the two
+  // admin.js offer pages (offer-options, offer-pdf-designer). Proforma Invoices live on 'sales-invoices' (finance, above).
+  sales: ['leads', 'pipeline', 'followups', 'offers', 'orders', 'fg-dispatches', 'sale-rejection-mrns', 'sales-returns',
+    'sales-credit-notes', 'clients', 'spares-comparison'],
 };
 // Department job-card queues: only these three stages belong to the modules in scope; Manufacturing & co. stay as they were.
 const HIG_STAGE_MODULE = { Purchase: 'purchase', Store: 'store', Electrical: 'electrical' };
@@ -185,9 +189,84 @@ const HIG_CSS = `
 }
 `.replace(/@I/g, 'input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=hidden]):not([type=color])');
 
+// ---- Sales & Marketing only: every rule starts with .mod-sales (page wrapper, and the popups opened from those pages) ----
+const HIG_SALES_CSS = `
+/* a row's cells share one top line even when one holds a picker + select pair (New Offer's Client) */
+.mod-sales .form-grid > div{justify-content:flex-start;}
+/* markup in sales.js still carries a few hand-rolled inline paddings / widths: the field look wins over them */
+.mod-sales textarea[style]{width:100% !important;box-sizing:border-box;padding:10px 12px !important;border-radius:8px !important;font-size:13px !important;}
+.mod-sales input[style*="padding"]:not([type=checkbox]):not([type=radio]):not([type=file]),.mod-sales select[style*="padding"]{padding:7px 10px !important;border-radius:8px !important;}
+.mod-sales > .btn.small.outline,.mod-sales > .toolbar{margin-bottom:12px;}
+.mod-sales .toolbar{align-items:center;}
+.mod-sales .panel > h4 + .form-grid,.mod-sales .modal-body > h4 + .form-grid{margin-top:4px;}
+/* status pills (Sales Orders / Leads use more statuses than the base palette names) */
+.mod-sales .badge{padding:3px 10px;font-size:12px;border-radius:999px;white-space:nowrap;}
+.mod-sales .badge.Confirmed,.mod-sales .badge.New{background:#dbeafe;color:#1d4ed8;}
+.mod-sales .badge.InProduction,.mod-sales .badge.Negotiation{background:#fef3cd;color:var(--amber);}
+.mod-sales .badge.Quoted{background:#ede9fe;color:#6d28d9;}
+.mod-sales .badge.Invoiced{background:#dcf3e6;color:var(--green);}
+/* ---- Leads kanban (had no CSS at all): one lane per stage, scrolls sideways, cards keep drag-and-drop ---- */
+.mod-sales .kanban-board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(168px,1fr);gap:12px;overflow-x:auto;padding:2px 2px 12px;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scroll-snap-type:x proximity;}
+.mod-sales .kanban-col{display:flex;flex-direction:column;min-width:0;background:var(--bg);border:1px solid var(--border);border-top:3px solid var(--border);border-radius:12px;padding:10px;scroll-snap-align:start;}
+.mod-sales .kanban-col[data-stage="New"]{border-top-color:#1d4ed8;}
+.mod-sales .kanban-col[data-stage="Quoted"]{border-top-color:#6d28d9;}
+.mod-sales .kanban-col[data-stage="Negotiation"]{border-top-color:var(--amber);}
+.mod-sales .kanban-col[data-stage="Won"]{border-top-color:var(--green);}
+.mod-sales .kanban-col[data-stage="Lost"]{border-top-color:var(--red);}
+.mod-sales .kanban-col-header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:2px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;letter-spacing:-.006em;}
+.mod-sales .kanban-col-header .muted{font-size:12px;font-weight:500;white-space:nowrap;}
+.mod-sales .kanban-dropzone{display:flex;flex-direction:column;gap:8px;flex:1;min-height:76px;border-radius:8px;}
+.mod-sales .kanban-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:grab;transition:border-color .15s ease,box-shadow .15s ease;}
+.mod-sales .kanban-card:hover{border-color:color-mix(in srgb,var(--primary) 35%,#fff);box-shadow:0 2px 8px rgba(30,58,95,.10);}
+.mod-sales .kanban-card:active{cursor:grabbing;}
+.mod-sales .kanban-card-title{font-size:14px;font-weight:600;letter-spacing:-.006em;margin-bottom:2px;overflow-wrap:anywhere;}
+.mod-sales .kanban-dropzone > .muted:only-child{display:block;text-align:center;padding:16px 8px;border:1px dashed var(--border);border-radius:8px;}
+/* the modal's close button floats right, which narrows a scrolling first child (History table, a form grid) to sit beside it */
+.mod-sales #app-modal-body > :first-child{clear:both;}
+.mod-sales .hig-actions > a:not(.btn),.mod-sales .hig-savebar > a:not(.btn){color:var(--primary);font-size:13px;font-weight:500;text-decoration:underline;text-underline-offset:2px;}
+.mod-sales .activity-item{padding:10px 0;border-bottom:1px solid var(--border);}
+.mod-sales .activity-item:last-child{border-bottom:0;}
+/* ---- list tables on a desktop: ids never split, actions pack into two columns instead of one tall stack ---- */
+.mod-sales .hig-rowcards table td,.mod-sales .hig-rowcards table th{padding-left:7px;padding-right:7px;}
+.mod-sales .hig-rowcards table th{white-space:normal;}
+.mod-sales .hig-rowcards td .badge{white-space:normal;text-align:center;font-size:11.5px;padding:3px 8px;border-radius:12px;}
+.mod-sales td .row-actions{grid-template-columns:repeat(2,minmax(78px,1fr));min-width:176px;}
+.mod-sales td[onclick*="toggleCustomerGroupRollup"]{padding:11px 10px;}
+/* entry tables (annexure rows, line fields) scroll inside their card on a desktop instead of widening the page */
+@media (min-width:769px){.mod-sales .hig-entry{overflow-x:auto;}}
+.mod-sales .hig-entry td[data-label="S.No"]:first-child{grid-column:auto;}
+@media (max-width:768px){
+  .mod-sales .badge,.mod-sales .hig-rowcards td .badge{padding:4px 10px;font-size:12px;white-space:nowrap;border-radius:999px;}
+  .mod-sales .hig-savebar{padding-bottom:max(12px,env(safe-area-inset-bottom));}
+  .mod-sales .hig-actions > a:not(.btn),.mod-sales .hig-savebar > a:not(.btn){display:inline-flex;align-items:center;min-height:44px;}
+  .mod-sales > .btn.small.outline{width:100%;}
+  /* kanban: one stage per screen, the next one peeks in; moving a lead on touch uses the List view's "Move to" menu */
+  .mod-sales .kanban-board{grid-auto-columns:82%;scroll-snap-type:x mandatory;margin-inline:-2px;}
+  .mod-sales .kanban-card{padding:12px;}
+  /* list rows -> cards */
+  .mod-sales .hig-rowcards td[data-empty]{display:none !important;}
+  .mod-sales .hig-rowcards table td{padding-left:0;padding-right:0;}
+  .mod-sales .hig-rowcards table td:first-child{white-space:normal;overflow-wrap:anywhere;}
+  .mod-sales .hig-rowcards td[data-label="Description"],.mod-sales .hig-rowcards td[data-label="Remarks"],.mod-sales .hig-rowcards td[data-label="Address"],.mod-sales .hig-rowcards td[data-label="Notes"],.mod-sales .hig-rowcards td[data-label="Details"],.mod-sales .hig-rowcards td[data-label="Revision Reason"]{display:block;text-align:left;}
+  .mod-sales .hig-rowcards td[data-label="Description"]::before,.mod-sales .hig-rowcards td[data-label="Remarks"]::before,.mod-sales .hig-rowcards td[data-label="Address"]::before,.mod-sales .hig-rowcards td[data-label="Notes"]::before,.mod-sales .hig-rowcards td[data-label="Details"]::before,.mod-sales .hig-rowcards td[data-label="Revision Reason"]::before{display:block;margin-bottom:2px;}
+  .mod-sales .hig-rowcards td:last-child .row-actions,.mod-sales .hig-rowcards td .row-actions{min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));}
+  .mod-sales .hig-rowcards td:last-child > select,.mod-sales .hig-rowcards td:last-child > .btn{margin-top:6px;}
+  .mod-sales .hig-rowcards td a.btn,.mod-sales .hig-rowcards td .btn.small{width:100%;}
+  .mod-sales .hig-rowcards tbody tr[id]{background:var(--bg);}
+  .mod-sales td[onclick*="toggleCustomerGroupRollup"]{min-height:44px;}
+  /* entry tables: keep the key text wide, numbers in pairs */
+  .mod-sales .hig-entry td[data-label="Description"],.mod-sales .hig-entry td[data-label="Line"],.mod-sales .hig-entry td[data-label="Item"],.mod-sales .hig-entry td[data-label="Remarks"],.mod-sales .hig-entry td[data-label="Title"],.mod-sales .hig-entry td[data-label="Summary"]{grid-column:1 / -1;}
+  .mod-sales .hig-entry:has(#kv-rows) td{grid-column:1 / -1;}
+  .mod-sales .hig-entry td textarea{width:100% !important;min-height:84px;}
+  .mod-sales .hig-entry td[data-w="act"] .row-actions{min-width:0;}
+  .mod-sales .hig-entry td .btn.small{min-width:96px;}
+  /* wide pickers and file rows never push the card past the screen */
+  .mod-sales input[type=file]{width:100%;}
+}
+`;
 function higInstall() {
   if (document.getElementById('hig-mod-css')) return;
-  const st = document.createElement('style'); st.id = 'hig-mod-css'; st.textContent = HIG_CSS;
+  const st = document.createElement('style'); st.id = 'hig-mod-css'; st.textContent = HIG_CSS + HIG_SALES_CSS;
   document.head.appendChild(st);
   // One observer keeps two things in step with every (re)render: popups opened from a module page get the scope class,
   // and line-item grids get their header text copied onto each cell (CSS attr(data-label) shows it on the mobile cards).
@@ -213,7 +292,35 @@ function higRevealMessages(muts) {
     if (r.bottom > innerHeight - 70 || r.top < 0) msg.scrollIntoView({ block: 'center', behavior: 'smooth' });
   });
 }
+// Sales screens build plain <table>s from several helpers (tableHTML, customerGroupedHTML, raw markup), so they are classified here
+// once instead of editing ~25 call sites. A table whose body holds fields is an entry table (.hig-entry: one labelled card per
+// line on a phone); any other table with 3+ columns is a list (.hig-rowcards: one card per row). A host that already carries
+// .hig-entry / .hig-rowcards / data-hig-keep is left alone. Only runs under .mod-sales; idempotent (re-run on every render).
+function higTagTables() {
+  document.querySelectorAll('.mod-sales table').forEach(t => {
+    const auto = t.closest('[data-hig-auto]');
+    if (!auto && t.closest('.hig-entry, .hig-rowcards, .grid-line-table, [data-hig-keep]')) return;
+    const head = t.tHead && t.tHead.rows[0];
+    if (!head || head.cells.length < 3) return;
+    // fields in a data cell = entry table; a select/button in the LAST cell is a row action, and a full-width (colspan) row is a hidden detail form
+    const entry = !!t.querySelector('tbody td:not([colspan]):not(:last-child) :is(input:not([type=hidden]), select, textarea)');
+    let box = auto;
+    if (!box) {
+      const host = t.parentElement;
+      if (host.tagName === 'DIV' && host.children.length === 1) box = host;
+      else { box = document.createElement('div'); host.insertBefore(box, t); box.appendChild(t); }
+      box.setAttribute('data-hig-auto', '');
+    }
+    box.classList.toggle('hig-entry', entry);
+    box.classList.toggle('hig-rowcards', !entry);
+  });
+  // a list cell with nothing in it would print a bare label on a phone card
+  document.querySelectorAll('.mod-sales .hig-rowcards tbody td').forEach(td => {
+    td.toggleAttribute('data-empty', td.colSpan === 1 && !td.textContent.trim() && !td.querySelector('input,select,textarea,button,a,img'));
+  });
+}
 function higStampLabels() {
+  higTagTables();
   document.querySelectorAll('.hig-mod-scope .grid-line-table').forEach(g => {
     const head = g.querySelector('.glt-head');
     if (!head) return;

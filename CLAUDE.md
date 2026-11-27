@@ -61,7 +61,7 @@ Thirteen plain classic scripts, no bundler, all `defer`, executed in this order 
 9. `hr.js` - Employees, Referral/Salary pages, Attendance, Leave, Advances, Payroll, Technician Tour Expenses (incl. the Finance-group review page), Leave Balances.
 10. `finance.js` - Expenses, BG, Foreign Payments, Ledger, FOC, Sales/Purchase Invoices, SOA, Operating Expenses, GST.
 11. `admin.js` - Offer Options/PDF Designer, Users, Access, Approval Matrix, Company Settings, Assets, Tickets, data tools.
-12. `modpolish.js` - Apple-HIG UI polish for Purchase / Store / Finance / Electrical & Service: wraps those `PAGES` entries (and popups opened from them) in `.hig-mod-scope`, owns all of that CSS, stamps `data-label`s so mobile line grids become cards. Add a new page of those four modules to `HIG_PAGES` there. Loads after every page file.
+12. `modpolish.js` - Apple-HIG UI polish for Purchase / Store / Finance / Electrical & Service and Sales & Marketing (`mod-sales`; its list/entry tables are classified centrally by `higTagTables()`, so a new Sales table needs no per-page class; all Sales dates go through `fmtDMY()` in `sales.js`): wraps those `PAGES` entries (and popups opened from them) in `.hig-mod-scope`, owns all of that CSS, stamps `data-label`s so mobile line grids become cards. Add a new page of those four modules to `HIG_PAGES` there. Loads after every page file.
 13. `app.js` - entrypoint only (boot on load); keep it LAST so every `PAGES` entry exists first.
 
 Page placement follows the file, not always the NAV group (e.g. `sales-returns` lives in `sales.js`, `overdue-items` in `purchase.js`). NAV groups: Settings (was Admin), plus an "Unused" group for leads/pipeline/followups/sales-analytics/sales-targets.
