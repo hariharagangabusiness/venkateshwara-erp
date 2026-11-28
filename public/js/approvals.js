@@ -34,7 +34,7 @@ function approvalActionCell(r) {
 // own inline rowRenderer so the whole page can share ONE <table> (see below).
 function approvalRowHTML(r) {
   return `<tr><td>${esc(r.ref)||('#'+r.entity_id)}</td><td>${esc(r.summary)||'-'}${r.is_resubmission ? ' <span class="badge Rejected" title="This was rejected before and has since been resubmitted">Resubmitted</span>' : ''}</td><td>${esc(r.raised_by_name)||'-'}</td><td>₹${fmt(r.amount)}</td><td>${r.current_step ?? '-'}</td>
-    <td>${new Date(r.created_at).toLocaleString()}</td>
+    <td>${fmtDMY(r.created_at, true)}</td>
     <td>${actionButtonsCell(approvalActionCell(r) + '<button class="btn small outline" type="button" onclick="toggleApprovalDrilldown(\'' + esc(r.source) + '-' + esc(r.id) + '\')">Details</button>', 'approval-actions')}</td></tr>
     ${r.is_resubmission && r.prior_rejection_reason ? `<tr><td></td><td colspan="6" style="padding-top:0;"><span class="muted" style="font-size:12px;">Previously rejected${r.prior_rejected_by_name ? ' by ' + esc(r.prior_rejected_by_name) : ''}: ${esc(r.prior_rejection_reason)}</span></td></tr>` : ''}
     <tr id="appr-drill-row-${r.source}-${r.id}" style="display:none;"><td colspan="7"><div id="appr-drill-${r.source}-${r.id}"></div></td></tr>`;
@@ -91,9 +91,9 @@ function grnBatchCardHTML(batchId, lines) {
   // button once a line is part of a batch, for exactly this reason).
   return `<tr style="background:#fbfcfe;"><td>${esc(f.grn_po_no)} <span class="badge">Batch #${esc(batchId)}</span>
       ${f.grn_po_id ? `<br><button class="btn small outline" type="button" style="margin-top:4px;" onclick="downloadPoPdf(${Number(f.grn_po_id)}, '${esc(f.grn_po_no)}')">📄 View Original PO Copy</button>` : ''}</td>
-    <td><strong>${lines.length} lines</strong> from ${esc(f.grn_vendor_name) || 'vendor'}<br><span class="muted">Invoice ${esc(f.grn_invoice_no) || '(no. not entered)'}${f.grn_invoice_date ? ' dated ' + esc(f.grn_invoice_date) : ''}</span></td>
+    <td><strong>${lines.length} lines</strong> from ${esc(f.grn_vendor_name) || 'vendor'}<br><span class="muted">Invoice ${esc(f.grn_invoice_no) || '(no. not entered)'}${f.grn_invoice_date ? ' dated ' + esc(fmtDMY(f.grn_invoice_date)) : ''}</span></td>
     <td>${esc(f.raised_by_name) || '-'}</td><td>₹${fmt(total)}</td><td>${f.current_step ?? '-'}</td>
-    <td>${new Date(f.created_at).toLocaleString()}</td>
+    <td>${fmtDMY(f.created_at, true)}</td>
     <td>${actionButtonsCell(`<button class="btn small green" onclick="actOnGrnBatch([${ids}], 'Approved')">Approve All</button>
       <button class="btn small red" onclick="actOnGrnBatch([${ids}], 'Rejected')">Reject All</button>
       <button class="btn small outline" type="button" onclick="var r=document.getElementById('grn-batch-${esc(batchId)}');r.style.display=r.style.display==='none'?'':'none'">Lines</button>`, 'approval-actions')}</td></tr>
@@ -193,8 +193,8 @@ window.openFocApprovalModal = async (id) => {
         </select>
       </div>
     </div>
-    <button class="btn small green" id="foc-modal-approve-${id}" disabled type="button" onclick="actOnFoc(${id}, 'approve')">Approve</button>
-    <button class="btn small red" id="foc-modal-reject-${id}" disabled type="button" onclick="actOnFoc(${id}, 'reject')">Reject</button>`;
+    <div class="hig-savebar"><button class="btn small green" id="foc-modal-approve-${id}" disabled type="button" onclick="actOnFoc(${id}, 'approve')">Approve</button>
+    <button class="btn small red" id="foc-modal-reject-${id}" disabled type="button" onclick="actOnFoc(${id}, 'reject')">Reject</button></div>`;
   openMiniModal('Review FOC Request', body);
 };
 window.actOnFoc = async (id, verb) => {
@@ -225,7 +225,7 @@ window.actOnApprovalTodo = async (id, status) => {
 function approvalHistoryTable(history) {
   if (!history || !history.length) return '<p class="muted" style="margin:4px 0;">No approval actions recorded yet.</p>';
   return tableHTML(['When', 'Step', 'Actor', 'Action', 'Comment'], history, h => `
-    <tr><td>${new Date(h.acted_at).toLocaleString()}</td><td>${h.step_order ?? '-'}</td><td>${esc(h.actor_name)||'-'}</td><td>${esc(h.action)}</td><td>${esc(h.comment)||'-'}</td></tr>`);
+    <tr><td>${fmtDMY(h.acted_at, true)}</td><td>${h.step_order ?? '-'}</td><td>${esc(h.actor_name)||'-'}</td><td>${esc(h.action)}</td><td>${esc(h.comment)||'-'}</td></tr>`);
 }
 window.toggleApprovalDrilldown = (key) => {
   const row = document.getElementById(`appr-drill-row-${key}`);
@@ -259,7 +259,7 @@ async function renderApprovalDrilldown(key) {
       // no separate fetch needed, just a fuller read of what's already here.
       container.innerHTML = `<div style="padding:10px;background:#f9f9f9;border-radius:6px;font-size:13px;">
         <b>Reference:</b> ${esc(r.ref)||'-'} &nbsp; <b>Category:</b> ${esc(r.chain_description)||'-'}<br>
-        <b>Details:</b> ${esc(r.summary)||'-'}${r.amount != null ? ` &nbsp; <b>Value:</b> ₹${fmt(r.amount)}` : ''}${r.target_date ? ` &nbsp; <b>Target Date:</b> ${r.target_date}` : ''}
+        <b>Details:</b> ${esc(r.summary)||'-'}${r.amount != null ? ` &nbsp; <b>Value:</b> ₹${fmt(r.amount)}` : ''}${r.target_date ? ` &nbsp; <b>Target Date:</b> ${fmtDMY(r.target_date)}` : ''}
       </div>`;
       return;
     }
@@ -281,7 +281,7 @@ async function renderApprovalDrilldown(key) {
     } else if (r.entity_type === 'expense_voucher') {
       const [ev, hist] = await Promise.all([api(`/finance/expense-vouchers/${r.entity_id}`).catch(() => null), api(`/approvals/${r.id}/history`)]);
       extraHtml = ev ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
-        <b>Voucher No:</b> ${esc(ev.voucher_no)} &nbsp; <b>Date:</b> ${new Date(ev.voucher_date).toLocaleDateString()}<br>
+        <b>Voucher No:</b> ${esc(ev.voucher_no)} &nbsp; <b>Date:</b> ${fmtDMY(ev.voucher_date)}<br>
         <b>Category:</b> ${esc(ev.category_name)||'-'} &nbsp; <b>Payment Mode:</b> ${esc(ev.payment_mode)} &nbsp; <b>Accounted:</b> ${esc(ev.accounted)}<br>
         <b>Description:</b> ${esc(ev.description)||'-'}<br>
         ${ev.attachment_path ? `<a href="${esc(ev.attachment_path)}" target="_blank">View Attached Receipt</a>` : '<span class="muted">No receipt on file.</span>'}
@@ -291,7 +291,7 @@ async function renderApprovalDrilldown(key) {
       const [rows, hist] = await Promise.all([api('/hr/leave-requests'), api(`/approvals/${r.id}/history`)]);
       const lr = rows.find(x => x.id === r.entity_id);
       extraHtml = lr ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
-        <b>Type:</b> ${esc(lr.leave_type_name)} &nbsp; <b>From:</b> ${lr.from_date} &nbsp; <b>To:</b> ${lr.to_date} &nbsp; <b>Days:</b> ${lr.days}<br>
+        <b>Type:</b> ${esc(lr.leave_type_name)} &nbsp; <b>From:</b> ${fmtDMY(lr.from_date)} &nbsp; <b>To:</b> ${fmtDMY(lr.to_date)} &nbsp; <b>Days:</b> ${lr.days}<br>
         <b>Reason:</b> ${esc(lr.reason)||'-'}
       </p>` : '<p class="muted">Leave request not found.</p>';
       history = hist;
@@ -300,7 +300,7 @@ async function renderApprovalDrilldown(key) {
       const [rows, hist] = await Promise.all([api('/hr/advances'), api(`/approvals/${r.id}/history`)]);
       const sa = rows.find(x => x.id === r.entity_id);
       extraHtml = sa ? `<h5 style="margin:8px 0 4px;">Details</h5><p style="font-size:13px;">
-        <b>Amount:</b> ₹${fmt(sa.amount)} &nbsp; <b>Requested:</b> ${new Date(sa.request_date).toLocaleDateString()} &nbsp; <b>Already Recovered:</b> ₹${fmt(sa.recovered_amount)}<br>
+        <b>Amount:</b> ₹${fmt(sa.amount)} &nbsp; <b>Requested:</b> ${fmtDMY(sa.request_date)} &nbsp; <b>Already Recovered:</b> ₹${fmt(sa.recovered_amount)}<br>
         <b>Reason:</b> ${esc(sa.reason)||'-'}
       </p>` : '<p class="muted">Advance not found.</p>';
       history = hist;
@@ -349,7 +349,7 @@ async function renderApprovalDrilldown(key) {
           </p>
           <h5 style="margin:8px 0 4px;">Terms</h5>
           <p style="font-size:13px;margin:0 0 8px;">
-            <b>Payment Terms:</b> ${esc(first.payment_terms)||'-'} &nbsp; <b>Delivery Date:</b> ${esc(first.delivery_date)||'-'}<br>
+            <b>Payment Terms:</b> ${esc(first.payment_terms)||'-'} &nbsp; <b>Delivery Date:</b> ${esc(fmtDMY(first.delivery_date))}<br>
             <b>Bill-To Address:</b> ${first.company_address_label ? esc(first.company_address_label) : '-'} &nbsp;
             <b>Ship-To Address:</b> ${first.company_ship_address_label ? esc(first.company_ship_address_label) : '-'}<br>
             <b>LD Rate:</b> ${first.ld_percentage != null ? first.ld_percentage + '%' : '-'} &nbsp; <b>LD Cap:</b> ${first.ld_cap_percentage != null ? first.ld_cap_percentage + '%' : '-'}
@@ -381,7 +381,7 @@ async function renderApprovalDrilldown(key) {
         </p>
         <h5 style="margin:8px 0 4px;">Bill Details</h5>
         <p style="font-size:13px;margin:0 0 8px;">
-          <b>Vendor's Invoice No:</b> ${esc(inv.vendor_invoice_no)} &nbsp; <b>Date:</b> ${esc(inv.vendor_invoice_date)} &nbsp;
+          <b>Vendor's Invoice No:</b> ${esc(inv.vendor_invoice_no)} &nbsp; <b>Date:</b> ${esc(fmtDMY(inv.vendor_invoice_date))} &nbsp;
           <b>Against PO:</b> ${esc(inv.po_no)||'-'}
         </p>
         <h5 style="margin:8px 0 4px;">Line Items</h5>
@@ -401,7 +401,7 @@ async function renderApprovalDrilldown(key) {
         <h5 style="margin:8px 0 4px;">Referral Details</h5>
         <p style="font-size:13px;margin:0 0 8px;">
           <b>Referred Employee:</b> ${esc(ri.employee_name)} (${esc(ri.employee_status)}) &nbsp; <b>Referred By:</b> ${esc(ri.referred_by_name)}<br>
-          <b>Incentive Amount:</b> ₹${fmt(ri.incentive_amount)} &nbsp; <b>Probation Ended:</b> ${ri.probation_end_date||'-'}
+          <b>Incentive Amount:</b> ₹${fmt(ri.incentive_amount)} &nbsp; <b>Probation Ended:</b> ${fmtDMY(ri.probation_end_date)}
         </p>
       ` : '<p class="muted">Referral incentive record not found.</p>';
     } else if (r.entity_type === 'salary_hike_cycle') {
@@ -502,14 +502,14 @@ async function renderApprovalDrilldown(key) {
       // own real grouping decision instead of just checking for a batch id.
       const inMultiLineBatch = g.grn_batch_id && Number(g.batch_line_count) > 1;
       extraHtml = `
-        ${g.status === 'Revoked' && g.revoked_by_name ? `<div class="msg" style="background:#ede9fe;color:#6d28d9;margin:0 0 8px;"><b>Revoked by ${esc(g.revoked_by_name)}${g.revoked_at ? ' &middot; ' + esc(new Date(g.revoked_at).toLocaleDateString()) : ''}</b><br>"${esc(g.revoke_reason)}"</div>` : ''}
+        ${g.status === 'Revoked' && g.revoked_by_name ? `<div class="msg" style="background:#ede9fe;color:#6d28d9;margin:0 0 8px;"><b>Revoked by ${esc(g.revoked_by_name)}${g.revoked_at ? ' &middot; ' + esc(fmtDMY(g.revoked_at)) : ''}</b><br>"${esc(g.revoke_reason)}"</div>` : ''}
         <h5 style="margin:8px 0 4px;">PO vs Vendor Invoice</h5>
         <p style="font-size:13px;margin:0 0 8px;">
           <b>PO No:</b> ${esc(g.po_no)} &nbsp; <b>Item:</b> ${esc(g.item_name)||'-'} &nbsp; <b>Vendor:</b> ${esc(g.vendor_name)||'-'} (${esc(g.vendor_gstin)||'GSTIN N/A'})
         </p>
         ${tableHTML(['', 'Qty', 'Rate (₹)'], [1], () => `
           <tr><td><b>As per PO (received)</b></td><td>${g.received_qty}</td><td>₹${fmt(g.po_rate)}</td></tr>
-          <tr><td><b>As per Vendor Invoice${g.vendor_invoice_no ? ' (' + esc(g.vendor_invoice_no) + (g.vendor_invoice_date ? ', ' + esc(g.vendor_invoice_date) : '') + ')' : ''}</b></td>
+          <tr><td><b>As per Vendor Invoice${g.vendor_invoice_no ? ' (' + esc(g.vendor_invoice_no) + (g.vendor_invoice_date ? ', ' + esc(fmtDMY(g.vendor_invoice_date)) : '') + ')' : ''}</b></td>
             <td style="${qtyDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_qty != null ? g.vendor_invoiced_qty : 'Not yet on file'}</td>
             <td style="${rateDiff?'color:#b00;font-weight:bold;':''}">${g.vendor_invoiced_rate != null ? '₹' + fmt(g.vendor_invoiced_rate) : '-'}</td></tr>`)}
         ${(qtyDiff || rateDiff) ? `<p class="msg err" style="display:block;">Variance from the PO - verify against the attached invoice copy before approving.</p>` : ''}
@@ -542,7 +542,7 @@ async function renderApprovalDrilldown(key) {
           <b>${esc(t.brief_description)}</b>${t.priority === 'High' ? ' <span class="badge Rejected">HIGH</span>' : ''}<br>
           ${t.details ? esc(t.details) + '<br>' : ''}
           <b>Assigned To:</b> ${esc(t.assigned_to_name)||'-'} &nbsp; <b>HOD:</b> ${esc(t.hod_name)||'-'}<br>
-          <b>Target Date:</b> ${esc(t.target_date)||'-'}
+          <b>Target Date:</b> ${esc(fmtDMY(t.target_date))}
         </p>
       `;
     }

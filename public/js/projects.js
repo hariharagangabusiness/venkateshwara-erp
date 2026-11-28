@@ -13,12 +13,12 @@ PAGES.projects = async (el) => {
         <div><label>Start Date</label><input id="pj-start" type="date" value="${today()}"></div>
         <div><label>Target Date</label><input id="pj-target" type="date"></div>
       </div>
-      <button class="btn" onclick="addProject()">Create Project (auto-generates full department pipeline)</button>
+      <div class="hig-savebar"><button class="btn" onclick="addProject()">Create Project (auto-generates full department pipeline)</button></div>
     </div>
     ${collapsiblePanel('projects-list', `Projects (${projects.length})`, `
       ${tableHTML(['Code', 'Title', 'Client', 'Status', 'PM', 'Target Completion', ''], projects, p => `
         <tr data-project-row="${p.id}"><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${badge(p.status)}</td><td>${esc(p.pm_name)}</td>
-        <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td>
+        <td class="pr-target">${p.target_date ? `<b>${fmtDMY(p.target_date)}</b>` : '<span class="muted">Not planned yet</span>'}</td>
         <td><button class="btn small outline" onclick="viewProjectCards(${p.id}, '${esc(p.project_code)}')">View Pipeline</button></td></tr>`)}
       <p class="muted" style="margin-top:10px;">Set or edit each project's department targets from the <a href="#" onclick="navigate('targets');return false;">Targets</a> tab.</p>
     `)}
@@ -50,13 +50,13 @@ window.addProject = async () => {
 // disabled, with the server's full reason as its tooltip and the summary
 // shown inline under the buttons (2026-10-20).
 let PJ_VIEW = null; // { id, code, expanded:Set } - pipeline currently open on the Projects page
-const pjTimestamp = t => t ? new Date(t).toLocaleString() : '-';
+const pjTimestamp = t => fmtDMY(t, true);
 // Planned window (start -> end) when both ends were planned in the Targets
 // sheet, otherwise whichever single end exists - older cards only ever got
 // a planned_end, so don't invent a start for them.
 function pjWindowCell(c) {
-  const start = c.planned_start ? esc(String(c.planned_start).slice(0, 10)) : '';
-  const end = c.planned_end ? esc(String(c.planned_end).slice(0, 10)) : '';
+  const start = c.planned_start ? esc(fmtDMY(String(c.planned_start).slice(0, 10))) : '';
+  const end = c.planned_end ? esc(fmtDMY(String(c.planned_end).slice(0, 10))) : '';
   if (start && end) return `<td>${start} &rarr; ${end}</td>`;
   return `<td>${end || start || '-'}</td>`;
 }
@@ -219,7 +219,7 @@ PAGES.targets = async (el) => {
     ${collapsiblePanel('targets-by-project', `Targets by Project (${projects.length})`, `
       ${tableHTML(['Code', 'Title', 'Client', 'Status', 'Target Completion', 'Annexure'], projects, p => `
         <tr data-project-row="${p.id}"><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${esc(p.client_name)||'-'}</td><td>${badge(p.status)}</td>
-        <td class="pr-target">${p.target_date ? `<b>${new Date(p.target_date).toLocaleDateString()}</b>` : '<span class="muted">Not planned yet</span>'}</td>
+        <td class="pr-target">${p.target_date ? `<b>${fmtDMY(p.target_date)}</b>` : '<span class="muted">Not planned yet</span>'}</td>
         <td>${annexureLinkHTML(p)}</td></tr>`)}
     `)}
     <div class="panel">
@@ -270,15 +270,15 @@ window.loadProjectPlan = async () => {
           <td>${esc(STAGE_LABELS[c.stage] || c.stage)}${c.child_count ? ` <span class="muted">(+${c.child_count} sub-processes, HOD-planned)</span>` : ''}</td>
           <td><input type="number" min="1" class="pl-duration" value="${c.duration_days || 7}" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
           <td style="text-align:center;"><input type="checkbox" class="pl-parallel" ${c.parallel_with_previous ? 'checked' : ''} ${i === 0 ? 'disabled title="The first row has nothing above it to run alongside."' : ''}></td>
-          <td class="pl-start">${c.planned_start || '-'}</td>
-          <td class="pl-end">${c.planned_end || '-'}</td>
+          <td class="pl-start">${fmtDMY(c.planned_start)}</td>
+          <td class="pl-end">${fmtDMY(c.planned_end)}</td>
           <td>${badge(c.status)}</td>
           <td>${c.status === 'Pending' ? `<button type="button" class="btn small outline" onclick="excludeJobCardFromPlan(${c.id})">Exclude</button>` : ''}</td>
         </tr>`).join('')}
     </tbody></table>
-    <button class="btn" onclick="saveProjectPlan(${projectId})">Recalculate &amp; Save Plan</button>
-    <button type="button" class="btn small outline" onclick="checkPlanCapacity(${projectId})">Check Department Availability</button>
-    <span id="pl-target" class="muted" style="margin-left:10px;">${targetProject && targetProject.target_date ? `Overall target completion: <b>${targetProject.target_date}</b>` : ''}</span>
+    <div class="hig-savebar"><button class="btn" onclick="saveProjectPlan(${projectId})">Recalculate &amp; Save Plan</button>
+    <button type="button" class="btn small outline" onclick="checkPlanCapacity(${projectId})">Check Department Availability</button></div>
+    <p id="pl-target" class="muted" style="margin:8px 0 0;">${targetProject && targetProject.target_date ? `Overall target completion: <b>${fmtDMY(targetProject.target_date)}</b>` : ''}</p>
     <div id="pl-capacity" style="margin-top:12px;"></div>
     ${excludedCards.length ? `
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
@@ -317,12 +317,12 @@ async function renderProjectCommunications(projectId) {
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;">
       ${departments.map(d => `<label style="margin:0;font-weight:normal;"><input type="checkbox" class="cc-dept-${projectId}" value="${d.id}"> ${esc(d.name)}</label>`).join('')}
     </div>
-    <button class="btn small" type="button" style="margin-top:10px;" onclick="sendCustomerCommunication(${projectId})">Send</button>
+    <div class="hig-savebar"><button class="btn small" type="button" onclick="sendCustomerCommunication(${projectId})">Send</button></div>
     <div id="cc-err-${projectId}" class="msg err" style="display:none;margin-top:8px;"></div>
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
       ${history.length ? history.map(c => `
         <div class="box" style="border:1px solid var(--border,#ccc);border-radius:6px;padding:10px;margin-bottom:10px;">
-          <p style="margin:0 0 4px;"><b>${esc(c.subject)}</b> <span class="muted">- ${esc(c.created_by_name)||'-'} &middot; ${new Date(c.created_at).toLocaleString()}</span></p>
+          <p style="margin:0 0 4px;"><b>${esc(c.subject)}</b> <span class="muted">- ${esc(c.created_by_name)||'-'} &middot; ${fmtDMY(c.created_at, true)}</span></p>
           <p style="margin:0 0 6px;">${esc(c.message)}</p>
           <div style="display:flex;flex-wrap:wrap;gap:6px;">
             ${c.recipients.map(r => `<span class="badge ${r.ack_status === 'Completed' ? 'active' : (r.user_name ? 'Draft' : 'red')}">${esc(r.department_name)}${r.user_name ? ' (' + esc(r.user_name) + (r.ack_status === 'Completed' ? ' - acknowledged' : ' - pending') + ')' : ' (no HOD configured)'}</span>`).join('')}
@@ -424,7 +424,7 @@ window.checkPlanCapacity = async (projectId) => {
     target.innerHTML = `<p class="muted" style="margin-bottom:6px;">Each department's existing load (from every OTHER project) over the window this plan would give it - <span style="color:#2ecc71;">green</span> = available, <span style="color:#3b82f6;">blue</span> = already at the 2-project cap, <span style="color:#e74c3c;">red</span> = already over it. Hover a day for the project list.</p>
       ${r.departments.map(d => `
         <div style="margin-bottom:10px;">
-          <b>${esc(d.stageLabel)}</b> <span class="muted">(${esc(d.planned_start)} to ${esc(d.planned_end)})</span>
+          <b>${esc(d.stageLabel)}</b> <span class="muted">(${esc(fmtDMY(d.planned_start))} to ${esc(fmtDMY(d.planned_end))})</span>
           ${capacityDayStripHTML(d.days)}
         </div>`).join('')}`;
   } catch (e) { target.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
@@ -442,12 +442,12 @@ window.saveProjectPlan = async (projectId, confirmed) => {
     const r = await api(`/projects/${projectId}/plan`, { method: 'PUT', body: JSON.stringify(body) });
     r.jobCards.forEach(c => {
       const tr = document.querySelector(`#pl-rows tr[data-jc="${c.id}"]`);
-      if (tr) { tr.querySelector('.pl-start').textContent = c.planned_start; tr.querySelector('.pl-end').textContent = c.planned_end; }
+      if (tr) { tr.querySelector('.pl-start').textContent = fmtDMY(c.planned_start); tr.querySelector('.pl-end').textContent = fmtDMY(c.planned_end); }
     });
-    document.getElementById('pl-target').innerHTML = `Saved. Overall target completion: <b>${new Date(r.targetDate).toLocaleDateString()}</b>`;
+    document.getElementById('pl-target').innerHTML = `Saved. Overall target completion: <b>${fmtDMY(r.targetDate)}</b>`;
     // also reflect it in the projects table above, so it's visible without re-opening this panel
     const projRow = document.querySelector(`tr[data-project-row="${projectId}"] .pr-target`);
-    if (projRow) projRow.innerHTML = `<b>${new Date(r.targetDate).toLocaleDateString()}</b>`;
+    if (projRow) projRow.innerHTML = `<b>${fmtDMY(r.targetDate)}</b>`;
   } catch (e) {
     // A capacity conflict (soft warning, never a hard block) comes back as
     // a 409 carrying structured conflict data rather than a plain message -
@@ -612,7 +612,7 @@ function jobCardBoardRowHTML(c) {
   const groupToggle = n ? ` <a href="#" id="jc-group-toggle-${c.id}" data-label="${toggleLabel}" onclick="toggleJobCardGroup(${c.id});return false;" class="muted" style="font-size:12px;">▸ ${toggleLabel}</a>` : '';
   const rowAttrs = c.__isChild ? ` class="jc-child-row-${c.__parentId}" style="display:none;"` : '';
   const itemCell = (c.__isChild ? '&nbsp;&nbsp;↳ ' : '') + esc(c.title || STAGE_LABELS[c.stage] || c.stage) + (c.is_adhoc ? ' <span class="muted">(sub-assembly/routed)</span>' : '') + (c.blocked_by ? ` <span class="muted" style="font-size:12px;" title="Waiting on handover from ${esc(STAGE_LABELS[c.blocked_by] || c.blocked_by_task_name)}">🔒 blocked</span>` : '') + groupToggle;
-  return `<tr${rowAttrs}><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${itemCell}</td><td>${c.planned_end || '-'}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
+  return `<tr${rowAttrs}><td>${esc(c.project_code)} - ${esc(c.project_title)}</td><td>${esc(c.client_name)||'-'}</td><td>${itemCell}</td><td>${fmtDMY(c.planned_end)}</td><td>${badge(c.status)}</td><td>${esc(c.assigned_to_name)||'-'}</td>
       <td>${jobCardActions(c)}</td></tr>`;
 }
 // Completed cards move into their own collapsed-by-default "Closed" bucket
@@ -737,7 +737,7 @@ window.openJobCardDetail = async (id) => {
       Waiting on hand-off from: <b>${esc(STAGE_LABELS[d.stage]||d.stage)}</b> (${esc(d.title)}) ${badge(d.status)}
       ${d.comments && d.comments.length ? `
         <div style="margin:4px 0 0 14px;border-left:2px solid var(--border);padding-left:8px;">
-          ${d.comments.map(cm => `<div style="font-size:12px;"><b>${esc(cm.user_name)||'-'}</b> <span class="muted">${new Date(cm.created_at).toLocaleString()}</span>: ${esc(cm.comment)}</div>`).join('')}
+          ${d.comments.map(cm => `<div style="font-size:12px;"><b>${esc(cm.user_name)||'-'}</b> <span class="muted">${fmtDMY(cm.created_at, true)}</span>: ${esc(cm.comment)}</div>`).join('')}
         </div>` : ''}
     </div>`).join('') : '';
   const routedHTML = routedTo.length ? `<p class="muted">Routed onward to: ${routedTo.map(d => `${esc(STAGE_LABELS[d.stage]||d.stage)} (${esc(d.title)}) ${badge(d.status)}`).join(', ')}</p>` : '';
@@ -763,7 +763,7 @@ window.openJobCardDetail = async (id) => {
       // backend's own gate on DELETE /job-cards/:id/attachments/:id exactly
       // (2026-10-16 - there was no delete option at all before this).
       const canDelete = isSupervisor || a.uploaded_by === ME.id;
-      return `<tr><td><a href="${a.file_path}" target="_blank">${esc(a.file_name)}</a></td><td>${esc(a.uploaded_by_name)||'-'}</td><td>${new Date(a.created_at).toLocaleDateString()}</td>
+      return `<tr><td><a href="${a.file_path}" target="_blank">${esc(a.file_name)}</a></td><td>${esc(a.uploaded_by_name)||'-'}</td><td>${fmtDMY(a.created_at)}</td>
         <td>${canDelete ? `<button class="btn small red" onclick="deleteJobCardAttachment(${c.id}, ${a.id})">Delete</button>` : ''}</td></tr>`;
     }) : '<div class="empty">No files yet.</div>'}
     </div>
@@ -773,7 +773,7 @@ window.openJobCardDetail = async (id) => {
   const commentsHTML = `
     <h4>Comments / Handover Notes</h4>
     <div class="comments-list">
-      ${comments.length ? comments.map(cm => `<div class="comment"><b>${esc(cm.user_name)||'-'}</b> <span class="muted">${new Date(cm.created_at).toLocaleString()}</span><div>${esc(cm.comment)}</div></div>`).join('') : '<div class="empty">No comments yet.</div>'}
+      ${comments.length ? comments.map(cm => `<div class="comment"><b>${esc(cm.user_name)||'-'}</b> <span class="muted">${fmtDMY(cm.created_at, true)}</span><div>${esc(cm.comment)}</div></div>`).join('') : '<div class="empty">No comments yet.</div>'}
     </div>
     ${canAct ? `<div class="form-grid"><div style="grid-column:1/-1;"><textarea id="jc-comment" rows="2" placeholder="Add a note for the next person/department..."></textarea></div></div>
       <button class="btn small" onclick="postJobCardComment(${c.id})">Add Comment</button>` : ''}
@@ -826,11 +826,11 @@ window.openJobCardDetail = async (id) => {
   ` : '';
 
   body.innerHTML = `
-    <p>Customer: <b>${esc(c.client_name)||'-'}</b> &nbsp; Status: ${badge(c.status)} &nbsp; Assigned to: <b>${esc(c.assigned_to_name)||'Unassigned'}</b> &nbsp; ${c.planned_start ? `Window: <b>${c.planned_start} to ${c.planned_end||'-'}</b>` : ''}</p>
+    <p>Customer: <b>${esc(c.client_name)||'-'}</b> &nbsp; Status: ${badge(c.status)} &nbsp; Assigned to: <b>${esc(c.assigned_to_name)||'Unassigned'}</b> &nbsp; ${c.planned_start ? `Window: <b>${fmtDMY(c.planned_start)} to ${fmtDMY(c.planned_end)}</b>` : ''}</p>
     <p class="muted" style="font-size:12px;">
-      Allocated: <b>${c.allocated_at ? new Date(c.allocated_at).toLocaleString() : '-'}</b> &nbsp;&middot;&nbsp;
-      Started: <b>${c.started_at ? new Date(c.started_at).toLocaleString() : '-'}</b> &nbsp;&middot;&nbsp;
-      Completed: <b>${c.completed_at ? new Date(c.completed_at).toLocaleString() : '-'}</b>
+      Allocated: <b>${fmtDMY(c.allocated_at, true)}</b> &nbsp;&middot;&nbsp;
+      Started: <b>${fmtDMY(c.started_at, true)}</b> &nbsp;&middot;&nbsp;
+      Completed: <b>${fmtDMY(c.completed_at, true)}</b>
     </p>
     ${depsHTML}${routedHTML}
     ${actionsHTML}
@@ -979,7 +979,7 @@ window.openSubPlan = async (parentId, parentLabel) => {
   const activeChildren = children.filter(c => c.status !== 'NotApplicable');
   const excludedChildren = children.filter(c => c.status === 'NotApplicable');
   body.innerHTML = `
-    <p class="muted">${esc(parentLabel)}'s overall window from the PM's plan: <b>${parent.planned_start || '-'} to ${parent.planned_end || '-'}</b>. Break it down into sub-process targets below — rows can be reordered (▲▼) to match real handover between sub-processes, and this can be re-edited any time. Don't need one of these sub-processes for this project? Exclude it below.</p>
+    <p class="muted">${esc(parentLabel)}'s overall window from the PM's plan: <b>${fmtDMY(parent.planned_start)} to ${fmtDMY(parent.planned_end)}</b>. Break it down into sub-process targets below — rows can be reordered (▲▼) to match real handover between sub-processes, and this can be re-edited any time. Don't need one of these sub-processes for this project? Exclude it below.</p>
     <div class="form-grid"><div><label>Sub-Plan Start Date</label><input id="sp-start" type="date" value="${parent.planned_start || today()}"></div></div>
     <table><thead><tr><th style="width:36px;"></th><th>Sub-Process</th><th>Duration (days)</th><th>Planned Start</th><th>Planned End</th><th>Status</th><th></th></tr></thead>
     <tbody id="sp-rows">
@@ -993,13 +993,13 @@ window.openSubPlan = async (parentId, parentLabel) => {
           </td>
           <td>${esc(STAGE_LABELS[c.stage] || c.stage)}</td>
           <td><input type="number" min="1" class="sp-duration" value="${c.duration_days || 2}" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:5px;"></td>
-          <td class="sp-start">${c.planned_start || '-'}</td>
-          <td class="sp-end">${c.planned_end || '-'}</td>
+          <td class="sp-start">${fmtDMY(c.planned_start)}</td>
+          <td class="sp-end">${fmtDMY(c.planned_end)}</td>
           <td>${badge(c.status)}</td>
           <td>${c.status === 'Pending' ? `<button type="button" class="btn small outline" onclick="excludeSubStage(${c.id}, ${parentId})">Exclude</button>` : ''}</td>
         </tr>`).join('')}
     </tbody></table>
-    <button class="btn" onclick="saveSubPlan(${parentId})">Recalculate &amp; Save Sub-Plan</button>
+    <div class="hig-savebar"><button class="btn" onclick="saveSubPlan(${parentId})">Recalculate &amp; Save Sub-Plan</button></div>
     ${excludedChildren.length ? `
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
         <b>Excluded from this project's flow</b>
@@ -1039,7 +1039,7 @@ window.saveSubPlan = async (parentId) => {
     const r = await api(`/projects/job-cards/${parentId}/subplan`, { method: 'PUT', body: JSON.stringify({ start_date: startDate, stages }) });
     r.children.forEach(c => {
       const tr = document.querySelector(`#sp-rows tr[data-jc="${c.id}"]`);
-      if (tr) { tr.querySelector('.sp-start').textContent = c.planned_start; tr.querySelector('.sp-end').textContent = c.planned_end; }
+      if (tr) { tr.querySelector('.sp-start').textContent = fmtDMY(c.planned_start); tr.querySelector('.sp-end').textContent = fmtDMY(c.planned_end); }
     });
   } catch (e) {
     errEl.textContent = e.message;

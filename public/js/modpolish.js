@@ -1,9 +1,10 @@
-// ===================== Module UI polish (Apple-HIG pass, 2026-11-26; Sales & Marketing added 2026-11-27) =====================
-// Purchase, Store, Finance, Electrical & Service and Sales & Marketing screens. Loaded after every page file and before app.js, so
+// ===================== Module UI polish (Apple-HIG pass, 2026-11-26; Sales & Marketing, HR, Projects, My Approvals, Dashboard added 2026-11-27) =====================
+// Purchase, Store, Finance, Electrical & Service, Sales & Marketing, HR, Projects, My Approvals and Dashboard screens. Loaded after every page file and before app.js, so
 // every PAGES entry already exists when it is wrapped here. Each wrapped page renders into
-//   <div class="hig-mod-scope mod-<purchase|store|finance|electrical|sales> hig-page-<id>">
+//   <div class="hig-mod-scope mod-<purchase|store|finance|electrical|sales|hr|projects|approvals|dashboard> hig-page-<id>">
 // and every CSS rule below starts with .hig-mod-scope (or .hig-entry / .hig-savebar, which only exist inside it; the Sales-only
-// block starts with .mod-sales), so Settings, HR and every other screen are untouched. Popups opened while a module page is current get the same
+// block starts with .mod-sales, the HR / Projects / Approvals / Dashboard block with :is(.mod-hr, .mod-projects, .mod-approvals,
+// .mod-dashboard)), so Settings and every other screen are untouched. Popups opened while a module page is current get the same
 // class on their .app-modal-box. Nothing here touches the backend, core.js, ui.js or another module's page file.
 //
 // Sizing follows the HIG ask (12px cards, 8px controls, 40px / 44px-on-mobile hit areas); colours stay on the DESIGN.md
@@ -21,6 +22,14 @@ const HIG_PAGES = {
   // admin.js offer pages (offer-options, offer-pdf-designer). Proforma Invoices live on 'sales-invoices' (finance, above).
   sales: ['leads', 'pipeline', 'followups', 'offers', 'orders', 'fg-dispatches', 'sale-rejection-mrns', 'sales-returns',
     'sales-credit-notes', 'clients', 'spares-comparison'],
+  // HR, Projects, My Approvals, Dashboard (2026-11-27). Left out on purpose: dept-capacity (already Electrical), To-Do / Department
+  // Report / Time & Motion Report (same file as the Dashboard but not part of this pass). Job-card boards of every stage that is not
+  // Purchase / Store / Electrical fall through to 'projects' in higModuleOf().
+  hr: ['employees', 'attendance', 'leave', 'advances', 'payroll', 'leave-balances', 'referral-incentives', 'salary-hikes',
+    'salary-hike-cycles', 'salary-report', 'tour-expenses-mine', 'tour-expenses-review'],
+  projects: ['projects', 'targets'],
+  approvals: ['approvals'],
+  dashboard: ['dashboard'],
 };
 // Department job-card queues: only these three stages belong to the modules in scope; Manufacturing & co. stay as they were.
 const HIG_STAGE_MODULE = { Purchase: 'purchase', Store: 'store', Electrical: 'electrical' };
@@ -30,8 +39,8 @@ Object.entries(HIG_PAGES).forEach(([mod, ids]) => ids.forEach(id => { HIG_PAGE_M
 
 function higModuleOf(pageId) {
   if (HIG_PAGE_MODULE[pageId]) return HIG_PAGE_MODULE[pageId];
-  if (pageId === 'jobcards') return HIG_ROLE_MODULE[ME && ME.role] || null;
-  if (pageId && pageId.startsWith('jc_')) return HIG_STAGE_MODULE[pageId.slice(3)] || null;
+  if (pageId === 'jobcards') return HIG_ROLE_MODULE[ME && ME.role] || 'projects';
+  if (pageId && pageId.startsWith('jc_')) return HIG_STAGE_MODULE[pageId.slice(3)] || 'projects';
   return null;
 }
 
@@ -273,9 +282,89 @@ const HIG_SALES_CSS = `
   .mod-sales input[type=file]{width:100%;}
 }
 `;
+// ---- HR, Projects, My Approvals, Dashboard: every rule starts with :is(.mod-hr, .mod-projects, .mod-approvals, .mod-dashboard) ----
+// (@N below). Long free-text columns keep their label above the text on a phone card; short columns sit label-left / value-right.
+const HIG_LONG_CELLS = ['Description', 'Remarks', 'Notes', 'Details', 'Reason', 'Summary', 'Subject', 'Issue', 'Comment', 'Travel', 'Lodging'];
+const HIG_WIDE_ENTRY = ['Description', 'Line', 'Item', 'Remarks', 'Title', 'Summary', 'Department', 'Employee', 'Leave Type', 'Name'];
+const higCells = (kind, labels, suffix = '') => labels.map(l => `@N .${kind} td[data-label="${l}"]${suffix}`).join(',');
+const HIG_NEW_CSS = `
+@N .badge{padding:3px 10px;font-size:12px;border-radius:999px;white-space:nowrap;}
+@N .toolbar{align-items:center;}
+@N .hig-check-row{margin:0 0 6px;}
+@N .hig-actions{margin:8px 0;}
+@N .panel > h4 + .form-grid{margin-top:4px;}
+@N td[data-label="Name"],@N td[data-label="Employee"]{font-weight:500;}
+@media (min-width:769px){@N .hig-entry{overflow-x:auto;}}
+/* ---- My Approvals ---- */
+@N .panel > h3:only-child{border-bottom:0;margin-bottom:0;padding-bottom:0;}
+@N td[onclick*="toggleApprovalBucket"]{transition:background-color .15s ease;}
+@N td[onclick*="toggleApprovalBucket"]:hover{background:#e8edf3 !important;}
+/* ---- Dashboard ---- */
+@N .card{display:flex;flex-direction:column;justify-content:center;min-height:84px;}
+@N .card .num{font-weight:600;line-height:1.15;}
+@N .card .label{margin-top:4px;line-height:1.3;overflow-wrap:anywhere;}
+@N .card:hover{transform:none;box-shadow:0 2px 8px rgba(30,58,95,.10);border-color:color-mix(in srgb,var(--primary) 35%,#fff);}
+@N .card.active{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 5%,#fff);box-shadow:0 0 0 2px rgba(30,58,95,.14);}
+@N .card > span[onclick*="removeDashboardMetric"]{top:6px !important;right:6px !important;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:18px;line-height:1;color:var(--muted) !important;transition:background-color .15s ease,color .15s ease;}
+@N .card > span[onclick*="removeDashboardMetric"]:hover{background:color-mix(in srgb,var(--red) 10%,#fff);color:var(--red) !important;}
+@N .card:has(> span[onclick*="removeDashboardMetric"]) .num{padding-right:30px;}
+@N .toolbar > h3{font-size:18px;font-weight:600;letter-spacing:-.012em;}
+@N .toolbar > select{min-width:150px;}
+@N .chart-box{border-radius:12px;padding:14px;}
+@N .chart-box h4{font-size:14px;font-weight:600;letter-spacing:-.006em;margin:0 0 8px;}
+/* ---- Projects ---- */
+@N .pj-child-row td{background:#fbfcfe;}
+@N .pj-blocked{max-width:260px;}
+@media (max-width:768px){
+  @N .badge{padding:4px 10px;}
+  @N .hig-rowcards td[data-empty]{display:none !important;}
+  @N .hig-rowcards table td{padding-left:0;padding-right:0;overflow-wrap:anywhere;}
+  @N .hig-rowcards table td:first-child{white-space:normal;}
+  /* the shared card rule treats every last cell as the action cell: a last cell with its own column header keeps its label */
+  @N .hig-rowcards td:last-child[data-label]:not([data-w="act"]):not([data-label="Action"]):not([data-label="Actions"]){display:flex;padding-top:4px;text-align:right;}
+  @N .hig-rowcards td:last-child[data-label]:not([data-w="act"]):not([data-label="Action"]):not([data-label="Actions"])::before{display:block;}
+  ${higCells('hig-rowcards', HIG_LONG_CELLS, '')}{display:block;text-align:left;}
+  ${higCells('hig-rowcards', HIG_LONG_CELLS, '::before')}{display:block;margin-bottom:2px;}
+  @N .hig-rowcards td .row-actions{min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));}
+  @N .hig-rowcards td:last-child > select,@N .hig-rowcards td:last-child > .btn{margin-top:6px;}
+  @N .hig-rowcards td a.btn,@N .hig-rowcards td .btn.small{width:100%;}
+  ${higCells('hig-entry', HIG_WIDE_ENTRY)}{grid-column:1 / -1;}
+  @N .hig-entry td textarea{width:100% !important;min-height:84px;}
+  @N .hig-entry td[data-w="act"] .row-actions{min-width:0;}
+  @N .hig-entry td .btn.small{min-width:96px;}
+  @N input[type=file]{width:100%;}
+  @N .toolbar > select{flex:1 1 100%;}
+  @N .card{min-height:76px;}
+  @N .card > span[onclick*="removeDashboardMetric"]{width:44px;height:44px;top:2px !important;right:2px !important;}
+  @N .card:has(> span[onclick*="removeDashboardMetric"]) .num{padding-right:40px;}
+  /* My Approvals: chain / department headers are full-width tappable section bars, every request below is a card */
+  @N .hig-rowcards tbody:not([id]) tr{padding:0;background:transparent;border:0;}
+  @N .hig-rowcards tbody:not([id]) tr:has(> td:not([onclick])){margin:16px 0 8px;}
+  @N .hig-rowcards tbody:not([id]) tr:has(> td[onclick]){margin:0 0 8px;}
+  @N .hig-rowcards tbody:not([id]) td[colspan]{display:flex;align-items:center;justify-content:flex-start;gap:4px 8px;min-height:44px;padding:10px 14px !important;border-radius:10px;text-align:left;}
+  @N .hig-rowcards tbody:not([id]) td[colspan] > .muted{margin-left:auto;}
+  @N .hig-rowcards tbody:not([id]) td[colspan][onclick]{border:1px solid var(--border);}
+  @N .hig-rowcards tbody:not([id]) td[colspan]::before{display:none;}
+  /* the page-wide .approval-actions is a fixed 130px column: on a phone the card is the column. Approve + Reject share a row, everything else is full width */
+  @N .row-actions.approval-actions{width:auto;grid-template-columns:repeat(2,minmax(0,1fr));}
+  @N .row-actions.approval-actions .btn.small{width:100%;min-height:44px;}
+  @N .row-actions.approval-actions > .btn{grid-column:1 / -1;}
+  @N .row-actions.approval-actions > .btn.green:has(+ .btn.red),@N .row-actions.approval-actions > .btn.green + .btn.red{grid-column:auto;}
+  @N .hig-rowcards tr:has(> td[data-empty]:first-child + td[colspan]){margin:-6px 0 10px;padding:8px 14px;border-top:0;border-radius:0 0 12px 12px;background:#fffaf0;}
+  @N .hig-rowcards tr[id^="appr-drill-row"],@N .hig-rowcards tr[id^="grn-batch-"]{background:var(--bg);margin-top:-4px;}
+  @N .hig-rowcards tr[id^="appr-drill-row"] > td,@N .hig-rowcards tr[id^="grn-batch-"] > td{display:block;}
+  @N .glt-row > div:has(> .row-actions){grid-column:1 / -1;}
+  /* Projects: nested sub-process / sub-assembly rows hang off their parent card; the plan editor puts the move buttons last */
+  @N .hig-rowcards tr.pj-child-row,@N .hig-rowcards tr[class*="jc-child-row"]{margin-left:12px;background:#fbfcfe;border-left:3px solid var(--border);}
+  @N .hig-entry td.pl-reorder[data-w]{order:90;grid-column:1;justify-self:start;}
+  @N .hig-entry td[data-w="act"]:last-child:not(.pl-reorder){order:91;grid-column:2;justify-self:end;}
+  @N .hig-entry .reorder-actions{grid-template-columns:repeat(2,44px);gap:8px;}
+  @N .hig-entry .reorder-actions .btn.small{min-width:0;width:44px;padding:0;}
+}
+`.replace(/@N/g, ':is(.mod-hr,.mod-projects,.mod-approvals,.mod-dashboard)');
 function higInstall() {
   if (document.getElementById('hig-mod-css')) return;
-  const st = document.createElement('style'); st.id = 'hig-mod-css'; st.textContent = HIG_CSS + HIG_SALES_CSS;
+  const st = document.createElement('style'); st.id = 'hig-mod-css'; st.textContent = HIG_CSS + HIG_SALES_CSS + HIG_NEW_CSS;
   document.head.appendChild(st);
   // One observer keeps two things in step with every (re)render: popups opened from a module page get the scope class,
   // and line-item grids get their header text copied onto each cell (CSS attr(data-label) shows it on the mobile cards).
@@ -304,9 +393,11 @@ function higRevealMessages(muts) {
 // Sales screens build plain <table>s from several helpers (tableHTML, customerGroupedHTML, raw markup), so they are classified here
 // once instead of editing ~25 call sites. A table whose body holds fields is an entry table (.hig-entry: one labelled card per
 // line on a phone); any other table with 3+ columns is a list (.hig-rowcards: one card per row). A host that already carries
-// .hig-entry / .hig-rowcards / data-hig-keep is left alone. Only runs under .mod-sales; idempotent (re-run on every render).
+// .hig-entry / .hig-rowcards / data-hig-keep is left alone. Only runs under .mod-sales / .mod-hr / .mod-projects / .mod-approvals /
+// .mod-dashboard; idempotent (re-run on every render).
+const HIG_TAGGED_MODS = ['sales', 'hr', 'projects', 'approvals', 'dashboard'];
 function higTagTables() {
-  document.querySelectorAll('.mod-sales table').forEach(t => {
+  document.querySelectorAll(HIG_TAGGED_MODS.map(k => '.mod-' + k + ' table').join(',')).forEach(t => {
     const auto = t.closest('[data-hig-auto]');
     if (!auto && t.closest('.hig-entry, .hig-rowcards, .grid-line-table, [data-hig-keep]')) return;
     const head = t.tHead && t.tHead.rows[0];
@@ -324,10 +415,12 @@ function higTagTables() {
     box.classList.toggle('hig-rowcards', !entry);
   });
   // a list cell with nothing in it would print a bare label on a phone card
-  document.querySelectorAll('.mod-sales .hig-rowcards tbody td').forEach(td => {
+  document.querySelectorAll(HIG_TAGGED_MODS.map(k => '.mod-' + k + ' .hig-rowcards tbody td').join(',')).forEach(td => {
     td.toggleAttribute('data-empty', td.colSpan === 1 && !td.textContent.trim() && !td.querySelector('input,select,textarea,button,a,img'));
   });
 }
+// a sortable header carries its ▲▼⇅ glyph in .sort-arrow: that is not part of the column name
+function higThLabel(th) { const c = th.cloneNode(true); c.querySelectorAll('.sort-arrow').forEach(e => e.remove()); c.querySelectorAll('br').forEach(e => e.replaceWith(' ')); return c.textContent.replace(/\s+/g, ' ').trim(); }
 function higStampLabels() {
   higTagTables();
   document.querySelectorAll('.hig-mod-scope .grid-line-table').forEach(g => {
@@ -345,8 +438,8 @@ function higStampLabels() {
     });
   });
   document.querySelectorAll('.hig-mod-scope :is(.hig-entry,.hig-rowcards) table').forEach(t => {
-    const labels = Array.from(t.querySelectorAll('thead th'), th => th.textContent.trim());
-    t.querySelectorAll('tbody tr').forEach(tr => {
+    const labels = Array.from(t.querySelectorAll(':scope > thead th'), higThLabel);
+    t.querySelectorAll(':scope > tbody > tr').forEach(tr => {
       Array.from(tr.children).forEach((td, i) => {
         if (td.hasAttribute('data-w') || td.colSpan > 1) return;
         if (labels[i]) { td.setAttribute('data-label', labels[i]); td.setAttribute('data-w', 'half'); }
@@ -374,7 +467,7 @@ Object.entries(HIG_PAGES).forEach(([mod, ids]) => ids.forEach(id => {
   if (!render) return;
   PAGES[id] = (el) => higRenderScoped(el, mod, id, (wrap) => render(wrap));
 }));
-// "My Job Cards" belongs to the user's own department: only Purchase / Store / Electrical (+ Service) roles are in scope.
+// "My Job Cards" belongs to the user's own department: Purchase / Store / Electrical (+ Service) keep their module, every other role is Projects.
 if (PAGES.jobcards) {
   const renderMine = PAGES.jobcards;
   PAGES.jobcards = (el) => {
@@ -386,7 +479,7 @@ if (PAGES.jobcards) {
 if (typeof renderDeptJobCards === 'function') {
   const renderDept = renderDeptJobCards;
   window.renderDeptJobCards = (el, stage, label, onlyStage) => {
-    const mod = HIG_STAGE_MODULE[stage];
+    const mod = HIG_STAGE_MODULE[stage] || 'projects';
     return mod ? higRenderScoped(el, mod, 'jc-' + stage, (wrap) => renderDept(wrap, stage, label, onlyStage)) : renderDept(el, stage, label, onlyStage);
   };
 }
