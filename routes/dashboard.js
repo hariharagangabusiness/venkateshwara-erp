@@ -2,6 +2,7 @@ const express = require('express');
 const { db } = require('../db');
 const { authRequired, hasPermission } = require('../middleware/auth');
 const { localDateStr } = require('../lib/dateUtil');
+const { SO_CLOSED_SQL } = require('../lib/soItems');
 const router = express.Router();
 router.use(authRequired);
 
@@ -19,8 +20,8 @@ router.get('/summary', (req, res) => {
     // A project already fully Dispatched (not just PendingApproval, and not a
     // Cancelled/Rejected dispatch attempt) has physically shipped - it no
     // longer belongs in "Active Projects" even if some other department's
-    // job card hasn't yet been marked Completed. A project whose Sales Order was
-    // Cancelled is not live work either (GET /projects flags it as order_cancelled).
+    // job card hasn't yet been marked Completed. A project whose Sales Order is
+    // Cancelled / Completed / Dispatched is not live work either (GET /projects flags it as order_closed).
     projects_active: db.prepare(`
       SELECT COUNT(*) c FROM projects p
       WHERE p.status != 'Completed'
@@ -29,7 +30,7 @@ router.get('/summary', (req, res) => {
           WHERE fd.sales_order_id = p.sales_order_id AND fd.status = 'Dispatched'
         )
         AND NOT EXISTS (
-          SELECT 1 FROM sales_orders so WHERE so.id = p.sales_order_id AND so.status = 'Cancelled'
+          SELECT 1 FROM sales_orders so WHERE so.id = p.sales_order_id AND so.status IN (${SO_CLOSED_SQL})
         )
     `).get().c,
     open_leads: db.prepare(`SELECT COUNT(*) c FROM leads WHERE stage NOT IN ('Won','Lost')`).get().c,
@@ -104,10 +105,10 @@ router.get('/window-summary', (req, res) => {
   // scheduled date it was ever given, so without excluding terminal
   // statuses a finished item kept reappearing here through its own old
   // date, indistinguishable from something genuinely still pending. Job cards of a
-  // Cancelled Sales Order are not coming up either.
+  // Cancelled / Completed / Dispatched Sales Order are not coming up either.
   const jcWhere = `
     FROM job_cards jc JOIN projects p ON p.id = jc.project_id LEFT JOIN sales_orders so ON so.id = p.sales_order_id
-    WHERE jc.status NOT IN ('NotApplicable', 'Completed') AND COALESCE(so.status, '') != 'Cancelled'
+    WHERE jc.status NOT IN ('NotApplicable', 'Completed') AND COALESCE(so.status, '') NOT IN (${SO_CLOSED_SQL})
       AND ((jc.planned_start BETWEEN ? AND ?) OR (jc.planned_end BETWEEN ? AND ?))`;
   const upcomingJobCards = db.prepare(`
     SELECT jc.id, jc.stage, jc.title, jc.planned_start, jc.planned_end, p.project_code ${jcWhere}

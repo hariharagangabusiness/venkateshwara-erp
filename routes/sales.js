@@ -10,7 +10,7 @@ const { localDateTimeStr, localDateFromValue, localDateStr } = require('../lib/d
 const { resolveUploadPath } = require('../lib/paths');
 const { recomputePoTermsStatus } = require('../lib/poTerms');
 const { getCompanySettings } = require('../lib/settings');
-const { soLineDispatchableQty, dispatchItemRejectableQty, syncSalesOrderDispatchStatus, markFgDispatchApproved, reopenDispatchJobCards } = require('../lib/soItems');
+const { soLineDispatchableQty, dispatchItemRejectableQty, syncSalesOrderDispatchStatus, markFgDispatchApproved, reopenDispatchJobCards, soPendingExecution, SO_OPEN_STATUSES } = require('../lib/soItems');
 const { generateFgDispatchPdf, generateTransporterRequestPdf, generateCustomerCoveringLetterPdf, generateEnvelopePdf, assembleCustomerBundle } = require('../lib/fgDispatchPdf');
 const approvals = require('../lib/approvals');
 const { buildDownloadFilename } = require('../lib/downloadFilename');
@@ -330,14 +330,17 @@ router.delete('/targets/:id', requirePermission('sales_order.manage', 'report.vi
 });
 
 router.get('/orders', (req, res) => {
-  res.json(db.prepare(`
-    SELECT so.*, c.name as client_name, c.group_id as group_id, cg.name as group_name,
+  const rows = db.prepare(`
+    SELECT so.*, c.name as client_name,
+      CASE WHEN EXISTS (SELECT 1 FROM offers o WHERE o.sales_order_id = so.id AND o.offer_format = 'Spares') THEN 'Spares' ELSE 'Standard' END as order_type, c.group_id as group_id, cg.name as group_name,
       c.gstin as client_gstin, c.phone as client_phone, c.contact_person as client_contact_person, c.address as client_address,
       (SELECT state FROM client_addresses WHERE client_id = c.id AND address_type = 'Billing' ORDER BY is_default DESC, id LIMIT 1) as client_billing_state,
       (SELECT state_code FROM client_addresses WHERE client_id = c.id AND address_type = 'Billing' ORDER BY is_default DESC, id LIMIT 1) as client_billing_state_code
     FROM sales_orders so JOIN clients c ON c.id = so.client_id LEFT JOIN client_groups cg ON cg.id = c.group_id
     ORDER BY so.id DESC
-  `).all());
+  `).all();
+  // Pending balance for the list filter and the CSV exports: measured from APPROVED dispatches (soPendingExecution -> soDispatchProgress).
+  res.json(rows.map(o => { const p = soPendingExecution(o); return { ...o, pending_execution: p.open, pending_qty: p.qty, pending_value: p.value }; }));
 });
 // `lines` is optional (Round 2026-10 addition) - an order built without any
 // keeps behaving exactly as before (manual order_value, no items row at
@@ -412,6 +415,33 @@ router.post('/orders', requirePermission('sales_order.manage'), async (req, res)
 });
 
 const SALES_ORDER_STATUSES = ['Confirmed', 'InProduction', 'PartiallyDispatched', 'Dispatched', 'Invoiced', 'Completed', 'Cancelled'];
+
+// Admin one-time cleanup (2026-11-28): close legacy open orders as Completed or Dispatched, one reason for the batch. Status only -
+// no cascade to job cards - but a closed order drops out of Pending Execution, Overdue Items / job cards, Upcoming job cards and
+// Active Projects (SO_CLOSED_SQL). Orders that are not open are skipped and reported, never an error. One transaction, one
+// audit_log row per order (shown in the order's History).
+router.post('/orders/bulk-close', requireRole('Admin'), (req, res) => {
+  const { status, reason } = req.body || {};
+  if (!['Completed', 'Dispatched'].includes(status)) return res.status(400).json({ error: 'Choose Completed or Dispatched.' });
+  const why = String(reason || '').trim();
+  if (!why) return res.status(400).json({ error: 'A cleanup reason is required.' });
+  const ids = [...new Set((Array.isArray(req.body.order_ids) ? req.body.order_ids : []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return res.status(400).json({ error: 'Select at least one order.' });
+  if (ids.length > 500) return res.status(400).json({ error: 'Close at most 500 orders at a time.' });
+  const closed = [], skipped = [];
+  db.transaction(() => {
+    for (const id of ids) {
+      const o = db.prepare('SELECT id, order_no, status FROM sales_orders WHERE id = ?').get(id);
+      if (!o) { skipped.push({ id, reason: 'Order not found' }); continue; }
+      if (!SO_OPEN_STATUSES.includes(o.status)) { skipped.push({ id, order_no: o.order_no, reason: `Already ${o.status}` }); continue; }
+      db.prepare('UPDATE sales_orders SET status = ? WHERE id = ?').run(status, id);
+      db.prepare('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)')
+        .run(req.user.id, 'order_closed', 'sales_order', id, `Status ${o.status} -> ${status} (Admin cleanup). Reason: ${why}`);
+      closed.push({ id, order_no: o.order_no, previous_status: o.status });
+    }
+  })();
+  res.json({ ok: true, status, closed, skipped });
+});
 
 // Admin-only header edit (2026-11-12) - every other Sales Order action
 // (Items, Customer PO, Commercial Terms) was already open to anyone holding
@@ -660,36 +690,9 @@ function findForeignKeyBlockers(targetTable, ids, exclude) {
   return blockers;
 }
 
-// Admin-only permanent delete, for cleaning up an order that was created by
-// mistake before any real work happened on it. Every order gets a project +
-// job cards (and usually an order-confirmation/annexure review pair)
-// automatically the moment it's created - see ensureProjectForOrder above -
-// so their mere existence isn't a sign of real progress; what actually
-// blocks deletion is any of that scaffolding having moved past its
-// untouched starting state, or any genuinely separate document (invoice,
-// BG, milestone, FOC request, dispatch, service request, material
-// requisition, ...) having been raised against this order/project.
-router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
-  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
-  if (!order) return res.status(404).json({ error: 'Not found' });
-  if (order.status !== 'Confirmed') {
-    return res.status(400).json({ error: `This order has moved to ${order.status} - only a Confirmed order with nothing built on it yet can be deleted.` });
-  }
-  const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
-  let jobCardIds = [];
-  if (project) {
-    // Excluding a stage (status = 'NotApplicable') is a planning decision,
-    // not production activity - it must not itself count as "started" here,
-    // or excluding even one stage would wrongly block deleting an order
-    // nothing has actually been built against yet.
-    const startedJobCard = db.prepare(`
-      SELECT id FROM job_cards WHERE project_id = ? AND ((status != 'Pending' AND status != 'NotApplicable') OR started_at IS NOT NULL) LIMIT 1
-    `).get(project.id);
-    if (startedJobCard) {
-      return res.status(400).json({ error: 'Production has already started on this order (at least one job card is in progress or further along) and it cannot be deleted.' });
-    }
-    jobCardIds = db.prepare('SELECT id FROM job_cards WHERE project_id = ?').all(project.id).map(r => r.id);
-  }
+// Every real record raised against an order (the polymorphic Bank Guarantee / Payment Milestone, the FK scan, live review documents, live
+// proforma / invoice ...). Returns the de-duplicated labels, [] when nothing blocks. Shared by DELETE /orders/:id and the Admin test cleanup.
+function orderDeleteBlockers(order, project, jobCardIds) {
   // Bank Guarantee / Payment Milestone are polymorphic (order_type/order_id
   // covering both SO and PO) with no real FK on order_id, so they're invisible
   // to findForeignKeyBlockers() and need their own explicit check, same as
@@ -749,80 +752,136 @@ router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
     const scnCount = db.prepare(`SELECT COUNT(*) as n FROM sales_credit_notes WHERE sales_invoice_id IN (${ph})`).get(...invoiceIds).n;
     if (scnCount > 0) blockers.push(['Sales Credit Note', scnCount]);
   }
-  if (blockers.length) {
-    // A table can carry more than one FK into this check's 3 target tables
-    // (e.g. store_material_requests has both job_card_id and project_id) and
-    // so can legitimately surface twice across the project-level and
-    // job_cards-level scans - de-duped by label so the message names it once.
-    const labels = [...new Set(blockers.map(([label]) => label))];
+  return [...new Set(blockers.map(([label]) => label))];
+}
+
+// The delete itself - the caller wraps it in a transaction (the test cleanup adds its audit row inside the same one).
+function runOrderDelete(order, project) {
+  // Every row left in these tables at this point is already in one of its
+  // own nonBlockingStatuses (the check above already refused the delete
+  // otherwise) - a child table with its own hard FK (cascadeFirst) has to
+  // go first, same reasoning as proforma_invoice_items below. Must run
+  // BEFORE the project is deleted further down: foc_requests carries its
+  // own project_id FK (caught live - deleting the project first while a
+  // Rejected foc_requests row still pointed at it threw a raw "FOREIGN
+  // KEY constraint failed" instead of succeeding), and a future addition
+  // to this list could carry the same risk, so this whole cascade is
+  // ordered ahead of it on principle, not just for the one table that
+  // happens to need it today.
+  for (const { table, cascadeFirst, cascadeFk } of SALES_ORDER_STATUS_AWARE_CHILDREN) {
+    if (cascadeFirst) {
+      db.prepare(`DELETE FROM ${cascadeFirst} WHERE ${cascadeFk} IN (SELECT id FROM ${table} WHERE sales_order_id = ?)`).run(order.id);
+    }
+    db.prepare(`DELETE FROM ${table} WHERE sales_order_id = ?`).run(order.id);
+  }
+  if (project) {
+    db.prepare(`DELETE FROM job_card_attachments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
+    db.prepare(`DELETE FROM job_card_comments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
+    db.prepare(`DELETE FROM job_card_dependencies WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?) OR depends_on_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id, project.id);
+    db.prepare('DELETE FROM job_cards WHERE project_id = ?').run(project.id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(project.id);
+  }
+  db.prepare('DELETE FROM order_confirmations WHERE sales_order_id = ?').run(order.id);
+  db.prepare('DELETE FROM annexure_reviews WHERE sales_order_id = ?').run(order.id);
+  // Every proforma_invoices row left at this point is Cancelled (the
+  // blockers check above already refused the delete if any live one
+  // exists) - proforma_invoice_items has its own hard FK into
+  // proforma_invoices with no ON DELETE CASCADE, so it has to go first.
+  // This whole pair must also run BEFORE sales_order_items below:
+  // proforma_invoice_items.sales_order_item_id (added 2026-10-27, for a
+  // proforma line generated by ticking a specific order line) is its own
+  // nullable FK straight into sales_order_items - caught live (deleting
+  // sales_order_items first while a Cancelled proforma's own items still
+  // pointed at those rows threw a raw "FOREIGN KEY constraint failed"
+  // against SO-1794373108479, the exact order this whole area was
+  // already being audited over) - same "a child two hops from the order
+  // itself is invisible to the generic scan" lesson the
+  // payment_receipts/sales_credit_notes guard above already represents,
+  // just missed here because this pair predates SALES_ORDER_STATUS_AWARE_
+  // CHILDREN and was never folded into it.
+  db.prepare(`DELETE FROM proforma_invoice_items WHERE proforma_id IN (SELECT id FROM proforma_invoices WHERE sales_order_id = ?)`).run(order.id);
+  db.prepare('DELETE FROM proforma_invoices WHERE sales_order_id = ?').run(order.id);
+  // sales_order_items.sales_order_id is a NOT NULL FK with no ON DELETE
+  // CASCADE - the blockers check above already confirmed no FG Dispatch
+  // (the only other table with a hard FK into these rows, via
+  // fg_dispatch_items) exists, so these lines are genuinely orphaned once
+  // the order itself goes and can be removed outright.
+  db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(order.id);
+  // If this order came from a confirmed offer, undo that conversion so the
+  // offer becomes a normal, editable Sent offer again rather than being
+  // left locked and pointing at a sales order that no longer exists.
+  const offer = db.prepare('SELECT id FROM offers WHERE sales_order_id = ?').get(order.id);
+  if (offer) {
+    db.prepare(`
+      UPDATE offers SET status = 'Sent', sales_order_id = NULL, locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = (datetime('now','localtime'))
+      WHERE id = ?
+    `).run(offer.id);
+  }
+  db.prepare('DELETE FROM sales_orders WHERE id = ?').run(order.id);
+}
+
+// Admin-only permanent delete, for cleaning up an order that was created by
+// mistake before any real work happened on it. Every order gets a project +
+// job cards (and usually an order-confirmation/annexure review pair)
+// automatically the moment it's created - see ensureProjectForOrder above -
+// so their mere existence isn't a sign of real progress; what actually
+// blocks deletion is any of that scaffolding having moved past its
+// untouched starting state, or any genuinely separate document (invoice,
+// BG, milestone, FOC request, dispatch, service request, material
+// requisition, ...) having been raised against this order/project.
+router.delete('/orders/:id', requireRole('Admin'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (order.status !== 'Confirmed') {
+    return res.status(400).json({ error: `This order has moved to ${order.status} - only a Confirmed order with nothing built on it yet can be deleted.` });
+  }
+  const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
+  let jobCardIds = [];
+  if (project) {
+    // Excluding a stage (status = 'NotApplicable') is a planning decision,
+    // not production activity - it must not itself count as "started" here,
+    // or excluding even one stage would wrongly block deleting an order
+    // nothing has actually been built against yet.
+    const startedJobCard = db.prepare(`
+      SELECT id FROM job_cards WHERE project_id = ? AND ((status != 'Pending' AND status != 'NotApplicable') OR started_at IS NOT NULL) LIMIT 1
+    `).get(project.id);
+    if (startedJobCard) {
+      return res.status(400).json({ error: 'Production has already started on this order (at least one job card is in progress or further along) and it cannot be deleted.' });
+    }
+    jobCardIds = db.prepare('SELECT id FROM job_cards WHERE project_id = ?').all(project.id).map(r => r.id);
+  }
+  const labels = orderDeleteBlockers(order, project, jobCardIds);
+  if (labels.length) {
     return res.status(400).json({ error: `This order already has real activity against it (${labels.join(', ')}) and cannot be deleted.` });
   }
-
-  const tx = db.transaction(() => {
-    // Every row left in these tables at this point is already in one of its
-    // own nonBlockingStatuses (the check above already refused the delete
-    // otherwise) - a child table with its own hard FK (cascadeFirst) has to
-    // go first, same reasoning as proforma_invoice_items below. Must run
-    // BEFORE the project is deleted further down: foc_requests carries its
-    // own project_id FK (caught live - deleting the project first while a
-    // Rejected foc_requests row still pointed at it threw a raw "FOREIGN
-    // KEY constraint failed" instead of succeeding), and a future addition
-    // to this list could carry the same risk, so this whole cascade is
-    // ordered ahead of it on principle, not just for the one table that
-    // happens to need it today.
-    for (const { table, cascadeFirst, cascadeFk } of SALES_ORDER_STATUS_AWARE_CHILDREN) {
-      if (cascadeFirst) {
-        db.prepare(`DELETE FROM ${cascadeFirst} WHERE ${cascadeFk} IN (SELECT id FROM ${table} WHERE sales_order_id = ?)`).run(order.id);
-      }
-      db.prepare(`DELETE FROM ${table} WHERE sales_order_id = ?`).run(order.id);
-    }
-    if (project) {
-      db.prepare(`DELETE FROM job_card_attachments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
-      db.prepare(`DELETE FROM job_card_comments WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id);
-      db.prepare(`DELETE FROM job_card_dependencies WHERE job_card_id IN (SELECT id FROM job_cards WHERE project_id = ?) OR depends_on_id IN (SELECT id FROM job_cards WHERE project_id = ?)`).run(project.id, project.id);
-      db.prepare('DELETE FROM job_cards WHERE project_id = ?').run(project.id);
-      db.prepare('DELETE FROM projects WHERE id = ?').run(project.id);
-    }
-    db.prepare('DELETE FROM order_confirmations WHERE sales_order_id = ?').run(order.id);
-    db.prepare('DELETE FROM annexure_reviews WHERE sales_order_id = ?').run(order.id);
-    // Every proforma_invoices row left at this point is Cancelled (the
-    // blockers check above already refused the delete if any live one
-    // exists) - proforma_invoice_items has its own hard FK into
-    // proforma_invoices with no ON DELETE CASCADE, so it has to go first.
-    // This whole pair must also run BEFORE sales_order_items below:
-    // proforma_invoice_items.sales_order_item_id (added 2026-10-27, for a
-    // proforma line generated by ticking a specific order line) is its own
-    // nullable FK straight into sales_order_items - caught live (deleting
-    // sales_order_items first while a Cancelled proforma's own items still
-    // pointed at those rows threw a raw "FOREIGN KEY constraint failed"
-    // against SO-1794373108479, the exact order this whole area was
-    // already being audited over) - same "a child two hops from the order
-    // itself is invisible to the generic scan" lesson the
-    // payment_receipts/sales_credit_notes guard above already represents,
-    // just missed here because this pair predates SALES_ORDER_STATUS_AWARE_
-    // CHILDREN and was never folded into it.
-    db.prepare(`DELETE FROM proforma_invoice_items WHERE proforma_id IN (SELECT id FROM proforma_invoices WHERE sales_order_id = ?)`).run(order.id);
-    db.prepare('DELETE FROM proforma_invoices WHERE sales_order_id = ?').run(order.id);
-    // sales_order_items.sales_order_id is a NOT NULL FK with no ON DELETE
-    // CASCADE - the blockers check above already confirmed no FG Dispatch
-    // (the only other table with a hard FK into these rows, via
-    // fg_dispatch_items) exists, so these lines are genuinely orphaned once
-    // the order itself goes and can be removed outright.
-    db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(order.id);
-    // If this order came from a confirmed offer, undo that conversion so the
-    // offer becomes a normal, editable Sent offer again rather than being
-    // left locked and pointing at a sales order that no longer exists.
-    const offer = db.prepare('SELECT id FROM offers WHERE sales_order_id = ?').get(order.id);
-    if (offer) {
-      db.prepare(`
-        UPDATE offers SET status = 'Sent', sales_order_id = NULL, locked = 0, locked_at = NULL, locked_reason = NULL, updated_at = (datetime('now','localtime'))
-        WHERE id = ?
-      `).run(offer.id);
-    }
-    db.prepare('DELETE FROM sales_orders WHERE id = ?').run(order.id);
-  });
-  tx();
+  db.transaction(() => runOrderDelete(order, project))();
   res.json({ ok: true });
+});
+
+// Admin "Delete Test Order" (2026-11-28): the escape hatch for an order that was only ever a test, even if its job cards were
+// started (the strict delete above refuses that). Refuses on any FG dispatch row, live Proforma / Tax Invoice or other real record
+// (named in the 400, with a pointer to Mark as Closed) and on Dispatched / Invoiced / Completed orders. One transaction, audit row inside.
+router.delete('/orders/:id/test-cleanup', requireRole('Admin'), (req, res) => {
+  const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to delete a test order.' });
+  if (['Dispatched', 'Invoiced', 'Completed'].includes(order.status)) {
+    return res.status(400).json({ error: `This order is ${order.status} - use Mark as Closed instead of deleting it.` });
+  }
+  const project = db.prepare('SELECT * FROM projects WHERE sales_order_id = ?').get(order.id);
+  const jobCardIds = project ? db.prepare('SELECT id FROM job_cards WHERE project_id = ?').all(project.id).map(r => r.id) : [];
+  const labels = orderDeleteBlockers(order, project, jobCardIds);
+  if (labels.length) {
+    return res.status(400).json({ error: `This order has real activity against it (${labels.join(', ')}) and cannot be deleted as a test order - use Mark as Closed instead.` });
+  }
+  db.transaction(() => {
+    runOrderDelete(order, project);
+    db.prepare('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?,?,?,?,?)')
+      .run(req.user.id, 'test_order_deleted', 'sales_order', order.id,
+        `Deleted test order ${order.order_no} (status ${order.status}${project ? `, project ${project.project_code} with ${jobCardIds.length} job card(s)` : ''}). Reason: ${reason}`);
+  })();
+  res.json({ ok: true, order_no: order.order_no });
 });
 
 // Commercial terms (Round 16): promised delivery date + LD clause, plus
@@ -1073,6 +1132,7 @@ const HISTORY_ACTION_LABELS = {
   item_added: 'Line added', item_edited: 'Line edited', item_deleted: 'Line deleted', po_updated: 'Customer PO updated',
   po_terms_accepted: 'PO terms accepted', po_terms_mismatch_acknowledged: 'PO terms mismatch acknowledged',
   order_status_synced: 'Order status updated (FG dispatch approved)', dispatch_deleted: 'FG dispatch deleted',
+  order_closed: 'Order closed by Admin (cleanup)',
 };
 router.get('/orders/:id/history', (req, res) => {
   const order = db.prepare('SELECT * FROM sales_orders WHERE id = ?').get(req.params.id);
