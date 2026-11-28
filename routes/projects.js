@@ -13,6 +13,7 @@ const {
 const { oversightRoleNames } = require('../lib/roleOversight');
 const { makeUpload } = require('../lib/upload');
 const { localDateStr } = require('../lib/dateUtil');
+const { SO_CLOSED_SQL } = require('../lib/soItems');
 const router = express.Router();
 router.use(authRequired);
 
@@ -178,7 +179,8 @@ router.get('/', (req, res) => {
     SELECT p.*, so.order_no, so.annexure_path, c.name as client_name, u.full_name as pm_name,
       (SELECT 1 FROM offers o WHERE o.sales_order_id = p.sales_order_id AND o.offer_format = 'Spares' LIMIT 1) IS NOT NULL AS is_spares,
       (SELECT 1 FROM fg_dispatches fd WHERE fd.sales_order_id = p.sales_order_id AND fd.status = 'Dispatched' LIMIT 1) IS NOT NULL AS is_dispatched,
-      COALESCE(so.status, '') = 'Cancelled' AS order_cancelled
+      COALESCE(so.status, '') = 'Cancelled' AS order_cancelled,
+      COALESCE(so.status, '') IN (${SO_CLOSED_SQL}) AS order_closed
     FROM projects p
     LEFT JOIN sales_orders so ON so.id = p.sales_order_id
     LEFT JOIN clients c ON c.id = so.client_id

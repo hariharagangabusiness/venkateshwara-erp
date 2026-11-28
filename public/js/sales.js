@@ -1384,6 +1384,7 @@ PAGES.orders = async (el) => {
   const wonLeads = (await api('/sales/leads')).filter(l => l.stage === 'Won');
   window.__SO_ORDERS_CACHE = orders;
   window.__SO_WON_LEADS_CACHE = wonLeads;
+  const shown = soFiltered(orders, SO_VIEW.pendingOnly);
   SO_LINES = [];
   el.innerHTML = `
     <div class="panel">
@@ -1420,21 +1421,177 @@ PAGES.orders = async (el) => {
       ${bgTermsFormFields('so')}
       <div class="hig-savebar"><button class="btn" onclick="addOrder()">Create Order</button></div>
     </div>
-    <button class="btn small outline" onclick="reportOrders()">Generate Report (CSV)</button>
-    ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${orders.length})</span>`, `
-      ${renderListSearch('orders', orders, ['order_no', 'client_name', 'group_name', 'status', 'description'], (rows) => {
+    <div class="hig-filters">
+      <div><label>Order Type</label><select id="so-type-filter" onchange="applySOFilters()">${['All', 'Standard', 'Spares'].map(t => `<option ${t === SO_VIEW.type ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <label><input type="checkbox" id="so-pending-only" ${SO_VIEW.pendingOnly ? 'checked' : ''} onchange="applySOFilters()"> Pending Execution Only</label>
+      <button class="btn small outline" type="button" onclick="reportOrders()">Generate Report (CSV)</button>
+      <button class="btn small outline" type="button" onclick="exportPendingOrders()">Export Pending Orders (CSV)</button>
+    </div>
+    ${collapsiblePanel('orders-list', `<span id="so-count">Sales Orders (${shown.length})</span>`, `
+      ${renderListSearch('orders', shown, ['order_no', 'client_name', 'group_name', 'status', 'description'], (rows) => {
         document.getElementById('so-table-wrap').innerHTML = customerGroupedHTML(rows, 'so', ORDER_LIST_COLUMNS, orderRowHTML);
         document.getElementById('so-count').textContent = 'Sales Orders (' + rows.length + ')';
       }, 'Search by order no, client, status...')}
-      <div id="so-table-wrap">${customerGroupedHTML(orders, 'so', ORDER_LIST_COLUMNS, orderRowHTML)}</div>
+      <div id="so-table-wrap">${customerGroupedHTML(shown, 'so', ORDER_LIST_COLUMNS, orderRowHTML)}</div>
       <p class="muted">Department-level target planning for a confirmed order now lives on the <a href="#" onclick="navigate('projects');return false;">Projects</a> tab, under that order's project.</p>
-    `)}`;
+    `)}
+    ${ME.role === 'Admin' ? soAdminCleanupPanelHTML() : ''}`;
   await loadSelectOptions(document.getElementById('so-client'), '/masters/clients', 'id', 'name', 'Select client');
   renderSOLines();
 };
+// ---- Order Type / Pending Execution filters and the CSV exports (2026-11-28) ----
+// The first 7 export columns are the original report, in their original order and format: Excel macros read it, so only APPEND.
+// order_type / pending_execution / pending_qty / pending_value come from GET /sales/orders (soPendingExecution -> soDispatchProgress on the
+// server), so the screen, the filter and both exports share one definition. Pending Qty is blank for an open order with no line items.
+const SO_EXPORT_COLUMNS = ['id', 'order_no', 'client_name', 'order_value', 'status', 'order_date', 'description'];
+const SO_EXPORT_EXTRA = ['Order Status', 'Order Type', 'Pending Qty / Balance', 'Pending Value'];
+const SO_OPEN_STATUSES = ['Confirmed', 'InProduction', 'PartiallyDispatched'];
+let SO_VIEW = { type: 'All', pendingOnly: false };
+function soFiltered(rows, pendingOnly) {
+  return rows.filter(o => (SO_VIEW.type === 'All' || o.order_type === SO_VIEW.type) && (!pendingOnly || o.pending_execution));
+}
+window.applySOFilters = () => {
+  SO_VIEW = { type: val('so-type-filter') || 'All', pendingOnly: !!document.getElementById('so-pending-only').checked };
+  const st = LIST_SEARCH_STATE.orders, wrap = document.getElementById('so-table-wrap');
+  if (!st || !wrap) return;
+  st.allRows = soFiltered(window.__SO_ORDERS_CACHE || [], SO_VIEW.pendingOnly);
+  const box = wrap.parentElement.querySelector('input.list-search');
+  filterList('orders', box ? box.value : '');
+};
+function soExportRows(orders) {
+  return orders.map(o => ({ ...o, 'Order Status': o.status, 'Order Type': o.order_type, 'Pending Qty / Balance': o.pending_qty, 'Pending Value': o.pending_value }));
+}
+// Generate Report = every order (the Order Type choice still applies); Export Pending Orders = only what is still to be executed.
 window.reportOrders = async () => {
-  const orders = await api('/sales/orders');
-  downloadCSV('sales_orders_report.csv', orders, ['id', 'order_no', 'client_name', 'order_value', 'status', 'order_date', 'description']);
+  const orders = soFiltered(await api('/sales/orders'), false);
+  downloadCSV('sales_orders_report.csv', soExportRows(orders), [...SO_EXPORT_COLUMNS, ...SO_EXPORT_EXTRA]);
+};
+window.exportPendingOrders = async () => {
+  const orders = soFiltered(await api('/sales/orders'), true);
+  downloadCSV('sales_orders_pending_execution.csv', soExportRows(orders), [...SO_EXPORT_COLUMNS, ...SO_EXPORT_EXTRA]);
+};
+
+// ---- Admin Cleanup (2026-11-28): close legacy open orders / delete test orders. Collapsed by default, Admin only (the server enforces it). ----
+let SO_CLEAN = { sel: new Set(), showAll: false };
+function soCleanRows() {
+  const all = window.__SO_ORDERS_CACHE || [];
+  return SO_CLEAN.showAll ? all : all.filter(o => SO_OPEN_STATUSES.includes(o.status));
+}
+function soCleanRowHTML(o) {
+  const open = SO_OPEN_STATUSES.includes(o.status);
+  return `<tr>
+    <td><label><input type="checkbox" data-id="${o.id}" ${open ? '' : 'disabled title="Only an open order can be closed"'} ${SO_CLEAN.sel.has(o.id) ? 'checked' : ''} onchange="toggleSOCleanSel(${o.id}, this.checked)"> ${esc(o.order_no)}</label></td>
+    <td>${esc(o.client_name)}</td><td>₹${fmt(o.order_value)}</td><td>${badge(o.status)}</td><td>${esc(o.order_type)}</td>
+    <td>${o.pending_qty === null ? '-' : fmt(o.pending_qty)} / ₹${fmt(o.pending_value)}</td>
+    <td>${soDeliveryBadge(o.promised_delivery_date)}</td>
+    <td>${actionButtonsCell(`${open ? `<button class="btn small outline" type="button" onclick="openCloseOrders([${o.id}])">Close&hellip;</button>` : ''}
+      <button class="btn small red" type="button" onclick="openDeleteTestOrder(${o.id})">Delete Test Order</button>`)}</td></tr>`;
+}
+function soCleanTableHTML(rows) {
+  // explicit .hig-rowcards: the checkbox would otherwise make higTagTables() treat this read-only list as an entry grid, whose half-width
+  // cells cannot hold a "(overdue 39d)" delivery badge on a phone
+  return '<div class="hig-rowcards">' + tableHTML(['Order No', 'Client', 'Value', 'Status', 'Type', 'Pending Qty / Value', 'Promised Delivery', ''], rows, soCleanRowHTML) + '</div>';
+}
+function soAdminCleanupPanelHTML() {
+  SO_CLEAN = { sel: new Set(), showAll: false };
+  const rows = soCleanRows();
+  return collapsiblePanel('orders-admin-cleanup', 'Admin Cleanup &mdash; close legacy orders / delete test orders', `
+    <p class="muted"><b>Close</b> marks open orders Completed or Dispatched (status only, nothing else is touched) so they leave Pending Execution, Overdue Items and Active Projects. <b>Delete Test Order</b> permanently removes an order that was only ever a test, and is refused once an FG dispatch or a live proforma / tax invoice exists. Both ask for a reason and are written to the order's History.</p>
+    <div class="hig-filters">
+      <label><input type="checkbox" id="so-clean-all" onchange="toggleSOCleanShowAll(this.checked)"> Show all statuses (default: open orders only)</label>
+      <button class="btn small outline" type="button" onclick="selectAllSOClean()">Select all shown</button>
+      <button class="btn small outline" type="button" onclick="clearSOCleanSel()">Clear</button>
+      <button class="btn small" type="button" id="so-clean-close-btn" onclick="openCloseOrders()">Close selected (0)&hellip;</button>
+    </div>
+    ${renderListSearch('so-clean', rows, ['order_no', 'client_name', 'status', 'order_type', 'description'], (r) => {
+      document.getElementById('so-clean-wrap').innerHTML = soCleanTableHTML(r);
+    }, 'Search by order no, client, status...')}
+    <div id="so-clean-wrap">${soCleanTableHTML(rows)}</div>`);
+}
+function soCleanRefreshCount() {
+  const b = document.getElementById('so-clean-close-btn');
+  if (b) b.innerHTML = `Close selected (${SO_CLEAN.sel.size})&hellip;`;
+}
+window.toggleSOCleanSel = (id, on) => { on ? SO_CLEAN.sel.add(id) : SO_CLEAN.sel.delete(id); soCleanRefreshCount(); };
+window.toggleSOCleanShowAll = (on) => {
+  SO_CLEAN.showAll = on;
+  const st = LIST_SEARCH_STATE['so-clean'], wrap = document.getElementById('so-clean-wrap');
+  if (!st || !wrap) return;
+  st.allRows = soCleanRows();
+  const box = wrap.parentElement.querySelector('input.list-search');
+  filterList('so-clean', box ? box.value : '');
+};
+window.selectAllSOClean = () => {
+  document.querySelectorAll('#so-clean-wrap input[type=checkbox]:not(:disabled)').forEach(c => { c.checked = true; SO_CLEAN.sel.add(Number(c.dataset.id)); });
+  soCleanRefreshCount();
+};
+window.clearSOCleanSel = () => {
+  SO_CLEAN.sel.clear();
+  document.querySelectorAll('#so-clean-wrap input[type=checkbox]').forEach(c => { c.checked = false; });
+  soCleanRefreshCount();
+};
+const soOrderById = (id) => (window.__SO_ORDERS_CACHE || []).find(o => o.id === id);
+window.openCloseOrders = (ids) => {
+  ids = (ids || [...SO_CLEAN.sel]).map(Number);
+  if (!ids.length) { alert('Tick at least one open order first.'); return; }
+  const rows = ids.map(soOrderById).filter(Boolean);
+  const names = rows.slice(0, 8).map(o => esc(o.order_no)).join(', ') + (rows.length > 8 ? ` and ${rows.length - 8} more` : '');
+  openAppModal(`Close ${rows.length} Sales Order${rows.length === 1 ? '' : 's'}`, `
+    <p class="msg err" style="display:block;">This only changes the order's status. Job cards, the project and every document stay as they are, and the order leaves Pending Execution, Overdue Items and Active Projects.</p>
+    <div class="disp-del-facts">
+      <span class="muted">Orders</span><span>${names}</span>
+      <span class="muted">Mark as</span><span><select id="co-status"><option value="Completed">Completed (Closed)</option><option value="Dispatched">Dispatched</option></select></span>
+    </div>
+    <label>Reason for the cleanup (required)</label>
+    <textarea id="co-reason" rows="3" placeholder="e.g. Legacy order delivered before the ERP went live"></textarea>
+    <div id="co-err" class="msg err" style="display:none;"></div>
+    <div class="hig-savebar">
+      <button class="btn" id="co-confirm" type="button" onclick="confirmCloseOrders([${ids.join(',')}])">Close ${rows.length === 1 ? 'Order' : 'Orders'}</button>
+      <button class="btn outline" type="button" onclick="closeAppModal()">Cancel</button>
+    </div>`);
+};
+window.confirmCloseOrders = async (ids) => {
+  const err = document.getElementById('co-err'), btn = document.getElementById('co-confirm');
+  err.style.display = 'none';
+  const reason = val('co-reason').trim();
+  if (!reason) { err.textContent = 'Enter the reason for the cleanup.'; err.style.display = 'block'; return; }
+  btn.disabled = true;
+  try {
+    const r = await api('/sales/orders/bulk-close', { method: 'POST', body: JSON.stringify({ order_ids: ids, status: val('co-status'), reason }) });
+    SO_CLEAN.sel.clear();
+    openAppModal('Cleanup done', `
+      <p><b>${r.closed.length}</b> order${r.closed.length === 1 ? '' : 's'} marked <b>${esc(r.status)}</b>${r.closed.length ? ': ' + r.closed.map(c => esc(c.order_no)).join(', ') : ''}.</p>
+      ${r.skipped.length ? `<p class="muted">Skipped ${r.skipped.length}: ${r.skipped.map(k => esc((k.order_no || '#' + k.id) + ' (' + k.reason + ')')).join(', ')}.</p>` : ''}
+      <div class="hig-savebar"><button class="btn" type="button" onclick="closeAppModal();navigate('orders')">Done</button></div>`);
+  } catch (e) { err.textContent = e.message; err.style.display = 'block'; btn.disabled = false; }
+};
+window.openDeleteTestOrder = (id) => {
+  const o = soOrderById(id);
+  if (!o) return;
+  openAppModal('Delete Test Order - ' + esc(o.order_no), `
+    <p class="msg err" style="display:block;">This permanently deletes the order, its line items, its project and job cards and its confirmation / annexure records. It cannot be undone. It is refused once an FG dispatch or a live proforma / tax invoice exists &mdash; use Close instead.</p>
+    <div class="disp-del-facts">
+      <span class="muted">Order</span><span>${esc(o.order_no)}</span>
+      <span class="muted">Client</span><span>${esc(o.client_name)}</span>
+      <span class="muted">Status</span><span>${badge(o.status)}</span>
+      <span class="muted">Value</span><span>₹${fmt(o.order_value)}</span>
+    </div>
+    <label>Reason (required)</label>
+    <textarea id="dt-reason" rows="3" placeholder="e.g. Test order created while training"></textarea>
+    <div id="dt-err" class="msg err" style="display:none;"></div>
+    <div class="hig-savebar">
+      <button class="btn red" id="dt-confirm" type="button" onclick="confirmDeleteTestOrder(${id})">Delete Test Order</button>
+      <button class="btn outline" type="button" onclick="closeAppModal()">Cancel</button>
+    </div>`);
+};
+window.confirmDeleteTestOrder = async (id) => {
+  const err = document.getElementById('dt-err'), btn = document.getElementById('dt-confirm');
+  err.style.display = 'none';
+  const reason = val('dt-reason').trim();
+  if (!reason) { err.textContent = 'Enter the reason for deleting this test order.'; err.style.display = 'block'; return; }
+  btn.disabled = true;
+  try { await api(`/sales/orders/${id}/test-cleanup`, { method: 'DELETE', body: JSON.stringify({ reason }) }); closeAppModal(); navigate('orders'); }
+  catch (e) { err.textContent = e.message; err.style.display = 'block'; btn.disabled = false; }
 };
 // format 'docx' (default, the stored engineering annexure) or 'pdf' (always
 // rendered fresh from the order's current data - see lib/annexurePdf.js).

@@ -82,8 +82,8 @@ const DASHBOARD_METRIC_REGISTRY = [
     fetchValue: async () => { const d = await api('/projects/time-motion-report?stage=Manufacturing'); return tmHrs(d.overall?.start_to_complete.avg); },
     buildDetail: async () => { const d = await api('/projects/time-motion-report?stage=Manufacturing'); return `<h3>Manufacturing: Avg Start→Completion: ${tmHrs(d.overall?.start_to_complete.avg)}</h3>${tableHTML(['Card','Project','Assignee','Start→Complete'], d.cards.filter(c=>c.start_to_complete_hrs!==null), c => `<tr><td>${esc(c.title)||'-'}</td><td>${esc(c.project_name)||'-'}</td><td>${esc(c.assignee_name)||'-'}</td><td>${tmHrs(c.start_to_complete_hrs)}</td></tr>`)}`; } },
   { key: 'projects_active', label: 'Projects: Active Projects', department: 'Projects',
-    fetchValue: async () => (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled).length,
-    buildDetail: async () => { const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled); return `<h3>Active Projects (${projects.length})</h3>${tableHTML(['Code','Title','Status'], projects, p => `<tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${badge(p.status)}</td></tr>`)}`; } },
+    fetchValue: async () => (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_closed).length,
+    buildDetail: async () => { const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_closed); return `<h3>Active Projects (${projects.length})</h3>${tableHTML(['Code','Title','Status'], projects, p => `<tr><td>${esc(p.project_code)}</td><td>${esc(p.title)}</td><td>${badge(p.status)}</td></tr>`)}`; } },
   { key: 'tickets_open_mine', label: 'Tickets: My Open Tickets', department: 'Tickets',
     fetchValue: async () => { try { return (await api('/tickets/mine')).filter(t => !['Closed','Resolved'].includes(t.status)).length; } catch (e) { return '-'; } },
     buildDetail: async () => { const tk = (await api('/tickets/mine')).filter(t => !['Closed','Resolved'].includes(t.status)); return `<h3>My Open Tickets (${tk.length})</h3>${tableHTML(['Ticket No','Subject','Priority','Status'], tk, t => `<tr><td>${esc(t.ticket_no)}</td><td>${esc(t.subject)}</td><td>${esc(t.priority)}</td><td>${badge(t.status)}</td></tr>`)}`; } },
@@ -218,7 +218,7 @@ PAGES.dashboard = async (el) => {
       // the same way routes/dashboard.js's own projects_active count already
       // is, so the drill-down list under the stat tile can't disagree with
       // the tile's own number.
-      const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_cancelled);
+      const projects = (await api('/projects')).filter(p => p.status !== 'Completed' && !p.is_dispatched && !p.order_closed);
       const byStatus = {};
       projects.forEach(p => { byStatus[p.status] = (byStatus[p.status]||0) + 1; });
       return `<h3>Active Projects (${projects.length})</h3>
