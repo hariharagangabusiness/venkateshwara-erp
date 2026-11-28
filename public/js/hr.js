@@ -43,7 +43,7 @@ PAGES.employees = async (el) => {
         <div><label>Emergency Contact Name</label><input id="em-ec-name"></div>
         <div><label>Emergency Contact Phone</label><input id="em-ec-phone"></div>
         <div><label>Permanent Address</label><textarea id="em-perm-address" rows="2" oninput="syncTempAddress('em')"></textarea></div>
-        <div><label>Temporary Address <span style="font-weight:400;"><input type="checkbox" id="em-same-address" onchange="syncTempAddress('em')"> Same as Permanent Address</span></label><textarea id="em-temp-address" rows="2"></textarea></div>
+        <div><label>Temporary Address</label><div class="hig-check-row"><label><input type="checkbox" id="em-same-address" onchange="syncTempAddress('em')"> Same as Permanent Address</label></div><textarea id="em-temp-address" rows="2"></textarea></div>
       </div>
       <h4>Referral</h4>
       <div class="form-grid">
@@ -64,7 +64,7 @@ PAGES.employees = async (el) => {
         <div><label>Visa Availability</label><input id="em-visa" placeholder="e.g. Yes - valid till 2027, or No"></div>
         <div><label>Driving License Number</label><input id="em-dl"></div>
       </div>
-      <button class="btn" onclick="addEmployee()">Add Employee</button>
+      <div class="hig-savebar"><button class="btn" onclick="addEmployee()">Add Employee</button></div>
     </div>
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per employee, then upload it here. Department names must match exactly (see the "Departments" sheet in the template).</p>
@@ -129,7 +129,7 @@ window.openEditEmployee = (id) => {
       <div><label>Emergency Contact Name</label><input id="eme-ec-name" value="${esc(e.emergency_contact_name)||''}"></div>
       <div><label>Emergency Contact Phone</label><input id="eme-ec-phone" value="${esc(e.emergency_contact_phone)||''}"></div>
       <div><label>Permanent Address</label><textarea id="eme-perm-address" rows="2" oninput="syncTempAddress('eme')">${esc(e.permanent_address||e.address)||''}</textarea></div>
-        <div><label>Temporary Address <span style="font-weight:400;"><input type="checkbox" id="eme-same-address" onchange="syncTempAddress('eme')"> Same as Permanent Address</span></label><textarea id="eme-temp-address" rows="2">${esc(e.temporary_address)||''}</textarea></div>
+        <div><label>Temporary Address</label><div class="hig-check-row"><label><input type="checkbox" id="eme-same-address" onchange="syncTempAddress('eme')"> Same as Permanent Address</label></div><textarea id="eme-temp-address" rows="2">${esc(e.temporary_address)||''}</textarea></div>
       <div><label>Status</label><select id="eme-status"><option value="active" ${e.status==='active'?'selected':''}>Active</option><option value="resigned" ${e.status==='resigned'?'selected':''}>Resigned</option><option value="terminated" ${e.status==='terminated'?'selected':''}>Terminated</option></select></div>
       <div><label>Exit Date (if resigned/terminated)</label><input id="eme-exit" type="date" value="${e.exit_date||''}"></div>
       <div><label>Exit Reason</label><select id="eme-exit-reason"><option value="">-</option>${EXIT_REASONS.map(r => `<option ${r===e.exit_reason?'selected':''}>${r}</option>`).join('')}</select></div>
@@ -154,8 +154,8 @@ window.openEditEmployee = (id) => {
       <div><label>Visa Availability</label><input id="eme-visa" value="${esc(e.visa_availability)||''}"></div>
       <div><label>Driving License Number</label><input id="eme-dl" value="${esc(e.driving_license_number)||''}"></div>
     </div>
-    <button class="btn" id="eme-save-btn-${id}" onclick="saveEditEmployee(${id})">Save Changes</button>
-    <div id="eme-err" class="msg err" style="display:none;"></div>`);
+    <div id="eme-err" class="msg err" style="display:none;"></div>
+    <div class="hig-savebar"><button class="btn" id="eme-save-btn-${id}" onclick="saveEditEmployee(${id})">Save Changes</button></div>`);
 };
 window.saveEditEmployee = async (id) => {
   const errEl = document.getElementById('eme-err');
@@ -183,7 +183,7 @@ PAGES['referral-incentives'] = async (el) => {
   const list = await api('/hr/referral-incentives');
   const rows = r => `<tr>
     <td>${esc(r.employee_name)}</td><td>${esc(r.referred_by_name)}</td><td>₹${fmt(r.incentive_amount)}</td>
-    <td>${r.probation_end_date||'-'}</td><td>${badge(r.status)}</td><td>${r.payment_reference ? esc(r.payment_reference) + (r.paid_date ? ' (' + r.paid_date + ')' : '') : '-'}</td>
+    <td>${fmtDMY(r.probation_end_date)}</td><td>${badge(r.status)}</td><td>${r.payment_reference ? esc(r.payment_reference) + (r.paid_date ? ' (' + fmtDMY(r.paid_date) + ')' : '') : '-'}</td>
     <td>${actionButtonsCell(`
       ${r.status === 'Eligible' ? `<button class="btn small" type="button" onclick="submitReferralIncentive(${r.id})">Submit for Approval</button>` : ''}
       ${r.status === 'Approved' ? `<button class="btn small" type="button" onclick="markReferralIncentivePaid(${r.id})">Mark Paid</button>` : ''}
@@ -220,7 +220,7 @@ PAGES['salary-hikes'] = async (el) => {
       ${tableHTML(['Employee', 'Previous (₹)', 'Hike', 'New (₹)', 'Year', 'Effective Date', 'Source'], hikes, h => `
         <tr><td>${esc(h.employee_name)}</td><td>₹${fmt(h.previous_salary)}</td>
         <td>${h.hike_type === 'Fixed' ? '₹' + fmt(h.hike_value) : h.hike_value + '%'}</td>
-        <td>₹${fmt(h.new_salary)}</td><td>${h.effective_year||'-'}</td><td>${h.effective_date||'-'}</td><td>${esc(h.source)}</td></tr>`)}
+        <td>₹${fmt(h.new_salary)}</td><td>${h.effective_year||'-'}</td><td>${fmtDMY(h.effective_date)}</td><td>${esc(h.source)}</td></tr>`)}
     `)}`;
 };
 
@@ -233,7 +233,7 @@ PAGES['salary-hike-cycles'] = async (el) => {
         <div><label>Cycle Name</label><input id="shc-name" placeholder="e.g. FY2026-27 Annual Hike"></div>
         <div><label>Effective Year</label><input id="shc-year" type="number" value="${new Date().getFullYear()}"></div>
       </div>
-      <button class="btn" onclick="createHikeCycle()">Create Draft</button>
+      <div class="hig-savebar"><button class="btn" onclick="createHikeCycle()">Create Draft</button></div>
     </div>
     ${collapsiblePanel('hike-cycles-list', `Hike Cycles (${cycles.length})`, `
       ${tableHTML(['Cycle', 'Year', 'Employees', 'Total Increase (₹)', 'Status', ''], cycles, c => `
@@ -281,8 +281,7 @@ window.openHikeCycle = async (id) => {
       <td>${i.hike_type === 'Fixed' ? '₹' + fmt(i.hike_value) : i.hike_value + '%'}</td><td>₹${fmt(i.proposed_salary)}</td><td>₹${fmt(i.proposed_salary - i.current_salary)}</td>
       ${editable ? `<td><button class="btn small outline" type="button" onclick="removeHikeItem(${cycle.id},${i.id})">Remove</button></td>` : ''}</tr>`)}
     <p class="muted" style="text-align:right;"><b>Total Current:</b> ₹${fmt(totalCurrent)} &nbsp; <b>Total Proposed:</b> ₹${fmt(totalProposed)} &nbsp; <b>Total Increase:</b> ₹${fmt(totalProposed - totalCurrent)}</p>
-    ${editable ? `<button class="btn" onclick="submitHikeCycle(${cycle.id})">Submit for Approval</button>` : ''}
-    ${cycle.status === 'Rejected' ? `<button class="btn" onclick="reopenHikeCycle(${cycle.id})">Reopen as Draft</button>` : ''}
+    ${editable || cycle.status === 'Rejected' ? `<div class="hig-savebar">${editable ? `<button class="btn" onclick="submitHikeCycle(${cycle.id})">Submit for Approval</button>` : ''}${cycle.status === 'Rejected' ? `<button class="btn" onclick="reopenHikeCycle(${cycle.id})">Reopen as Draft</button>` : ''}</div>` : ''}
   `;
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -361,7 +360,7 @@ function renderTodayLeavesSummaryHTML(summary) {
   const departments = (summary && summary.departments) || [];
   const total = (summary && summary.total) || 0;
   if (!total) {
-    return `<div class="panel"><h3>Today's Leave Status (${today()})</h3><p class="muted">Nobody is on approved leave today.</p></div>`;
+    return `<div class="panel"><h3>Today's Leave Status (${fmtDMY(today())})</h3><p class="muted">Nobody is on approved leave today.</p></div>`;
   }
   const cards = departments.map(d => `
     <div class="panel" style="margin-bottom:10px;">
@@ -370,12 +369,12 @@ function renderTodayLeavesSummaryHTML(summary) {
         ${d.employees.map(e => `<tr>
           <td>${esc(e.employee_name)}</td>
           <td>${badge(e.leave_type || '-')}</td>
-          <td>${e.from_date} to ${e.to_date} (${e.days}d)</td>
+          <td>${fmtDMY(e.from_date)} to ${fmtDMY(e.to_date)} (${e.days}d)</td>
           <td>${esc(e.reason || '-')}</td>
         </tr>`).join('')}
       </tbody></table>
     </div>`).join('');
-  return collapsiblePanel('today-leaves-summary', `Today's Leave Status (${today()}) - ${total} on leave`, cards);
+  return collapsiblePanel('today-leaves-summary', `Today's Leave Status (${fmtDMY(today())}) - ${total} on leave`, cards);
 }
 
 // Next-4-weeks planning view (2026-10-26) - toggles between a by-department
@@ -394,7 +393,7 @@ function upcomingLeaveRowHTML(r) {
     <td>${esc(r.department_name)}</td>
     <td>${esc(r.employee_name)}</td>
     <td>${badge(r.leave_type || '-')}</td>
-    <td>${r.from_date} to ${r.to_date} (${r.days}d)</td>
+    <td>${fmtDMY(r.from_date)} to ${fmtDMY(r.to_date)} (${r.days}d)</td>
     <td>${badge(r.status)}</td>
     <td>${esc(r.reason || '-')}</td>
   </tr>`;
@@ -420,7 +419,7 @@ function renderUpcomingLeavesByDepartment(rows) {
 function renderUpcomingLeavesByWeek(rows) {
   const start = today();
   const weeks = [0, 1, 2, 3].map(i => ({
-    label: `Week ${i + 1} (${dateAddDays(start, i * 7)} to ${dateAddDays(start, i * 7 + 6)})`,
+    label: `Week ${i + 1} (${fmtDMY(dateAddDays(start, i * 7))} to ${fmtDMY(dateAddDays(start, i * 7 + 6))})`,
     from: dateAddDays(start, i * 7), to: dateAddDays(start, i * 7 + 6), rows: [],
   }));
   rows.forEach(r => {
@@ -472,7 +471,7 @@ PAGES.attendance = async (el) => {
         <div><label>Date</label><input id="at-date" type="date" value="${today()}"></div>
         <div><label>Status</label><select id="at-status"><option>Present</option><option>Absent</option><option>HalfDay</option><option>Leave</option><option>Holiday</option><option>WeekOff</option></select></div>
       </div>
-      <button class="btn" onclick="markAttendance()">Mark</button>
+      <div class="hig-savebar"><button class="btn" onclick="markAttendance()">Mark</button></div>
     </div>
     <div class="panel"><h3>Bulk Upload via Excel Template</h3>
       <p class="muted">Download the template, fill in one row per employee per day, then upload it. Matches employees by Employee Code.</p>
@@ -482,7 +481,7 @@ PAGES.attendance = async (el) => {
       <div id="at-upload-result"></div>
     </div>
     ${collapsiblePanel('attendance-records', `This Month's Records (${records.length})`, `
-      ${tableHTML(['Employee', 'Date', 'Status'], records, r => `<tr><td>${esc(r.full_name)}</td><td>${r.work_date}</td><td>${badge(r.status==='Present'?'Approved':r.status==='Absent'?'Rejected':'Pending')}${r.status}</td></tr>`)}
+      ${tableHTML(['Employee', 'Date', 'Status'], records, r => `<tr><td>${esc(r.full_name)}</td><td>${fmtDMY(r.work_date)}</td><td>${badge(r.status==='Present'?'Approved':r.status==='Absent'?'Rejected':'Pending')}${r.status}</td></tr>`)}
     `)}`;
 };
 window.markAttendance = async () => {
@@ -510,11 +509,11 @@ PAGES.leave = async (el) => {
         <div><label>Reason</label><input id="lv-reason"></div>
         <div><label>Supporting Document (e.g. medical certificate)</label><input id="lv-file" type="file"></div>
       </div>
-      <button class="btn" onclick="addLeave()">Submit Request</button>
+      <div class="hig-savebar"><button class="btn" onclick="addLeave()">Submit Request</button></div>
     </div>
     ${collapsiblePanel('leave-requests-list', `Leave Requests (${reqs.length})`, `
       ${tableHTML(['Employee', 'Type', 'From', 'To', 'Days', 'Status', ''], reqs, r => `
-        <tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${r.from_date}</td><td>${r.to_date}</td><td>${r.days}</td><td>${badge(r.status)}</td>
+        <tr><td>${esc(r.full_name)}</td><td>${esc(r.leave_type_name)}</td><td>${fmtDMY(r.from_date)}</td><td>${fmtDMY(r.to_date)}</td><td>${r.days}</td><td>${badge(r.status)}</td>
         <td><button class="btn small outline" type="button" onclick="toggleLeaveAttachments(${r.id})">Attachments</button></td></tr>
         <tr id="lv-att-row-${r.id}" style="display:none;"><td colspan="7"><div id="lv-attachments-${r.id}"></div></td></tr>`)}
     `)}`;
@@ -553,14 +552,13 @@ PAGES.advances = async (el) => {
         <div><label>Reason</label><input id="ad-reason"></div>
         <div><label>Supporting Document</label><input id="ad-file" type="file"></div>
       </div>
-      <button class="btn" onclick="addAdvance()">Submit Request</button>
-      <div class="muted">Approval chain: HR then Accounts.</div>
+      <div class="hig-savebar"><button class="btn" onclick="addAdvance()">Submit Request</button><span class="muted">Approval chain: HR then Accounts.</span></div>
     </div>
     ${collapsiblePanel('advances-list', `Advances (${advs.length})`, `
       ${tableHTML(['Employee', 'Amount', 'Recovered', 'Installments', 'Status', 'Date', ''], advs, a => `
         <tr><td>${esc(a.full_name)}</td><td>₹${fmt(a.amount)}</td><td>₹${fmt(a.recovered_amount)} / ₹${fmt(a.amount)}</td>
         <td>${a.installments_paid || 0} / ${a.installments || 1} (₹${fmt(a.installment_amount)} each)</td>
-        <td>${badge(a.status)}</td><td>${new Date(a.request_date).toLocaleDateString()}</td>
+        <td>${badge(a.status)}</td><td>${fmtDMY(a.request_date)}</td>
         <td><button class="btn small outline" type="button" onclick="toggleAdvanceAttachments(${a.id})">Attachments</button></td></tr>
         <tr id="ad-att-row-${a.id}" style="display:none;"><td colspan="7"><div id="ad-attachments-${a.id}"></div></td></tr>`)}
     `)}`;
@@ -595,7 +593,7 @@ PAGES.payroll = async (el) => {
       <div class="form-grid">
         <div><label>Month</label><input id="pr-month" type="month" value="${month}"></div>
       </div>
-      <button class="btn" onclick="genPayroll()">Generate Draft (from attendance & advances)</button>
+      <div class="hig-savebar"><button class="btn" onclick="genPayroll()">Generate Draft (from attendance & advances)</button></div>
     </div>
     ${collapsiblePanel('salary-schedule', `Salary Schedule &mdash; ${month} (${schedule.length})`, `
       ${tableHTML(['Employee', 'Days Present', 'Gross', 'Leave Ded.', 'Advance Ded.', 'Net Pay', 'Status', 'Action'], schedule, s => `
@@ -652,8 +650,8 @@ PAGES['tour-expenses-mine'] = async (el) => {
         <div><label>Month Status</label><input value="${esc(monthRow ? monthRow.status : 'Draft')}" disabled></div>
       </div>
       ${locked ? `<p class="msg err">${esc(month)} has already been submitted for review - no further days can be logged or edited this month.</p>` :
-        `<button class="btn" onclick="navigate('tour-expenses-mine');document.getElementById('tem-editor').scrollIntoView({behavior:'smooth'})">+ Log a day</button>
-         <button class="btn outline" onclick="submitTemMonth()">Submit ${esc(month)} for Review</button>`}
+        `<div class="hig-actions"><button class="btn" onclick="navigate('tour-expenses-mine');document.getElementById('tem-editor').scrollIntoView({behavior:'smooth'})">+ Log a day</button>
+         <button class="btn outline" onclick="submitTemMonth()">Submit ${esc(month)} for Review</button></div>`}
       <div id="tem-editor" style="margin-top:14px;"></div>
     </div>
     ${collapsiblePanel('tem-days', `Logged Days (${days.length})`, `<div id="tem-days-body">${renderTemDaysList(days)}</div>`)}
@@ -665,7 +663,7 @@ PAGES['tour-expenses-mine'] = async (el) => {
         <div><label>Receipt</label><input type="file" id="tem-allow-file" ${monthRow && monthRow.allowance_status !== 'Pending' && monthRow.allowance_amount != null ? 'disabled' : ''}></div>
       </div>
       ${monthRow && monthRow.allowance_amount != null ? `<p>Status: ${badge(monthRow.allowance_status)}${monthRow.allowance_reason ? ' - ' + esc(monthRow.allowance_reason) : ''}</p>` : ''}
-      ${!monthRow || monthRow.allowance_status === 'Pending' || monthRow.allowance_amount == null ? `<button class="btn" onclick="saveTemAllowance()">Save Monthly Expense Claim</button>` : ''}
+      ${!monthRow || monthRow.allowance_status === 'Pending' || monthRow.allowance_amount == null ? `<div class="hig-savebar"><button class="btn" onclick="saveTemAllowance()">Save Monthly Expense Claim</button></div>` : ''}
     </div>`;
   renderTemEditor();
 };
@@ -673,7 +671,7 @@ function renderTemDaysList(days) {
   if (!days.length) return '<p class="muted">No days logged yet this month.</p>';
   return tableHTML(['Date', 'Travel', 'Lodging', 'Food', 'Claimed (&#8377;)', 'Status', ''], days, (d) => `
     <tr>
-      <td>${esc(d.entry_date)}</td>
+      <td>${fmtDMY(d.entry_date)}</td>
       <td>${d.legs.map(l => esc(l.mode_of_transport) + (l.from_location ? ' ' + esc(l.from_location) + '&rarr;' + esc(l.to_location || '') : '')).join(', ')}</td>
       <td>${d.lodging_claimed ? '&#8377;' + fmt(d.lodging_amount) : '-'}</td>
       <td>${d.food_claimed ? '&#8377;' + fmt(d.food_amount) : '-'}</td>
@@ -704,7 +702,7 @@ function renderTemEditor() {
   const s = window.TEM_STATE;
   el.innerHTML = `
     <div class="panel" style="background:var(--panel-bg,#f7f8fa);">
-      <h4 style="margin-top:0;">${s.editingId ? 'Edit' : 'Log'} Day ${s.entryDate ? '- ' + esc(s.entryDate) : ''}</h4>
+      <h4 style="margin-top:0;">${s.editingId ? 'Edit' : 'Log'} Day ${s.entryDate ? '- ' + esc(fmtDMY(s.entryDate)) : ''}</h4>
       ${!s.editingId ? `<div class="form-grid"><div><label>Date</label><input type="date" id="tem-date" value="${today()}"></div></div>` : ''}
       <h5>Travel</h5>
       <div id="tem-legs">${s.legs.map((l, i) => `
@@ -730,9 +728,8 @@ function renderTemEditor() {
         <div><label>Amount (&#8377;)</label><input type="number" value="${s.food.amount}" onchange="TEM_STATE.food.amount=this.value"></div>
         <div><label>Receipt (optional)</label><input type="file" onchange="TEM_STATE.foodFile=this.files[0]"></div>
       </div>` : ''}
-      <button class="btn" onclick="saveTemDay()">Save this day</button>
-      <button class="btn outline" type="button" onclick="temResetState();renderTemEditor()">Cancel</button>
       <div id="tem-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div class="hig-savebar"><button class="btn" onclick="saveTemDay()">Save this day</button><button class="btn outline" type="button" onclick="temResetState();renderTemEditor()">Cancel</button></div>
     </div>`;
 }
 window.saveTemDay = async () => {
@@ -798,7 +795,7 @@ PAGES['tour-expenses-review'] = async (el) => {
         <div><label>Mode</label><select id="ter-adv-mode"><option>Cash</option><option>Bank</option></select></div>
         <div><label>Notes</label><input id="ter-adv-notes"></div>
       </div>
-      <button class="btn" onclick="issueTourAdvance()">Issue Advance</button>
+      <div class="hig-savebar"><button class="btn" onclick="issueTourAdvance()">Issue Advance</button></div>
     </div>
     <div id="ter-body"></div>`;
   if (employeeId) await loadTerBundle();
@@ -835,9 +832,9 @@ async function loadTerBundle() {
           ${bundle.monthRow.allowance_attachment_path ? ` <a href="${bundle.monthRow.allowance_attachment_path}" target="_blank">Receipt</a>` : ''}
           ${bundle.monthRow.allowance_reason ? '<br><span class="muted">' + esc(bundle.monthRow.allowance_reason) + '</span>' : ''}</p>
         ${bundle.monthRow.allowance_status === 'Pending' ? `
-          <button class="btn small green" onclick="decideTerAllowance('Approve')">Approve</button>
+          <div class="hig-actions"><button class="btn small green" onclick="decideTerAllowance('Approve')">Approve</button>
           <button class="btn small outline" onclick="decideTerAllowance('Adjust')">Adjust</button>
-          <button class="btn small outline" onclick="decideTerAllowance('Reject')">Reject</button>` : ''}
+          <button class="btn small outline" onclick="decideTerAllowance('Reject')">Reject</button></div>` : ''}
       ` : '<p class="muted">No monthly expense claim filed for this month.</p>'}
     </div>
     <div class="panel">
@@ -846,15 +843,15 @@ async function loadTerBundle() {
         <div><label>Approved Expenses</label><input value="&#8377;${fmt(t.approvedExpenses)}" disabled></div>
         <div><label>Net (Earnings vs. Expenses)</label><input value="${t.net >= 0 ? 'Earns' : 'Expenses exceed by'} &#8377;${fmt(Math.abs(t.net))}" disabled></div>
       </div>
-      <button class="btn" onclick="finalizeTerMonth()">Finalize Month &amp; Post to Ledger</button>
       <div id="ter-finalize-err" class="msg err" style="display:none;margin-top:8px;"></div>
+      <div class="hig-savebar"><button class="btn" onclick="finalizeTerMonth()">Finalize Month &amp; Post to Ledger</button></div>
     </div>`;
 }
 function renderTerDaysTable(days) {
   if (!days.length) return '<p class="muted">No days logged yet this month.</p>';
   return tableHTML(['Date', 'Travel', 'Lodging', 'Food', 'Claimed (&#8377;)', 'Status', ''], days, (d) => `
     <tr>
-      <td>${esc(d.entry_date)}</td>
+      <td>${fmtDMY(d.entry_date)}</td>
       <td>${d.legs.map(l => `${esc(l.mode_of_transport)} ${esc(l.from_location||'')}&rarr;${esc(l.to_location||'')} (&#8377;${fmt(l.amount)})${l.attachment_path ? ` <a href="${l.attachment_path}" target="_blank">receipt</a>` : ' <span class="muted">(no receipt)</span>'}`).join('<br>')}</td>
       <td>${d.lodging_claimed ? `${esc(d.lodging_name||'')} &#8377;${fmt(d.lodging_amount)}${d.lodging_attachment_path ? ` <a href="${d.lodging_attachment_path}" target="_blank">receipt</a>` : ' <span class="muted">(no receipt)</span>'}` : '-'}</td>
       <td>${d.food_claimed ? `&#8377;${fmt(d.food_amount)}${d.food_attachment_path ? ` <a href="${d.food_attachment_path}" target="_blank">receipt</a>` : ''}` : '-'}</td>
@@ -870,7 +867,7 @@ function renderTerSvcTable(rows) {
   if (!rows.length) return '<p class="muted">No Service Reports with an Up/Down &amp; Food charge this month.</p>';
   return tableHTML(['Date', 'SR No', 'Customer', 'Claimed (&#8377;)', 'Status', ''], rows, (r) => `
     <tr>
-      <td>${esc(r.activity_date)}</td><td>${esc(r.sr_no)}</td><td>${esc(r.client_name || r.customer_name || '-')}</td>
+      <td>${fmtDMY(r.activity_date)}</td><td>${esc(r.sr_no)}</td><td>${esc(r.client_name || r.customer_name || '-')}</td>
       <td>&#8377;${fmt(r.amount_updown_food)}</td>
       <td>${badge(r.updown_food_status)}${r.updown_food_reason ? '<br><span class="muted">' + esc(r.updown_food_reason) + '</span>' : ''}${r.updown_food_approved_amount != null ? '<br>Approved: &#8377;' + fmt(r.updown_food_approved_amount) : ''}</td>
       <td>${actionButtonsCell(r.updown_food_status === 'Pending' ? `
@@ -942,7 +939,7 @@ PAGES['leave-balances'] = async (el) => {
         <div><label>Leave Type</label><select id="cp-type">${types.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
         <div><label>Allocated</label><input id="cp-alloc" type="number" step="0.5" value="0"></div>
       </div>
-      <button class="btn small" onclick="saveCompanyPolicy()">Save Company Policy</button>
+      <div class="hig-savebar"><button class="btn small" onclick="saveCompanyPolicy()">Save Company Policy</button></div>
       ${tableHTML(['Leave Type', 'Allocated', ''], companyPolicies, p => `
         <tr><td>${esc(p.leave_type_name)}</td><td>${p.allocated}</td>
         <td><button class="btn small outline" onclick="editCompanyPolicy(${p.leave_type_id},${p.allocated})">Edit</button></td></tr>`)}
@@ -955,7 +952,7 @@ PAGES['leave-balances'] = async (el) => {
         <div><label>Year</label><input id="dp-year" type="number" value="${year}"></div>
         <div><label>Allocated</label><input id="dp-alloc" type="number" step="0.5" value="0"></div>
       </div>
-      <button class="btn small" onclick="saveDeptPolicy()">Save Department Override</button>
+      <div class="hig-savebar"><button class="btn small" onclick="saveDeptPolicy()">Save Department Override</button></div>
       ${tableHTML(['Department', 'Leave Type', 'Allocated'], deptPolicies, p => `
         <tr><td>${esc(p.department_name)}</td><td>${esc(p.leave_type_name)}</td><td>${p.allocated}</td></tr>`)}
     </div>
@@ -964,7 +961,7 @@ PAGES['leave-balances'] = async (el) => {
         <div><label>Year</label><input id="lb-year" type="number" value="${year}"></div>
         <div><label>Employee</label><select id="lb-emp"><option value="">Select an employee...</option>${emps.map(e => `<option value="${e.id}" ${String(e.id) === String(empFilter) ? 'selected' : ''}>${esc(e.full_name)}</option>`).join('')}</select></div>
       </div>
-      <button class="btn" onclick="loadLeaveBalances()">Look Up</button>
+      <div class="hig-savebar"><button class="btn" onclick="loadLeaveBalances()">Look Up</button></div>
       ${tableHTML(['Leave Type', 'Paid', 'Source', 'Allocated', 'Used', 'Balance', 'On Probation'], balances, b => `
         <tr><td>${esc(b.leave_type_name)}</td><td>${b.is_paid ? 'Paid' : 'Unpaid'}</td><td>${esc(b.overridden ? 'Manual Override' : b.source)}</td>
         <td>${b.allocated}</td><td>${b.used}</td><td>${b.balance}</td><td>${b.on_probation ? 'Yes' : ''}</td></tr>`)}
@@ -980,7 +977,7 @@ PAGES['leave-balances'] = async (el) => {
         <div><label>Carry Forward?</label><select id="lt-carry"><option value="0">No</option><option value="1">Yes</option></select></div>
         <div><label>Max Carry Forward</label><input id="lt-maxcarry" type="number" step="0.5" value="0"></div>
       </div>
-      <button class="btn" onclick="addLeaveType()">Add Leave Type</button>
+      <div class="hig-savebar"><button class="btn" onclick="addLeaveType()">Add Leave Type</button></div>
       ${tableHTML(['Name', 'Quota', 'Paid', 'Probation (mo)', 'Accrual', 'Carry Fwd', 'Max Carry', 'Action'], types, t => `
         <tr>
           <td><input id="lt-name-${t.id}" value="${esc(t.name)}"></td>
